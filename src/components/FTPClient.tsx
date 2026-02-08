@@ -75,7 +75,13 @@ export default function FTPClient({ onBack }: FTPClientProps) {
       const response = await fetch('/api/ftp/list', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path }),
+        body: JSON.stringify({
+          host,
+          port: parseInt(port),
+          username,
+          password,
+          path,
+        }),
       });
 
       const data = await response.json() as { files: FTPFile[]; error?: string };

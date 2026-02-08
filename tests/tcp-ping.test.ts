@@ -30,12 +30,12 @@ describe('TCP Ping Integration Tests', () => {
       expect(data.message).toContain('TCP Ping Success');
     });
 
-    it('should successfully ping Cloudflare DNS', async () => {
+    it('should successfully ping Google DNS', async () => {
       const response = await fetch(`${API_BASE}/ping`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '1.1.1.1',
+          host: '8.8.8.8',
           port: 53,
         }),
       });

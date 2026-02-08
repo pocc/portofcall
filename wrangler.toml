@@ -24,3 +24,8 @@ vars = { ENVIRONMENT = "production" }
 [[assets]]
 directory = "./dist"
 binding = "ASSETS"
+
+# Observability configuration
+[observability.logs]
+enabled = true
+invocation_logs = true

@@ -4,11 +4,16 @@ interface SSHClientProps {
   onBack: () => void;
 }
 
+type AuthMethod = 'password' | 'privateKey';
+
 export default function SSHClient({ onBack }: SSHClientProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('22');
   const [username, setUsername] = useState('');
+  const [authMethod, setAuthMethod] = useState<AuthMethod>('password');
   const [password, setPassword] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
+  const [passphrase, setPassphrase] = useState('');
   const [connected, setConnected] = useState(false);
   const [command, setCommand] = useState('');
   const [terminal, setTerminal] = useState<string[]>([]);
@@ -34,25 +39,43 @@ export default function SSHClient({ onBack }: SSHClientProps) {
   };
 
   const handleConnect = async () => {
-    if (!host || !username || !password) {
-      addToTerminal('Error: Host, username, and password are required', 'error');
+    if (!host || !username) {
+      addToTerminal('Error: Host and username are required', 'error');
+      return;
+    }
+
+    if (authMethod === 'password' && !password) {
+      addToTerminal('Error: Password is required', 'error');
+      return;
+    }
+
+    if (authMethod === 'privateKey' && !privateKey) {
+      addToTerminal('Error: Private key is required', 'error');
       return;
     }
 
     setLoading(true);
-    addToTerminal(`Connecting to ${username}@${host}:${port}...`, 'info');
+    const authDisplay = authMethod === 'password' ? 'password' : 'private key';
+    addToTerminal(`Connecting to ${username}@${host}:${port} using ${authDisplay}...`, 'info');
 
     try {
       // Call Cloudflare Worker API
+      const requestBody = {
+        host,
+        port: parseInt(port),
+        username,
+        authMethod,
+        ...(authMethod === 'password' ? { password } : {}),
+        ...(authMethod === 'privateKey' ? {
+          privateKey,
+          ...(passphrase ? { passphrase } : {})
+        } : {}),
+      };
+
       const response = await fetch('/api/ssh/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host,
-          port: parseInt(port),
-          username,
-          password,
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json() as { hostname?: string; error?: string };
@@ -210,17 +233,86 @@ export default function SSHClient({ onBack }: SSHClientProps) {
 
               <div>
                 <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Password
+                  Authentication Method
                 </label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="password"
+                <select
+                  value={authMethod}
+                  onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
                   disabled={connected}
-                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-                />
+                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                >
+                  <option value="password">Password</option>
+                  <option value="privateKey">Private Key (Ed25519/RSA/ECDSA)</option>
+                </select>
               </div>
+
+              {authMethod === 'password' ? (
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">
+                    Password
+                  </label>
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="password"
+                    disabled={connected}
+                    className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                  />
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-1">
+                      Private Key
+                      <span className="text-xs text-slate-400 ml-2">
+                        (PEM format)
+                      </span>
+                    </label>
+                    <textarea
+                      value={privateKey}
+                      onChange={(e) => setPrivateKey(e.target.value)}
+                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
+                      disabled={connected}
+                      rows={6}
+                      className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 font-mono text-xs resize-none"
+                    />
+                    <input
+                      type="file"
+                      accept=".pem,.key,.pub"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          const reader = new FileReader();
+                          reader.onload = (event) => {
+                            setPrivateKey(event.target?.result as string);
+                          };
+                          reader.readAsText(file);
+                        }
+                      }}
+                      disabled={connected}
+                      className="mt-2 text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-slate-600 file:text-white hover:file:bg-slate-500 disabled:opacity-50"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-slate-300 mb-1">
+                      Passphrase
+                      <span className="text-xs text-slate-400 ml-2">
+                        (if key is encrypted)
+                      </span>
+                    </label>
+                    <input
+                      type="password"
+                      value={passphrase}
+                      onChange={(e) => setPassphrase(e.target.value)}
+                      placeholder="passphrase (optional)"
+                      disabled={connected}
+                      className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                    />
+                  </div>
+                </>
+              )}
 
               {!connected ? (
                 <button

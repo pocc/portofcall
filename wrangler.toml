@@ -3,6 +3,11 @@ main = "src/worker/index.ts"
 compatibility_date = "2026-02-07"
 compatibility_flags = ["nodejs_compat"]
 
+# Custom domain configuration
+routes = [
+  { pattern = "portofcall.ross.gg/*", custom_domain = true }
+]
+
 # Smart Placement: automatically migrates worker execution closer to backend services
 [placement]
 mode = "smart"

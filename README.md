@@ -2,6 +2,8 @@
 
 Browser-to-TCP bridge via Cloudflare Workers Sockets API. Run SSH, connect to databases, and access any TCP service directly from your browser.
 
+**Live Demo**: [portofcall.ross.gg](https://portofcall.ross.gg)
+
 ## What is Port of Call?
 
 Port of Call leverages [Cloudflare Workers' Sockets API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) (released May 16, 2023) to enable browser-based access to TCP protocols that were previously impossible to reach from the web.
@@ -50,13 +52,19 @@ Visit `http://localhost:5173` to see the React UI, or `http://localhost:8787` fo
 
 ### Build & Deploy
 
+This project is deployed as a **Cloudflare Worker** (not Pages) that serves static assets via the Workers Assets API.
+
 ```bash
 # Build React app
 npm run build
 
 # Deploy to Cloudflare Workers
 npm run worker:deploy
+# or
+npx wrangler deploy
 ```
+
+The Worker serves the built React app from the `dist/` directory while providing TCP connectivity APIs.
 
 ## Usage
 
@@ -91,13 +99,22 @@ ws.onmessage = (event) => {
 
 ## Architecture
 
+Port of Call is deployed as a **single Cloudflare Worker** that:
+1. Serves the built React UI as static assets (via Workers Assets API)
+2. Provides TCP connectivity APIs (via Workers Sockets API)
+3. Uses Smart Placement to minimize latency to backend services
+
 ```
-┌─────────────┐          ┌──────────────────┐          ┌─────────────┐
-│   Browser   │          │  Cloudflare      │          │   Backend   │
-│             │◄────────►│  Worker          │◄────────►│   Service   │
-│  (React UI) │ WebSocket│  (Sockets API)   │   TCP    │ (SSH/DB/etc)│
-└─────────────┘          └──────────────────┘          └─────────────┘
+┌─────────────┐          ┌──────────────────────────────┐          ┌─────────────┐
+│   Browser   │          │  Cloudflare Worker           │          │   Backend   │
+│             │◄────────►│  ┌────────────────────────┐  │◄────────►│   Service   │
+│  (React UI) │ WebSocket│  │ Sockets API + Assets   │  │   TCP    │ (SSH/DB/etc)│
+│             │   HTTP   │  │ (Single Worker)        │  │          │             │
+└─────────────┘          │  └────────────────────────┘  │          └─────────────┘
+                         └──────────────────────────────┘
 ```
+
+**Note**: This is a Workers deployment, not Cloudflare Pages. The Worker handles both static asset serving and TCP proxy functionality.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 
@@ -119,9 +136,11 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 ## Tech Stack
 
 - **Frontend**: React 19 + TypeScript + Vite 7
-- **Worker**: Cloudflare Workers + Sockets API
+- **Backend**: Cloudflare Workers + Sockets API
+- **Static Assets**: Workers Assets API (serves built React app)
 - **Build**: Vite for bundling, Wrangler for deployment
-- **Deployment**: Cloudflare Pages/Workers
+- **Deployment**: Cloudflare Workers (not Pages)
+- **Domain**: portofcall.ross.gg
 
 ## Smart Placement
 

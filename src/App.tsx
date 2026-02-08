@@ -23,7 +23,7 @@ function App() {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as { success: boolean; rtt?: number; error?: string };
 
       if (data.success) {
         setResult(`✅ Connection successful! Round-trip time: ${data.rtt}ms`);

@@ -5,7 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 # Custom domain configuration
 routes = [
-  { pattern = "portofcall.ross.gg/*", custom_domain = true }
+  { pattern = "portofcall.ross.gg", custom_domain = true }
 ]
 
 # Smart Placement: automatically migrates worker execution closer to backend services

@@ -75,17 +75,17 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         <p className="text-slate-300 text-sm leading-relaxed mb-4">
           This interface demonstrates TCP protocol implementations using Cloudflare Workers'
           <code className="bg-slate-700 px-2 py-1 rounded mx-1">connect()</code> API.
-          Select a protocol above to explore the planned interface design.
+          Select a protocol above to establish connections and interact with remote servers.
         </p>
-        <div className="bg-yellow-900/30 border border-yellow-600/50 rounded-lg p-4">
+        <div className="bg-green-900/30 border border-green-600/50 rounded-lg p-4">
           <div className="flex items-start gap-2">
-            <span className="text-yellow-400 text-xl">⚠️</span>
+            <span className="text-green-400 text-xl">✓</span>
             <div>
-              <p className="text-yellow-200 text-sm font-semibold mb-1">Demo Interface</p>
-              <p className="text-yellow-100/80 text-xs leading-relaxed">
-                The FTP and SSH client interfaces are UI demos. Full protocol implementations
-                (FTP command parsing, SSH2 protocol, authentication) are coming soon. These
-                demonstrate the planned user experience once backend handlers are complete.
+              <p className="text-green-200 text-sm font-semibold mb-1">Live Implementation</p>
+              <p className="text-green-100/80 text-xs leading-relaxed">
+                FTP (Passive Mode) and SSH (WebSocket Tunnel) are now fully functional.
+                Connect to any FTP or SSH server directly from your browser. All connections
+                are proxied through Cloudflare's global network with Smart Placement for low latency.
               </p>
             </div>
           </div>

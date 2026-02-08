@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Ocean blue background -->
+  <rect width="64" height="64" fill="#006994"/>
+  <!-- Anchor -->
+  <!-- Ring at top -->
+  <circle cx="32" cy="15" r="4" fill="none" stroke="#FFF" stroke-width="3"/>
+  <!-- Vertical shaft -->
+  <rect x="30" y="15" width="4" height="30" fill="#FFF"/>
+  <!-- Horizontal bar -->
+  <rect x="20" y="27" width="24" height="3" fill="#FFF"/>
+  <!-- Flukes (bottom arms) -->
+  <path d="M 32 45 L 20 52 L 20 48 L 28 44 Z" fill="#FFF"/>
+  <path d="M 32 45 L 44 52 L 44 48 L 36 44 Z" fill="#FFF"/>
+  <!-- Fluke tips -->
+  <circle cx="20" cy="50" r="3" fill="#FFF"/>
+  <circle cx="44" cy="50" r="3" fill="#FFF"/>
+</svg>

@@ -1,0 +1,229 @@
+# ⚓ Port of Call
+
+Browser-to-TCP bridge via Cloudflare Workers Sockets API. Run SSH, connect to databases, and access any TCP service directly from your browser.
+
+## What is Port of Call?
+
+Port of Call leverages [Cloudflare Workers' Sockets API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) (released May 16, 2023) to enable browser-based access to TCP protocols that were previously impossible to reach from the web.
+
+### The Name
+
+**Port of Call** works on multiple levels:
+- 🎯 **Literal**: You're calling a port (like 22 for SSH) from the browser
+- ⚓ **Nautical**: A transitional stop where data moves between worlds
+- 🌊 **Ecosystem**: Fits Cloudflare's naming theme (Workers, Pages, Streams)
+
+## Features
+
+- ✅ **TCP Connections**: Connect to any TCP service from the browser
+- ✅ **TCP Ping**: Measure round-trip time via TCP handshake
+- ✅ **WebSocket Tunneling**: Bridge browser WebSockets to TCP sockets
+- ✅ **Smart Placement**: Automatic Worker migration closer to backends
+- ✅ **React UI**: Modern TypeScript interface for testing connections
+- ✅ **Zero Configuration**: Works out of the box
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+ and npm
+- Cloudflare account (for deployment)
+- [Wrangler CLI](https://developers.cloudflare.com/workers/wrangler/install-and-update/)
+
+### Installation
+
+```bash
+# Clone or download this repo
+cd portofcall
+
+# Install dependencies
+npm install
+
+# Start Vite dev server (React UI)
+npm run dev
+
+# In another terminal, start Wrangler (Worker)
+npm run worker:dev
+```
+
+Visit `http://localhost:5173` to see the React UI, or `http://localhost:8787` for the Worker.
+
+### Build & Deploy
+
+```bash
+# Build React app
+npm run build
+
+# Deploy to Cloudflare Workers
+npm run worker:deploy
+```
+
+## Usage
+
+### TCP Ping Example
+
+Test if a service is reachable:
+
+```typescript
+const response = await fetch('/api/ping', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ host: 'example.com', port: 22 }),
+});
+
+const { success, rtt } = await response.json();
+// rtt = round-trip time in milliseconds
+```
+
+### WebSocket Tunnel Example
+
+```typescript
+const ws = new WebSocket('wss://your-worker.workers.dev/api/connect');
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ host: 'ssh-server.com', port: 22 }));
+};
+
+ws.onmessage = (event) => {
+  console.log('Received from TCP:', event.data);
+};
+```
+
+## Architecture
+
+```
+┌─────────────┐          ┌──────────────────┐          ┌─────────────┐
+│   Browser   │          │  Cloudflare      │          │   Backend   │
+│             │◄────────►│  Worker          │◄────────►│   Service   │
+│  (React UI) │ WebSocket│  (Sockets API)   │   TCP    │ (SSH/DB/etc)│
+└─────────────┘          └──────────────────┘          └─────────────┘
+```
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
+
+## What Can You Build?
+
+- 🖥️ **Browser SSH Client**: Terminal access from any web browser
+- 🗄️ **Database Explorer**: Query databases without local clients
+- 📊 **Network Diagnostics**: TCP connectivity testing and monitoring
+- 🔌 **Protocol Bridges**: Connect legacy services to modern web apps
+- 🎓 **Educational Tools**: Interactive networking protocol demos
+
+## Documentation
+
+- [📖 Project Overview](docs/PROJECT_OVERVIEW.md) - Concept and goals
+- [🏗️ Architecture](docs/ARCHITECTURE.md) - Technical architecture
+- [🔌 Sockets API Reference](docs/SOCKETS_API.md) - API details and examples
+- [📝 Naming History](docs/NAMING_HISTORY.md) - How we chose the name
+
+## Tech Stack
+
+- **Frontend**: React 19 + TypeScript + Vite 7
+- **Worker**: Cloudflare Workers + Sockets API
+- **Build**: Vite for bundling, Wrangler for deployment
+- **Deployment**: Cloudflare Pages/Workers
+
+## Smart Placement
+
+Port of Call uses Cloudflare's Smart Placement to automatically migrate Worker execution closer to your backend services:
+
+```toml
+[placement]
+mode = "smart"  # Automatic migration for low latency
+```
+
+This means if you repeatedly connect to an SSH server in Virginia, the Worker will migrate from the edge to a datacenter near Virginia, reducing backend latency from 70ms to ~2ms.
+
+## API Endpoints
+
+### POST /api/ping
+
+Test TCP connectivity and measure round-trip time.
+
+**Request**:
+```json
+{
+  "host": "example.com",
+  "port": 22
+}
+```
+
+**Response**:
+```json
+{
+  "success": true,
+  "host": "example.com",
+  "port": 22,
+  "rtt": 42,
+  "message": "TCP Ping Success: 42ms"
+}
+```
+
+### POST /api/connect
+
+Establish WebSocket-to-TCP tunnel.
+
+**Request**: WebSocket upgrade with host/port
+**Response**: 101 Switching Protocols
+
+## Limitations
+
+### What You CAN Do
+
+- ✅ TCP connections (any port)
+- ✅ Measure TCP handshake latency
+- ✅ WebSocket-to-TCP tunneling
+- ✅ Smart placement near backends
+
+### What You CANNOT Do
+
+- ❌ ICMP pings (TCP only, not raw sockets)
+- ❌ UDP connections (TCP only as of Feb 2026)
+- ❌ Pin to specific datacenter (only region hints)
+
+See [docs/SOCKETS_API.md](docs/SOCKETS_API.md) for details.
+
+## Contributing
+
+Contributions welcome! Areas for improvement:
+
+- SSH terminal emulator component
+- Database query interface
+- Network diagnostics dashboard
+- Custom protocol handlers
+- Tests and documentation
+
+## Security Notes
+
+⚠️ **Important Security Considerations**:
+
+1. **Public Workers**: Anyone can call your Worker's API
+2. **Rate Limiting**: Implement rate limiting to prevent abuse
+3. **Allowlists**: Consider restricting connectable hosts
+4. **Authentication**: Add auth for production deployments
+5. **Input Validation**: Always validate host/port inputs
+
+See [docs/ARCHITECTURE.md#security](docs/ARCHITECTURE.md#security-considerations) for details.
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Resources
+
+- [Cloudflare Sockets API Docs](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
+- [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
+- [Smart Placement](https://blog.cloudflare.com/smart-placement-for-workers/)
+- [React Documentation](https://react.dev/)
+- [Vite Documentation](https://vite.dev/)
+
+## Acknowledgments
+
+Built with inspiration from:
+- 80s/90s networking protocols (Gopher, Telnet, SLIP)
+- Cloudflare's nautical naming theme
+- The power of bringing "bare-metal" protocols to the browser
+
+---
+
+Made with ⚓ using Cloudflare Workers Sockets API

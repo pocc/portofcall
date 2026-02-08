@@ -1,0 +1,26 @@
+name = "portofcall"
+main = "src/worker/index.ts"
+compatibility_date = "2026-02-07"
+compatibility_flags = ["nodejs_compat"]
+
+# Enable Sockets API (required for TCP connections)
+# Note: Sockets API was released May 16, 2023
+[sockets]
+enabled = true
+
+# Smart Placement: automatically migrates worker execution closer to backend services
+[placement]
+mode = "smart"
+
+# For development
+[env.dev]
+vars = { ENVIRONMENT = "development" }
+
+# For production
+[env.production]
+vars = { ENVIRONMENT = "production" }
+
+# Asset binding for serving the built React app
+[[assets]]
+directory = "./dist"
+binding = "ASSETS"

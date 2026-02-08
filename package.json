@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "description": "A Cloudflare Worker leveraging the Sockets API to run protocols like SSH from the browser",
   "type": "module",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",

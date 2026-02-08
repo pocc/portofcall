@@ -41,6 +41,7 @@ wrangler.toml.local
 # Testing
 coverage/
 .nyc_output/
+test-results/
 
 # Temp files
 *.tmp

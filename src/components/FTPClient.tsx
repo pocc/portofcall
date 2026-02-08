@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 interface FTPClientProps {
   onBack: () => void;
@@ -11,6 +11,8 @@ interface FTPFile {
   modified: string;
 }
 
+type CommandModal = 'upload' | 'download' | 'delete' | 'rename' | 'mkdir' | null;
+
 export default function FTPClient({ onBack }: FTPClientProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('21');
@@ -21,6 +23,15 @@ export default function FTPClient({ onBack }: FTPClientProps) {
   const [files, setFiles] = useState<FTPFile[]>([]);
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<FTPFile | null>(null);
+  const [showCommands, setShowCommands] = useState(false);
+  const [activeModal, setActiveModal] = useState<CommandModal>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Modal state
+  const [remotePath, setRemotePath] = useState('');
+  const [newName, setNewName] = useState('');
+  const [dirName, setDirName] = useState('');
 
   const addLog = (message: string) => {
     setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
@@ -36,7 +47,6 @@ export default function FTPClient({ onBack }: FTPClientProps) {
     addLog(`🔄 Connecting to ${host}:${port}...`);
 
     try {
-      // Call Cloudflare Worker API
       const response = await fetch('/api/ftp/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -55,7 +65,6 @@ export default function FTPClient({ onBack }: FTPClientProps) {
         setConnected(true);
         addLog(`✅ Connected to ${host}`);
         addLog('📡 Using PASSIVE mode');
-        // Auto-list directory
         await handleListDirectory('/');
       } else {
         addLog(`❌ Connection failed: ${data.error}`);
@@ -104,7 +113,214 @@ export default function FTPClient({ onBack }: FTPClientProps) {
     setConnected(false);
     setFiles([]);
     setCurrentPath('/');
-    addLog('🔌 Disconnected');
+    addLog('🔌 Disconnected from server');
+    setShowCommands(false);
+  };
+
+  const handleUpload = async (file: File) => {
+    if (!file) return;
+
+    setLoading(true);
+    const uploadPath = `${currentPath === '/' ? '' : currentPath}/${file.name}`;
+    addLog(`⬆️  Uploading ${file.name} to ${uploadPath}...`);
+
+    try {
+      const formData = new FormData();
+      formData.append('host', host);
+      formData.append('port', port);
+      formData.append('username', username);
+      formData.append('password', password);
+      formData.append('remotePath', uploadPath);
+      formData.append('file', file);
+
+      const response = await fetch('/api/ftp/upload', {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json() as { error?: string; size?: number };
+
+      if (response.ok) {
+        addLog(`✅ Uploaded ${file.name} (${(data.size || 0 / 1024).toFixed(1)} KB)`);
+        await handleListDirectory(currentPath);
+      } else {
+        addLog(`❌ Upload failed: ${data.error}`);
+      }
+    } catch (error) {
+      addLog(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+      setActiveModal(null);
+    }
+  };
+
+  const handleDownload = async (file: FTPFile) => {
+    setLoading(true);
+    const downloadPath = `${currentPath === '/' ? '' : currentPath}/${file.name}`;
+    addLog(`⬇️  Downloading ${file.name}...`);
+
+    try {
+      const response = await fetch('/api/ftp/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port),
+          username,
+          password,
+          remotePath: downloadPath,
+        }),
+      });
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        addLog(`✅ Downloaded ${file.name} (${(file.size / 1024).toFixed(1)} KB)`);
+      } else {
+        const data = await response.json() as { error?: string };
+        addLog(`❌ Download failed: ${data.error}`);
+      }
+    } catch (error) {
+      addLog(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+      setActiveModal(null);
+      setSelectedFile(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!remotePath) return;
+
+    setLoading(true);
+    addLog(`🗑️  Deleting ${remotePath}...`);
+
+    try {
+      const response = await fetch('/api/ftp/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port),
+          username,
+          password,
+          remotePath,
+        }),
+      });
+
+      const data = await response.json() as { error?: string };
+
+      if (response.ok) {
+        addLog(`✅ Deleted ${remotePath}`);
+        await handleListDirectory(currentPath);
+      } else {
+        addLog(`❌ Delete failed: ${data.error}`);
+      }
+    } catch (error) {
+      addLog(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+      setActiveModal(null);
+      setRemotePath('');
+    }
+  };
+
+  const handleRename = async () => {
+    if (!remotePath || !newName) return;
+
+    setLoading(true);
+    const fromPath = remotePath;
+    const dir = currentPath === '/' ? '' : currentPath;
+    const toPath = `${dir}/${newName}`;
+    addLog(`✏️  Renaming ${fromPath} to ${toPath}...`);
+
+    try {
+      const response = await fetch('/api/ftp/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port),
+          username,
+          password,
+          fromPath,
+          toPath,
+        }),
+      });
+
+      const data = await response.json() as { error?: string };
+
+      if (response.ok) {
+        addLog(`✅ Renamed to ${newName}`);
+        await handleListDirectory(currentPath);
+      } else {
+        addLog(`❌ Rename failed: ${data.error}`);
+      }
+    } catch (error) {
+      addLog(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+      setActiveModal(null);
+      setRemotePath('');
+      setNewName('');
+    }
+  };
+
+  const handleMkdir = async () => {
+    if (!dirName) return;
+
+    setLoading(true);
+    const dirPath = `${currentPath === '/' ? '' : currentPath}/${dirName}`;
+    addLog(`📁 Creating directory ${dirPath}...`);
+
+    try {
+      const response = await fetch('/api/ftp/mkdir', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port),
+          username,
+          password,
+          dirPath,
+        }),
+      });
+
+      const data = await response.json() as { error?: string };
+
+      if (response.ok) {
+        addLog(`✅ Created directory ${dirName}`);
+        await handleListDirectory(currentPath);
+      } else {
+        addLog(`❌ Create directory failed: ${data.error}`);
+      }
+    } catch (error) {
+      addLog(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setLoading(false);
+      setActiveModal(null);
+      setDirName('');
+    }
+  };
+
+  const openCommandModal = (command: CommandModal, file?: FTPFile) => {
+    if (file) {
+      setSelectedFile(file);
+      const filePath = `${currentPath === '/' ? '' : currentPath}/${file.name}`;
+      setRemotePath(filePath);
+      if (command === 'rename') {
+        setNewName(file.name);
+      }
+    }
+    setActiveModal(command);
+    setShowCommands(false);
   };
 
   return (
@@ -199,12 +415,47 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                   {loading ? 'Connecting...' : 'Connect'}
                 </button>
               ) : (
-                <button
-                  onClick={handleDisconnect}
-                  className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
-                >
-                  Disconnect
-                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowCommands(!showCommands)}
+                    className="w-full bg-slate-700 hover:bg-slate-600 text-white font-medium py-2 px-4 rounded-lg transition-colors flex items-center justify-between"
+                  >
+                    <span>Commands</span>
+                    <span>{showCommands ? '▲' : '▼'}</span>
+                  </button>
+
+                  {showCommands && (
+                    <div className="absolute top-full mt-2 w-full bg-slate-700 border border-slate-600 rounded-lg shadow-lg z-10">
+                      <button
+                        onClick={() => openCommandModal('upload')}
+                        className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors rounded-t-lg"
+                      >
+                        ⬆️  Upload File
+                      </button>
+                      <button
+                        onClick={() => openCommandModal('mkdir')}
+                        className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors"
+                      >
+                        📁 Create Directory
+                      </button>
+                      <button
+                        onClick={() => {
+                          handleListDirectory(currentPath);
+                          setShowCommands(false);
+                        }}
+                        className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors"
+                      >
+                        🔄 Refresh
+                      </button>
+                      <button
+                        onClick={handleDisconnect}
+                        className="w-full text-left px-4 py-2 text-red-400 hover:bg-slate-600 transition-colors rounded-b-lg"
+                      >
+                        🔌 Disconnect
+                      </button>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
@@ -248,14 +499,16 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                   files.map((file, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between bg-slate-700 hover:bg-slate-600 rounded-lg p-3 cursor-pointer transition-colors"
-                      onClick={() => {
-                        if (file.type === 'directory') {
-                          handleListDirectory(`${currentPath}/${file.name}`);
-                        }
-                      }}
+                      className="group flex items-center justify-between bg-slate-700 hover:bg-slate-600 rounded-lg p-3 transition-colors"
                     >
-                      <div className="flex items-center gap-3">
+                      <div
+                        className="flex items-center gap-3 flex-1 cursor-pointer"
+                        onClick={() => {
+                          if (file.type === 'directory') {
+                            handleListDirectory(`${currentPath}/${file.name}`);
+                          }
+                        }}
+                      >
                         <div className="text-2xl">
                           {file.type === 'directory' ? '📁' : '📄'}
                         </div>
@@ -266,8 +519,35 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                           </div>
                         </div>
                       </div>
-                      <div className="text-sm text-slate-400">
-                        {file.type === 'file' ? `${(file.size / 1024).toFixed(1)} KB` : ''}
+                      <div className="flex items-center gap-3">
+                        <div className="text-sm text-slate-400">
+                          {file.type === 'file' ? `${(file.size / 1024).toFixed(1)} KB` : ''}
+                        </div>
+                        {file.type === 'file' && (
+                          <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={() => handleDownload(file)}
+                              className="text-blue-400 hover:text-blue-300 text-xs"
+                              title="Download"
+                            >
+                              ⬇️
+                            </button>
+                            <button
+                              onClick={() => openCommandModal('rename', file)}
+                              className="text-yellow-400 hover:text-yellow-300 text-xs"
+                              title="Rename"
+                            >
+                              ✏️
+                            </button>
+                            <button
+                              onClick={() => openCommandModal('delete', file)}
+                              className="text-red-400 hover:text-red-300 text-xs"
+                              title="Delete"
+                            >
+                              🗑️
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ))
@@ -277,6 +557,140 @@ export default function FTPClient({ onBack }: FTPClientProps) {
           </div>
         </div>
       </div>
+
+      {/* Upload Modal */}
+      {activeModal === 'upload' && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-semibold text-white mb-4">Upload File</h3>
+            <input
+              ref={fileInputRef}
+              type="file"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  handleUpload(file);
+                }
+              }}
+              className="w-full mb-4 text-white"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg"
+              >
+                Choose File
+              </button>
+              <button
+                onClick={() => setActiveModal(null)}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Modal */}
+      {activeModal === 'delete' && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-semibold text-white mb-4">Delete File</h3>
+            <p className="text-slate-300 mb-4">
+              Are you sure you want to delete <span className="font-mono text-red-400">{selectedFile?.name}</span>?
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={handleDelete}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg"
+              >
+                Delete
+              </button>
+              <button
+                onClick={() => {
+                  setActiveModal(null);
+                  setSelectedFile(null);
+                  setRemotePath('');
+                }}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Modal */}
+      {activeModal === 'rename' && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-semibold text-white mb-4">Rename File</h3>
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="New name"
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white mb-4"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleRename}
+                disabled={!newName}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg disabled:opacity-50"
+              >
+                Rename
+              </button>
+              <button
+                onClick={() => {
+                  setActiveModal(null);
+                  setSelectedFile(null);
+                  setRemotePath('');
+                  setNewName('');
+                }}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create Directory Modal */}
+      {activeModal === 'mkdir' && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-xl font-semibold text-white mb-4">Create Directory</h3>
+            <input
+              type="text"
+              value={dirName}
+              onChange={(e) => setDirName(e.target.value)}
+              placeholder="Directory name"
+              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white mb-4"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleMkdir}
+                disabled={!dirName}
+                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg disabled:opacity-50"
+              >
+                Create
+              </button>
+              <button
+                onClick={() => {
+                  setActiveModal(null);
+                  setDirName('');
+                }}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

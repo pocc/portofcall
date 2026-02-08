@@ -4,6 +4,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 /**
  * Handle SSH connection via WebSocket tunnel
@@ -33,6 +34,19 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
           error: 'Missing required parameter: host',
         }), {
           status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Check if the target is behind Cloudflare
+      const cfCheck = await checkIfCloudflare(host);
+      if (cfCheck.isCloudflare && cfCheck.ip) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }), {
+          status: 403,
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -68,6 +82,19 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
         error: 'Missing required parameter: host',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheckWs = await checkIfCloudflare(host);
+    if (cfCheckWs.isCloudflare && cfCheckWs.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckWs.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

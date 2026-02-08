@@ -20,6 +20,7 @@ import {
   handleFTPRename,
 } from './ftp';
 import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect } from './ssh';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
   ENVIRONMENT: string;
@@ -103,6 +104,19 @@ async function handleTcpPing(request: Request): Promise<Response> {
 
     if (!host || !port) {
       return new Response('Missing host or port', { status: 400 });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const start = Date.now();

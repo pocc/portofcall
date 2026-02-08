@@ -44,6 +44,13 @@ Tests basic TCP connectivity:
 - ✅ Measure round-trip time
 - ✅ Error handling for unreachable hosts
 
+### Cloudflare Detection Tests (`cloudflare-detection.test.ts`)
+Tests Cloudflare-protected host detection:
+- ✅ Block connections to Cloudflare-protected domains
+- ✅ Block connections to Cloudflare IP ranges
+- ✅ Allow connections to non-Cloudflare hosts
+- ✅ Return helpful error messages
+
 ## Running Specific Tests
 
 ```bash

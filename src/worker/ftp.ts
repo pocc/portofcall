@@ -4,6 +4,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface FTPConnectionParams {
   host: string;
@@ -485,6 +486,19 @@ export async function handleFTPConnect(request: Request): Promise<Response> {
         error: 'Missing required parameters: host, username, password',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

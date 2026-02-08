@@ -199,8 +199,24 @@ Establish WebSocket-to-TCP tunnel.
 - ❌ ICMP pings (TCP only, not raw sockets)
 - ❌ UDP connections (TCP only as of Feb 2026)
 - ❌ Pin to specific datacenter (only region hints)
+- ❌ **Connect to Cloudflare-protected domains** (security restriction)
 
-See [docs/SOCKETS_API.md](docs/SOCKETS_API.md) for details.
+### Cloudflare Detection
+
+Port of Call **automatically blocks connections to Cloudflare-protected hosts**. This is a security limitation imposed by Cloudflare's architecture to prevent Workers from being used as proxies.
+
+**Example blocked domains:**
+- Any site with orange cloud in Cloudflare DNS
+- discord.com, stackoverflow.com, npmjs.com (all use Cloudflare)
+
+**Workarounds:**
+- Use the origin server's IP address directly
+- Disable Cloudflare proxy (orange cloud → gray)
+- Deploy Port of Call on a non-Cloudflare platform
+
+See [docs/CLOUDFLARE_DETECTION.md](docs/CLOUDFLARE_DETECTION.md) for complete details.
+
+See [docs/SOCKETS_API.md](docs/SOCKETS_API.md) for more API details.
 
 ## Contributing
 

@@ -169,6 +169,178 @@ export class FTPClient {
   }
 
   /**
+   * Upload file to server
+   */
+  async upload(remotePath: string, fileData: Uint8Array): Promise<void> {
+    // Enter passive mode
+    const { host, port } = await this.enterPassiveMode();
+
+    // Open data socket BEFORE sending STOR command
+    const dataSocket = connect(`${host}:${port}`);
+    const dataOpened = dataSocket.opened;
+
+    // Send STOR command
+    await this.sendCommand(`STOR ${remotePath}`);
+
+    // Wait for both data socket ready and server response
+    const [storResponse] = await Promise.all([
+      this.readResponse(),
+      dataOpened,
+    ]);
+
+    if (!storResponse.startsWith('150') && !storResponse.startsWith('125')) {
+      await dataSocket.close();
+      throw new Error(`STOR command failed: ${storResponse}`);
+    }
+
+    // Write file data to data socket
+    const dataWriter = dataSocket.writable.getWriter();
+    try {
+      await dataWriter.write(fileData);
+    } finally {
+      await dataWriter.close();
+      await dataSocket.close();
+    }
+
+    // Read transfer complete response
+    const completeResponse = await this.readResponse();
+    if (!completeResponse.startsWith('226')) {
+      throw new Error(`Upload failed: ${completeResponse}`);
+    }
+  }
+
+  /**
+   * Download file from server
+   */
+  async download(remotePath: string): Promise<Uint8Array> {
+    // Enter passive mode
+    const { host, port } = await this.enterPassiveMode();
+
+    // Open data socket BEFORE sending RETR command
+    const dataSocket = connect(`${host}:${port}`);
+    const dataOpened = dataSocket.opened;
+
+    // Send RETR command
+    await this.sendCommand(`RETR ${remotePath}`);
+
+    // Wait for both data socket ready and server response
+    const [retrResponse] = await Promise.all([
+      this.readResponse(),
+      dataOpened,
+    ]);
+
+    if (!retrResponse.startsWith('150') && !retrResponse.startsWith('125')) {
+      await dataSocket.close();
+      throw new Error(`RETR command failed: ${retrResponse}`);
+    }
+
+    // Read file data from data socket
+    const dataReader = dataSocket.readable.getReader();
+    const chunks: Uint8Array[] = [];
+
+    try {
+      const dataTimeout = 60000; // 60 seconds for file download
+      while (true) {
+        const readPromise = dataReader.read();
+        const timeoutPromise = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Download timeout after ${dataTimeout}ms`)), dataTimeout)
+        );
+
+        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        if (done) break;
+        chunks.push(value);
+      }
+    } finally {
+      await dataSocket.close();
+    }
+
+    // Read transfer complete response
+    const completeResponse = await this.readResponse();
+    if (!completeResponse.startsWith('226')) {
+      throw new Error(`Download incomplete: ${completeResponse}`);
+    }
+
+    return this.concatenateChunks(chunks);
+  }
+
+  /**
+   * Delete file from server
+   */
+  async delete(remotePath: string): Promise<void> {
+    await this.sendCommand(`DELE ${remotePath}`);
+    const response = await this.readResponse();
+
+    if (!response.startsWith('250')) {
+      throw new Error(`Delete failed: ${response}`);
+    }
+  }
+
+  /**
+   * Create directory
+   */
+  async mkdir(dirPath: string): Promise<void> {
+    await this.sendCommand(`MKD ${dirPath}`);
+    const response = await this.readResponse();
+
+    if (!response.startsWith('257')) {
+      throw new Error(`Create directory failed: ${response}`);
+    }
+  }
+
+  /**
+   * Remove directory
+   */
+  async rmdir(dirPath: string): Promise<void> {
+    await this.sendCommand(`RMD ${dirPath}`);
+    const response = await this.readResponse();
+
+    if (!response.startsWith('250')) {
+      throw new Error(`Remove directory failed: ${response}`);
+    }
+  }
+
+  /**
+   * Rename file or directory
+   */
+  async rename(fromPath: string, toPath: string): Promise<void> {
+    // Send RNFR (rename from)
+    await this.sendCommand(`RNFR ${fromPath}`);
+    const rnfrResponse = await this.readResponse();
+
+    if (!rnfrResponse.startsWith('350')) {
+      throw new Error(`Rename failed: ${rnfrResponse}`);
+    }
+
+    // Send RNTO (rename to)
+    await this.sendCommand(`RNTO ${toPath}`);
+    const rntoResponse = await this.readResponse();
+
+    if (!rntoResponse.startsWith('250')) {
+      throw new Error(`Rename failed: ${rntoResponse}`);
+    }
+  }
+
+  /**
+   * Get file size
+   */
+  async size(remotePath: string): Promise<number> {
+    await this.sendCommand(`SIZE ${remotePath}`);
+    const response = await this.readResponse();
+
+    if (!response.startsWith('213')) {
+      throw new Error(`SIZE command failed: ${response}`);
+    }
+
+    // Extract size from response: 213 1234567
+    const match = response.match(/^213\s+(\d+)/);
+    if (!match) {
+      throw new Error('Failed to parse SIZE response');
+    }
+
+    return parseInt(match[1]);
+  }
+
+  /**
    * Get current working directory
    */
   async pwd(): Promise<string> {
@@ -394,6 +566,260 @@ export async function handleFTPList(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'List failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle FTP file upload request
+ */
+export async function handleFTPUpload(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    const formData = await request.formData();
+    const host = formData.get('host') as string;
+    const port = parseInt(formData.get('port') as string || '21');
+    const username = formData.get('username') as string;
+    const password = formData.get('password') as string;
+    const remotePath = formData.get('remotePath') as string;
+    const file = formData.get('file') as File;
+
+    if (!host || !username || !password || !remotePath || !file) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, remotePath, file',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const fileData = new Uint8Array(await file.arrayBuffer());
+
+    const client = new FTPClient({ host, port, username, password });
+    await client.connect();
+
+    await client.upload(remotePath, fileData);
+
+    await client.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      message: `Uploaded ${file.name} to ${remotePath}`,
+      size: fileData.length,
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Upload failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle FTP file download request
+ */
+export async function handleFTPDownload(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+
+    let host: string, port: number, username: string, password: string, remotePath: string;
+
+    if (request.method === 'POST') {
+      const body = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
+      host = body.host;
+      port = body.port || 21;
+      username = body.username;
+      password = body.password;
+      remotePath = body.remotePath;
+    } else {
+      host = url.searchParams.get('host') || '';
+      port = parseInt(url.searchParams.get('port') || '21');
+      username = url.searchParams.get('username') || '';
+      password = url.searchParams.get('password') || '';
+      remotePath = url.searchParams.get('remotePath') || '';
+    }
+
+    if (!host || !username || !password || !remotePath) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, remotePath',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const client = new FTPClient({ host, port, username, password });
+    await client.connect();
+
+    const fileData = await client.download(remotePath);
+
+    await client.close();
+
+    // Extract filename from path
+    const filename = remotePath.split('/').pop() || 'download';
+
+    // Create a proper ArrayBuffer for Response
+    const buffer = new ArrayBuffer(fileData.length);
+    const view = new Uint8Array(buffer);
+    view.set(fileData);
+
+    return new Response(buffer, {
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Length': fileData.length.toString(),
+      },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Download failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle FTP file delete request
+ */
+export async function handleFTPDelete(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    const body = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
+    const { host, port = 21, username, password, remotePath } = body;
+
+    if (!host || !username || !password || !remotePath) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, remotePath',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const client = new FTPClient({ host, port, username, password });
+    await client.connect();
+
+    await client.delete(remotePath);
+
+    await client.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      message: `Deleted ${remotePath}`,
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Delete failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle FTP create directory request
+ */
+export async function handleFTPMkdir(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    const body = await request.json() as { host: string; port?: number; username: string; password: string; dirPath: string };
+    const { host, port = 21, username, password, dirPath } = body;
+
+    if (!host || !username || !password || !dirPath) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, dirPath',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const client = new FTPClient({ host, port, username, password });
+    await client.connect();
+
+    await client.mkdir(dirPath);
+
+    await client.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      message: `Created directory ${dirPath}`,
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Create directory failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle FTP rename request
+ */
+export async function handleFTPRename(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response('Method not allowed', { status: 405 });
+    }
+
+    const body = await request.json() as { host: string; port?: number; username: string; password: string; fromPath: string; toPath: string };
+    const { host, port = 21, username, password, fromPath, toPath } = body;
+
+    if (!host || !username || !password || !fromPath || !toPath) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, fromPath, toPath',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const client = new FTPClient({ host, port, username, password });
+    await client.connect();
+
+    await client.rename(fromPath, toPath);
+
+    await client.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      message: `Renamed ${fromPath} to ${toPath}`,
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Rename failed',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

@@ -4,6 +4,8 @@ This guide provides curl commands to test all Port of Call API endpoints.
 
 ## FTP Protocol Endpoints
 
+All FTP operations have been implemented and tested against public FTP test servers.
+
 ### Test FTP Connection
 
 **Using Query Parameters (GET)**:
@@ -65,6 +67,136 @@ curl -X POST https://portofcall.ross.gg/api/ftp/list \
       "modified": "Jan 01 12:00"
     }
   ]
+}
+```
+
+### Upload File to FTP Server
+
+**Using curl with file upload**:
+```bash
+curl -X POST https://portofcall.ross.gg/api/ftp/upload \
+  -F "host=ftp.dlptest.com" \
+  -F "port=21" \
+  -F "username=dlpuser@dlptest.com" \
+  -F "password=SzMf7rTE4pCrf9dV286GuNe4N" \
+  -F "remotePath=/test-upload.txt" \
+  -F "file=@/path/to/local/file.txt"
+```
+
+**Using Node.js**:
+```javascript
+const fs = require('fs');
+const formData = new FormData();
+formData.append('host', 'ftp.dlptest.com');
+formData.append('port', '21');
+formData.append('username', 'dlpuser@dlptest.com');
+formData.append('password', 'SzMf7rTE4pCrf9dV286GuNe4N');
+formData.append('remotePath', '/test-upload.txt');
+formData.append('file', fs.createReadStream('./test.txt'));
+
+fetch('https://portofcall.ross.gg/api/ftp/upload', {
+  method: 'POST',
+  body: formData
+}).then(r => r.json()).then(console.log);
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "message": "Uploaded file.txt to /test-upload.txt",
+  "size": 1024
+}
+```
+
+### Download File from FTP Server
+
+**Using Query Parameters (GET)**:
+```bash
+curl "https://portofcall.ross.gg/api/ftp/download?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N&remotePath=/test.txt" \
+  -o downloaded-file.txt
+```
+
+**Using JSON Body (POST)**:
+```bash
+curl -X POST https://portofcall.ross.gg/api/ftp/download \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ftp.dlptest.com",
+    "port": 21,
+    "username": "dlpuser@dlptest.com",
+    "password": "SzMf7rTE4pCrf9dV286GuNe4N",
+    "remotePath": "/test.txt"
+  }' \
+  -o downloaded-file.txt
+```
+
+**Expected Response**: Binary file content with appropriate headers
+
+### Delete File from FTP Server
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/ftp/delete \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ftp.dlptest.com",
+    "port": 21,
+    "username": "dlpuser@dlptest.com",
+    "password": "SzMf7rTE4pCrf9dV286GuNe4N",
+    "remotePath": "/test-upload.txt"
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "message": "Deleted /test-upload.txt"
+}
+```
+
+### Create Directory on FTP Server
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/ftp/mkdir \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ftp.dlptest.com",
+    "port": 21,
+    "username": "dlpuser@dlptest.com",
+    "password": "SzMf7rTE4pCrf9dV286GuNe4N",
+    "dirPath": "/test-directory"
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "message": "Created directory /test-directory"
+}
+```
+
+### Rename File or Directory
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/ftp/rename \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ftp.dlptest.com",
+    "port": 21,
+    "username": "dlpuser@dlptest.com",
+    "password": "SzMf7rTE4pCrf9dV286GuNe4N",
+    "fromPath": "/old-name.txt",
+    "toPath": "/new-name.txt"
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "message": "Renamed /old-name.txt to /new-name.txt"
 }
 ```
 

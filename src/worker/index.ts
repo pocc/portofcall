@@ -10,7 +10,15 @@
  */
 
 import { connect } from 'cloudflare:sockets';
-import { handleFTPConnect, handleFTPList } from './ftp';
+import {
+  handleFTPConnect,
+  handleFTPList,
+  handleFTPUpload,
+  handleFTPDownload,
+  handleFTPDelete,
+  handleFTPMkdir,
+  handleFTPRename,
+} from './ftp';
 import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect } from './ssh';
 
 export interface Env {
@@ -39,6 +47,26 @@ export default {
 
     if (url.pathname === '/api/ftp/list') {
       return handleFTPList(request);
+    }
+
+    if (url.pathname === '/api/ftp/upload') {
+      return handleFTPUpload(request);
+    }
+
+    if (url.pathname === '/api/ftp/download') {
+      return handleFTPDownload(request);
+    }
+
+    if (url.pathname === '/api/ftp/delete') {
+      return handleFTPDelete(request);
+    }
+
+    if (url.pathname === '/api/ftp/mkdir') {
+      return handleFTPMkdir(request);
+    }
+
+    if (url.pathname === '/api/ftp/rename') {
+      return handleFTPRename(request);
     }
 
     // SSH API endpoints

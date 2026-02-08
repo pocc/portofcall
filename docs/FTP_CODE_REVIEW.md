@@ -1,3 +1,36 @@
+# FTP Implementation Code Review
+
+## Problem Statement
+
+FTP connection succeeds but directory listing fails with:
+- Error: `LIST command failed: 425 Failed to establish connection`
+- Timeout: ~60 seconds (Cloudflare Workers timeout)
+- Connect works ✅ (returns current directory)
+- List fails ❌ (data connection issue)
+
+## Test Server
+
+```
+Host: ftp.dlptest.com
+Port: 21
+Username: dlpuser
+Password: rNrKYTX9g7z3RgJRmxWuGHbeu
+
+Files on server (verified with native ftp client):
+- SensorData_D83ADD63D4FD_DIO01_edd1_TM-edd1_TM_sensor_20251025212900.csv
+- _11475502 (1MB)
+- _11477659 (1MB)
+- _11477664 (100KB)
+- _11478019 (100KB)
+- _11478021 (100KB)
+- test_ascii_150926 - Copy.txt
+```
+
+## FTP Client Implementation
+
+**File:** `src/worker/ftp.ts`
+
+```typescript
 /**
  * FTP Protocol Implementation for Cloudflare Workers
  * Supports passive mode FTP connections via Sockets API
@@ -104,7 +137,7 @@ export class FTPClient {
 
   /**
    * List directory contents
-   * Fixed: Data connection must be opened BEFORE sending LIST command
+   * ⚠️ THIS IS WHERE THE BUG LIKELY IS ⚠️
    */
   async list(path: string = '/'): Promise<FTPFile[]> {
     // Change to directory if not root
@@ -116,52 +149,35 @@ export class FTPClient {
       }
     }
 
-    // Enter passive mode and get data connection info
+    // Enter passive mode
     const { host, port } = await this.enterPassiveMode();
 
-    // CRITICAL FIX: Open data socket BEFORE sending LIST command
-    const dataSocket = connect(`${host}:${port}`);
-    const dataOpened = dataSocket.opened;
-
-    // Send LIST command while data socket is connecting
+    // Send LIST command
     await this.sendCommand('LIST');
-
-    // Wait for BOTH data socket ready AND server response
-    const [listResponse] = await Promise.all([
-      this.readResponse(),
-      dataOpened,
-    ]);
+    const listResponse = await this.readResponse();
 
     if (!listResponse.startsWith('150') && !listResponse.startsWith('125')) {
-      await dataSocket.close();
       throw new Error(`LIST command failed: ${listResponse}`);
     }
 
-    // Read directory listing from data socket with timeout
+    // Connect to data port
+    const dataSocket = connect(`${host}:${port}`);
+    await dataSocket.opened;
+
+    // Read directory listing
     const dataReader = dataSocket.readable.getReader();
     const chunks: Uint8Array[] = [];
 
-    try {
-      const dataTimeout = 30000; // 30 seconds for data transfer
-      while (true) {
-        const readPromise = dataReader.read();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Data transfer timeout after ${dataTimeout}ms`)), dataTimeout)
-        );
-
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-        if (done) break;
-        chunks.push(value);
-      }
-    } finally {
-      await dataSocket.close();
+    while (true) {
+      const { done, value } = await dataReader.read();
+      if (done) break;
+      chunks.push(value);
     }
 
-    // CRITICAL: Read the 226 Transfer Complete response
-    const completeResponse = await this.readResponse();
-    if (!completeResponse.startsWith('226')) {
-      console.warn(`Expected 226 Transfer Complete, got: ${completeResponse}`);
-    }
+    await dataSocket.close();
+
+    // Wait for transfer complete response
+    await this.readResponse();
 
     // Parse listing
     const listing = this.decoder.decode(this.concatenateChunks(chunks));
@@ -206,22 +222,17 @@ export class FTPClient {
   }
 
   /**
-   * Read FTP response with timeout protection
+   * Read FTP response
+   * ⚠️ POTENTIAL BUG: May hang waiting for data that never comes ⚠️
    */
-  private async readResponse(timeoutMs: number = 10000): Promise<string> {
+  private async readResponse(): Promise<string> {
     if (!this.reader) throw new Error('Not connected');
 
     let response = '';
     const chunks: Uint8Array[] = [];
 
     while (true) {
-      // Add timeout to prevent infinite hanging
-      const readPromise = this.reader.read();
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`FTP response timeout after ${timeoutMs}ms`)), timeoutMs)
-      );
-
-      const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+      const { done, value } = await this.reader.read();
       if (done) break;
 
       chunks.push(value);
@@ -344,6 +355,7 @@ export async function handleFTPConnect(request: Request): Promise<Response> {
 
 /**
  * Handle FTP list directory request
+ * ⚠️ THIS TIMES OUT AFTER 60 SECONDS ⚠️
  */
 export async function handleFTPList(request: Request): Promise<Response> {
   try {
@@ -400,3 +412,58 @@ export async function handleFTPList(request: Request): Promise<Response> {
     });
   }
 }
+```
+
+## Suspected Issues
+
+### 1. **Data Connection Timing** (Most Likely)
+The FTP protocol requires:
+1. Send PASV → Get port
+2. **Send LIST command** (on control connection)
+3. **Then connect to data port** (must be after LIST)
+
+Our code does:
+1. Send PASV → Get port
+2. Send LIST command ✅
+3. Read LIST response (150) ✅
+4. Connect to data port ✅
+
+**But**: The data connection might be timing out because we're not connected before the server expects us.
+
+### 2. **Reader Blocking**
+The `readResponse()` method blocks indefinitely waiting for data. If the FTP server doesn't send expected data, it hangs forever (until 60s Worker timeout).
+
+### 3. **Data Connection Order**
+Some FTP servers expect the data connection to be established **before** sending the LIST command. We're doing it after.
+
+## Test Commands
+
+**Test with curl (bypasses browser):**
+```bash
+curl -X POST https://portofcall.ross.gg/api/ftp/list \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ftp.dlptest.com",
+    "port": 21,
+    "username": "dlpuser",
+    "password": "rNrKYTX9g7z3RgJRmxWuGHbeu",
+    "path": "/"
+  }'
+```
+
+Result: Hangs for 60 seconds, times out.
+
+## Questions for Review
+
+1. Should we connect to the data port **before** sending the LIST command?
+2. Should we add timeouts to the `readResponse()` method to prevent infinite blocking?
+3. Is the PASV response parsing correct?
+4. Should we keep the data connection open during the LIST command?
+5. Are we handling the FTP protocol state machine correctly?
+
+## Environment
+
+- **Platform**: Cloudflare Workers (Sockets API)
+- **Timeout**: 60 seconds max
+- **Socket API**: `connect()` from `cloudflare:sockets`
+- **Streams**: ReadableStream/WritableStream

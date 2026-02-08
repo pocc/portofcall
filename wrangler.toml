@@ -12,14 +12,6 @@ routes = [
 [placement]
 mode = "smart"
 
-# For development
-[env.dev]
-vars = { ENVIRONMENT = "development" }
-
-# For production
-[env.production]
-vars = { ENVIRONMENT = "production" }
-
 # Asset binding for serving the built React app
 [assets]
 directory = "./dist"

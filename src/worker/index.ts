@@ -30,6 +30,28 @@ export default {
       return handleSocketConnection(request);
     }
 
+    // FTP API endpoints (not yet implemented)
+    if (url.pathname.startsWith('/api/ftp/')) {
+      return new Response(JSON.stringify({
+        error: 'FTP protocol implementation is not yet available. Coming soon!',
+        message: 'The FTP client UI is a demo of the planned interface. Full FTP protocol support requires implementing command parsing, PASV mode, and data channel handling.',
+      }), {
+        status: 501, // Not Implemented
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSH API endpoints (not yet implemented)
+    if (url.pathname.startsWith('/api/ssh/')) {
+      return new Response(JSON.stringify({
+        error: 'SSH protocol implementation is not yet available. Coming soon!',
+        message: 'The SSH client UI is a demo of the planned interface. Full SSH support requires implementing the SSH2 protocol, authentication, and channel management.',
+      }), {
+        status: 501, // Not Implemented
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Serve static assets (built React app)
     return env.ASSETS.fetch(request);
   },

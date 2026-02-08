@@ -18,9 +18,12 @@ Port of Call leverages [Cloudflare Workers' Sockets API](https://developers.clou
 ## Features
 
 - ✅ **TCP Connections**: Connect to any TCP service from the browser
+- ✅ **SSH Authentication**: Password & private key (Ed25519, RSA, ECDSA) support
+- ✅ **FTP Operations**: Upload, download, rename, delete, list, mkdir
 - ✅ **TCP Ping**: Measure round-trip time via TCP handshake
 - ✅ **WebSocket Tunneling**: Bridge browser WebSockets to TCP sockets
 - ✅ **Smart Placement**: Automatic Worker migration closer to backends
+- ✅ **Cloudflare Detection**: Automatic blocking of Cloudflare-protected hosts
 - ✅ **React UI**: Modern TypeScript interface for testing connections
 - ✅ **Zero Configuration**: Works out of the box
 
@@ -83,19 +86,42 @@ const { success, rtt } = await response.json();
 // rtt = round-trip time in milliseconds
 ```
 
-### WebSocket Tunnel Example
+### SSH Authentication Examples
 
+**Password Authentication:**
+```bash
+curl -X POST /api/ssh/connect \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "ssh.example.com",
+    "username": "admin",
+    "password": "secret",
+    "authMethod": "password"
+  }'
+```
+
+**Private Key Authentication:**
 ```typescript
-const ws = new WebSocket('wss://your-worker.workers.dev/api/connect');
+const privateKey = `-----BEGIN OPENSSH PRIVATE KEY-----
+...
+-----END OPENSSH PRIVATE KEY-----`;
 
-ws.onopen = () => {
-  ws.send(JSON.stringify({ host: 'ssh-server.com', port: 22 }));
-};
+const ws = new WebSocket('wss://portofcall.ross.gg/api/ssh/connect?' + new URLSearchParams({
+  host: 'ssh.example.com',
+  username: 'admin',
+  privateKey: privateKey,
+  authMethod: 'publickey'
+}));
 
 ws.onmessage = (event) => {
-  console.log('Received from TCP:', event.data);
+  const data = JSON.parse(event.data);
+  if (data.type === 'ssh-options') {
+    // Use data.options with browser SSH client (ssh2.js, xterm.js)
+  }
 };
 ```
+
+See [SSH Authentication Guide](docs/SSH_AUTHENTICATION.md) for complete examples with Ed25519, RSA, ECDSA keys.
 
 ## Architecture
 
@@ -131,6 +157,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 - [📖 Project Overview](docs/PROJECT_OVERVIEW.md) - Concept and goals
 - [🏗️ Architecture](docs/ARCHITECTURE.md) - Technical architecture
 - [🔌 Sockets API Reference](docs/SOCKETS_API.md) - API details and examples
+- [🔐 SSH Authentication](docs/SSH_AUTHENTICATION.md) - Password & private key authentication
+- [☁️ Cloudflare Detection](docs/CLOUDFLARE_DETECTION.md) - Connection restrictions
 - [📝 Naming History](docs/NAMING_HISTORY.md) - How we chose the name
 
 ## Tech Stack

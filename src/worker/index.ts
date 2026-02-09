@@ -20,6 +20,17 @@ import {
   handleFTPRename,
 } from './ftp';
 import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect } from './ssh';
+import { handleTelnetConnect, handleTelnetWebSocket } from './telnet';
+import { handleSMTPConnect, handleSMTPSend } from './smtp';
+import { handlePOP3Connect, handlePOP3List, handlePOP3Retrieve } from './pop3';
+import { handleIMAPConnect, handleIMAPList, handleIMAPSelect } from './imap';
+import { handleMySQLConnect, handleMySQLQuery } from './mysql';
+import { handlePostgreSQLConnect } from './postgres';
+import { handleRedisConnect, handleRedisCommand } from './redis';
+import { handleMQTTConnect } from './mqtt';
+import { handleLDAPConnect } from './ldap';
+import { handleSMBConnect } from './smb';
+import { handleEchoTest, handleEchoWebSocket } from './echo';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
@@ -34,6 +45,20 @@ export default {
     // API endpoint for TCP ping
     if (url.pathname === '/api/ping') {
       return handleTcpPing(request);
+    }
+
+    // ECHO API endpoints
+    if (url.pathname === '/api/echo/test') {
+      return handleEchoTest(request);
+    }
+
+    if (url.pathname === '/api/echo/connect') {
+      // Check for WebSocket upgrade for interactive sessions
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleEchoWebSocket(request);
+      }
+      return new Response('WebSocket upgrade required', { status: 426 });
     }
 
     // API endpoint for socket connections
@@ -81,6 +106,89 @@ export default {
 
     if (url.pathname === '/api/ssh/disconnect') {
       return handleSSHDisconnect(request);
+    }
+
+    // Telnet API endpoints
+    if (url.pathname === '/api/telnet/connect') {
+      // Check for WebSocket upgrade
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleTelnetWebSocket(request);
+      }
+      return handleTelnetConnect(request);
+    }
+
+    // SMTP API endpoints
+    if (url.pathname === '/api/smtp/connect') {
+      return handleSMTPConnect(request);
+    }
+
+    if (url.pathname === '/api/smtp/send') {
+      return handleSMTPSend(request);
+    }
+
+    // POP3 API endpoints
+    if (url.pathname === '/api/pop3/connect') {
+      return handlePOP3Connect(request);
+    }
+
+    if (url.pathname === '/api/pop3/list') {
+      return handlePOP3List(request);
+    }
+
+    if (url.pathname === '/api/pop3/retrieve') {
+      return handlePOP3Retrieve(request);
+    }
+
+    // IMAP API endpoints
+    if (url.pathname === '/api/imap/connect') {
+      return handleIMAPConnect(request);
+    }
+
+    if (url.pathname === '/api/imap/list') {
+      return handleIMAPList(request);
+    }
+
+    if (url.pathname === '/api/imap/select') {
+      return handleIMAPSelect(request);
+    }
+
+    // MySQL API endpoints
+    if (url.pathname === '/api/mysql/connect') {
+      return handleMySQLConnect(request);
+    }
+
+    if (url.pathname === '/api/mysql/query') {
+      return handleMySQLQuery(request);
+    }
+
+    // PostgreSQL API endpoints
+    if (url.pathname === '/api/postgres/connect') {
+      return handlePostgreSQLConnect(request);
+    }
+
+    // Redis API endpoints
+    if (url.pathname === '/api/redis/connect') {
+      return handleRedisConnect(request);
+    }
+
+    if (url.pathname === '/api/redis/command') {
+      return handleRedisCommand(request);
+    }
+
+    // MQTT API endpoints
+    if (url.pathname === '/api/mqtt/connect') {
+      return handleMQTTConnect(request);
+    }
+
+    // LDAP API endpoints
+    if (url.pathname === '/api/ldap/connect') {
+      return handleLDAPConnect(request);
+    }
+
+    // SMB API endpoints
+    if (url.pathname === '/api/smb/connect') {
+      return handleSMBConnect(request);
     }
 
     // Serve static assets (built React app)

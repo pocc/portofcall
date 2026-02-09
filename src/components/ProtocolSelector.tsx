@@ -1,8 +1,16 @@
 interface ProtocolSelectorProps {
-  onSelect: (protocol: 'ftp' | 'ssh') => void;
+  onSelect: (protocol: 'echo' | 'ftp' | 'ssh' | 'telnet' | 'smtp' | 'pop3' | 'imap' | 'mysql' | 'postgres' | 'redis' | 'mqtt' | 'ldap' | 'smb') => void;
 }
 
 const protocols = [
+  {
+    id: 'echo' as const,
+    name: 'ECHO',
+    description: 'ECHO Protocol (RFC 862) - The simplest TCP test protocol',
+    port: 7,
+    icon: '🔊',
+    features: ['Network testing', 'Latency measurement', 'Connectivity verification'],
+  },
   {
     id: 'ftp' as const,
     name: 'FTP (Passive Mode)',
@@ -17,13 +25,93 @@ const protocols = [
     description: 'Secure Shell - Execute commands on remote servers',
     port: 22,
     icon: '🔐',
-    features: ['Terminal emulation', 'Command execution', 'Encrypted connection'],
+    features: ['Private key authentication', 'Password authentication', 'Encrypted connection'],
+  },
+  {
+    id: 'telnet' as const,
+    name: 'Telnet',
+    description: 'Telnet Protocol - Unencrypted text-based terminal protocol',
+    port: 23,
+    icon: '📟',
+    features: ['Interactive terminal', 'Command execution', 'WebSocket tunnel'],
+  },
+  {
+    id: 'smtp' as const,
+    name: 'SMTP',
+    description: 'Simple Mail Transfer Protocol - Send emails via SMTP servers',
+    port: 587,
+    icon: '📧',
+    features: ['Email sending', 'AUTH LOGIN support', 'Multiple ports (25/587/465)'],
+  },
+  {
+    id: 'pop3' as const,
+    name: 'POP3',
+    description: 'Post Office Protocol v3 - Retrieve emails from mail servers',
+    port: 110,
+    icon: '📬',
+    features: ['Email retrieval', 'Message listing', 'Mailbox management'],
+  },
+  {
+    id: 'imap' as const,
+    name: 'IMAP',
+    description: 'Internet Message Access Protocol - Advanced email management',
+    port: 143,
+    icon: '📮',
+    features: ['Multiple folders', 'Server-side organization', 'Message flags'],
+  },
+  {
+    id: 'mysql' as const,
+    name: 'MySQL',
+    description: 'MySQL Database - Connectivity testing for MySQL servers',
+    port: 3306,
+    icon: '🗄️',
+    features: ['Server handshake', 'Version detection', 'Connection testing'],
+  },
+  {
+    id: 'postgres' as const,
+    name: 'PostgreSQL',
+    description: 'PostgreSQL Database - Connectivity testing for PostgreSQL servers',
+    port: 5432,
+    icon: '🐘',
+    features: ['Startup message', 'Authentication check', 'Connection testing'],
+  },
+  {
+    id: 'redis' as const,
+    name: 'Redis',
+    description: 'Redis In-Memory Store - Key-value store and cache server',
+    port: 6379,
+    icon: '⚡',
+    features: ['RESP protocol', 'Command execution', 'AUTH & database selection'],
+  },
+  {
+    id: 'mqtt' as const,
+    name: 'MQTT',
+    description: 'MQTT Protocol - Lightweight IoT messaging protocol',
+    port: 1883,
+    icon: '📡',
+    features: ['Publish/subscribe', 'MQTT 3.1.1', 'Username/password auth'],
+  },
+  {
+    id: 'ldap' as const,
+    name: 'LDAP',
+    description: 'LDAP Protocol - Directory services and authentication',
+    port: 389,
+    icon: '📂',
+    features: ['BIND operation', 'Anonymous/authenticated bind', 'ASN.1/BER encoding'],
+  },
+  {
+    id: 'smb' as const,
+    name: 'SMB',
+    description: 'SMB Protocol - Windows file sharing and network communication',
+    port: 445,
+    icon: '💾',
+    features: ['SMB2/SMB3 negotiation', 'Protocol dialect detection', 'Connectivity testing'],
   },
 ];
 
 export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
   return (
-    <div className="max-w-6xl mx-auto">
+    <div className="max-w-7xl mx-auto">
       <div className="text-center mb-12">
         <h1 className="text-5xl font-bold text-white mb-4">
           Port of Call
@@ -34,34 +122,38 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         <p className="text-sm text-slate-400 mt-2">
           Powered by Cloudflare Workers Sockets API
         </p>
+        <div className="mt-4 inline-block bg-blue-600 px-4 py-2 rounded-full">
+          <span className="text-white font-semibold text-sm">{protocols.length} Protocols Available</span>
+        </div>
       </div>
 
-      <div className="grid md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {protocols.map((protocol) => (
           <button
             key={protocol.id}
             onClick={() => onSelect(protocol.id)}
-            className="bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl p-8 text-left transition-all duration-200 hover:scale-105 hover:shadow-2xl group"
+            className="bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl p-6 text-left transition-all duration-200 hover:scale-105 hover:shadow-2xl group"
+            aria-label={`Connect to ${protocol.name} on port ${protocol.port}`}
           >
             <div className="flex items-start justify-between mb-4">
-              <div className="text-6xl">{protocol.icon}</div>
-              <div className="bg-slate-700 px-3 py-1 rounded-full text-sm text-slate-300">
+              <div className="text-5xl" aria-hidden="true">{protocol.icon}</div>
+              <div className="bg-slate-700 px-3 py-1 rounded-full text-xs text-slate-300">
                 Port {protocol.port}
               </div>
             </div>
 
-            <h3 className="text-2xl font-bold text-white mb-2 group-hover:text-blue-400 transition-colors">
+            <h3 className="text-xl font-bold text-white mb-2 group-hover:text-blue-400 transition-colors">
               {protocol.name}
             </h3>
 
-            <p className="text-slate-300 mb-4">
+            <p className="text-slate-300 text-sm mb-4">
               {protocol.description}
             </p>
 
-            <div className="space-y-2">
+            <div className="space-y-1">
               {protocol.features.map((feature, idx) => (
-                <div key={idx} className="flex items-center text-sm text-slate-400">
-                  <span className="text-green-400 mr-2">✓</span>
+                <div key={idx} className="flex items-center text-xs text-slate-400">
+                  <span className="text-green-400 mr-2" aria-hidden="true">✓</span>
                   {feature}
                 </div>
               ))}
@@ -79,12 +171,12 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         </p>
         <div className="bg-green-900/30 border border-green-600/50 rounded-lg p-4">
           <div className="flex items-start gap-2">
-            <span className="text-green-400 text-xl">✓</span>
+            <span className="text-green-400 text-xl" aria-hidden="true">✓</span>
             <div>
               <p className="text-green-200 text-sm font-semibold mb-1">Live Implementation</p>
               <p className="text-green-100/80 text-xs leading-relaxed">
-                FTP (Passive Mode) and SSH (WebSocket Tunnel) are now fully functional.
-                Connect to any FTP or SSH server directly from your browser. All connections
+                All {protocols.length} protocols are fully functional with comprehensive testing.
+                Connect to remote servers directly from your browser. All connections
                 are proxied through Cloudflare's global network with Smart Placement for low latency.
               </p>
             </div>

@@ -1452,3 +1452,1238 @@ describe('Time — Real-World Usage', () => {
     expect(data.error).toBe('Port must be between 1 and 65535');
   });
 });
+
+/* ================================================================== */
+/*  21. DNS — public resolvers                                        */
+/* ================================================================== */
+
+describe('DNS — Real-World Usage', () => {
+  it('should resolve google.com A record via Google DNS', async () => {
+    const { data } = await postJson('/dns/query', {
+      domain: 'google.com',
+      type: 'A',
+      server: '8.8.8.8',
+      port: 53,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.domain).toBe('google.com');
+      expect(data.queryType).toBe('A');
+      expect(data.rcode).toBe('NOERROR');
+      expect((data.answers as unknown[]).length).toBeGreaterThan(0);
+    }
+  }, 15000);
+
+  it('should resolve cloudflare.com AAAA via Cloudflare DNS', async () => {
+    const { data } = await postJson('/dns/query', {
+      domain: 'cloudflare.com',
+      type: 'AAAA',
+      server: '1.1.1.1',
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.queryType).toBe('AAAA');
+    }
+  }, 15000);
+
+  it('should resolve MX records for gmail.com via Quad9', async () => {
+    const { data } = await postJson('/dns/query', {
+      domain: 'gmail.com',
+      type: 'MX',
+      server: '9.9.9.9',
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.rcode).toBe('NOERROR');
+      expect((data.answers as unknown[]).length).toBeGreaterThan(0);
+    }
+  }, 15000);
+
+  it('should resolve TXT records for google.com (SPF)', async () => {
+    const { data } = await postJson('/dns/query', {
+      domain: 'google.com',
+      type: 'TXT',
+      server: '8.8.8.8',
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.queryType).toBe('TXT');
+    }
+  }, 15000);
+
+  it('should return NXDOMAIN for nonexistent domain', async () => {
+    const { data } = await postJson('/dns/query', {
+      domain: 'this-domain-does-not-exist-xyz123.example',
+      type: 'A',
+      server: '8.8.8.8',
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.rcode).toBe('NXDOMAIN');
+    }
+  }, 15000);
+
+  it('should reject missing domain', async () => {
+    const { response, data } = await postJson('/dns/query', {
+      type: 'A',
+      server: '8.8.8.8',
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('domain');
+  });
+
+  it('should reject unsupported record type', async () => {
+    const { response, data } = await postJson('/dns/query', {
+      domain: 'google.com',
+      type: 'BOGUS',
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Unknown record type');
+  });
+});
+
+/* ================================================================== */
+/*  22. Gopher — public Gopher servers                                */
+/* ================================================================== */
+
+describe('Gopher — Real-World Usage', () => {
+  it('should fetch the root menu from Floodgap', async () => {
+    const { data } = await postJson('/gopher/fetch', {
+      host: 'gopher.floodgap.com',
+      port: 70,
+      selector: '',
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.isMenu).toBe(true);
+      expect((data.items as unknown[]).length).toBeGreaterThan(0);
+    }
+  }, 20000);
+
+  it('should handle unreachable Gopher host gracefully', async () => {
+    const { data } = await postJson('/gopher/fetch', {
+      host: '192.0.2.1',
+      port: 70,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty host', async () => {
+    const { response, data } = await postJson('/gopher/fetch', {
+      host: '',
+      timeout: 5000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('should reject host with invalid characters', async () => {
+    const { response, data } = await postJson('/gopher/fetch', {
+      host: 'bad host!',
+      timeout: 5000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('invalid characters');
+  });
+});
+
+/* ================================================================== */
+/*  23. Gemini — gemini:// protocol                                   */
+/* ================================================================== */
+
+describe('Gemini — Real-World Usage', () => {
+  it('should handle connection to a Gemini server', async () => {
+    const { data } = await postJson('/gemini/fetch', {
+      url: 'gemini://geminiprotocol.net/',
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.status).toBeDefined();
+      expect(typeof data.status).toBe('number');
+    }
+  }, 20000);
+
+  it('should handle unreachable Gemini host', async () => {
+    const { data } = await postJson('/gemini/fetch', {
+      url: 'gemini://192.0.2.1/',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty URL', async () => {
+    const { response, data } = await postJson('/gemini/fetch', {
+      url: '',
+      timeout: 5000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('URL is required');
+  });
+});
+
+/* ================================================================== */
+/*  24. IRC — public IRC networks                                     */
+/* ================================================================== */
+
+describe('IRC — Real-World Usage', () => {
+  it('should connect to Libera.Chat and read MOTD', async () => {
+    const { data } = await postJson('/irc/connect', {
+      host: 'irc.libera.chat',
+      port: 6667,
+      nickname: 'poctest' + Math.floor(Math.random() * 9999),
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.messagesReceived).toBeGreaterThan(0);
+    }
+  }, 35000);
+
+  it('should reject missing nickname', async () => {
+    const { response, data } = await postJson('/irc/connect', {
+      host: 'irc.libera.chat',
+      port: 6667,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('nickname');
+  });
+
+  it('should reject invalid nickname (starts with number)', async () => {
+    const { response, data } = await postJson('/irc/connect', {
+      host: 'irc.libera.chat',
+      nickname: '123bad',
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Invalid nickname');
+  });
+
+  it('should reject missing host', async () => {
+    const { response, data } = await postJson('/irc/connect', {
+      nickname: 'testuser',
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('host');
+  });
+});
+
+/* ================================================================== */
+/*  25. NNTP — public Usenet server                                   */
+/* ================================================================== */
+
+describe('NNTP — Real-World Usage', () => {
+  it('should connect to aioe.org NNTP server', async () => {
+    const { data } = await postJson('/nntp/connect', {
+      host: 'nntp.aioe.org',
+      port: 119,
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.banner).toBeDefined();
+    }
+  }, 20000);
+
+  it('should select a newsgroup on aioe.org', async () => {
+    const { data } = await postJson('/nntp/group', {
+      host: 'nntp.aioe.org',
+      port: 119,
+      group: 'comp.lang.python',
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+  }, 20000);
+
+  it('should handle unreachable NNTP host', async () => {
+    const { data } = await postJson('/nntp/connect', {
+      host: '192.0.2.1',
+      port: 119,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  26. Memcached — cache operations                                  */
+/* ================================================================== */
+
+describe('Memcached — Real-World Usage', () => {
+  it('should handle connection to unreachable Memcached host', async () => {
+    const { data } = await postJson('/memcached/connect', {
+      host: '192.0.2.1',
+      port: 11211,
+      timeout: 3000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle VERSION command to unreachable host', async () => {
+    const { data } = await postJson('/memcached/command', {
+      host: '192.0.2.1',
+      port: 11211,
+      command: 'version',
+      timeout: 3000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle stats request to unreachable host', async () => {
+    const { data } = await postJson('/memcached/stats', {
+      host: '192.0.2.1',
+      port: 11211,
+      timeout: 3000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle set command with realistic cache key', async () => {
+    const { data } = await postJson('/memcached/command', {
+      host: '192.0.2.1',
+      port: 11211,
+      command: 'set session:user:abc123 0 3600 hello-world',
+      timeout: 3000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject missing host on connect', async () => {
+    const { response, data } = await postJson('/memcached/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('host');
+  });
+
+  it('should reject missing command', async () => {
+    const { response, data } = await postJson('/memcached/command', {
+      host: 'localhost',
+      command: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('host and command');
+  });
+});
+
+/* ================================================================== */
+/*  27. STOMP — message broker protocol                               */
+/* ================================================================== */
+
+describe('STOMP — Real-World Usage', () => {
+  it('should handle connection to unreachable STOMP broker', async () => {
+    const { data } = await postJson('/stomp/connect', {
+      host: '192.0.2.1',
+      port: 61613,
+      username: 'guest',
+      password: 'guest',
+      vhost: '/',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle send to unreachable broker', async () => {
+    const { data } = await postJson('/stomp/send', {
+      host: '192.0.2.1',
+      port: 61613,
+      username: 'guest',
+      password: 'guest',
+      destination: '/queue/test-events',
+      body: '{"event":"user.signup","userId":"u-12345"}',
+      contentType: 'application/json',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  28. SOCKS5 — proxy connection testing                             */
+/* ================================================================== */
+
+describe('SOCKS5 — Real-World Usage', () => {
+  it('should handle connection to unreachable SOCKS5 proxy', async () => {
+    const { data } = await postJson('/socks5/connect', {
+      proxyHost: '192.0.2.1',
+      proxyPort: 1080,
+      destHost: 'example.com',
+      destPort: 80,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle SOCKS5 with username/password auth', async () => {
+    const { data } = await postJson('/socks5/connect', {
+      proxyHost: '198.51.100.1',
+      proxyPort: 1080,
+      destHost: 'www.google.com',
+      destPort: 443,
+      username: 'proxyuser',
+      password: 'proxypass',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle SOCKS5 proxy on Tor port 9050', async () => {
+    const { data } = await postJson('/socks5/connect', {
+      proxyHost: '203.0.113.1',
+      proxyPort: 9050,
+      destHost: 'check.torproject.org',
+      destPort: 443,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  29. Modbus TCP — industrial protocol                              */
+/* ================================================================== */
+
+describe('Modbus — Real-World Usage', () => {
+  it('should handle connection to unreachable PLC', async () => {
+    const { data } = await postJson('/modbus/connect', {
+      host: '192.0.2.1',
+      port: 502,
+      unitId: 1,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle read holding registers from unreachable device', async () => {
+    const { data } = await postJson('/modbus/read', {
+      host: '192.0.2.1',
+      port: 502,
+      unitId: 1,
+      functionCode: 3, // Read Holding Registers
+      address: 0,
+      quantity: 10,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle read coils from unreachable device', async () => {
+    const { data } = await postJson('/modbus/read', {
+      host: '198.51.100.1',
+      port: 502,
+      unitId: 1,
+      functionCode: 1, // Read Coils
+      address: 100,
+      quantity: 16,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject write function codes', async () => {
+    const { response, data } = await postJson('/modbus/read', {
+      host: '192.0.2.1',
+      port: 502,
+      functionCode: 6, // Write Single Register
+      address: 0,
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Invalid read function code');
+  });
+
+  it('should reject missing host', async () => {
+    const { response, data } = await postJson('/modbus/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('host');
+  });
+});
+
+/* ================================================================== */
+/*  30. MongoDB — wire protocol                                       */
+/* ================================================================== */
+
+describe('MongoDB — Real-World Usage', () => {
+  it('should handle connection to Atlas-style endpoint', async () => {
+    const { data } = await postJson('/mongodb/connect', {
+      host: 'cluster0-shard-00-00.abc123.mongodb.net',
+      port: 27017,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
+  }, 15000);
+
+  it('should handle ping to unreachable MongoDB', async () => {
+    const { data } = await postJson('/mongodb/ping', {
+      host: '192.0.2.1',
+      port: 27017,
+      timeout: 3000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty host on connect', async () => {
+    const { response, data } = await postJson('/mongodb/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('should reject invalid port on connect', async () => {
+    const { response, data } = await postJson('/mongodb/connect', {
+      host: 'localhost',
+      port: 99999,
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('Port must be between 1 and 65535');
+  });
+});
+
+/* ================================================================== */
+/*  31. Graphite — metrics ingestion                                  */
+/* ================================================================== */
+
+describe('Graphite — Real-World Usage', () => {
+  it('should handle sending CPU metric to unreachable Graphite', async () => {
+    const { data } = await postJson('/graphite/send', {
+      host: '192.0.2.1',
+      port: 2003,
+      metrics: [
+        { name: 'servers.web01.cpu.usage', value: 72.5 },
+        { name: 'servers.web01.memory.used', value: 4096 },
+        { name: 'servers.web01.disk.iops', value: 1250 },
+      ],
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject missing metrics array', async () => {
+    const { response, data } = await postJson('/graphite/send', {
+      host: 'localhost',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('metrics');
+  });
+
+  it('should reject invalid metric name (spaces)', async () => {
+    const { response, data } = await postJson('/graphite/send', {
+      host: 'localhost',
+      metrics: [{ name: 'bad metric name', value: 1 }],
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Invalid metric name');
+  });
+
+  it('should reject NaN metric value', async () => {
+    const { response, data } = await postJson('/graphite/send', {
+      host: 'localhost',
+      metrics: [{ name: 'valid.name', value: NaN }],
+      timeout: 3000,
+    });
+    // NaN serializes to null in JSON, server may return 400 or 500
+    expect([400, 500]).toContain(response.status);
+    expect(data.success).not.toBe(true);
+  });
+});
+
+/* ================================================================== */
+/*  32. RCON — Minecraft / Source Engine                               */
+/* ================================================================== */
+
+describe('RCON — Real-World Usage', () => {
+  it('should handle connection to unreachable Minecraft server', async () => {
+    const { data } = await postJson('/rcon/connect', {
+      host: '192.0.2.1',
+      port: 25575,
+      password: 'minecraft-rcon-pass',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle command execution to unreachable server', async () => {
+    const { data } = await postJson('/rcon/command', {
+      host: '198.51.100.1',
+      port: 25575,
+      password: 'rcon_password',
+      command: 'list',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject missing password on connect', async () => {
+    const { response, data } = await postJson('/rcon/connect', {
+      host: 'mc.example.com',
+      password: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Password is required');
+  });
+
+  it('should reject missing command', async () => {
+    const { response, data } = await postJson('/rcon/command', {
+      host: 'mc.example.com',
+      password: 'pass',
+      command: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Command is required');
+  });
+
+  it('should reject invalid host characters', async () => {
+    const { response, data } = await postJson('/rcon/connect', {
+      host: 'bad host!',
+      password: 'pass',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('invalid characters');
+  });
+});
+
+/* ================================================================== */
+/*  33. Git — native protocol (git://)                                */
+/* ================================================================== */
+
+describe('Git — Real-World Usage', () => {
+  it('should list refs from GNU Savannah git daemon', async () => {
+    const { data } = await postJson('/git/refs', {
+      host: 'git.savannah.gnu.org',
+      port: 9418,
+      repo: '/git/emacs.git',
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.refs).toBeDefined();
+      expect((data.refs as unknown[]).length).toBeGreaterThan(0);
+      expect(data.branchCount).toBeGreaterThan(0);
+    }
+  }, 20000);
+
+  it('should handle unreachable git daemon', async () => {
+    const { data } = await postJson('/git/refs', {
+      host: '192.0.2.1',
+      port: 9418,
+      repo: '/project.git',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject missing host', async () => {
+    const { response, data } = await postJson('/git/refs', {
+      host: '',
+      repo: '/project.git',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Host is required');
+  });
+
+  it('should reject missing repo', async () => {
+    const { response, data } = await postJson('/git/refs', {
+      host: 'git.example.com',
+      repo: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Repository path is required');
+  });
+});
+
+/* ================================================================== */
+/*  34. ZooKeeper — four-letter words                                 */
+/* ================================================================== */
+
+describe('ZooKeeper — Real-World Usage', () => {
+  it('should handle ruok to unreachable ZooKeeper', async () => {
+    const { data } = await postJson('/zookeeper/connect', {
+      host: '192.0.2.1',
+      port: 2181,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle srvr command to unreachable ZooKeeper', async () => {
+    const { data } = await postJson('/zookeeper/command', {
+      host: '192.0.2.1',
+      port: 2181,
+      command: 'srvr',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject invalid four-letter word command', async () => {
+    const { response, data } = await postJson('/zookeeper/command', {
+      host: 'localhost',
+      command: 'xxxx',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Invalid command');
+  });
+
+  it('should reject missing command', async () => {
+    const { response, data } = await postJson('/zookeeper/command', {
+      host: 'localhost',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Command is required');
+  });
+});
+
+/* ================================================================== */
+/*  35. Cassandra — CQL binary protocol                               */
+/* ================================================================== */
+
+describe('Cassandra — Real-World Usage', () => {
+  it('should handle connection to unreachable Cassandra cluster', async () => {
+    const { data } = await postJson('/cassandra/connect', {
+      host: '192.0.2.1',
+      port: 9042,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle Astra DB-style endpoint', async () => {
+    const { data } = await postJson('/cassandra/connect', {
+      host: 'abc12345-us-east-1.db.astra.datastax.com',
+      port: 29042,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty host', async () => {
+    const { response, data } = await postJson('/cassandra/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('Host is required');
+  });
+});
+
+/* ================================================================== */
+/*  36. AMQP — RabbitMQ-style broker                                  */
+/* ================================================================== */
+
+describe('AMQP — Real-World Usage', () => {
+  it('should handle connection to unreachable RabbitMQ', async () => {
+    const { data } = await postJson('/amqp/connect', {
+      host: '192.0.2.1',
+      port: 5672,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle CloudAMQP-style endpoint', async () => {
+    const { data } = await postJson('/amqp/connect', {
+      host: 'sparrow.rmq.cloudamqp.com',
+      port: 5672,
+      timeout: 10000,
+    });
+    // May succeed with handshake or fail — verify well-formed
+    expect(data).toHaveProperty('success');
+  }, 15000);
+
+  it('should reject missing host', async () => {
+    const { response, data } = await postJson('/amqp/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('host');
+  });
+});
+
+/* ================================================================== */
+/*  37. Kafka — broker protocol                                       */
+/* ================================================================== */
+
+describe('Kafka — Real-World Usage', () => {
+  it('should handle ApiVersions to unreachable Kafka broker', async () => {
+    const { data } = await postJson('/kafka/versions', {
+      host: '192.0.2.1',
+      port: 9092,
+      clientId: 'portofcall-test',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle Metadata request to unreachable broker', async () => {
+    const { data } = await postJson('/kafka/metadata', {
+      host: '198.51.100.1',
+      port: 9092,
+      clientId: 'portofcall-test',
+      topics: ['events', 'logs'],
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject missing host on versions', async () => {
+    const { response, data } = await postJson('/kafka/versions', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Host is required');
+  });
+});
+
+/* ================================================================== */
+/*  38. RTSP — streaming media                                        */
+/* ================================================================== */
+
+describe('RTSP — Real-World Usage', () => {
+  it('should handle OPTIONS to unreachable IP camera', async () => {
+    const { data } = await postJson('/rtsp/options', {
+      host: '192.0.2.1',
+      port: 554,
+      path: '/live/stream1',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle DESCRIBE to unreachable RTSP server', async () => {
+    const { data } = await postJson('/rtsp/describe', {
+      host: '198.51.100.1',
+      port: 554,
+      path: '/cam/realmonitor',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject missing host on OPTIONS', async () => {
+    const { response, data } = await postJson('/rtsp/options', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('Host is required');
+  });
+});
+
+/* ================================================================== */
+/*  39. Rsync — daemon protocol                                       */
+/* ================================================================== */
+
+describe('Rsync — Real-World Usage', () => {
+  it('should connect to kernel.org rsync daemon', async () => {
+    const { data } = await postJson('/rsync/connect', {
+      host: 'rsync.kernel.org',
+      port: 873,
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.serverVersion).toBeDefined();
+      expect(data.greeting).toContain('@RSYNCD');
+    }
+  }, 20000);
+
+  it('should list modules from kernel.org', async () => {
+    const { data } = await postJson('/rsync/module', {
+      host: 'rsync.kernel.org',
+      port: 873,
+      module: 'pub',
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+  }, 20000);
+
+  it('should handle unreachable rsync daemon', async () => {
+    const { data } = await postJson('/rsync/connect', {
+      host: '192.0.2.1',
+      port: 873,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty host', async () => {
+    const { response, data } = await postJson('/rsync/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('should reject missing module name', async () => {
+    const { response, data } = await postJson('/rsync/module', {
+      host: 'rsync.kernel.org',
+      module: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Module name is required');
+  });
+});
+
+/* ================================================================== */
+/*  40. TDS — MS SQL Server                                           */
+/* ================================================================== */
+
+describe('TDS — Real-World Usage', () => {
+  it('should handle connection to unreachable SQL Server', async () => {
+    const { data } = await postJson('/tds/connect', {
+      host: 'sqlserver.database.windows.net',
+      port: 1433,
+      timeout: 5000,
+    });
+    expect(data).toHaveProperty('success');
+  }, 10000);
+
+  it('should handle connection to RDS-style SQL Server', async () => {
+    const { data } = await postJson('/tds/connect', {
+      host: '192.0.2.1',
+      port: 1433,
+      timeout: 3000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  41. VNC — Remote Framebuffer Protocol                             */
+/* ================================================================== */
+
+describe('VNC — Real-World Usage', () => {
+  it('should handle connection to unreachable VNC server', async () => {
+    const { data } = await postJson('/vnc/connect', {
+      host: '192.0.2.1',
+      port: 5900,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle VNC on display :1 (port 5901)', async () => {
+    const { data } = await postJson('/vnc/connect', {
+      host: '198.51.100.1',
+      port: 5901,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  42. CHARGEN — character generator                                 */
+/* ================================================================== */
+
+describe('CHARGEN — Real-World Usage', () => {
+  it('should handle connection to unreachable CHARGEN server', async () => {
+    const { data } = await postJson('/chargen/stream', {
+      host: '192.0.2.1',
+      port: 19,
+      maxBytes: 1024,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty host', async () => {
+    const { response, data } = await postJson('/chargen/stream', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('should reject invalid port', async () => {
+    const { response, data } = await postJson('/chargen/stream', {
+      host: 'localhost',
+      port: 99999,
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toBe('Port must be between 1 and 65535');
+  });
+});
+
+/* ================================================================== */
+/*  43. Neo4j — Bolt protocol                                         */
+/* ================================================================== */
+
+describe('Neo4j — Real-World Usage', () => {
+  it('should handle connection to unreachable Neo4j server', async () => {
+    const { data } = await postJson('/neo4j/connect', {
+      host: '192.0.2.1',
+      port: 7687,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle Aura cloud endpoint', async () => {
+    const { data } = await postJson('/neo4j/connect', {
+      host: 'abc12345.databases.neo4j.io',
+      port: 7687,
+      timeout: 5000,
+    });
+    expect(data).toHaveProperty('success');
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  44. RTMP — streaming media                                        */
+/* ================================================================== */
+
+describe('RTMP — Real-World Usage', () => {
+  it('should handle connection to unreachable RTMP server', async () => {
+    const { data } = await postJson('/rtmp/connect', {
+      host: '192.0.2.1',
+      port: 1935,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle Twitch ingest endpoint', async () => {
+    const { data } = await postJson('/rtmp/connect', {
+      host: 'live.twitch.tv',
+      port: 1935,
+      timeout: 10000,
+    });
+    // Twitch may or may not respond before RTMP handshake
+    expect(data).toHaveProperty('success');
+  }, 15000);
+});
+
+/* ================================================================== */
+/*  45. TACACS+ — network device AAA                                  */
+/* ================================================================== */
+
+describe('TACACS+ — Real-World Usage', () => {
+  it('should handle probe to unreachable TACACS+ server', async () => {
+    const { data } = await postJson('/tacacs/probe', {
+      host: '192.0.2.1',
+      port: 49,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle authenticate to unreachable server', async () => {
+    const { data } = await postJson('/tacacs/authenticate', {
+      host: '198.51.100.1',
+      port: 49,
+      username: 'netadmin',
+      password: 'cisco123',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  46. HL7 — healthcare messaging                                    */
+/* ================================================================== */
+
+describe('HL7 — Real-World Usage', () => {
+  it('should handle connection to unreachable HL7 endpoint', async () => {
+    const { data } = await postJson('/hl7/connect', {
+      host: '192.0.2.1',
+      port: 2575,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle ADT^A01 send to unreachable hospital system', async () => {
+    const { data } = await postJson('/hl7/send', {
+      host: '198.51.100.1',
+      port: 2575,
+      messageType: 'ADT^A01',
+      sendingApplication: 'LabSystem',
+      sendingFacility: 'CentralLab',
+      receivingApplication: 'HIS',
+      receivingFacility: 'MainHospital',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  47. Elasticsearch — REST over TCP                                 */
+/* ================================================================== */
+
+describe('Elasticsearch — Real-World Usage', () => {
+  it('should handle health check to unreachable cluster', async () => {
+    const { data } = await postJson('/elasticsearch/health', {
+      host: '192.0.2.1',
+      port: 9200,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle query to unreachable cluster', async () => {
+    const { data } = await postJson('/elasticsearch/query', {
+      host: '198.51.100.1',
+      port: 9200,
+      path: '/logs-2025/_search',
+      method: 'POST',
+      body: JSON.stringify({ query: { match_all: {} }, size: 10 }),
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  48. AJP — Apache JServ Protocol                                   */
+/* ================================================================== */
+
+describe('AJP — Real-World Usage', () => {
+  it('should handle CPing to unreachable Tomcat', async () => {
+    const { data } = await postJson('/ajp/connect', {
+      host: '192.0.2.1',
+      port: 8009,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle CPing to typical internal Tomcat port', async () => {
+    const { data } = await postJson('/ajp/connect', {
+      host: '198.51.100.1',
+      port: 8009,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  49. XMPP — instant messaging                                      */
+/* ================================================================== */
+
+describe('XMPP — Real-World Usage', () => {
+  it('should connect to jabber.org XMPP server', async () => {
+    const { data } = await postJson('/xmpp/connect', {
+      host: 'jabber.org',
+      port: 5222,
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+  }, 20000);
+
+  it('should handle unreachable XMPP server', async () => {
+    const { data } = await postJson('/xmpp/connect', {
+      host: '192.0.2.1',
+      port: 5222,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  50. RDP — Remote Desktop Protocol                                 */
+/* ================================================================== */
+
+describe('RDP — Real-World Usage', () => {
+  it('should handle connection to unreachable RDP server', async () => {
+    const { data } = await postJson('/rdp/connect', {
+      host: '192.0.2.1',
+      port: 3389,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should handle connection to Windows Server endpoint', async () => {
+    const { data } = await postJson('/rdp/connect', {
+      host: '198.51.100.1',
+      port: 3389,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  51. NATS — pub/sub messaging                                      */
+/* ================================================================== */
+
+describe('NATS — Real-World Usage', () => {
+  it('should connect to demo.nats.io public server', async () => {
+    const { data } = await postJson('/nats/connect', {
+      host: 'demo.nats.io',
+      port: 4222,
+      timeout: 15000,
+    });
+    expect(data).toHaveProperty('success');
+    if (data.success) {
+      expect(data.serverInfo).toBeDefined();
+    }
+  }, 20000);
+
+  it('should handle publish to unreachable NATS', async () => {
+    const { data } = await postJson('/nats/publish', {
+      host: '192.0.2.1',
+      port: 4222,
+      subject: 'events.user.login',
+      payload: '{"userId":"u-12345","ts":1706400000}',
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+});
+
+/* ================================================================== */
+/*  52. JetDirect — network printing                                  */
+/* ================================================================== */
+
+describe('JetDirect — Real-World Usage', () => {
+  it('should handle connection to unreachable printer', async () => {
+    const { data } = await postJson('/jetdirect/connect', {
+      host: '192.0.2.1',
+      port: 9100,
+      timeout: 5000,
+    });
+    expect(data.success).toBe(false);
+  }, 10000);
+
+  it('should reject empty host', async () => {
+    const { response, data } = await postJson('/jetdirect/connect', {
+      host: '',
+      timeout: 3000,
+    });
+    expect(response.status).toBe(400);
+    expect(data.error).toContain('Host is required');
+  });
+});

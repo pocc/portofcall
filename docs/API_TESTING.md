@@ -494,6 +494,359 @@ curl -X POST https://portofcall.ross.gg/api/echo/test \
 }
 ```
 
+## DNS Protocol Endpoint
+
+### Query DNS Records
+
+```bash
+# A record via Google DNS
+curl -X POST https://portofcall.ross.gg/api/dns/query \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "google.com", "type": "A", "server": "8.8.8.8"}'
+
+# MX records via Cloudflare DNS
+curl -X POST https://portofcall.ross.gg/api/dns/query \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "gmail.com", "type": "MX", "server": "1.1.1.1"}'
+
+# TXT records (SPF)
+curl -X POST https://portofcall.ross.gg/api/dns/query \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "google.com", "type": "TXT", "server": "9.9.9.9"}'
+```
+
+## Gopher Protocol Endpoint (RFC 1436)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/gopher/fetch \
+  -H "Content-Type: application/json" \
+  -d '{"host": "gopher.floodgap.com", "port": 70, "selector": ""}'
+```
+
+## Gemini Protocol Endpoint
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/gemini/fetch \
+  -H "Content-Type: application/json" \
+  -d '{"url": "gemini://geminiprotocol.net/"}'
+```
+
+## IRC Protocol Endpoint (RFC 2812)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/irc/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "irc.libera.chat", "port": 6667, "nickname": "portofcall_test"}'
+```
+
+## NNTP Protocol Endpoint (RFC 3977)
+
+```bash
+# Connect
+curl -X POST https://portofcall.ross.gg/api/nntp/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "nntp.aioe.org", "port": 119}'
+
+# Select newsgroup
+curl -X POST https://portofcall.ross.gg/api/nntp/group \
+  -H "Content-Type: application/json" \
+  -d '{"host": "nntp.aioe.org", "group": "comp.lang.python"}'
+```
+
+## Memcached Protocol Endpoint
+
+```bash
+# Connection test
+curl -X POST https://portofcall.ross.gg/api/memcached/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "memcached.example.com", "port": 11211}'
+
+# Run command
+curl -X POST https://portofcall.ross.gg/api/memcached/command \
+  -H "Content-Type: application/json" \
+  -d '{"host": "memcached.example.com", "command": "stats"}'
+
+# Get stats
+curl -X POST https://portofcall.ross.gg/api/memcached/stats \
+  -H "Content-Type: application/json" \
+  -d '{"host": "memcached.example.com"}'
+```
+
+## STOMP Protocol Endpoint
+
+```bash
+# Connect to broker
+curl -X POST https://portofcall.ross.gg/api/stomp/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "broker.example.com", "port": 61613}'
+
+# Send message
+curl -X POST https://portofcall.ross.gg/api/stomp/send \
+  -H "Content-Type: application/json" \
+  -d '{"host": "broker.example.com", "destination": "/queue/test", "body": "Hello"}'
+```
+
+## SOCKS5 Proxy Endpoint (RFC 1928)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/socks5/connect \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proxyHost": "proxy.example.com",
+    "proxyPort": 1080,
+    "destHost": "example.com",
+    "destPort": 80
+  }'
+```
+
+## Modbus Protocol Endpoint (ICS/SCADA)
+
+```bash
+# Connection test
+curl -X POST https://portofcall.ross.gg/api/modbus/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "plc.example.com", "port": 502, "unitId": 1}'
+
+# Read holding registers
+curl -X POST https://portofcall.ross.gg/api/modbus/read \
+  -H "Content-Type: application/json" \
+  -d '{"host": "plc.example.com", "functionCode": 3, "address": 0, "quantity": 10}'
+```
+
+## MongoDB Protocol Endpoint
+
+```bash
+# Connection test
+curl -X POST https://portofcall.ross.gg/api/mongodb/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "mongo.example.com", "port": 27017}'
+
+# Ping
+curl -X POST https://portofcall.ross.gg/api/mongodb/ping \
+  -H "Content-Type: application/json" \
+  -d '{"host": "mongo.example.com", "port": 27017}'
+```
+
+## Graphite (Carbon) Protocol Endpoint
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/graphite/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "graphite.example.com",
+    "port": 2003,
+    "metrics": [
+      {"name": "servers.web01.cpu.usage", "value": 45.2},
+      {"name": "servers.web01.mem.used", "value": 78.5}
+    ]
+  }'
+```
+
+## RCON Protocol Endpoint (Minecraft/Source Engine)
+
+```bash
+# Authenticate
+curl -X POST https://portofcall.ross.gg/api/rcon/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "mc.example.com", "port": 25575, "password": "rcon_password"}'
+
+# Execute command
+curl -X POST https://portofcall.ross.gg/api/rcon/command \
+  -H "Content-Type: application/json" \
+  -d '{"host": "mc.example.com", "password": "rcon_password", "command": "list"}'
+```
+
+## Git Protocol Endpoint
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/git/refs \
+  -H "Content-Type: application/json" \
+  -d '{"host": "git.savannah.gnu.org", "port": 9418, "repo": "emacs.git"}'
+```
+
+## ZooKeeper Protocol Endpoint
+
+```bash
+# Health check (ruok)
+curl -X POST https://portofcall.ross.gg/api/zookeeper/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "zk.example.com", "port": 2181}'
+
+# Four-letter word command
+curl -X POST https://portofcall.ross.gg/api/zookeeper/command \
+  -H "Content-Type: application/json" \
+  -d '{"host": "zk.example.com", "command": "srvr"}'
+```
+
+## Cassandra Protocol Endpoint
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/cassandra/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "cassandra.example.com", "port": 9042}'
+```
+
+## AMQP Protocol Endpoint (RabbitMQ)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/amqp/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "rabbitmq.example.com", "port": 5672, "vhost": "/"}'
+```
+
+## Kafka Protocol Endpoint
+
+```bash
+# API versions
+curl -X POST https://portofcall.ross.gg/api/kafka/versions \
+  -H "Content-Type: application/json" \
+  -d '{"host": "kafka.example.com", "port": 9092}'
+
+# Metadata
+curl -X POST https://portofcall.ross.gg/api/kafka/metadata \
+  -H "Content-Type: application/json" \
+  -d '{"host": "kafka.example.com", "port": 9092, "topics": ["test-topic"]}'
+```
+
+## RTSP Protocol Endpoint (RFC 2326)
+
+```bash
+# OPTIONS
+curl -X POST https://portofcall.ross.gg/api/rtsp/options \
+  -H "Content-Type: application/json" \
+  -d '{"host": "camera.example.com", "port": 554, "path": "/stream1"}'
+
+# DESCRIBE
+curl -X POST https://portofcall.ross.gg/api/rtsp/describe \
+  -H "Content-Type: application/json" \
+  -d '{"host": "camera.example.com", "port": 554, "path": "/stream1"}'
+```
+
+## Rsync Protocol Endpoint
+
+```bash
+# Connect (list modules)
+curl -X POST https://portofcall.ross.gg/api/rsync/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "rsync.kernel.org", "port": 873}'
+
+# Get module details
+curl -X POST https://portofcall.ross.gg/api/rsync/module \
+  -H "Content-Type: application/json" \
+  -d '{"host": "rsync.kernel.org", "module": "pub"}'
+```
+
+## TDS Protocol Endpoint (SQL Server)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/tds/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "sqlserver.example.com", "port": 1433}'
+```
+
+## VNC Protocol Endpoint (RFB)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/vnc/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "vnc.example.com", "port": 5900}'
+```
+
+## CHARGEN Protocol Endpoint (RFC 864)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/chargen/stream \
+  -H "Content-Type: application/json" \
+  -d '{"host": "chargen.example.com", "port": 19, "maxBytes": 1024}'
+```
+
+## Neo4j Protocol Endpoint (Bolt)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/neo4j/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "neo4j.example.com", "port": 7687}'
+```
+
+## RTMP Protocol Endpoint
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/rtmp/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "live.twitch.tv", "port": 1935}'
+```
+
+## TACACS+ Protocol Endpoint (RFC 8907)
+
+```bash
+# Probe (connectivity test)
+curl -X POST https://portofcall.ross.gg/api/tacacs/probe \
+  -H "Content-Type: application/json" \
+  -d '{"host": "tacacs.example.com", "port": 49}'
+
+# Authenticate
+curl -X POST https://portofcall.ross.gg/api/tacacs/authenticate \
+  -H "Content-Type: application/json" \
+  -d '{"host": "tacacs.example.com", "username": "admin", "password": "pass", "secret": "shared_key"}'
+```
+
+## HL7 v2.x Protocol Endpoint (MLLP)
+
+```bash
+# Connection test
+curl -X POST https://portofcall.ross.gg/api/hl7/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "hl7.example.com", "port": 2575}'
+
+# Send ADT^A01 message
+curl -X POST https://portofcall.ross.gg/api/hl7/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "hl7.example.com",
+    "messageType": "ADT^A01",
+    "sendingApplication": "PortOfCall",
+    "sendingFacility": "TestFacility"
+  }'
+```
+
+## Elasticsearch Protocol Endpoint
+
+```bash
+# Cluster health
+curl -X POST https://portofcall.ross.gg/api/elasticsearch/health \
+  -H "Content-Type: application/json" \
+  -d '{"host": "es.example.com", "port": 9200}'
+
+# Query
+curl -X POST https://portofcall.ross.gg/api/elasticsearch/query \
+  -H "Content-Type: application/json" \
+  -d '{"host": "es.example.com", "index": "my-index", "query": {"match_all": {}}}'
+```
+
+## AJP Protocol Endpoint (Apache JServ)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/ajp/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "tomcat.example.com", "port": 8009}'
+```
+
+## RDP Protocol Endpoint (Remote Desktop)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/rdp/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "rdp.example.com", "port": 3389}'
+```
+
+## JetDirect Protocol Endpoint (PJL)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/jetdirect/connect \
+  -H "Content-Type: application/json" \
+  -d '{"host": "printer.example.com", "port": 9100}'
+```
+
 ## Public Test Servers
 
 ### FTP Test Servers
@@ -553,6 +906,40 @@ Domains with stable, well-known WHOIS records:
 ### LDAP Test Server
 
 1. **ForumSys**: `ldap.forumsys.com:389` (bind DN: `cn=read-only-admin,dc=example,dc=com`, pass: `password`)
+
+### DNS Resolvers
+
+1. **Google**: `8.8.8.8:53`, `8.8.4.4:53`
+2. **Cloudflare**: `1.1.1.1:53`, `1.0.0.1:53`
+3. **Quad9**: `9.9.9.9:53`
+
+### Gopher Test Server
+
+1. **Floodgap**: `gopher.floodgap.com:70` (public Gopher server with root menu)
+
+### IRC Test Server
+
+1. **Libera.Chat**: `irc.libera.chat:6667` (public IRC network, requires unique nickname)
+
+### NNTP Test Server
+
+1. **Aioe**: `nntp.aioe.org:119` (public NNTP server, newsgroups like `comp.lang.python`)
+
+### Rsync Test Server
+
+1. **Kernel.org**: `rsync.kernel.org:873` (public rsync daemon, modules: `pub`)
+
+### Git Test Server
+
+1. **GNU Savannah**: `git.savannah.gnu.org:9418` (public git daemon, repos: `emacs.git`)
+
+### NATS Test Server
+
+1. **NATS Demo**: `demo.nats.io:4222` (public NATS server, no auth required)
+
+### XMPP Test Server
+
+1. **Jabber.org**: `jabber.org:5222` (public XMPP server)
 
 ## Error Handling
 

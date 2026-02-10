@@ -175,6 +175,110 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ✅ Passing (10/10)
 - **Documentation**: README.md
 
+### Echo
+- **Port**: Any (commonly 7 or 4242 for tcpbin.com)
+- **Status**: ✅ Complete
+- **Features**:
+  - Send/receive echo test
+  - WebSocket interactive echo mode
+  - Match verification
+  - Connectivity testing
+- **UI**: Yes
+- **Tests**: ✅ Passing (9/9)
+- **Documentation**: README.md
+
+### WHOIS (RFC 3912)
+- **Port**: 43 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Domain registration lookup
+  - Auto-select WHOIS server by TLD (20 TLD mappings)
+  - Manual server override
+  - Domain format validation
+  - 100KB response size limit
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment (8 unit + 8 real-world)
+- **Documentation**: README.md
+
+### Syslog (RFC 5424 / RFC 3164)
+- **Port**: 514 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - RFC 5424 (modern) message formatting
+  - RFC 3164 (legacy BSD) message formatting
+  - Priority calculation (Facility × 8 + Severity)
+  - All 8 severity levels (Emergency–Debug)
+  - All 24 facility codes (Kernel–Local7)
+  - Fire-and-forget TCP send
+  - Input validation
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment (11 unit + 11 real-world)
+- **Documentation**: README.md
+
+### SOCKS4 / SOCKS4a
+- **Port**: 1080 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - SOCKS4 CONNECT command
+  - SOCKS4a hostname resolution (special IP 0.0.0.1)
+  - User ID support
+  - Response code parsing (0x5A–0x5D)
+  - Bound address/port reporting
+  - Input validation
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment (10 unit + 7 real-world)
+- **Documentation**: README.md
+
+### Daytime (RFC 867)
+- **Port**: 13 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Human-readable time from remote server
+  - Local/remote timestamp comparison
+  - Clock offset calculation
+  - Simplest network protocol — just connect and read
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment (4 real-world)
+- **Documentation**: README.md
+
+### Finger (RFC 1288)
+- **Port**: 79 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - User information lookup
+  - Remote host forwarding (user@host)
+  - Username/hostname validation (injection prevention)
+  - 100KB response size limit
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment (6 real-world)
+- **Documentation**: README.md
+
+### Time (RFC 868)
+- **Port**: 37 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Binary 32-bit time synchronization
+  - Epoch conversion (1900 → 1970 Unix)
+  - ISO 8601 date output
+  - Clock offset calculation
+  - Network delay compensation
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment (4 real-world)
+- **Documentation**: README.md
+
+### Memcached
+- **Port**: 11211 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Connection test via VERSION command
+  - Command execution (get, set, add, replace, delete, incr, decr, flush_all)
+  - Automatic byte count calculation for storage commands
+  - Stats retrieval with parsed key-value output
+  - Cloudflare detection
+- **UI**: Yes (connection test + stats + command execution)
+- **Tests**: ⚠️ Awaiting deployment (13 integration tests)
+- **Documentation**: README.md
+
 ### WebSocket Tunnel
 - **Port**: Any
 - **Status**: ✅ Complete
@@ -193,6 +297,9 @@ This document tracks all protocols that have been fully implemented in Port of C
 
 ## Summary
 
-- **Total Implemented**: 14 protocols + 1 security feature
-- **Total Tests Passing**: 157/165 (FTP server issues)
-- **Test Coverage**: POP3 (18), IMAP (17), Redis (17), SSH (14), SMTP (14), MQTT (13), LDAP (13), MySQL (12), SMB (10), PostgreSQL (9), Telnet (9), TCP Ping (6), Cloudflare Detection (5)
+- **Total Implemented**: 22 protocols + 1 security feature
+- **Deployed & Passing**: 14 protocols — 157/165 tests (FTP server issues)
+- **Awaiting Deployment**: 8 protocols (Echo, WHOIS, Syslog, SOCKS4, Daytime, Finger, Time, Memcached)
+- **Test Coverage**:
+  - POP3 (18), IMAP (17), Redis (17), SSH (14), SMTP (14), MQTT (13), LDAP (13), MySQL (12), SMB (10), Echo (9), PostgreSQL (9), Telnet (9), Syslog (11+11), SOCKS4 (10+7), WHOIS (8+8), TCP Ping (6), Cloudflare Detection (5), Daytime (4), Time (4), Finger (6)
+- **Real-World Usage Tests**: 112 integration tests covering all protocols with realistic hosts/ports/parameters

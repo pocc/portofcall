@@ -1,0 +1,343 @@
+/* Retro CRT Terminal Theme - 1980s/90s Aesthetic */
+
+/* NOTE TO HUMAN: You can delete either retro.css or keep modern theme in App.css
+   based on which design you prefer long-term. This dual-theme setup is temporary. */
+
+/* CRT Phosphor Colors */
+:root[data-theme="retro"] {
+  --retro-bg: #000000;
+  --retro-fg-green: #33ff33;
+  --retro-fg-amber: #ffb000;
+  --retro-border: #00ff00;
+  --retro-glow: #00ff0044;
+  --retro-scanline: rgba(0, 255, 0, 0.03);
+}
+
+/* Override Tailwind when retro theme is active */
+[data-theme="retro"] {
+  background: var(--retro-bg);
+  color: var(--retro-fg-green);
+  font-family: 'Courier New', 'VT323', monospace;
+}
+
+/* CRT Screen Effect */
+[data-theme="retro"] .retro-screen {
+  background: var(--retro-bg);
+  position: relative;
+  box-shadow: inset 0 0 100px rgba(0, 255, 0, 0.1);
+  border: 4px double var(--retro-border);
+  border-radius: 8px;
+}
+
+/* Scanline Effect */
+[data-theme="retro"] .retro-screen::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    rgba(0, 0, 0, 0.15),
+    rgba(0, 0, 0, 0.15) 1px,
+    transparent 1px,
+    transparent 2px
+  );
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* CRT Flicker Animation */
+[data-theme="retro"] .retro-flicker {
+  animation: flicker 0.15s infinite;
+}
+
+@keyframes flicker {
+  0% { opacity: 0.97; }
+  50% { opacity: 1; }
+  100% { opacity: 0.97; }
+}
+
+/* Text Glow Effect */
+[data-theme="retro"] .retro-text {
+  color: var(--retro-fg-green);
+  text-shadow:
+    0 0 5px var(--retro-glow),
+    0 0 10px var(--retro-glow);
+}
+
+[data-theme="retro"] .retro-text-amber {
+  color: var(--retro-fg-amber);
+  text-shadow:
+    0 0 5px rgba(255, 176, 0, 0.4),
+    0 0 10px rgba(255, 176, 0, 0.4);
+}
+
+/* Typewriter Effect */
+[data-theme="retro"] .retro-typewriter {
+  overflow: hidden;
+  border-right: 0.15em solid var(--retro-fg-green);
+  white-space: nowrap;
+  animation: typing 2s steps(40, end), blink-caret 0.75s step-end infinite;
+}
+
+@keyframes typing {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+@keyframes blink-caret {
+  from, to { border-color: transparent; }
+  50% { border-color: var(--retro-fg-green); }
+}
+
+/* Double-Line Borders (IBM Box Drawing Characters) */
+[data-theme="retro"] .retro-box {
+  border: 3px double var(--retro-border);
+  background: rgba(0, 20, 0, 0.8);
+  padding: 1rem;
+  box-shadow:
+    inset 0 0 20px rgba(0, 255, 0, 0.05),
+    0 0 20px rgba(0, 255, 0, 0.1);
+}
+
+/* Blocky Buttons */
+[data-theme="retro"] .retro-button {
+  background: var(--retro-bg);
+  border: 2px solid var(--retro-border);
+  color: var(--retro-fg-green);
+  padding: 0.75rem 1.5rem;
+  font-family: 'Courier New', monospace;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  transition: all 0.1s;
+  box-shadow: 0 0 10px var(--retro-glow);
+}
+
+[data-theme="retro"] .retro-button:hover {
+  background: rgba(0, 255, 0, 0.1);
+  box-shadow: 0 0 20px var(--retro-glow);
+  transform: scale(1.02);
+}
+
+[data-theme="retro"] .retro-button:active {
+  transform: scale(0.98);
+  box-shadow: inset 0 0 10px var(--retro-glow);
+}
+
+[data-theme="retro"] .retro-button:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+/* Input Fields */
+[data-theme="retro"] .retro-input {
+  background: var(--retro-bg);
+  border: 2px solid var(--retro-border);
+  color: var(--retro-fg-green);
+  padding: 0.5rem;
+  font-family: 'Courier New', monospace;
+  outline: none;
+  box-shadow: inset 0 0 10px rgba(0, 255, 0, 0.1);
+}
+
+[data-theme="retro"] .retro-input:focus {
+  box-shadow:
+    inset 0 0 10px rgba(0, 255, 0, 0.2),
+    0 0 10px var(--retro-glow);
+}
+
+/* Terminal Output */
+[data-theme="retro"] .retro-terminal {
+  background: var(--retro-bg);
+  border: 2px solid var(--retro-border);
+  padding: 1rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  overflow-y: auto;
+  max-height: 400px;
+  box-shadow: inset 0 0 20px rgba(0, 255, 0, 0.1);
+}
+
+/* Scrollbar Styling */
+[data-theme="retro"] .retro-terminal::-webkit-scrollbar {
+  width: 12px;
+}
+
+[data-theme="retro"] .retro-terminal::-webkit-scrollbar-track {
+  background: var(--retro-bg);
+  border: 1px solid var(--retro-border);
+}
+
+[data-theme="retro"] .retro-terminal::-webkit-scrollbar-thumb {
+  background: var(--retro-border);
+  border: 1px solid var(--retro-bg);
+}
+
+/* Hex Viewer Styling */
+[data-theme="retro"] .retro-hex-viewer {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 1rem;
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+[data-theme="retro"] .retro-hex-offset {
+  color: var(--retro-fg-amber);
+  text-align: right;
+}
+
+[data-theme="retro"] .retro-hex-bytes {
+  color: var(--retro-fg-green);
+  letter-spacing: 0.1em;
+}
+
+[data-theme="retro"] .retro-hex-ascii {
+  color: rgba(51, 255, 51, 0.7);
+}
+
+/* Loading Animation */
+[data-theme="retro"] .retro-loading {
+  display: inline-block;
+  animation: blink 1s infinite;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Card Styling */
+[data-theme="retro"] .retro-card {
+  background: rgba(0, 20, 0, 0.9);
+  border: 3px double var(--retro-border);
+  padding: 1.5rem;
+  transition: all 0.2s;
+}
+
+[data-theme="retro"] .retro-card:hover {
+  box-shadow: 0 0 30px var(--retro-glow);
+  transform: scale(1.02);
+}
+
+/* Protocol Selector Grid */
+[data-theme="retro"] .retro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+/* Status Indicators */
+[data-theme="retro"] .retro-status-idle {
+  color: rgba(51, 255, 51, 0.5);
+}
+
+[data-theme="retro"] .retro-status-connecting {
+  color: var(--retro-fg-amber);
+  animation: blink 0.5s infinite;
+}
+
+[data-theme="retro"] .retro-status-active {
+  color: var(--retro-fg-green);
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+/* ASCII Art Border */
+[data-theme="retro"] .retro-ascii-border {
+  border-top: 2px solid var(--retro-border);
+  position: relative;
+}
+
+[data-theme="retro"] .retro-ascii-border::before {
+  content: "═══════════════════════════════════════";
+  position: absolute;
+  top: -1em;
+  left: 0;
+  color: var(--retro-border);
+  font-size: 0.8rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Monospace Everything */
+[data-theme="retro"] * {
+  font-family: 'Courier New', 'VT323', monospace !important;
+}
+
+/* Theme Toggle Button (Special Styling) */
+[data-theme="retro"] .theme-toggle {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  background: var(--retro-bg);
+  border: 2px solid var(--retro-border);
+  color: var(--retro-fg-green);
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  box-shadow: 0 0 10px var(--retro-glow);
+}
+
+[data-theme="retro"] .theme-toggle:hover {
+  box-shadow: 0 0 20px var(--retro-glow);
+}
+
+/* Boot Screen Animation */
+[data-theme="retro"] .retro-boot {
+  animation: boot-sequence 2s ease-out;
+}
+
+@keyframes boot-sequence {
+  0% {
+    opacity: 0;
+    filter: blur(10px);
+  }
+  20% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 0.7;
+    filter: blur(5px);
+  }
+  100% {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* Override Modern Theme Colors */
+[data-theme="retro"] .bg-slate-800,
+[data-theme="retro"] .bg-slate-900,
+[data-theme="retro"] .bg-slate-700 {
+  background: rgba(0, 20, 0, 0.8) !important;
+}
+
+[data-theme="retro"] .border-slate-600,
+[data-theme="retro"] .border-slate-700 {
+  border-color: var(--retro-border) !important;
+}
+
+[data-theme="retro"] .text-slate-300,
+[data-theme="retro"] .text-slate-400,
+[data-theme="retro"] .text-white {
+  color: var(--retro-fg-green) !important;
+  text-shadow: 0 0 5px var(--retro-glow);
+}
+
+[data-theme="retro"] .text-blue-400,
+[data-theme="retro"] .text-green-400,
+[data-theme="retro"] .text-yellow-400 {
+  color: var(--retro-fg-amber) !important;
+}

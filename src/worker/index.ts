@@ -31,6 +31,34 @@ import { handleMQTTConnect } from './mqtt';
 import { handleLDAPConnect } from './ldap';
 import { handleSMBConnect } from './smb';
 import { handleEchoTest, handleEchoWebSocket } from './echo';
+import { handleWhoisLookup } from './whois';
+import { handleSyslogSend } from './syslog';
+import { handleSocks4Connect } from './socks4';
+import { handleDaytimeGet } from './daytime';
+import { handleFingerQuery } from './finger';
+import { handleTimeGet } from './time';
+import { handleChargenStream } from './chargen';
+import { handleGeminiFetch } from './gemini';
+import { handleGopherFetch } from './gopher';
+import { handleIRCConnect, handleIRCWebSocket } from './irc';
+import { handleMemcachedConnect, handleMemcachedCommand, handleMemcachedStats } from './memcached';
+import { handleDNSQuery } from './dns';
+import { handleNNTPConnect, handleNNTPGroup, handleNNTPArticle } from './nntp';
+import { handleStompConnect, handleStompSend } from './stomp';
+import { handleSocks5Connect } from './socks5';
+import { handleModbusConnect, handleModbusRead } from './modbus';
+import { handleMongoDBConnect, handleMongoDBPing } from './mongodb';
+import { handleGraphiteSend } from './graphite';
+import { handleRCONConnect, handleRCONCommand } from './rcon';
+import { handleGitRefs } from './git';
+import { handleZooKeeperConnect, handleZooKeeperCommand } from './zookeeper';
+import { handleCassandraConnect } from './cassandra';
+import { handleAMQPConnect } from './amqp';
+import { handleKafkaApiVersions, handleKafkaMetadata } from './kafka';
+import { handleRtspOptions, handleRtspDescribe } from './rtsp';
+import { handleRsyncConnect, handleRsyncModule } from './rsync';
+import { handleTDSConnect } from './tds';
+import { handleVNCConnect } from './vnc';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
@@ -59,6 +87,124 @@ export default {
         return handleEchoWebSocket(request);
       }
       return new Response('WebSocket upgrade required', { status: 426 });
+    }
+
+    // WHOIS API endpoint
+    if (url.pathname === '/api/whois/lookup') {
+      return handleWhoisLookup(request);
+    }
+
+    // Syslog API endpoint
+    if (url.pathname === '/api/syslog/send') {
+      return handleSyslogSend(request);
+    }
+
+    // SOCKS4 API endpoint
+    if (url.pathname === '/api/socks4/connect') {
+      return handleSocks4Connect(request);
+    }
+
+    // SOCKS5 API endpoint
+    if (url.pathname === '/api/socks5/connect') {
+      return handleSocks5Connect(request);
+    }
+
+    // Daytime API endpoint
+    if (url.pathname === '/api/daytime/get') {
+      return handleDaytimeGet(request);
+    }
+
+    // Finger API endpoint
+    if (url.pathname === '/api/finger/query') {
+      return handleFingerQuery(request);
+    }
+
+    // TIME API endpoint
+    if (url.pathname === '/api/time/get') {
+      return handleTimeGet(request);
+    }
+
+    // CHARGEN API endpoint
+    if (url.pathname === '/api/chargen/stream') {
+      return handleChargenStream(request);
+    }
+
+    // GEMINI API endpoint
+    if (url.pathname === '/api/gemini/fetch') {
+      return handleGeminiFetch(request);
+    }
+
+    // Gopher API endpoint
+    if (url.pathname === '/api/gopher/fetch') {
+      return handleGopherFetch(request);
+    }
+
+    // IRC API endpoints
+    if (url.pathname === '/api/irc/connect') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleIRCWebSocket(request);
+      }
+      return handleIRCConnect(request);
+    }
+
+    // DNS API endpoint
+    if (url.pathname === '/api/dns/query') {
+      return handleDNSQuery(request);
+    }
+
+    // Memcached API endpoints
+    if (url.pathname === '/api/memcached/connect') {
+      return handleMemcachedConnect(request);
+    }
+
+    if (url.pathname === '/api/memcached/command') {
+      return handleMemcachedCommand(request);
+    }
+
+    if (url.pathname === '/api/memcached/stats') {
+      return handleMemcachedStats(request);
+    }
+
+    // Modbus TCP API endpoints
+    if (url.pathname === '/api/modbus/connect') {
+      return handleModbusConnect(request);
+    }
+
+    if (url.pathname === '/api/modbus/read') {
+      return handleModbusRead(request);
+    }
+
+    // Graphite API endpoint
+    if (url.pathname === '/api/graphite/send') {
+      return handleGraphiteSend(request);
+    }
+
+    // Git Protocol API endpoint
+    if (url.pathname === '/api/git/refs') {
+      return handleGitRefs(request);
+    }
+
+    // Kafka API endpoints
+    if (url.pathname === '/api/kafka/versions') {
+      return handleKafkaApiVersions(request);
+    }
+
+    if (url.pathname === '/api/kafka/metadata') {
+      return handleKafkaMetadata(request);
+    }
+
+    // NNTP API endpoints
+    if (url.pathname === '/api/nntp/connect') {
+      return handleNNTPConnect(request);
+    }
+
+    if (url.pathname === '/api/nntp/group') {
+      return handleNNTPGroup(request);
+    }
+
+    if (url.pathname === '/api/nntp/article') {
+      return handleNNTPArticle(request);
     }
 
     // API endpoint for socket connections
@@ -189,6 +335,80 @@ export default {
     // SMB API endpoints
     if (url.pathname === '/api/smb/connect') {
       return handleSMBConnect(request);
+    }
+
+    // MongoDB API endpoints
+    if (url.pathname === '/api/mongodb/connect') {
+      return handleMongoDBConnect(request);
+    }
+
+    if (url.pathname === '/api/mongodb/ping') {
+      return handleMongoDBPing(request);
+    }
+
+    // STOMP API endpoints
+    if (url.pathname === '/api/stomp/connect') {
+      return handleStompConnect(request);
+    }
+
+    if (url.pathname === '/api/stomp/send') {
+      return handleStompSend(request);
+    }
+
+    // Minecraft RCON API endpoints
+    if (url.pathname === '/api/rcon/connect') {
+      return handleRCONConnect(request);
+    }
+
+    if (url.pathname === '/api/rcon/command') {
+      return handleRCONCommand(request);
+    }
+
+    // ZooKeeper API endpoints
+    if (url.pathname === '/api/zookeeper/connect') {
+      return handleZooKeeperConnect(request);
+    }
+
+    if (url.pathname === '/api/zookeeper/command') {
+      return handleZooKeeperCommand(request);
+    }
+
+    // AMQP API endpoint
+    if (url.pathname === '/api/amqp/connect') {
+      return handleAMQPConnect(request);
+    }
+
+    // Cassandra CQL API endpoint
+    if (url.pathname === '/api/cassandra/connect') {
+      return handleCassandraConnect(request);
+    }
+
+    // RTSP API endpoints
+    if (url.pathname === '/api/rtsp/options') {
+      return handleRtspOptions(request);
+    }
+
+    if (url.pathname === '/api/rtsp/describe') {
+      return handleRtspDescribe(request);
+    }
+
+    // Rsync API endpoints
+    if (url.pathname === '/api/rsync/connect') {
+      return handleRsyncConnect(request);
+    }
+
+    if (url.pathname === '/api/rsync/module') {
+      return handleRsyncModule(request);
+    }
+
+    // TDS (SQL Server) API endpoint
+    if (url.pathname === '/api/tds/connect') {
+      return handleTDSConnect(request);
+    }
+
+    // VNC (RFB) API endpoint
+    if (url.pathname === '/api/vnc/connect') {
+      return handleVNCConnect(request);
     }
 
     // Serve static assets (built React app)

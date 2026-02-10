@@ -267,6 +267,233 @@ curl -X POST https://portofcall.ross.gg/api/ping \
 }
 ```
 
+## WHOIS Protocol Endpoint
+
+### Lookup Domain Registration
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/whois/lookup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "google.com",
+    "timeout": 10000
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "domain": "google.com",
+  "server": "whois.verisign-grs.com",
+  "response": "   Domain Name: GOOGLE.COM\n   Registry Domain ID: ..."
+}
+```
+
+**With explicit server override**:
+```bash
+curl -X POST https://portofcall.ross.gg/api/whois/lookup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "wikipedia.org",
+    "server": "whois.pir.org",
+    "port": 43,
+    "timeout": 10000
+  }'
+```
+
+**Auto-selected WHOIS servers by TLD**: `.com`/`.net` → verisign, `.org` → pir.org, `.edu` → educause, `.gov` → dotgov.gov, `.uk` → nic.uk, `.de` → denic.de, `.jp` → jprs.jp
+
+## Syslog Protocol Endpoint
+
+### Send Syslog Message (RFC 5424)
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/syslog/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "syslog.example.com",
+    "port": 514,
+    "severity": 6,
+    "facility": 16,
+    "message": "Application started successfully",
+    "hostname": "web-server-01",
+    "appName": "myapp",
+    "format": "rfc5424",
+    "timeout": 5000
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "message": "Syslog message sent successfully",
+  "formatted": "<134>1 2026-02-09T12:00:00.000Z web-server-01 myapp - - - Application started successfully"
+}
+```
+
+**Priority = (Facility x 8) + Severity**. Example: facility 16 (Local0) + severity 6 (Info) = priority 134.
+
+**Legacy BSD format (RFC 3164)**:
+```bash
+curl -X POST https://portofcall.ross.gg/api/syslog/send \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "syslog.example.com",
+    "severity": 4,
+    "facility": 4,
+    "message": "Failed password for root from 10.0.2.2 port 4791 ssh2",
+    "hostname": "bastion-01",
+    "appName": "sshd",
+    "format": "rfc3164"
+  }'
+```
+
+## SOCKS4 Proxy Endpoint
+
+### Test SOCKS4 Proxy Connection
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/socks4/connect \
+  -H "Content-Type: application/json" \
+  -d '{
+    "proxyHost": "proxy.example.com",
+    "proxyPort": 1080,
+    "destHost": "example.com",
+    "destPort": 80,
+    "userId": "",
+    "useSocks4a": true,
+    "timeout": 10000
+  }'
+```
+
+**Expected Response (if proxy grants)**:
+```json
+{
+  "success": true,
+  "granted": true,
+  "responseCode": 90,
+  "responseMessage": "Request granted",
+  "boundAddress": "0.0.0.0",
+  "boundPort": 0
+}
+```
+
+## Daytime Protocol Endpoint (RFC 867)
+
+### Get Human-Readable Time
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/daytime/get \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "time.nist.gov",
+    "port": 13,
+    "timeout": 10000
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "time": "60444 26-02-09 17:00:00 00 0 0 0.0 UTC(NIST) *",
+  "localTime": "2026-02-09T17:00:00.123Z",
+  "localTimestamp": 1770613200123,
+  "offsetMs": -42
+}
+```
+
+## Finger Protocol Endpoint (RFC 1288)
+
+### Query User Information
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/finger/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "finger.example.com",
+    "port": 79,
+    "username": "admin",
+    "timeout": 10000
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "query": "admin",
+  "response": "Login: admin\nName: System Administrator\n..."
+}
+```
+
+**With remote host forwarding** (user@host):
+```bash
+curl -X POST https://portofcall.ross.gg/api/finger/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "gateway.example.com",
+    "username": "john",
+    "remoteHost": "internal.example.com"
+  }'
+```
+
+## Time Protocol Endpoint (RFC 868)
+
+### Get Binary Time
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/time/get \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "time.nist.gov",
+    "port": 37,
+    "timeout": 10000
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "raw": 3978691200,
+  "unixTimestamp": 1769702400,
+  "date": "2026-01-29T00:00:00.000Z",
+  "localTime": "2026-01-29T00:00:00.123Z",
+  "localTimestamp": 1769702400123,
+  "offsetMs": -42
+}
+```
+
+The `raw` field is seconds since 1900-01-01 (RFC 868 epoch). `unixTimestamp` subtracts the 70-year offset (2,208,988,800 seconds).
+
+## Echo Protocol Endpoint
+
+### Test TCP Echo
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/echo/test \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "tcpbin.com",
+    "port": 4242,
+    "message": "Hello, World!",
+    "timeout": 10000
+  }'
+```
+
+**Expected Response**:
+```json
+{
+  "success": true,
+  "sent": "Hello, World!",
+  "received": "Hello, World!",
+  "match": true
+}
+```
+
 ## Public Test Servers
 
 ### FTP Test Servers
@@ -293,6 +520,39 @@ curl -X POST https://portofcall.ross.gg/api/ping \
    - Username: `demo`
    - Password: `password`
    - Features: SSH2, read-only access
+
+### WHOIS Test Targets
+
+Domains with stable, well-known WHOIS records:
+- `google.com` → `whois.verisign-grs.com` (port 43)
+- `wikipedia.org` → `whois.pir.org` (port 43)
+- `mit.edu` → `whois.educause.edu` (port 43)
+- `example.com` → `whois.verisign-grs.com` (port 43)
+
+### Daytime / Time Test Servers
+
+1. **NIST Internet Time Service**:
+   - Host: `time.nist.gov`
+   - Daytime port: `13` (RFC 867, human-readable ASCII)
+   - Time port: `37` (RFC 868, binary 32-bit)
+   - Features: Legacy time protocols, still operational
+
+### Echo Test Servers
+
+1. **tcpbin.com**:
+   - Host: `tcpbin.com`
+   - Port: `4242`
+   - Features: Echoes back any TCP data; may rate-limit under heavy load
+
+### MQTT Test Brokers
+
+1. **HiveMQ**: `broker.hivemq.com:1883` (no auth)
+2. **EMQX**: `broker.emqx.io:1883` (user: `emqx`, pass: `public`)
+3. **Mosquitto**: `test.mosquitto.org:1883` (no auth), `1884` (user: `rw`, pass: `readwrite`)
+
+### LDAP Test Server
+
+1. **ForumSys**: `ldap.forumsys.com:389` (bind DN: `cn=read-only-admin,dc=example,dc=com`, pass: `password`)
 
 ## Error Handling
 

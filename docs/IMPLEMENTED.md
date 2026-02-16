@@ -655,6 +655,34 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (2 real-world tests)
 
+### LPD (Line Printer Daemon - RFC 1179)
+- **Port**: 515 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Short queue state query (opcode 0x03)
+  - Long queue state listing (opcode 0x04)
+  - Printer queue name configuration
+  - Job parsing from long-format output
+  - Cloudflare detection
+- **UI**: Yes (probe + queue listing with printer name presets)
+- **Tests**: ⚠️ Awaiting deployment (7 integration tests)
+- **Documentation**: README.md
+
+### Beanstalkd (Work Queue Protocol)
+- **Port**: 11300 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Connection test via stats command
+  - Server version and uptime detection
+  - Job statistics (ready, reserved, delayed, buried)
+  - Tube listing and tube stats
+  - Read-only command execution (stats, list-tubes, peek-*)
+  - Command whitelist for safety
+  - Cloudflare detection
+- **UI**: Yes (connect + command execution with quick action buttons)
+- **Tests**: ⚠️ Awaiting deployment (8 integration tests)
+- **Documentation**: README.md
+
 ## 🔒 Security Features
 
 ### Cloudflare Detection

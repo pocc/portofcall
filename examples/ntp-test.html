@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NTP Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .time-display {
+      font-size: 24px;
+      color: #4ec9b0;
+      font-weight: bold;
+      text-align: center;
+      padding: 20px;
+      background: #2d2d30;
+      border-radius: 5px;
+      margin: 15px 0;
+    }
+    .server-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .server-item {
+      background: #2d2d30;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .server-item:hover {
+      background: #3c3c3c;
+    }
+  </style>
+</head>
+<body>
+  <h1>⏰ NTP Protocol Tester</h1>
+
+  <div class="section">
+    <h2>NTP Server Settings</h2>
+
+    <label for="host">NTP Server Host:</label>
+    <input type="text" id="host" placeholder="time.cloudflare.com" value="time.cloudflare.com">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="123" value="123">
+
+    <div class="server-list">
+      <strong>Public NTP Servers (click to use):</strong>
+      <div class="server-item" onclick="setServer('time.cloudflare.com')">time.cloudflare.com - Cloudflare NTP</div>
+      <div class="server-item" onclick="setServer('time.google.com')">time.google.com - Google Public NTP</div>
+      <div class="server-item" onclick="setServer('time.nist.gov')">time.nist.gov - NIST Internet Time Service</div>
+      <div class="server-item" onclick="setServer('pool.ntp.org')">pool.ntp.org - NTP Pool Project</div>
+      <div class="server-item" onclick="setServer('time.apple.com')">time.apple.com - Apple NTP</div>
+      <div class="server-item" onclick="setServer('time.windows.com')">time.windows.com - Microsoft NTP</div>
+    </div>
+
+    <button onclick="queryNTP()">Query NTP Server</button>
+    <button onclick="clearOutput()">Clear Output</button>
+  </div>
+
+  <div class="section">
+    <h2>Current Time</h2>
+    <div id="timeDisplay" class="time-display">--:--:--</div>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready to query NTP servers...</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    let autoUpdateInterval = null;
+
+    function setServer(host) {
+      document.getElementById('host').value = host;
+    }
+
+    function log(message, type = 'info') {
+      const output = document.getElementById('output');
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      document.getElementById('output').innerHTML = '';
+    }
+
+    function updateTimeDisplay(isoTime) {
+      const timeDisplay = document.getElementById('timeDisplay');
+      const date = new Date(isoTime);
+      const timeStr = date.toLocaleTimeString('en-US', { hour12: false });
+      const dateStr = date.toLocaleDateString('en-US', {
+        weekday: 'short',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric'
+      });
+      timeDisplay.innerHTML = `${timeStr}<br><span style="font-size: 14px; color: #9cdcfe;">${dateStr}</span>`;
+    }
+
+    async function queryNTP() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+
+      if (!host) {
+        log('❌ Host is required', 'error');
+        return;
+      }
+
+      log(`⏰ Querying NTP server ${host}:${port}...`);
+
+      try {
+        const response = await fetch(`${API_BASE}/api/ntp/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            host,
+            port,
+            timeout: 10000,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log('✅ NTP query successful!', 'success');
+          log('');
+
+          // Update time display
+          updateTimeDisplay(data.time);
+
+          // Display results
+          log(`📅 Server Time: ${data.time}`, 'success');
+          log(`⏱️  Clock Offset: ${data.offset}ms`, data.offset > 0 ? 'info' : 'success');
+          log(`🔄 Round-Trip Delay: ${data.delay}ms`, 'info');
+          log(`📊 Stratum: ${data.stratum}`, 'info');
+
+          // Stratum interpretation
+          const stratumDesc = {
+            0: 'Unspecified/Invalid',
+            1: 'Primary Reference (GPS, Atomic Clock)',
+            2: 'Secondary Reference (synced from Stratum 1)',
+            3: 'Secondary Reference (synced from Stratum 2)',
+            4: 'Secondary Reference (synced from Stratum 3)',
+            16: 'Unsynchronized'
+          };
+          const desc = stratumDesc[data.stratum] || `Secondary Reference (synced from Stratum ${data.stratum - 1})`;
+          log(`   └─ ${desc}`, 'info');
+
+          log(`🎯 Precision: 2^${data.precision} seconds (~${Math.pow(2, data.precision) * 1000}ms)`, 'info');
+          log(`🔗 Reference ID: ${data.referenceId}`, 'info');
+          log(`📏 Root Delay: ${data.rootDelay}ms`, 'info');
+          log(`📐 Root Dispersion: ${data.rootDispersion}ms`, 'info');
+          log(`⚠️  Leap Indicator: ${data.leapIndicator}`, 'info');
+
+          // Clock sync recommendation
+          log('');
+          if (Math.abs(data.offset) > 100) {
+            log(`⚠️  Your clock is off by ${Math.abs(data.offset)}ms - consider synchronizing!`, 'error');
+          } else if (Math.abs(data.offset) > 10) {
+            log(`⚠️  Your clock is off by ${Math.abs(data.offset)}ms - acceptable but could be better`, 'info');
+          } else {
+            log(`✅ Your clock is well synchronized (offset: ${data.offset}ms)`, 'success');
+          }
+
+        } else {
+          log(`❌ NTP query failed: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+      }
+    }
+
+    // Update local time display every second
+    setInterval(() => {
+      const now = new Date();
+      const localDisplay = document.getElementById('timeDisplay');
+      if (localDisplay.innerHTML === '--:--:--') {
+        const timeStr = now.toLocaleTimeString('en-US', { hour12: false });
+        const dateStr = now.toLocaleDateString('en-US', {
+          weekday: 'short',
+          year: 'numeric',
+          month: 'short',
+          day: 'numeric'
+        });
+        localDisplay.innerHTML = `${timeStr}<br><span style="font-size: 14px; color: #9cdcfe;">${dateStr} (Local)</span>`;
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

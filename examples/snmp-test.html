@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SNMP Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .oid-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .oid-item {
+      background: #2d2d30;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .oid-item:hover {
+      background: #3c3c3c;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 SNMP Protocol Tester</h1>
+
+  <div class="section">
+    <h2>Connection Settings</h2>
+
+    <label for="host">SNMP Agent Host:</label>
+    <input type="text" id="host" placeholder="demo.snmplabs.com" value="demo.snmplabs.com">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="161" value="161">
+
+    <label for="community">Community String:</label>
+    <input type="text" id="community" placeholder="public" value="public">
+
+    <label for="version">SNMP Version:</label>
+    <select id="version">
+      <option value="1">SNMPv1</option>
+      <option value="2" selected>SNMPv2c</option>
+    </select>
+  </div>
+
+  <div class="section">
+    <h2>SNMP GET - Single OID Query</h2>
+
+    <label for="oid">OID:</label>
+    <input type="text" id="oid" placeholder="1.3.6.1.2.1.1.1.0" value="1.3.6.1.2.1.1.1.0">
+
+    <div class="oid-list">
+      <strong>Common OIDs (click to use):</strong>
+      <div class="oid-item" onclick="setOID('1.3.6.1.2.1.1.1.0')">1.3.6.1.2.1.1.1.0 - sysDescr (System Description)</div>
+      <div class="oid-item" onclick="setOID('1.3.6.1.2.1.1.3.0')">1.3.6.1.2.1.1.3.0 - sysUpTime (System Uptime)</div>
+      <div class="oid-item" onclick="setOID('1.3.6.1.2.1.1.5.0')">1.3.6.1.2.1.1.5.0 - sysName (System Name)</div>
+      <div class="oid-item" onclick="setOID('1.3.6.1.2.1.1.6.0')">1.3.6.1.2.1.1.6.0 - sysLocation (System Location)</div>
+      <div class="oid-item" onclick="setOID('1.3.6.1.2.1.1.4.0')">1.3.6.1.2.1.1.4.0 - sysContact (System Contact)</div>
+    </div>
+
+    <button onclick="snmpGet()">Query OID</button>
+    <button onclick="clearOutput()">Clear Output</button>
+  </div>
+
+  <div class="section">
+    <h2>SNMP WALK - OID Tree Query</h2>
+
+    <label for="walkOid">Base OID:</label>
+    <input type="text" id="walkOid" placeholder="1.3.6.1.2.1.1" value="1.3.6.1.2.1.1">
+
+    <label for="maxRepetitions">Max Repetitions (v2c only):</label>
+    <input type="number" id="maxRepetitions" placeholder="10" value="10">
+
+    <div class="oid-list">
+      <strong>Common Base OIDs for Walking:</strong>
+      <div class="oid-item" onclick="setWalkOID('1.3.6.1.2.1.1')">1.3.6.1.2.1.1 - System Group (MIB-II)</div>
+      <div class="oid-item" onclick="setWalkOID('1.3.6.1.2.1.2')">1.3.6.1.2.1.2 - Interfaces Group</div>
+      <div class="oid-item" onclick="setWalkOID('1.3.6.1.2.1.4')">1.3.6.1.2.1.4 - IP Group</div>
+      <div class="oid-item" onclick="setWalkOID('1.3.6.1.2.1.6')">1.3.6.1.2.1.6 - TCP Group</div>
+    </div>
+
+    <button onclick="snmpWalk()">Walk OID Tree</button>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready to test SNMP queries...</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    function setOID(oid) {
+      document.getElementById('oid').value = oid;
+    }
+
+    function setWalkOID(oid) {
+      document.getElementById('walkOid').value = oid;
+    }
+
+    function log(message, type = 'info') {
+      const output = document.getElementById('output');
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : '';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      document.getElementById('output').innerHTML = '';
+    }
+
+    async function snmpGet() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const community = document.getElementById('community').value;
+      const oid = document.getElementById('oid').value;
+      const version = parseInt(document.getElementById('version').value);
+
+      if (!host || !oid) {
+        log('❌ Host and OID are required', 'error');
+        return;
+      }
+
+      log(`🔍 Sending SNMP GET request to ${host}:${port}...`);
+      log(`   OID: ${oid}`);
+      log(`   Community: ${community}`);
+      log(`   Version: SNMPv${version}`);
+
+      try {
+        const response = await fetch(`${API_BASE}/api/snmp/get`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            host,
+            port,
+            community,
+            oid,
+            version,
+            timeout: 10000,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.results) {
+          log('✅ SNMP GET successful!', 'success');
+          data.results.forEach(result => {
+            log(`   OID: ${result.oid}`, 'success');
+            log(`   Type: ${result.type}`, 'success');
+            log(`   Value: ${result.value}`, 'success');
+          });
+        } else {
+          log(`❌ SNMP GET failed: ${data.error || data.errorStatus}`, 'error');
+          if (data.errorIndex) {
+            log(`   Error Index: ${data.errorIndex}`, 'error');
+          }
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+      }
+    }
+
+    async function snmpWalk() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const community = document.getElementById('community').value;
+      const oid = document.getElementById('walkOid').value;
+      const version = parseInt(document.getElementById('version').value);
+      const maxRepetitions = parseInt(document.getElementById('maxRepetitions').value);
+
+      if (!host || !oid) {
+        log('❌ Host and OID are required', 'error');
+        return;
+      }
+
+      log(`🚶 Starting SNMP WALK on ${host}:${port}...`);
+      log(`   Base OID: ${oid}`);
+      log(`   Community: ${community}`);
+      log(`   Version: SNMPv${version}`);
+      if (version === 2) {
+        log(`   Max Repetitions: ${maxRepetitions}`);
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/api/snmp/walk`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            host,
+            port,
+            community,
+            oid,
+            version,
+            maxRepetitions: version === 2 ? maxRepetitions : undefined,
+            timeout: 30000,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.results) {
+          log(`✅ SNMP WALK completed! Found ${data.count} OIDs`, 'success');
+          log('');
+          data.results.forEach((result, index) => {
+            log(`${index + 1}. ${result.oid}`, 'success');
+            log(`   Type: ${result.type}`, 'success');
+            log(`   Value: ${result.value}`, 'success');
+          });
+        } else {
+          log(`❌ SNMP WALK failed: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+      }
+    }
+  </script>
+</body>
+</html>

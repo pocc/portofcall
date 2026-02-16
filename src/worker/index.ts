@@ -22,6 +22,7 @@ import {
 import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect } from './ssh';
 import { handleTelnetConnect, handleTelnetWebSocket } from './telnet';
 import { handleSMTPConnect, handleSMTPSend } from './smtp';
+import { handleSubmissionConnect, handleSubmissionSend } from './submission';
 import { handlePOP3Connect, handlePOP3List, handlePOP3Retrieve } from './pop3';
 import { handleIMAPConnect, handleIMAPList, handleIMAPSelect } from './imap';
 import { handleMySQLConnect, handleMySQLQuery } from './mysql';
@@ -29,6 +30,7 @@ import { handlePostgreSQLConnect } from './postgres';
 import { handleRedisConnect, handleRedisCommand } from './redis';
 import { handleMQTTConnect } from './mqtt';
 import { handleLDAPConnect } from './ldap';
+import { handleLDAPSConnect, handleLDAPSSearch } from './ldaps';
 import { handleSMBConnect } from './smb';
 import { handleEchoTest, handleEchoWebSocket } from './echo';
 import { handleWhoisLookup } from './whois';
@@ -41,6 +43,7 @@ import { handleChargenStream } from './chargen';
 import { handleGeminiFetch } from './gemini';
 import { handleGopherFetch } from './gopher';
 import { handleIRCConnect, handleIRCWebSocket } from './irc';
+import { handleIRCSConnect, handleIRCSWebSocket } from './ircs';
 import { handleMemcachedConnect, handleMemcachedCommand, handleMemcachedStats } from './memcached';
 import { handleDNSQuery } from './dns';
 import { handleNNTPConnect, handleNNTPGroup, handleNNTPArticle } from './nntp';
@@ -59,6 +62,144 @@ import { handleRtspOptions, handleRtspDescribe } from './rtsp';
 import { handleRsyncConnect, handleRsyncModule } from './rsync';
 import { handleTDSConnect } from './tds';
 import { handleVNCConnect } from './vnc';
+import { handleNeo4jConnect } from './neo4j';
+import { handleRTMPConnect } from './rtmp';
+import { handleTacacsProbe, handleTacacsAuthenticate } from './tacacs';
+import { handleHL7Connect, handleHL7Send } from './hl7';
+import { handleElasticsearchHealth, handleElasticsearchQuery } from './elasticsearch';
+import { handleAJPConnect } from './ajp';
+import { handleXMPPConnect } from './xmpp';
+import { handleRDPConnect } from './rdp';
+import { handleNATSConnect, handleNATSPublish } from './nats';
+import { handleJetDirectConnect } from './jetdirect';
+import { handleBGPConnect } from './bgp';
+import { handleDiameterConnect, handleDiameterWatchdog } from './diameter';
+import { handleFastCGIProbe, handleFastCGIRequest } from './fastcgi';
+import { handleEtcdHealth, handleEtcdQuery } from './etcd';
+import { handleConsulHealth, handleConsulServices } from './consul';
+import { handleInfluxDBHealth, handleInfluxDBWrite, handleInfluxDBQuery } from './influxdb';
+import { handleDICOMConnect, handleDICOMEcho } from './dicom';
+import { handleDockerHealth, handleDockerQuery } from './docker';
+import { handlePPTPConnect } from './pptp';
+import { handleJsonRpcCall, handleJsonRpcBatch } from './jsonrpc';
+import { handle9PConnect } from './ninep';
+import { handleThriftProbe, handleThriftCall } from './thrift';
+import { handleSLPServiceTypes, handleSLPServiceFind, handleSLPAttributes } from './slp';
+import { handleBitTorrentHandshake } from './bittorrent';
+import { handleX11Connect } from './x11';
+import { handleKerberosConnect } from './kerberos';
+import { handleSCCPProbe, handleSCCPRegister } from './sccp';
+import { handleMatrixHealth, handleMatrixQuery } from './matrix';
+import { handleISCSIDiscover } from './iscsi';
+import { handleWebSocketProbe } from './websocket';
+import { handleH323Connect } from './h323';
+import { handleDoTQuery } from './dot';
+import { handleSoapCall, handleSoapWsdl } from './soap';
+import { handleOpenVPNHandshake } from './openvpn';
+import { handleAFPConnect } from './afp';
+import { handleNFSProbe, handleNFSExports } from './nfs';
+import { handleMGCPAudit, handleMGCPCommand } from './mgcp';
+import { handleFTPSConnect } from './ftps';
+import { handleDictDefine, handleDictMatch, handleDictDatabases } from './dict';
+import { handleSipOptions, handleSipRegister } from './sip';
+import { handleQotdFetch } from './qotd';
+import { handleDiscardTest, handleDiscardWebSocket } from './discard';
+import { handleLPDProbe, handleLPDQueue } from './lpd';
+import { handleMinecraftStatus, handleMinecraftPing } from './minecraft';
+import { handleOracleTNSConnect, handleOracleTNSProbe } from './oracle-tns';
+import { handleIdentQuery } from './ident';
+import { handleZabbixConnect, handleZabbixAgent } from './zabbix';
+import { handleMpdStatus, handleMpdCommand } from './mpd';
+import { handleBeanstalkdConnect, handleBeanstalkdCommand } from './beanstalkd';
+import { handleClamAVPing, handleClamAVVersion, handleClamAVStats } from './clamav';
+import { handleLMTPConnect, handleLMTPSend } from './lmtp';
+import { handleManageSieveConnect, handleManageSieveList } from './managesieve';
+import { handleCouchDBHealth, handleCouchDBQuery } from './couchdb';
+import { handleIPPProbe } from './ipp';
+import { handleSMPPConnect, handleSMPPProbe } from './smpp';
+import { handleSVNConnect } from './svn';
+import { handleTeamSpeakConnect, handleTeamSpeakCommand } from './teamspeak';
+import { handleRadiusProbe, handleRadiusAuth } from './radius';
+import { handleNRPEQuery, handleNRPEVersion } from './nrpe';
+import { handleRloginConnect, handleRloginWebSocket } from './rlogin';
+import { handleS7commConnect } from './s7comm';
+import { handleSNPPProbe, handleSNPPPage } from './snpp';
+import { handleRethinkDBConnect, handleRethinkDBProbe } from './rethinkdb';
+import { handleClickHouseHealth, handleClickHouseQuery } from './clickhouse';
+import { handleGearmanConnect, handleGearmanCommand } from './gearman';
+import { handleEtherNetIPIdentity } from './ethernetip';
+import { handlePrometheusHealth, handlePrometheusQuery, handlePrometheusMetrics } from './prometheus';
+import { handlePortmapperProbe, handlePortmapperDump } from './portmapper';
+import { handleRelpConnect, handleRelpSend } from './relp';
+import { handleADBCommand, handleADBVersion, handleADBDevices } from './adb';
+import { handleDNP3Connect, handleDNP3Read } from './dnp3';
+import { handleStunBinding, handleStunProbe } from './stun';
+import { handleFluentdConnect, handleFluentdSend } from './fluentd';
+import { handleAerospikeConnect, handleAerospikeInfo } from './aerospike';
+import { handleRexecExecute, handleRexecWebSocket } from './rexec';
+import { handleFIXProbe, handleFIXHeartbeat } from './fix';
+import { handleEPMDNames, handleEPMDPort } from './epmd';
+import { handleTarantoolConnect, handleTarantoolProbe } from './tarantool';
+import { handleVaultHealth, handleVaultQuery } from './vault';
+import { handleSolrHealth, handleSolrQuery } from './solr';
+import { handleIEC104Probe } from './iec104';
+import { handleRiakPing, handleRiakInfo } from './riak';
+import { handleOpenTSDBVersion, handleOpenTSDBStats, handleOpenTSDBSuggest } from './opentsdb';
+import { handleSpamdPing, handleSpamdCheck } from './spamd';
+import { handleBitcoinConnect, handleBitcoinGetAddr } from './bitcoin';
+import { handleNSQConnect, handleNSQPublish } from './nsq';
+import { handleZMTPProbe, handleZMTPHandshake } from './zmtp';
+import { handleOPCUAHello, handleOPCUAEndpoints } from './opcua';
+import { handleMuninConnect, handleMuninFetch } from './munin';
+import { handleSANEProbe } from './sane';
+import { handleCephConnect, handleCephProbe } from './ceph';
+import { handleHTTPProxyProbe, handleHTTPProxyConnect } from './httpproxy';
+import { handleVarnishProbe, handleVarnishCommand } from './varnish';
+import { handleFINSConnect } from './fins';
+import { handleCouchbasePing, handleCouchbaseVersion, handleCouchbaseStats } from './couchbase';
+import { handleAMIProbe, handleAMICommand } from './ami';
+import { handleJDWPProbe, handleJDWPVersion } from './jdwp';
+import { handleDRDAConnect, handleDRDAProbe } from './drda';
+import { handleDCERPCConnect, handleDCERPCProbe } from './dcerpc';
+import { handleLivestatusStatus, handleLivestatusHosts, handleLivestatusQuery } from './livestatus';
+import { handleNSCAProbe, handleNSCASend } from './nsca';
+import { handlePJLinkProbe, handlePJLinkPower } from './pjlink';
+import { handleIMAPSConnect, handleIMAPSList, handleIMAPSSelect } from './imaps';
+import { handleLokiHealth, handleLokiQuery, handleLokiMetrics } from './loki';
+import { handleMeilisearchHealth, handleMeilisearchSearch } from './meilisearch';
+import { handleIcecastStatus, handleIcecastAdmin } from './icecast';
+import { handleOpenFlowProbe, handleOpenFlowEcho } from './openflow';
+import { handleRMIProbe, handleRMIList } from './rmi';
+import { handleHAProxyInfo, handleHAProxyStat, handleHAProxyCommand } from './haproxy';
+import { handleNBDConnect, handleNBDProbe } from './nbd';
+import { handleGangliaConnect, handleGangliaProbe } from './ganglia';
+import { handlePOP3SConnect, handlePOP3SList, handlePOP3SRetrieve } from './pop3s';
+import { handleNetBIOSConnect, handleNetBIOSProbe } from './netbios';
+import { handleSMTPSConnect, handleSMTPSSend } from './smtps';
+import { handlePCEPConnect, handlePCEPProbe } from './pcep';
+import { handleUwsgiProbe, handleUwsgiRequest } from './uwsgi';
+import { handleTorControlProbe, handleTorControlGetInfo } from './torcontrol';
+import { handleWinRMIdentify, handleWinRMAuth } from './winrm';
+import { handleKibanaStatus, handleKibanaSavedObjects } from './kibana';
+import { handleGrafanaHealth, handleGrafanaDatasources, handleGrafanaDashboards } from './grafana';
+import { handleGPSDVersion, handleGPSDDevices, handleGPSDPoll, handleGPSDCommand } from './gpsd';
+import { handleRserveProbe, handleRserveEval } from './rserve';
+import { handleHazelcastProbe } from './hazelcast';
+import { handleSentinelProbe, handleSentinelQuery } from './sentinel';
+import { handleNNTPSConnect, handleNNTPSGroup, handleNNTPSArticle } from './nntps';
+import { handleSonicProbe, handleSonicPing } from './sonic';
+import { handleNomadHealth, handleNomadJobs, handleNomadNodes } from './nomad';
+import { handleRabbitMQHealth, handleRabbitMQQuery } from './rabbitmq';
+import { handleLDPConnect, handleLDPProbe } from './ldp';
+import { handleIgniteConnect, handleIgniteProbe } from './ignite';
+import { handleFirebirdProbe, handleFirebirdVersion } from './firebird';
+import { handleCVSConnect, handleCVSLogin } from './cvs';
+import { handleAMQPSConnect } from './amqps';
+import { handleTFTPConnect, handleTFTPRead, handleTFTPWrite } from './tftp';
+import { handleSNMPGet, handleSNMPWalk } from './snmp';
+import { handleNTPQuery, handleNTPSync } from './ntp';
+import { handleMsrpSend, handleMsrpConnect } from './msrp';
+import { handleL2TPConnect, handleL2TPHello } from './l2tp';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
@@ -146,6 +287,15 @@ export default {
         return handleIRCWebSocket(request);
       }
       return handleIRCConnect(request);
+    }
+
+    // IRCS (IRC over TLS) API endpoints
+    if (url.pathname === '/api/ircs/connect') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleIRCSWebSocket(request);
+      }
+      return handleIRCSConnect(request);
     }
 
     // DNS API endpoint
@@ -273,6 +423,15 @@ export default {
       return handleSMTPSend(request);
     }
 
+    // Message Submission Protocol (RFC 6409) API endpoints
+    if (url.pathname === '/api/submission/connect') {
+      return handleSubmissionConnect(request);
+    }
+
+    if (url.pathname === '/api/submission/send') {
+      return handleSubmissionSend(request);
+    }
+
     // POP3 API endpoints
     if (url.pathname === '/api/pop3/connect') {
       return handlePOP3Connect(request);
@@ -330,6 +489,14 @@ export default {
     // LDAP API endpoints
     if (url.pathname === '/api/ldap/connect') {
       return handleLDAPConnect(request);
+    }
+
+    // LDAPS API endpoints
+    if (url.pathname === '/api/ldaps/connect') {
+      return handleLDAPSConnect(request);
+    }
+    if (url.pathname === '/api/ldaps/search') {
+      return handleLDAPSSearch(request);
     }
 
     // SMB API endpoints
@@ -409,6 +576,1252 @@ export default {
     // VNC (RFB) API endpoint
     if (url.pathname === '/api/vnc/connect') {
       return handleVNCConnect(request);
+    }
+
+    // Neo4j Bolt API endpoint
+    if (url.pathname === '/api/neo4j/connect') {
+      return handleNeo4jConnect(request);
+    }
+
+    // RTMP API endpoint
+    if (url.pathname === '/api/rtmp/connect') {
+      return handleRTMPConnect(request);
+    }
+
+    // TACACS+ API endpoints
+    if (url.pathname === '/api/tacacs/probe') {
+      return handleTacacsProbe(request);
+    }
+
+    if (url.pathname === '/api/tacacs/authenticate') {
+      return handleTacacsAuthenticate(request);
+    }
+
+    // Elasticsearch API endpoints
+    if (url.pathname === '/api/elasticsearch/health') {
+      return handleElasticsearchHealth(request);
+    }
+
+    if (url.pathname === '/api/elasticsearch/query') {
+      return handleElasticsearchQuery(request);
+    }
+
+    // AJP API endpoint
+    if (url.pathname === '/api/ajp/connect') {
+      return handleAJPConnect(request);
+    }
+
+    // HL7 v2.x API endpoints
+    if (url.pathname === '/api/hl7/connect') {
+      return handleHL7Connect(request);
+    }
+
+    if (url.pathname === '/api/hl7/send') {
+      return handleHL7Send(request);
+    }
+
+    // XMPP API endpoint
+    if (url.pathname === '/api/xmpp/connect') {
+      return handleXMPPConnect(request);
+    }
+
+    // RDP API endpoint
+    if (url.pathname === '/api/rdp/connect') {
+      return handleRDPConnect(request);
+    }
+
+    // NATS API endpoints
+    if (url.pathname === '/api/nats/connect') {
+      return handleNATSConnect(request);
+    }
+
+    if (url.pathname === '/api/nats/publish') {
+      return handleNATSPublish(request);
+    }
+
+    // JetDirect API endpoint
+    if (url.pathname === '/api/jetdirect/connect') {
+      return handleJetDirectConnect(request);
+    }
+
+    // BGP API endpoint
+    if (url.pathname === '/api/bgp/connect') {
+      return handleBGPConnect(request);
+    }
+
+    // Diameter API endpoints
+    if (url.pathname === '/api/diameter/connect') {
+      return handleDiameterConnect(request);
+    }
+
+    if (url.pathname === '/api/diameter/watchdog') {
+      return handleDiameterWatchdog(request);
+    }
+
+    // FastCGI API endpoints
+    if (url.pathname === '/api/fastcgi/probe') {
+      return handleFastCGIProbe(request);
+    }
+
+    if (url.pathname === '/api/fastcgi/request') {
+      return handleFastCGIRequest(request);
+    }
+
+    // Consul API endpoints
+    if (url.pathname === '/api/consul/health') {
+      return handleConsulHealth(request);
+    }
+
+    if (url.pathname === '/api/consul/services') {
+      return handleConsulServices(request);
+    }
+
+    // etcd API endpoints
+    if (url.pathname === '/api/etcd/health') {
+      return handleEtcdHealth(request);
+    }
+
+    if (url.pathname === '/api/etcd/query') {
+      return handleEtcdQuery(request);
+    }
+
+    // InfluxDB API endpoints
+    if (url.pathname === '/api/influxdb/health') {
+      return handleInfluxDBHealth(request);
+    }
+
+    if (url.pathname === '/api/influxdb/write') {
+      return handleInfluxDBWrite(request);
+    }
+
+    if (url.pathname === '/api/influxdb/query') {
+      return handleInfluxDBQuery(request);
+    }
+
+    // DICOM API endpoints
+    if (url.pathname === '/api/dicom/connect') {
+      return handleDICOMConnect(request);
+    }
+
+    if (url.pathname === '/api/dicom/echo') {
+      return handleDICOMEcho(request);
+    }
+
+    // Docker Engine API endpoints
+    if (url.pathname === '/api/docker/health') {
+      return handleDockerHealth(request);
+    }
+
+    if (url.pathname === '/api/docker/query') {
+      return handleDockerQuery(request);
+    }
+
+    // PPTP API endpoint
+    if (url.pathname === '/api/pptp/connect') {
+      return handlePPTPConnect(request);
+    }
+
+    // JSON-RPC API endpoints
+    if (url.pathname === '/api/jsonrpc/call') {
+      return handleJsonRpcCall(request);
+    }
+
+    if (url.pathname === '/api/jsonrpc/batch') {
+      return handleJsonRpcBatch(request);
+    }
+
+    // 9P API endpoint
+    if (url.pathname === '/api/9p/connect') {
+      return handle9PConnect(request);
+    }
+
+    // Thrift API endpoints
+    if (url.pathname === '/api/thrift/probe') {
+      return handleThriftProbe(request);
+    }
+
+    if (url.pathname === '/api/thrift/call') {
+      return handleThriftCall(request);
+    }
+
+    // SLP API endpoints
+    if (url.pathname === '/api/slp/types') {
+      return handleSLPServiceTypes(request);
+    }
+
+    if (url.pathname === '/api/slp/find') {
+      return handleSLPServiceFind(request);
+    }
+
+    if (url.pathname === '/api/slp/attributes') {
+      return handleSLPAttributes(request);
+    }
+
+    // BitTorrent API endpoint
+    if (url.pathname === '/api/bittorrent/handshake') {
+      return handleBitTorrentHandshake(request);
+    }
+
+    // X11 API endpoint
+    if (url.pathname === '/api/x11/connect') {
+      return handleX11Connect(request);
+    }
+
+    // Kerberos API endpoint
+    if (url.pathname === '/api/kerberos/connect') {
+      return handleKerberosConnect(request);
+    }
+
+    // SCCP API endpoints
+    if (url.pathname === '/api/sccp/probe') {
+      return handleSCCPProbe(request);
+    }
+
+    if (url.pathname === '/api/sccp/register') {
+      return handleSCCPRegister(request);
+    }
+
+    // Matrix API endpoints
+    if (url.pathname === '/api/matrix/health') {
+      return handleMatrixHealth(request);
+    }
+
+    if (url.pathname === '/api/matrix/query') {
+      return handleMatrixQuery(request);
+    }
+
+    // WebSocket API endpoint
+    if (url.pathname === '/api/websocket/probe') {
+      return handleWebSocketProbe(request);
+    }
+
+    // iSCSI API endpoint
+    if (url.pathname === '/api/iscsi/discover') {
+      return handleISCSIDiscover(request);
+    }
+
+    // H.323 API endpoint
+    if (url.pathname === '/api/h323/connect') {
+      return handleH323Connect(request);
+    }
+
+    // DoT (DNS over TLS) API endpoint
+    if (url.pathname === '/api/dot/query') {
+      return handleDoTQuery(request);
+    }
+
+    // SOAP API endpoints
+    if (url.pathname === '/api/soap/call') {
+      return handleSoapCall(request);
+    }
+
+    if (url.pathname === '/api/soap/wsdl') {
+      return handleSoapWsdl(request);
+    }
+
+    // OpenVPN API endpoint
+    if (url.pathname === '/api/openvpn/handshake') {
+      return handleOpenVPNHandshake(request);
+    }
+
+    // AFP API endpoint
+    if (url.pathname === '/api/afp/connect') {
+      return handleAFPConnect(request);
+    }
+
+    // NFS API endpoints
+    if (url.pathname === '/api/nfs/probe') {
+      return handleNFSProbe(request);
+    }
+
+    if (url.pathname === '/api/nfs/exports') {
+      return handleNFSExports(request);
+    }
+
+    // MGCP API endpoints
+    if (url.pathname === '/api/mgcp/audit') {
+      return handleMGCPAudit(request);
+    }
+
+    if (url.pathname === '/api/mgcp/command') {
+      return handleMGCPCommand(request);
+    }
+
+    // FTPS API endpoint
+    if (url.pathname === '/api/ftps/connect') {
+      return handleFTPSConnect(request);
+    }
+
+    // DICT API endpoints
+    if (url.pathname === '/api/dict/define') {
+      return handleDictDefine(request);
+    }
+
+    if (url.pathname === '/api/dict/match') {
+      return handleDictMatch(request);
+    }
+
+    if (url.pathname === '/api/dict/databases') {
+      return handleDictDatabases(request);
+    }
+
+    // SIP API endpoints
+    if (url.pathname === '/api/sip/options') {
+      return handleSipOptions(request);
+    }
+
+    if (url.pathname === '/api/sip/register') {
+      return handleSipRegister(request);
+    }
+
+    // MSRP API endpoints
+    if (url.pathname === '/api/msrp/send') {
+      return handleMsrpSend(request);
+    }
+
+    if (url.pathname === '/api/msrp/connect') {
+      return handleMsrpConnect(request);
+    }
+
+    // QOTD API endpoint
+    if (url.pathname === '/api/qotd/fetch') {
+      return handleQotdFetch(request);
+    }
+
+    // DISCARD API endpoints
+    if (url.pathname === '/api/discard/test') {
+      return handleDiscardTest(request);
+    }
+
+    if (url.pathname === '/api/discard/connect') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleDiscardWebSocket(request);
+      }
+      return new Response('WebSocket upgrade required', { status: 426 });
+    }
+
+    // LPD API endpoints
+    if (url.pathname === '/api/lpd/probe') {
+      return handleLPDProbe(request);
+    }
+
+    if (url.pathname === '/api/lpd/queue') {
+      return handleLPDQueue(request);
+    }
+
+    // Minecraft SLP API endpoints
+    if (url.pathname === '/api/minecraft/status') {
+      return handleMinecraftStatus(request);
+    }
+
+    if (url.pathname === '/api/minecraft/ping') {
+      return handleMinecraftPing(request);
+    }
+
+    // IDENT API endpoint
+    if (url.pathname === '/api/ident/query') {
+      return handleIdentQuery(request);
+    }
+
+    // Zabbix API endpoints
+    if (url.pathname === '/api/zabbix/connect') {
+      return handleZabbixConnect(request);
+    }
+
+    if (url.pathname === '/api/zabbix/agent') {
+      return handleZabbixAgent(request);
+    }
+
+    // Oracle TNS API endpoints
+    if (url.pathname === '/api/oracle-tns/connect') {
+      return handleOracleTNSConnect(request);
+    }
+
+    if (url.pathname === '/api/oracle-tns/probe') {
+      return handleOracleTNSProbe(request);
+    }
+
+    // MPD API endpoints
+    if (url.pathname === '/api/mpd/status') {
+      return handleMpdStatus(request);
+    }
+
+    if (url.pathname === '/api/mpd/command') {
+      return handleMpdCommand(request);
+    }
+
+    // Beanstalkd API endpoints
+    if (url.pathname === '/api/beanstalkd/connect') {
+      return handleBeanstalkdConnect(request);
+    }
+
+    if (url.pathname === '/api/beanstalkd/command') {
+      return handleBeanstalkdCommand(request);
+    }
+
+    // ClamAV API endpoints
+    if (url.pathname === '/api/clamav/ping') {
+      return handleClamAVPing(request);
+    }
+
+    if (url.pathname === '/api/clamav/version') {
+      return handleClamAVVersion(request);
+    }
+
+    if (url.pathname === '/api/clamav/stats') {
+      return handleClamAVStats(request);
+    }
+
+    // LMTP API endpoints
+    if (url.pathname === '/api/lmtp/connect') {
+      return handleLMTPConnect(request);
+    }
+
+    if (url.pathname === '/api/lmtp/send') {
+      return handleLMTPSend(request);
+    }
+
+    // ManageSieve API endpoints
+    if (url.pathname === '/api/managesieve/connect') {
+      return handleManageSieveConnect(request);
+    }
+
+    if (url.pathname === '/api/managesieve/list') {
+      return handleManageSieveList(request);
+    }
+
+    // CouchDB API endpoints
+    if (url.pathname === '/api/couchdb/health') {
+      return handleCouchDBHealth(request);
+    }
+
+    if (url.pathname === '/api/couchdb/query') {
+      return handleCouchDBQuery(request);
+    }
+
+    // IPP API endpoint
+    if (url.pathname === '/api/ipp/probe') {
+      return handleIPPProbe(request);
+    }
+
+    // SMPP API endpoints
+    if (url.pathname === '/api/smpp/connect') {
+      return handleSMPPConnect(request);
+    }
+
+    if (url.pathname === '/api/smpp/probe') {
+      return handleSMPPProbe(request);
+    }
+
+    // SVN API endpoint
+    if (url.pathname === '/api/svn/connect') {
+      return handleSVNConnect(request);
+    }
+
+    // TeamSpeak ServerQuery API endpoints
+    if (url.pathname === '/api/teamspeak/connect') {
+      return handleTeamSpeakConnect(request);
+    }
+
+    if (url.pathname === '/api/teamspeak/command') {
+      return handleTeamSpeakCommand(request);
+    }
+
+    // RADIUS API endpoints
+    if (url.pathname === '/api/radius/probe') {
+      return handleRadiusProbe(request);
+    }
+
+    if (url.pathname === '/api/radius/auth') {
+      return handleRadiusAuth(request);
+    }
+
+    // NRPE API endpoints
+    if (url.pathname === '/api/nrpe/query') {
+      return handleNRPEQuery(request);
+    }
+
+    if (url.pathname === '/api/nrpe/version') {
+      return handleNRPEVersion(request);
+    }
+
+    // Rlogin API endpoints
+    if (url.pathname === '/api/rlogin/connect') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleRloginWebSocket(request);
+      }
+      return handleRloginConnect(request);
+    }
+
+    // S7comm API endpoint
+    if (url.pathname === '/api/s7comm/connect') {
+      return handleS7commConnect(request);
+    }
+
+    // SNPP API endpoints
+    if (url.pathname === '/api/snpp/probe') {
+      return handleSNPPProbe(request);
+    }
+
+    if (url.pathname === '/api/snpp/page') {
+      return handleSNPPPage(request);
+    }
+
+    // RethinkDB API endpoints
+    if (url.pathname === '/api/rethinkdb/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleRethinkDBConnect(request);
+    }
+
+    if (url.pathname === '/api/rethinkdb/probe') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleRethinkDBProbe(request);
+    }
+
+    // ClickHouse API endpoints
+    if (url.pathname === '/api/clickhouse/health') {
+      return handleClickHouseHealth(request);
+    }
+
+    if (url.pathname === '/api/clickhouse/query') {
+      return handleClickHouseQuery(request);
+    }
+
+    // Gearman API endpoints
+    if (url.pathname === '/api/gearman/connect') {
+      return handleGearmanConnect(request);
+    }
+
+    if (url.pathname === '/api/gearman/command') {
+      return handleGearmanCommand(request);
+    }
+
+    // EtherNet/IP API endpoint
+    if (url.pathname === '/api/ethernetip/identity') {
+      return handleEtherNetIPIdentity(request);
+    }
+
+    // Prometheus API endpoints
+    if (url.pathname === '/api/prometheus/health') {
+      return handlePrometheusHealth(request);
+    }
+
+    if (url.pathname === '/api/prometheus/query') {
+      return handlePrometheusQuery(request);
+    }
+
+    if (url.pathname === '/api/prometheus/metrics') {
+      return handlePrometheusMetrics(request);
+    }
+
+    // Portmapper / rpcbind API endpoints
+    if (url.pathname === '/api/portmapper/probe') {
+      return handlePortmapperProbe(request);
+    }
+
+    if (url.pathname === '/api/portmapper/dump') {
+      return handlePortmapperDump(request);
+    }
+
+    // RELP API endpoints
+    if (url.pathname === '/api/relp/connect') {
+      return handleRelpConnect(request);
+    }
+
+    if (url.pathname === '/api/relp/send') {
+      return handleRelpSend(request);
+    }
+
+    // ADB API endpoints
+    if (url.pathname === '/api/adb/command') {
+      return handleADBCommand(request);
+    }
+
+    if (url.pathname === '/api/adb/version') {
+      return handleADBVersion(request);
+    }
+
+    if (url.pathname === '/api/adb/devices') {
+      return handleADBDevices(request);
+    }
+
+    // DNP3 API endpoints
+    if (url.pathname === '/api/dnp3/connect') {
+      return handleDNP3Connect(request);
+    }
+
+    if (url.pathname === '/api/dnp3/read') {
+      return handleDNP3Read(request);
+    }
+
+    // STUN API endpoints
+    if (url.pathname === '/api/stun/binding') {
+      return handleStunBinding(request);
+    }
+
+    if (url.pathname === '/api/stun/probe') {
+      return handleStunProbe(request);
+    }
+
+    // Fluentd Forward Protocol API endpoints
+    if (url.pathname === '/api/fluentd/connect') {
+      return handleFluentdConnect(request);
+    }
+
+    if (url.pathname === '/api/fluentd/send') {
+      return handleFluentdSend(request);
+    }
+
+    // Aerospike API endpoints
+    if (url.pathname === '/api/aerospike/connect') {
+      return handleAerospikeConnect(request);
+    }
+
+    if (url.pathname === '/api/aerospike/info') {
+      return handleAerospikeInfo(request);
+    }
+
+    // Rexec API endpoints
+    if (url.pathname === '/api/rexec/execute') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleRexecWebSocket(request);
+      }
+      return handleRexecExecute(request);
+    }
+
+    // FIX Protocol API endpoints
+    if (url.pathname === '/api/fix/probe') {
+      return handleFIXProbe(request);
+    }
+
+    if (url.pathname === '/api/fix/heartbeat') {
+      return handleFIXHeartbeat(request);
+    }
+
+    // EPMD API endpoints
+    if (url.pathname === '/api/epmd/names') {
+      return handleEPMDNames(request);
+    }
+
+    if (url.pathname === '/api/epmd/port') {
+      return handleEPMDPort(request);
+    }
+
+    // Tarantool API endpoints
+    if (url.pathname === '/api/tarantool/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleTarantoolConnect(request);
+    }
+
+    if (url.pathname === '/api/tarantool/probe') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleTarantoolProbe(request);
+    }
+
+    // Vault API endpoints
+    if (url.pathname === '/api/vault/health') {
+      return handleVaultHealth(request);
+    }
+
+    if (url.pathname === '/api/vault/query') {
+      return handleVaultQuery(request);
+    }
+
+    // Solr API endpoints
+    if (url.pathname === '/api/solr/health') {
+      return handleSolrHealth(request);
+    }
+
+    if (url.pathname === '/api/solr/query') {
+      return handleSolrQuery(request);
+    }
+
+    // IEC 60870-5-104 API endpoint
+    if (url.pathname === '/api/iec104/probe') {
+      return handleIEC104Probe(request);
+    }
+
+    // Riak API endpoints
+    if (url.pathname === '/api/riak/ping') {
+      return handleRiakPing(request);
+    }
+
+    if (url.pathname === '/api/riak/info') {
+      return handleRiakInfo(request);
+    }
+
+    // OpenTSDB API endpoints
+    if (url.pathname === '/api/opentsdb/version') {
+      return handleOpenTSDBVersion(request);
+    }
+
+    if (url.pathname === '/api/opentsdb/stats') {
+      return handleOpenTSDBStats(request);
+    }
+
+    if (url.pathname === '/api/opentsdb/suggest') {
+      return handleOpenTSDBSuggest(request);
+    }
+
+    // SpamAssassin spamd API endpoints
+    if (url.pathname === '/api/spamd/ping') {
+      return handleSpamdPing(request);
+    }
+
+    if (url.pathname === '/api/spamd/check') {
+      return handleSpamdCheck(request);
+    }
+
+    // Bitcoin API endpoints
+    if (url.pathname === '/api/bitcoin/connect') {
+      return handleBitcoinConnect(request);
+    }
+
+    if (url.pathname === '/api/bitcoin/getaddr') {
+      return handleBitcoinGetAddr(request);
+    }
+
+    // NSQ API endpoints
+    if (url.pathname === '/api/nsq/connect') {
+      return handleNSQConnect(request);
+    }
+
+    if (url.pathname === '/api/nsq/publish') {
+      return handleNSQPublish(request);
+    }
+
+    // ZMTP / ZeroMQ API endpoints
+    if (url.pathname === '/api/zmtp/probe') {
+      return handleZMTPProbe(request);
+    }
+
+    if (url.pathname === '/api/zmtp/handshake') {
+      return handleZMTPHandshake(request);
+    }
+
+    // OPC UA API endpoints
+    if (url.pathname === '/api/opcua/hello') {
+      return handleOPCUAHello(request);
+    }
+
+    if (url.pathname === '/api/opcua/endpoints') {
+      return handleOPCUAEndpoints(request);
+    }
+
+    // Munin API endpoints
+    if (url.pathname === '/api/munin/connect') {
+      return handleMuninConnect(request);
+    }
+
+    if (url.pathname === '/api/munin/fetch') {
+      return handleMuninFetch(request);
+    }
+
+    // SANE API endpoint
+    if (url.pathname === '/api/sane/probe') {
+      return handleSANEProbe(request);
+    }
+
+    // Ceph Monitor API endpoints
+    if (url.pathname === '/api/ceph/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleCephConnect(request);
+    }
+
+    if (url.pathname === '/api/ceph/probe') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleCephProbe(request);
+    }
+
+    // HTTP Proxy API endpoints
+    if (url.pathname === '/api/httpproxy/probe') {
+      return handleHTTPProxyProbe(request);
+    }
+
+    if (url.pathname === '/api/httpproxy/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleHTTPProxyConnect(request);
+    }
+
+    // Varnish CLI API endpoints
+    if (url.pathname === '/api/varnish/probe') {
+      return handleVarnishProbe(request);
+    }
+
+    if (url.pathname === '/api/varnish/command') {
+      return handleVarnishCommand(request);
+    }
+
+    // Omron FINS API endpoint
+    if (url.pathname === '/api/fins/connect') {
+      return handleFINSConnect(request);
+    }
+
+    // Couchbase API endpoints
+    if (url.pathname === '/api/couchbase/ping') {
+      return handleCouchbasePing(request);
+    }
+
+    if (url.pathname === '/api/couchbase/version') {
+      return handleCouchbaseVersion(request);
+    }
+
+    if (url.pathname === '/api/couchbase/stats') {
+      return handleCouchbaseStats(request);
+    }
+
+    // Asterisk AMI API endpoints
+    if (url.pathname === '/api/ami/probe') {
+      return handleAMIProbe(request);
+    }
+
+    if (url.pathname === '/api/ami/command') {
+      return handleAMICommand(request);
+    }
+
+    // JDWP API endpoints
+    if (url.pathname === '/api/jdwp/probe') {
+      return handleJDWPProbe(request);
+    }
+
+    if (url.pathname === '/api/jdwp/version') {
+      return handleJDWPVersion(request);
+    }
+
+    // DRDA / DB2 API endpoints
+    if (url.pathname === '/api/drda/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleDRDAConnect(request);
+    }
+
+    if (url.pathname === '/api/drda/probe') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleDRDAProbe(request);
+    }
+
+    // Livestatus API endpoints
+    if (url.pathname === '/api/livestatus/status') {
+      return handleLivestatusStatus(request);
+    }
+
+    if (url.pathname === '/api/livestatus/hosts') {
+      return handleLivestatusHosts(request);
+    }
+
+    if (url.pathname === '/api/livestatus/query') {
+      return handleLivestatusQuery(request);
+    }
+
+    // DCERPC / MS-RPC API endpoints
+    if (url.pathname === '/api/dcerpc/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleDCERPCConnect(request);
+    }
+
+    if (url.pathname === '/api/dcerpc/probe') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleDCERPCProbe(request);
+    }
+
+    // PJLink API endpoints
+    if (url.pathname === '/api/pjlink/probe') {
+      return handlePJLinkProbe(request);
+    }
+
+    if (url.pathname === '/api/pjlink/power') {
+      return handlePJLinkPower(request);
+    }
+
+    // NSCA API endpoints
+    if (url.pathname === '/api/nsca/probe') {
+      return handleNSCAProbe(request);
+    }
+
+    if (url.pathname === '/api/nsca/send') {
+      return handleNSCASend(request);
+    }
+
+    // Meilisearch API endpoints
+    if (url.pathname === '/api/meilisearch/health') {
+      return handleMeilisearchHealth(request);
+    }
+
+    if (url.pathname === '/api/meilisearch/search') {
+      return handleMeilisearchSearch(request);
+    }
+
+    // IMAPS API endpoints
+    if (url.pathname === '/api/imaps/connect') {
+      return handleIMAPSConnect(request);
+    }
+
+    if (url.pathname === '/api/imaps/list') {
+      return handleIMAPSList(request);
+    }
+
+    if (url.pathname === '/api/imaps/select') {
+      return handleIMAPSSelect(request);
+    }
+
+    // Icecast Streaming Server API endpoints
+    if (url.pathname === '/api/icecast/status') {
+      return handleIcecastStatus(request);
+    }
+
+    if (url.pathname === '/api/icecast/admin') {
+      return handleIcecastAdmin(request);
+    }
+
+    // Loki API endpoints
+    if (url.pathname === '/api/loki/health') {
+      return handleLokiHealth(request);
+    }
+    if (url.pathname === '/api/loki/query') {
+      return handleLokiQuery(request);
+    }
+    if (url.pathname === '/api/loki/metrics') {
+      return handleLokiMetrics(request);
+    }
+
+    // OpenFlow SDN API endpoints
+    if (url.pathname === '/api/openflow/probe') {
+      return handleOpenFlowProbe(request);
+    }
+
+    if (url.pathname === '/api/openflow/echo') {
+      return handleOpenFlowEcho(request);
+    }
+
+    // RMI API endpoints
+    if (url.pathname === '/api/rmi/probe') {
+      return handleRMIProbe(request);
+    }
+
+    if (url.pathname === '/api/rmi/list') {
+      return handleRMIList(request);
+    }
+
+    // HAProxy Runtime API endpoints
+    if (url.pathname === '/api/haproxy/info') {
+      return handleHAProxyInfo(request);
+    }
+
+    if (url.pathname === '/api/haproxy/stat') {
+      return handleHAProxyStat(request);
+    }
+
+    if (url.pathname === '/api/haproxy/command') {
+      return handleHAProxyCommand(request);
+    }
+
+    // NBD API endpoints
+    if (url.pathname === '/api/nbd/connect') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNBDConnect(request);
+    }
+
+    if (url.pathname === '/api/nbd/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNBDProbe(request);
+    }
+
+    // Ganglia gmond API endpoints
+    if (url.pathname === '/api/ganglia/connect') {
+      return handleGangliaConnect(request);
+    }
+
+    if (url.pathname === '/api/ganglia/probe') {
+      return handleGangliaProbe(request);
+    }
+
+    // NetBIOS Session Service API endpoints
+    if (url.pathname === '/api/netbios/connect') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleNetBIOSConnect(request);
+    }
+
+    if (url.pathname === '/api/netbios/probe') {
+      if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405 });
+      }
+      return handleNetBIOSProbe(request);
+    }
+
+    // POP3S API endpoints
+    if (url.pathname === '/api/pop3s/connect') {
+      return handlePOP3SConnect(request);
+    }
+
+    if (url.pathname === '/api/pop3s/list') {
+      return handlePOP3SList(request);
+    }
+
+    if (url.pathname === '/api/pop3s/retrieve') {
+      return handlePOP3SRetrieve(request);
+    }
+
+    // SMTPS API endpoints
+    if (url.pathname === '/api/smtps/connect') {
+      return handleSMTPSConnect(request);
+    }
+
+    if (url.pathname === '/api/smtps/send') {
+      return handleSMTPSSend(request);
+    }
+
+    // NNTPS API endpoints
+    if (url.pathname === '/api/nntps/connect') {
+      return handleNNTPSConnect(request);
+    }
+
+    if (url.pathname === '/api/nntps/group') {
+      return handleNNTPSGroup(request);
+    }
+
+    if (url.pathname === '/api/nntps/article') {
+      return handleNNTPSArticle(request);
+    }
+
+    // PCEP API endpoints
+    if (url.pathname === '/api/pcep/connect') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handlePCEPConnect(request);
+    }
+
+    if (url.pathname === '/api/pcep/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handlePCEPProbe(request);
+    }
+
+    // uWSGI API endpoints
+    if (url.pathname === '/api/uwsgi/probe') {
+      return handleUwsgiProbe(request);
+    }
+
+    if (url.pathname === '/api/uwsgi/request') {
+      return handleUwsgiRequest(request);
+    }
+
+    // WinRM API endpoints
+    if (url.pathname === '/api/winrm/identify') {
+      return handleWinRMIdentify(request);
+    }
+
+    if (url.pathname === '/api/winrm/auth') {
+      return handleWinRMAuth(request);
+    }
+
+    // Hazelcast API endpoint
+    if (url.pathname === '/api/hazelcast/probe') {
+      return handleHazelcastProbe(request);
+    }
+
+    // Kibana API endpoints
+    if (url.pathname === '/api/kibana/status') {
+      return handleKibanaStatus(request);
+    }
+    if (url.pathname === '/api/kibana/saved-objects') {
+      return handleKibanaSavedObjects(request);
+    }
+
+    // Grafana API endpoints
+    if (url.pathname === '/api/grafana/health') {
+      return handleGrafanaHealth(request);
+    }
+    if (url.pathname === '/api/grafana/datasources') {
+      return handleGrafanaDatasources(request);
+    }
+    if (url.pathname === '/api/grafana/dashboards') {
+      return handleGrafanaDashboards(request);
+    }
+
+    // GPSD API endpoints
+    if (url.pathname === '/api/gpsd/version') {
+      return handleGPSDVersion(request);
+    }
+    if (url.pathname === '/api/gpsd/devices') {
+      return handleGPSDDevices(request);
+    }
+    if (url.pathname === '/api/gpsd/poll') {
+      return handleGPSDPoll(request);
+    }
+    if (url.pathname === '/api/gpsd/command') {
+      return handleGPSDCommand(request);
+    }
+
+    // Rserve API endpoints
+    if (url.pathname === '/api/rserve/probe') {
+      return handleRserveProbe(request);
+    }
+
+    if (url.pathname === '/api/rserve/eval') {
+      return handleRserveEval(request);
+    }
+
+    // Redis Sentinel API endpoints
+    if (url.pathname === '/api/sentinel/probe') {
+      return handleSentinelProbe(request);
+    }
+
+    if (url.pathname === '/api/sentinel/query') {
+      return handleSentinelQuery(request);
+    }
+
+    // Sonic API endpoints
+    if (url.pathname === '/api/sonic/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleSonicProbe(request);
+    }
+
+    if (url.pathname === '/api/sonic/ping') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleSonicPing(request);
+    }
+
+
+    // RabbitMQ Management API endpoints
+    if (url.pathname === '/api/rabbitmq/health') {
+      return handleRabbitMQHealth(request);
+    }
+
+    if (url.pathname === '/api/rabbitmq/query') {
+      return handleRabbitMQQuery(request);
+    }
+
+    // Nomad API endpoints
+    if (url.pathname === '/api/nomad/health') {
+      return handleNomadHealth(request);
+    }
+
+    if (url.pathname === '/api/nomad/jobs') {
+      return handleNomadJobs(request);
+    }
+
+    if (url.pathname === '/api/nomad/nodes') {
+      return handleNomadNodes(request);
+    }
+
+    // LDP API endpoints
+    if (url.pathname === '/api/ldp/connect') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleLDPConnect(request);
+    }
+
+    if (url.pathname === '/api/ldp/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleLDPProbe(request);
+    }
+
+    // Apache Ignite Thin Client API endpoints
+    if (url.pathname === '/api/ignite/connect') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleIgniteConnect(request);
+    }
+
+    if (url.pathname === '/api/ignite/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleIgniteProbe(request);
+    }
+
+    // Firebird SQL API endpoints
+    if (url.pathname === '/api/firebird/probe') {
+      return handleFirebirdProbe(request);
+    }
+
+    if (url.pathname === '/api/firebird/version') {
+      return handleFirebirdVersion(request);
+    }
+
+    // Tor Control API endpoints
+    if (url.pathname === '/api/torcontrol/probe') {
+      return handleTorControlProbe(request);
+    }
+
+    if (url.pathname === '/api/torcontrol/getinfo') {
+      return handleTorControlGetInfo(request);
+    }
+
+
+    // CVS pserver API endpoints
+    if (url.pathname === '/api/cvs/connect') {
+      return handleCVSConnect(request);
+    }
+
+    if (url.pathname === '/api/cvs/login') {
+      return handleCVSLogin(request);
+    }
+
+    // TFTP API endpoints
+    if (url.pathname === '/api/tftp/connect') {
+      return handleTFTPConnect(request);
+    }
+
+    if (url.pathname === '/api/tftp/read') {
+      return handleTFTPRead(request);
+    }
+
+    if (url.pathname === '/api/tftp/write') {
+      return handleTFTPWrite(request);
+    }
+
+
+    // AMQPS API endpoint
+    if (url.pathname === '/api/amqps/connect') {
+      return handleAMQPSConnect(request);
+    }
+
+    // SNMP API endpoints
+    if (url.pathname === '/api/snmp/get') {
+      return handleSNMPGet(request);
+    }
+
+    if (url.pathname === '/api/snmp/walk') {
+      return handleSNMPWalk(request);
+    }
+
+    // NTP API endpoints
+    if (url.pathname === '/api/ntp/query') {
+      return handleNTPQuery(request);
+    }
+
+    if (url.pathname === '/api/ntp/sync') {
+      return handleNTPSync(request);
+    }
+
+    // L2TP API endpoints
+    if (url.pathname === '/api/l2tp/connect') {
+      return handleL2TPConnect(request);
+    }
+
+    if (url.pathname === '/api/l2tp/hello') {
+      return handleL2TPHello(request);
     }
 
     // Serve static assets (built React app)

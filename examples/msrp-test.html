@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MSRP Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    textarea {
+      min-height: 100px;
+      resize: vertical;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .note {
+      background: #2d2d30;
+      border-left: 3px solid #4ec9b0;
+      padding: 10px;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <h1>💬 MSRP Protocol Tester</h1>
+
+  <div class="note">
+    <strong>Note:</strong> MSRP (Message Session Relay Protocol, RFC 4975) is typically used in SIP-based
+    communication sessions. This tester allows you to send MSRP messages to a relay server.
+    Since public MSRP relays are rare, this is primarily for testing with local MSRP servers.
+  </div>
+
+  <div class="section">
+    <h2>Connection Settings</h2>
+
+    <label for="host">MSRP Relay Host:</label>
+    <input type="text" id="host" placeholder="relay.example.com" value="localhost">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="2855" value="2855">
+
+    <label for="timeout">Timeout (ms):</label>
+    <input type="number" id="timeout" placeholder="15000" value="15000">
+  </div>
+
+  <div class="section">
+    <h2>MSRP Paths</h2>
+
+    <label for="fromPath">From-Path (Your MSRP URI):</label>
+    <input type="text" id="fromPath" placeholder="msrp://client.example.com:2855/session123;tcp"
+           value="msrp://client.example.com:2855/session123;tcp">
+
+    <label for="toPath">To-Path (Destination MSRP URI):</label>
+    <input type="text" id="toPath" placeholder="msrp://relay.example.com:2855/session456;tcp"
+           value="msrp://relay.example.com:2855/session456;tcp">
+
+    <div class="note">
+      <strong>MSRP URI Format:</strong> msrp://host:port/session-id;tcp
+      <br>Example: msrp://relay.example.com:2855/abc123xyz;tcp
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Message Content</h2>
+
+    <label for="contentType">Content-Type:</label>
+    <select id="contentType">
+      <option value="text/plain">text/plain</option>
+      <option value="text/html">text/html</option>
+      <option value="application/json">application/json</option>
+      <option value="application/octet-stream">application/octet-stream</option>
+    </select>
+
+    <label for="content">Message Content:</label>
+    <textarea id="content" placeholder="Enter your message here...">Hello from MSRP Protocol Tester!</textarea>
+
+    <label for="messageId">Message-ID (optional):</label>
+    <input type="text" id="messageId" placeholder="Auto-generated if empty">
+  </div>
+
+  <div class="section">
+    <h2>Actions</h2>
+    <button id="testConnect">Test Connection</button>
+    <button id="sendMessage">Send MSRP Message</button>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready. Click "Test Connection" or "Send MSRP Message" to begin.</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    const output = document.getElementById('output');
+
+    function log(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      output.innerHTML = '';
+    }
+
+    async function testConnection() {
+      clearOutput();
+      log('Testing MSRP connection...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const fromPath = document.getElementById('fromPath').value;
+      const toPath = document.getElementById('toPath').value;
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !fromPath || !toPath) {
+        log('Error: Host, From-Path, and To-Path are required', 'error');
+        return;
+      }
+
+      const testBtn = document.getElementById('testConnect');
+      testBtn.disabled = true;
+      testBtn.textContent = 'Connecting...';
+
+      try {
+        const response = await fetch(`${API_BASE}/api/msrp/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            host,
+            port,
+            fromPath,
+            toPath,
+            timeout
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ Connection successful!`, 'success');
+          log(`  Host: ${data.host}:${data.port}`, 'info');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+          log(`  ${data.message}`, 'success');
+        } else {
+          log(`✗ Connection failed: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = 'Test Connection';
+      }
+    }
+
+    async function sendMessage() {
+      clearOutput();
+      log('Sending MSRP message...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const fromPath = document.getElementById('fromPath').value;
+      const toPath = document.getElementById('toPath').value;
+      const content = document.getElementById('content').value;
+      const contentType = document.getElementById('contentType').value;
+      const messageId = document.getElementById('messageId').value;
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !fromPath || !toPath || !content) {
+        log('Error: Host, From-Path, To-Path, and Content are required', 'error');
+        return;
+      }
+
+      const sendBtn = document.getElementById('sendMessage');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Sending...';
+
+      log(`Sending to ${host}:${port}`, 'info');
+      log(`From: ${fromPath}`, 'info');
+      log(`To: ${toPath}`, 'info');
+      log(`Content-Type: ${contentType}`, 'info');
+      log(`Content length: ${content.length} bytes`, 'info');
+      log('', 'info');
+
+      try {
+        const requestBody = {
+          host,
+          port,
+          fromPath,
+          toPath,
+          content,
+          contentType,
+          timeout
+        };
+
+        if (messageId) {
+          requestBody.messageId = messageId;
+        }
+
+        const response = await fetch(`${API_BASE}/api/msrp/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ Message sent successfully!`, 'success');
+          log('', 'info');
+          log('Response Details:', 'success');
+          log(`  Status: ${data.statusCode} ${data.statusText}`, 'success');
+          log(`  Transaction ID: ${data.transactionId}`, 'info');
+          log(`  Message ID: ${data.messageId}`, 'info');
+          if (data.byteRange) {
+            log(`  Byte Range: ${data.byteRange}`, 'info');
+          }
+          log(`  RTT: ${data.rtt}ms`, 'info');
+        } else {
+          log(`✗ Message send failed`, 'error');
+          if (data.statusCode) {
+            log(`  Status: ${data.statusCode} ${data.statusText}`, 'error');
+          }
+          log(`  Error: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send MSRP Message';
+      }
+    }
+
+    // Event listeners
+    document.getElementById('testConnect').addEventListener('click', testConnection);
+    document.getElementById('sendMessage').addEventListener('click', sendMessage);
+
+    // Allow Enter key to send message in content textarea
+    document.getElementById('content').addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key === 'Enter') {
+        sendMessage();
+      }
+    });
+  </script>
+</body>
+</html>

@@ -694,20 +694,23 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
       {/* RFCs Tab Content */}
       {activeTab === 'rfcs' && (() => {
         // Combine implemented protocols with non-implementable RFCs
+        // Only include protocols that have an RFC number
         const allRFCEntries: Array<RFCEntry & { implemented?: boolean }> = [
-          ...protocols.map(p => {
-            const rfcMatch = p.description.match(/RFC\s*(\d+)/i);
-            return {
-              name: p.name,
-              icon: p.icon,
-              rfc: rfcMatch ? rfcMatch[1] : null,
-              year: p.year,
-              description: p.description.replace(/\s*\(RFC.*?\)\s*-?\s*/i, ' - '),
-              workersCompatible: true,
-              layer: 'Application' as const,
-              implemented: p.status === 'active' || p.status === 'niche',
-            };
-          }),
+          ...protocols
+            .map(p => {
+              const rfcMatch = p.description.match(/RFC\s*(\d+)/i);
+              return {
+                name: p.name,
+                icon: p.icon,
+                rfc: rfcMatch ? rfcMatch[1] : null,
+                year: p.year,
+                description: p.description.replace(/\s*\(RFC.*?\)\s*-?\s*/i, ' - '),
+                workersCompatible: true,
+                layer: 'Application' as const,
+                implemented: p.status === 'active' || p.status === 'niche',
+              };
+            })
+            .filter(entry => entry.rfc !== null), // Only include protocols with RFC numbers
           ...nonImplementableRFCs.map(r => ({ ...r, implemented: false })),
         ];
 

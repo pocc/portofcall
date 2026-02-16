@@ -1,0 +1,283 @@
+version: '3.8'
+
+services:
+  # HTTP/HTTPS Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: testserver-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/html:/usr/share/nginx/html:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # FTP Server
+  vsftpd:
+    image: fauria/vsftpd
+    container_name: testserver-ftp
+    ports:
+      - "20:20"
+      - "21:21"
+      - "21100-21110:21100-21110"
+    environment:
+      - FTP_USER=testuser
+      - FTP_PASS=testpass123
+      - PASV_ADDRESS=127.0.0.1
+      - PASV_MIN_PORT=21100
+      - PASV_MAX_PORT=21110
+      - LOCAL_UMASK=022
+    volumes:
+      - ./docker/vsftpd/vsftpd.conf:/etc/vsftpd/vsftpd.conf:ro
+      - ./docker/vsftpd/init.sh:/usr/local/bin/init.sh:ro
+      - ftp_data:/home/vsftpd
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # SSH Server
+  openssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: testserver-ssh
+    hostname: testserver-ssh
+    ports:
+      - "2222:2222"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PUBLIC_KEY_FILE=/config/authorized_keys
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=true
+      - USER_PASSWORD=testpass123
+      - USER_NAME=testuser
+    volumes:
+      - ./docker/openssh/sshd_config:/config/sshd_config:ro
+      - ssh_data:/config
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # SMTP/IMAP/POP3 Email Server (Docker-Mailserver)
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: testserver-mail
+    hostname: mail.testserver.local
+    ports:
+      - "25:25"     # SMTP
+      - "587:587"   # SMTP Submission
+      - "143:143"   # IMAP
+      - "993:993"   # IMAPS
+      - "110:110"   # POP3
+      - "995:995"   # POP3S
+    environment:
+      - ENABLE_SPAMASSASSIN=0
+      - ENABLE_CLAMAV=0
+      - ENABLE_FAIL2BAN=0
+      - ENABLE_POSTGREY=0
+      - ONE_DIR=1
+      - DMS_DEBUG=0
+      - PERMIT_DOCKER=network
+      - SSL_TYPE=self-signed
+      - POSTFIX_MESSAGE_SIZE_LIMIT=51200000
+    volumes:
+      - ./docker/mailserver/config:/tmp/docker-mailserver:rw
+      - mailserver_data:/var/mail
+      - mailserver_state:/var/mail-state
+      - mailserver_logs:/var/log/mail
+    cap_add:
+      - NET_ADMIN
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Redis
+  redis:
+    image: redis:alpine
+    container_name: testserver-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --timeout 900
+      --tcp-keepalive 60
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - ./docker/redis/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # MySQL
+  mysql:
+    image: mysql:8.0
+    container_name: testserver-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass123
+      - MYSQL_DATABASE=testdb
+      - MYSQL_USER=testuser
+      - MYSQL_PASSWORD=testpass123
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --wait_timeout=900
+      --interactive_timeout=900
+      --max_connections=100
+    volumes:
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: testserver-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=rootpass123
+      - POSTGRES_USER=testuser
+      - POSTGRES_DB=testdb
+    command: >
+      postgres
+      -c idle_in_transaction_session_timeout=900000
+      -c statement_timeout=900000
+      -c tcp_keepalives_idle=60
+      -c tcp_keepalives_interval=10
+      -c tcp_keepalives_count=5
+    volumes:
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Simple Protocol Servers (Echo, Discard, Daytime, Chargen, Time)
+  simple-protocols:
+    build:
+      context: ./docker/simple-protocols
+      dockerfile: Dockerfile
+    container_name: testserver-simple
+    ports:
+      - "7:7"       # Echo
+      - "9:9"       # Discard
+      - "13:13"     # Daytime
+      - "19:19"     # Chargen
+      - "37:37"     # Time
+      - "79:79"     # Finger
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Telnet Server (for legacy testing)
+  telnet:
+    image: ubuntu:24.04
+    container_name: testserver-telnet
+    ports:
+      - "23:23"
+    command: >
+      bash -c "
+        apt-get update &&
+        apt-get install -y telnetd xinetd &&
+        echo 'service telnet {
+          disable = no
+          flags = REUSE
+          socket_type = stream
+          wait = no
+          user = root
+          server = /usr/sbin/in.telnetd
+          log_on_failure += USERID
+        }' > /etc/xinetd.d/telnet &&
+        useradd -m -s /bin/bash testuser &&
+        echo 'testuser:testpass123' | chpasswd &&
+        xinetd -dontfork
+      "
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # IRC Server (for chat protocol testing)
+  ircd:
+    image: inspircd/inspircd-docker:latest
+    container_name: testserver-irc
+    ports:
+      - "6667:6667"
+    volumes:
+      - ./docker/ircd/inspircd.conf:/inspircd/conf/inspircd.conf:ro
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # MQTT Broker
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: testserver-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # MongoDB (NoSQL database)
+  mongodb:
+    image: mongo:7
+    container_name: testserver-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=testuser
+      - MONGO_INITDB_ROOT_PASSWORD=testpass123
+      - MONGO_INITDB_DATABASE=testdb
+    command: >
+      mongod
+      --auth
+      --bind_ip_all
+      --setParameter socketCheckIntervalMS=900000
+    volumes:
+      - ./docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Memcached (Key-Value Cache)
+  memcached:
+    image: memcached:alpine
+    container_name: testserver-memcached
+    ports:
+      - "11211:11211"
+    command: memcached -m 64 -t 900
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  ftp_data:
+  ssh_data:
+  mailserver_data:
+  mailserver_state:
+  mailserver_logs:
+  redis_data:
+  mysql_data:
+  postgres_data:
+  mosquitto_data:
+  mosquitto_logs:
+  mongodb_data:

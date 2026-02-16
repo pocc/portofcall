@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Protocol Test Server</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+            background: #f5f5f5;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        h1 { margin: 0 0 0.5rem 0; }
+        .tagline { opacity: 0.9; }
+        .protocols {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+        }
+        .protocol-card {
+            background: white;
+            border-radius: 8px;
+            padding: 1.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .protocol-card h3 {
+            margin: 0 0 0.5rem 0;
+            color: #667eea;
+        }
+        .protocol-card .port {
+            background: #f0f0f0;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            display: inline-block;
+            margin-bottom: 0.5rem;
+        }
+        .protocol-card .description {
+            color: #666;
+            font-size: 0.9rem;
+        }
+        .protocol-card .credentials {
+            background: #fff8dc;
+            border-left: 3px solid #ffd700;
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+            font-size: 0.85rem;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 2rem;
+            padding: 1rem;
+            color: #666;
+            font-size: 0.9rem;
+        }
+        code {
+            background: #f0f0f0;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>⚓ Multi-Protocol Test Server</h1>
+        <p class="tagline">Comprehensive TCP protocol testing environment for Port of Call</p>
+    </div>
+
+    <div class="protocols">
+        <div class="protocol-card">
+            <h3>HTTP/HTTPS</h3>
+            <div class="port">Port 80, 443</div>
+            <div class="description">Web server with sample HTML and API endpoints</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>FTP</h3>
+            <div class="port">Port 21 (passive: 21100-21110)</div>
+            <div class="description">File transfer with upload/download test files</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> testpass123
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>SSH</h3>
+            <div class="port">Port 2222</div>
+            <div class="description">Secure shell access for terminal testing</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> testpass123
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>SMTP</h3>
+            <div class="port">Port 25, 587</div>
+            <div class="description">Email sending with test mailboxes</div>
+            <div class="credentials">
+                <strong>Email:</strong> test@testserver.local<br>
+                <strong>Pass:</strong> testpass123
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>IMAP/POP3</h3>
+            <div class="port">Port 143 (IMAP), 110 (POP3)</div>
+            <div class="description">Email retrieval with sample messages</div>
+            <div class="credentials">
+                <strong>Email:</strong> test@testserver.local<br>
+                <strong>Pass:</strong> testpass123
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>MySQL</h3>
+            <div class="port">Port 3306</div>
+            <div class="description">Relational database with test schema</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> testpass123<br>
+                <strong>DB:</strong> testdb
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>PostgreSQL</h3>
+            <div class="port">Port 5432</div>
+            <div class="description">Relational database with test schema</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> rootpass123<br>
+                <strong>DB:</strong> testdb
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Redis</h3>
+            <div class="port">Port 6379</div>
+            <div class="description">Key-value store with sample data</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>MongoDB</h3>
+            <div class="port">Port 27017</div>
+            <div class="description">NoSQL database with test collections</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> testpass123<br>
+                <strong>DB:</strong> testdb
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Memcached</h3>
+            <div class="port">Port 11211</div>
+            <div class="description">Distributed memory caching system</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>MQTT</h3>
+            <div class="port">Port 1883</div>
+            <div class="description">IoT messaging broker</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> testpass123
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>IRC</h3>
+            <div class="port">Port 6667</div>
+            <div class="description">Internet Relay Chat server</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Telnet</h3>
+            <div class="port">Port 23</div>
+            <div class="description">Legacy remote terminal (unencrypted)</div>
+            <div class="credentials">
+                <strong>User:</strong> testuser<br>
+                <strong>Pass:</strong> testpass123
+            </div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Echo Service</h3>
+            <div class="port">Port 7</div>
+            <div class="description">RFC 862 TCP echo protocol</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Discard Service</h3>
+            <div class="port">Port 9</div>
+            <div class="description">RFC 863 data sink protocol</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Daytime Service</h3>
+            <div class="port">Port 13</div>
+            <div class="description">RFC 867 ASCII time protocol</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Chargen Service</h3>
+            <div class="port">Port 19</div>
+            <div class="description">RFC 864 character generator</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Time Service</h3>
+            <div class="port">Port 37</div>
+            <div class="description">RFC 868 binary time protocol</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+
+        <div class="protocol-card">
+            <h3>Finger Service</h3>
+            <div class="port">Port 79</div>
+            <div class="description">RFC 1288 user information protocol</div>
+            <div class="credentials">No authentication required</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        <p><strong>⚠️ Security Notice:</strong> This is a TEST SERVER for protocol development. Do not expose to public internet without proper firewall rules.</p>
+        <p>All services configured with 15-minute session timeouts. See <code>docs/WEBSERVER.md</code> for complete documentation.</p>
+    </div>
+</body>
+</html>

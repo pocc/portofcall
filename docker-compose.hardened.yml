@@ -1,0 +1,623 @@
+version: '3.8'
+
+# HARDENED DOCKER-COMPOSE CONFIGURATION
+# This configuration implements all security measures from docs/WEBSERVER.md
+#
+# WARNING: This configuration is more restrictive and may require tuning
+# for your specific use case. Test thoroughly before deploying.
+#
+# Prerequisites:
+# 1. Docker user namespace remapping enabled (see WEBSERVER.md)
+# 2. Seccomp profile at /etc/docker/seccomp-default.json
+# 3. AppArmor or SELinux enabled on host
+# 4. UFW firewall configured
+
+services:
+  # HTTP/HTTPS Web Server
+  nginx:
+    image: nginx:alpine
+    container_name: testserver-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/html:/usr/share/nginx/html:ro
+      - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: Read-only root filesystem
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=100M,mode=0755
+      - /var/run:size=10M,mode=0755
+      - /tmp:size=10M,mode=1777
+    # SECURITY: Drop all capabilities, add only required
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    # SECURITY: Seccomp, AppArmor, no-new-privileges
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+      - seccomp=/etc/docker/seccomp-default.json
+    # SECURITY: Resource limits (prevent DoS)
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 100
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    # SECURITY: Run as non-root user (nginx user is UID 101 in alpine)
+    user: "101:101"
+
+  # FTP Server
+  vsftpd:
+    image: fauria/vsftpd
+    container_name: testserver-ftp
+    ports:
+      - "20:20"
+      - "21:21"
+      - "21100-21110:21100-21110"
+    environment:
+      - FTP_USER=testuser
+      - FTP_PASS=testpass123
+      - PASV_ADDRESS=127.0.0.1
+      - PASV_MIN_PORT=21100
+      - PASV_MAX_PORT=21110
+      - LOCAL_UMASK=022
+    volumes:
+      - ./docker/vsftpd/vsftpd.conf:/etc/vsftpd/vsftpd.conf:ro
+      - ./docker/vsftpd/init.sh:/usr/local/bin/init.sh:ro
+      - ftp_data:/home/vsftpd
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: Drop most capabilities
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+          pids: 200
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+
+  # SSH Server
+  openssh:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: testserver-ssh
+    hostname: testserver-ssh
+    ports:
+      - "2222:2222"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+      - PUBLIC_KEY_FILE=/config/authorized_keys
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=true
+      - USER_PASSWORD=testpass123
+      - USER_NAME=testuser
+    volumes:
+      - ./docker/openssh/sshd_config:/config/sshd_config:ro
+      - ssh_data:/config
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: SSH requires more capabilities but still drop unnecessary ones
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+      - SYS_CHROOT
+      - AUDIT_WRITE
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+          pids: 200
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+
+  # SMTP/IMAP/POP3 Email Server
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: testserver-mail
+    hostname: mail.testserver.local
+    ports:
+      - "25:25"
+      - "587:587"
+      - "143:143"
+      - "993:993"
+      - "110:110"
+      - "995:995"
+    environment:
+      - ENABLE_SPAMASSASSIN=0
+      - ENABLE_CLAMAV=0
+      - ENABLE_FAIL2BAN=0
+      - ENABLE_POSTGREY=0
+      - ONE_DIR=1
+      - DMS_DEBUG=0
+      - PERMIT_DOCKER=network
+      - SSL_TYPE=self-signed
+      - POSTFIX_MESSAGE_SIZE_LIMIT=51200000
+    volumes:
+      - ./docker/mailserver/config:/tmp/docker-mailserver:rw
+      - mailserver_data:/var/mail
+      - mailserver_state:/var/mail-state
+      - mailserver_logs:/var/log/mail
+    # SECURITY: Mailserver needs NET_BIND_SERVICE but NOT NET_ADMIN in most cases
+    # If you experience issues, add NET_ADMIN back, but be aware of the risk
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+      - DAC_OVERRIDE
+      - FOWNER
+      # - NET_ADMIN  # ONLY add if absolutely necessary
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    restart: unless-stopped
+    networks:
+      - testnet
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+          pids: 500
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  # Redis
+  redis:
+    image: redis:alpine
+    container_name: testserver-redis
+    ports:
+      - "6379:6379"
+    command: >
+      redis-server
+      --timeout 900
+      --tcp-keepalive 60
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+    volumes:
+      - ./docker/redis/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: Redis can run with read-only rootfs
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+          pids: 100
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    # SECURITY: Redis user is UID 999
+    user: "999:999"
+
+  # MySQL
+  mysql:
+    image: mysql:8.0
+    container_name: testserver-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpass123
+      - MYSQL_DATABASE=testdb
+      - MYSQL_USER=testuser
+      - MYSQL_PASSWORD=testpass123
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --wait_timeout=900
+      --interactive_timeout=900
+      --max_connections=100
+    volumes:
+      - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - mysql_data:/var/lib/mysql
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: MySQL requires writable filesystem but limit capabilities
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+          pids: 500
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # SECURITY: MySQL user is UID 999
+    user: "999:999"
+
+  # PostgreSQL
+  postgres:
+    image: postgres:16-alpine
+    container_name: testserver-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=rootpass123
+      - POSTGRES_USER=testuser
+      - POSTGRES_DB=testdb
+    command: >
+      postgres
+      -c idle_in_transaction_session_timeout=900000
+      -c statement_timeout=900000
+      -c tcp_keepalives_idle=60
+      -c tcp_keepalives_interval=10
+      -c tcp_keepalives_count=5
+    volumes:
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - testnet
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+          pids: 500
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # SECURITY: Postgres user is UID 70 in alpine
+    user: "70:70"
+
+  # Simple Protocol Servers
+  simple-protocols:
+    build:
+      context: ./docker/simple-protocols
+      dockerfile: Dockerfile
+    container_name: testserver-simple
+    ports:
+      - "7:7"
+      - "9:9"
+      - "13:13"
+      - "19:19"
+      - "37:37"
+      - "79:79"
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: Runs as non-root (UID 1000 defined in Dockerfile)
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 50
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # Telnet Server (LEAST SECURE - consider removing)
+  telnet:
+    image: ubuntu:24.04
+    container_name: testserver-telnet
+    ports:
+      - "23:23"
+    command: >
+      bash -c "
+        set -e
+        apt-get update && apt-get install -y telnetd xinetd sudo
+        useradd -u 1001 -m -s /bin/bash testuser
+        echo 'testuser:testpass123' | chpasswd
+        echo 'service telnet {
+          disable = no
+          flags = REUSE
+          socket_type = stream
+          wait = no
+          user = testuser
+          server = /usr/sbin/in.telnetd
+          log_on_failure += USERID
+        }' > /etc/xinetd.d/telnet
+        exec xinetd -dontfork
+      "
+    restart: unless-stopped
+    networks:
+      - testnet
+    # SECURITY: Telnet is inherently insecure, limit as much as possible
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 100
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+  # IRC Server
+  ircd:
+    image: inspircd/inspircd-docker:latest
+    container_name: testserver-irc
+    ports:
+      - "6667:6667"
+    volumes:
+      - ./docker/ircd/inspircd.conf:/inspircd/conf/inspircd.conf:ro
+    restart: unless-stopped
+    networks:
+      - testnet
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+          pids: 200
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+
+  # MQTT Broker
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: testserver-mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./docker/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./docker/mosquitto/passwd:/mosquitto/config/passwd:ro
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_logs:/mosquitto/log
+    restart: unless-stopped
+    networks:
+      - testnet
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+          pids: 200
+        reservations:
+          cpus: '0.2'
+          memory: 128M
+    # SECURITY: Mosquitto user is UID 1883
+    user: "1883:1883"
+
+  # MongoDB
+  mongodb:
+    image: mongo:7
+    container_name: testserver-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=testuser
+      - MONGO_INITDB_ROOT_PASSWORD=testpass123
+      - MONGO_INITDB_DATABASE=testdb
+    command: >
+      mongod
+      --auth
+      --bind_ip_all
+      --setParameter socketCheckIntervalMS=900000
+    volumes:
+      - ./docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
+      - mongodb_data:/data/db
+    restart: unless-stopped
+    networks:
+      - testnet
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+      - DAC_OVERRIDE
+      - FOWNER
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+          pids: 500
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    # SECURITY: MongoDB user is UID 999
+    user: "999:999"
+
+  # Memcached
+  memcached:
+    image: memcached:alpine
+    container_name: testserver-memcached
+    ports:
+      - "11211:11211"
+    command: memcached -m 64 -t 900 -u memcache
+    restart: unless-stopped
+    networks:
+      - testnet
+    read_only: true
+    tmpfs:
+      - /tmp:size=10M,mode=1777
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETGID
+      - SETUID
+    security_opt:
+      - no-new-privileges:true
+      - apparmor=docker-default
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+          pids: 50
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    # SECURITY: Memcache user is UID 100
+    user: "100:100"
+
+networks:
+  testnet:
+    driver: bridge
+    driver_opts:
+      # SECURITY: Disable inter-container communication by default
+      com.docker.network.bridge.enable_icc: "false"
+      com.docker.network.bridge.enable_ip_masquerade: "true"
+      com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"
+    # SECURITY: Set to 'true' to completely isolate from internet (breaks updates)
+    internal: false
+
+volumes:
+  ftp_data:
+    driver: local
+  ssh_data:
+    driver: local
+  mailserver_data:
+    driver: local
+  mailserver_state:
+    driver: local
+  mailserver_logs:
+    driver: local
+  redis_data:
+    driver: local
+  mysql_data:
+    driver: local
+  postgres_data:
+    driver: local
+  mosquitto_data:
+    driver: local
+  mosquitto_logs:
+    driver: local
+  mongodb_data:
+    driver: local
+
+# USAGE NOTES:
+#
+# 1. Before using this configuration:
+#    - Enable Docker user namespace remapping (see docs/WEBSERVER.md)
+#    - Download seccomp profile to /etc/docker/seccomp-default.json
+#    - Ensure AppArmor or SELinux is enabled
+#
+# 2. Some services may fail if they need additional capabilities
+#    Monitor logs: docker-compose logs -f [service]
+#
+# 3. To test a specific service:
+#    docker-compose up -d [service]
+#    docker-compose logs -f [service]
+#
+# 4. If a service fails due to permissions:
+#    - Check the user UID/GID in the container
+#    - Adjust the 'user' directive accordingly
+#    - Or add required capabilities (sparingly!)
+#
+# 5. Resource limits can be tuned based on your workload
+#
+# 6. For production, consider:
+#    - Using external secrets management (Vault, Docker secrets)
+#    - Implementing network policies (Calico, Cilium)
+#    - Adding IDS/IPS (Snort, Suricata)
+#    - Enabling audit logging

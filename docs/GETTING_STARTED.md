@@ -117,7 +117,7 @@ Check [node_modules/mutex.md](../node_modules/mutex.md) for currently implementi
    - Not in [docs/IMPOSSIBLE.md](IMPOSSIBLE.md)
    - Not in [node_modules/mutex.md](../node_modules/mutex.md) "Currently Implementing"
    - Not in [docs/IMPLEMENTED.md](IMPLEMENTED.md)
-3. **Follow the guide**: [ADD_PROTOCOL.md](../ADD_PROTOCOL.md)
+3. **Follow the guide**: [ADD_PROTOCOL.md](ADD_PROTOCOL.md)
 4. **Study examples**: Start with simple protocols like Echo or Whois
 
 ### Option 2: Improve Existing Protocols
@@ -144,7 +144,7 @@ Before implementing protocols, read these **in order**:
 - [Sockets API Reference](SOCKETS_API.md) - The underlying technology
 
 ### 2. Implementation Guide (1 hour)
-- [ADD_PROTOCOL Guide](../ADD_PROTOCOL.md) - Step-by-step process
+- [ADD_PROTOCOL Guide](ADD_PROTOCOL.md) - Step-by-step process
 - [Implementation Guide](protocols/IMPLEMENTATION_GUIDE.md) - Patterns and best practices
 - [Quick Reference](protocols/QUICK_REFERENCE.md) - Code templates
 
@@ -334,7 +334,7 @@ npx wrangler kv:key list      # List KV keys (if using KV)
 
 ### This Week
 1. Choose a simple protocol (Echo, Whois, Daytime)
-2. Follow [ADD_PROTOCOL Guide](../ADD_PROTOCOL.md)
+2. Follow [ADD_PROTOCOL Guide](ADD_PROTOCOL.md)
 3. Implement your first protocol
 4. Write tests and documentation
 5. Submit for review
@@ -365,7 +365,7 @@ npx wrangler kv:key list      # List KV keys (if using KV)
 
 Port of Call is an ambitious project bringing legacy TCP protocols to modern browsers. Your contributions help make the internet more accessible and demonstrate the power of edge computing.
 
-**Ready to start?** Pick a protocol from [docs/TCP_PROTOCOLS.md](TCP_PROTOCOLS.md) and follow [ADD_PROTOCOL.md](../ADD_PROTOCOL.md)!
+**Ready to start?** Pick a protocol from [docs/TCP_PROTOCOLS.md](TCP_PROTOCOLS.md) and follow [ADD_PROTOCOL.md](ADD_PROTOCOL.md)!
 
 ---
 

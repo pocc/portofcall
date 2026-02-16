@@ -1,75 +1,75 @@
 /**
- * DISCARD Protocol Implementation (RFC 863)
+ * Discard Protocol Implementation (RFC 863)
  *
- * The DISCARD service accepts connections, reads incoming data, and silently
- * discards everything. No response is ever sent back to the client.
- * It is the complement to ECHO (RFC 862).
+ * The Discard protocol is a network testing protocol that accepts data
+ * and immediately discards it without any response.
  *
  * Protocol Flow:
  * 1. Client connects to server port 9
- * 2. Client sends arbitrary data
- * 3. Server reads and discards all data — sends nothing back
- * 4. Connection stays open until client closes it
+ * 2. Client sends data
+ * 3. Server silently discards all data (no response)
+ * 4. Connection can be closed by either party
  *
  * Use Cases:
- * - Bandwidth/throughput testing (measure send rate to a black hole)
- * - Connection verification (can I reach this host?)
- * - Firewall rule testing (is outbound port 9 open?)
- * - Load testing (stress-test a server's ability to accept data)
+ * - Network connectivity testing
+ * - TCP throughput testing (fire-and-forget)
+ * - Data sink for debugging
+ * - Testing network buffering behavior
+ * - Educational protocol demonstration
+ *
+ * Security Warning:
+ * - No authentication or encryption
+ * - Can be used for connection exhaustion attacks
+ * - Most modern systems have Discard disabled
+ * - Educational use only
  */
 
 import { connect } from 'cloudflare:sockets';
-import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface DiscardRequest {
   host: string;
-  port: number;
-  message: string;
-  repeatCount?: number;
+  port?: number;
+  data: string;
   timeout?: number;
 }
 
 interface DiscardResponse {
   success: boolean;
-  host: string;
-  port: number;
-  bytesSent: number;
-  sendCount: number;
-  elapsed: number;
-  throughputBps: number;
-  noResponse: boolean;
+  bytesSent?: number;
+  duration?: number;
+  throughput?: string;
   error?: string;
 }
 
 /**
- * Test DISCARD protocol connectivity.
- * Sends data to a Discard server and verifies that no response comes back,
- * measuring throughput and connection health.
+ * Calculate throughput from bytes and duration
  */
-export async function handleDiscardTest(request: Request): Promise<Response> {
-  if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
-  }
+function calculateThroughput(bytes: number, durationMs: number): string {
+  const bps = (bytes * 8) / (durationMs / 1000);
 
+  if (bps < 1024) {
+    return `${bps.toFixed(2)} bps`;
+  } else if (bps < 1024 * 1024) {
+    return `${(bps / 1024).toFixed(2)} Kbps`;
+  } else {
+    return `${(bps / (1024 * 1024)).toFixed(2)} Mbps`;
+  }
+}
+
+/**
+ * Send data to Discard server
+ * Server will accept and discard data without responding
+ */
+export async function handleDiscardSend(request: Request): Promise<Response> {
   try {
     const body = await request.json() as DiscardRequest;
-    const { host, port = 9, message, repeatCount = 1, timeout = 10000 } = body;
+    const { host, port = 9, data, timeout = 10000 } = body;
 
     // Validation
     if (!host) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
-      }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!message || message.length === 0) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Message is required',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -86,189 +86,83 @@ export async function handleDiscardTest(request: Request): Promise<Response> {
       });
     }
 
-    const safeRepeat = Math.min(Math.max(1, repeatCount), 1000);
-
-    // Check if the target is behind Cloudflare
-    const cfCheck = await checkIfCloudflare(host);
-    if (cfCheck.isCloudflare && cfCheck.ip) {
+    if (!data || data.length === 0) {
       return new Response(JSON.stringify({
         success: false,
-        error: getCloudflareErrorMessage(host, cfCheck.ip),
-        isCloudflare: true,
+        error: 'Data is required (cannot be empty)',
       }), {
-        status: 403,
+        status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    // Connect
+    // Enforce safety limit - max 1MB of data
+    if (data.length > 1048576) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Data exceeds maximum size (1MB)',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
+
+    // Connect to Discard server
     const socket = connect(`${host}:${port}`);
 
+    // Set up timeout
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
-      await Promise.race([socket.opened, timeoutPromise]);
+      // Wait for connection with timeout
+      await Promise.race([
+        socket.opened,
+        timeoutPromise,
+      ]);
 
+      // Send data to server
       const writer = socket.writable.getWriter();
-      const messageBytes = new TextEncoder().encode(message);
+      const encoder = new TextEncoder();
+      const dataBytes = encoder.encode(data);
 
-      // Send data repeatedly
-      let totalBytesSent = 0;
-      for (let i = 0; i < safeRepeat; i++) {
-        await writer.write(messageBytes);
-        totalBytesSent += messageBytes.byteLength;
-      }
+      await writer.write(dataBytes);
+      await writer.close();
 
-      // After sending, briefly listen for a response (there should be none)
-      const reader = socket.readable.getReader();
-      let gotResponse = false;
+      const duration = Date.now() - startTime;
+      const throughput = calculateThroughput(dataBytes.length, duration);
 
-      try {
-        const readTimeout = new Promise<{ value: undefined; done: true }>((resolve) => {
-          setTimeout(() => resolve({ value: undefined, done: true }), 500);
-        });
-        const readResult = await Promise.race([reader.read(), readTimeout]);
-        if (!readResult.done && readResult.value && readResult.value.byteLength > 0) {
-          gotResponse = true;
-        }
-      } catch {
-        // Read error or timeout — expected for Discard
-      }
-
-      const elapsed = Date.now() - startTime;
-      const throughputBps = elapsed > 0 ? Math.round((totalBytesSent * 1000) / elapsed) : 0;
-
-      writer.releaseLock();
-      reader.releaseLock();
+      // Close socket
       socket.close();
 
-      const response: DiscardResponse = {
+      const result: DiscardResponse = {
         success: true,
-        host,
-        port,
-        bytesSent: totalBytesSent,
-        sendCount: safeRepeat,
-        elapsed,
-        throughputBps,
-        noResponse: !gotResponse,
+        bytesSent: dataBytes.length,
+        duration,
+        throughput,
       };
 
-      if (gotResponse) {
-        response.error = 'Warning: Server sent data back — this is not a compliant Discard server';
-      }
-
-      return new Response(JSON.stringify(response), {
+      return new Response(JSON.stringify(result), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
+
     } catch (error) {
+      // Connection or write error
       socket.close();
       throw error;
     }
+
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-      bytesSent: 0,
-      sendCount: 0,
-      elapsed: 0,
-      throughputBps: 0,
-      noResponse: false,
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
-  }
-}
-
-/**
- * Open a persistent WebSocket tunnel for interactive DISCARD sessions.
- * Data sent through the WebSocket is forwarded to the Discard server.
- * The server side of the WebSocket reports byte counts back to the client.
- */
-export async function handleDiscardWebSocket(request: Request): Promise<Response> {
-  try {
-    const url = new URL(request.url);
-    const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '9');
-
-    if (!host) {
-      return new Response('Host parameter required', { status: 400 });
-    }
-
-    const upgradeHeader = request.headers.get('Upgrade');
-    if (upgradeHeader !== 'websocket') {
-      return new Response('Expected websocket', { status: 426 });
-    }
-
-    const webSocketPair = new WebSocketPair();
-    const [client, server] = Object.values(webSocketPair);
-
-    server.accept();
-
-    const socket = connect(`${host}:${port}`);
-
-    (async () => {
-      try {
-        await socket.opened;
-
-        const writer = socket.writable.getWriter();
-        let totalSent = 0;
-
-        // Forward WebSocket -> TCP (discard server)
-        server.addEventListener('message', async (event) => {
-          let bytes: Uint8Array;
-          if (typeof event.data === 'string') {
-            bytes = new TextEncoder().encode(event.data);
-          } else if (event.data instanceof ArrayBuffer) {
-            bytes = new Uint8Array(event.data);
-          } else {
-            return;
-          }
-          await writer.write(bytes);
-          totalSent += bytes.byteLength;
-          // Report back to the browser how many bytes have been discarded
-          server.send(JSON.stringify({ discarded: bytes.byteLength, totalSent }));
-        });
-
-        // Read from TCP (shouldn't get anything, but drain to avoid backpressure)
-        const reader = socket.readable.getReader();
-        (async () => {
-          try {
-            while (true) {
-              const { done } = await reader.read();
-              if (done) break;
-            }
-          } catch {
-            // Expected — discard servers don't send data
-          } finally {
-            server.close();
-          }
-        })();
-
-        server.addEventListener('close', () => {
-          writer.releaseLock();
-          reader.releaseLock();
-          socket.close();
-        });
-      } catch (error) {
-        console.error('Discard WebSocket tunnel error:', error);
-        server.close();
-        socket.close();
-      }
-    })();
-
-    return new Response(null, {
-      status: 101,
-      webSocket: client,
-    });
-  } catch (error) {
-    return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } },
-    );
   }
 }

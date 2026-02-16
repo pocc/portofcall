@@ -8,9 +8,9 @@ import { describe, it, expect } from 'vitest';
 const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Docker Engine API Integration Tests', () => {
-  describe('Docker Ping', () => {
+  describe('Docker Health Check', () => {
     it('should handle connection to non-existent host', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -27,7 +27,7 @@ describe('Docker Engine API Integration Tests', () => {
     }, 15000);
 
     it('should fail with missing host parameter', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -42,7 +42,7 @@ describe('Docker Engine API Integration Tests', () => {
     });
 
     it('should handle custom port', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -58,7 +58,7 @@ describe('Docker Engine API Integration Tests', () => {
     }, 10000);
 
     it('should handle timeout', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -74,9 +74,9 @@ describe('Docker Engine API Integration Tests', () => {
     }, 10000);
   });
 
-  describe('Docker Version Info', () => {
+  describe('Docker API Query', () => {
     it('should handle connection failure', async () => {
-      const response = await fetch(`${API_BASE}/docker/info`, {
+      const response = await fetch(`${API_BASE}/docker/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -93,7 +93,7 @@ describe('Docker Engine API Integration Tests', () => {
     }, 15000);
 
     it('should fail with missing host parameter', async () => {
-      const response = await fetch(`${API_BASE}/docker/info`, {
+      const response = await fetch(`${API_BASE}/docker/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -107,7 +107,7 @@ describe('Docker Engine API Integration Tests', () => {
     });
 
     it('should handle non-Docker service', async () => {
-      const response = await fetch(`${API_BASE}/docker/info`, {
+      const response = await fetch(`${API_BASE}/docker/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -124,8 +124,8 @@ describe('Docker Engine API Integration Tests', () => {
   });
 
   describe('Docker Error Handling', () => {
-    it('should return 400 for missing host on ping', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+    it('should return 400 for missing host on health check', async () => {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -134,8 +134,8 @@ describe('Docker Engine API Integration Tests', () => {
       expect(response.status).toBe(400);
     });
 
-    it('should return 400 for missing host on info', async () => {
-      const response = await fetch(`${API_BASE}/docker/info`, {
+    it('should return 400 for missing host on query', async () => {
+      const response = await fetch(`${API_BASE}/docker/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
@@ -145,7 +145,7 @@ describe('Docker Engine API Integration Tests', () => {
     });
 
     it('should handle network errors gracefully', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -163,7 +163,7 @@ describe('Docker Engine API Integration Tests', () => {
 
   describe('Docker Cloudflare Detection', () => {
     it('should block connection to Cloudflare-protected host', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -182,7 +182,7 @@ describe('Docker Engine API Integration Tests', () => {
 
   describe('Docker Port Support', () => {
     it('should accept port 2375 (HTTP default)', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -197,7 +197,7 @@ describe('Docker Engine API Integration Tests', () => {
     }, 10000);
 
     it('should accept port 2376 (HTTPS)', async () => {
-      const response = await fetch(`${API_BASE}/docker/ping`, {
+      const response = await fetch(`${API_BASE}/docker/health`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

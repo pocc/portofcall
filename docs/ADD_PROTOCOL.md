@@ -5,21 +5,21 @@ Complete step-by-step guide for implementing TCP protocols in Port of Call.
 ## Prerequisites
 
 Before starting, **ALWAYS**:
-1. ✅ Check [node_modules/mutex.md](node_modules/mutex.md) - Avoid duplicate work
-2. ✅ Verify protocol is TCP-based (consult [docs/IMPOSSIBLE.md](docs/IMPOSSIBLE.md))
-3. ✅ Review implemented protocols in [docs/IMPLEMENTED.md](docs/IMPLEMENTED.md)
+1. ✅ Check [../node_modules/mutex.md](../node_modules/mutex.md) - Avoid duplicate work
+2. ✅ Verify protocol is TCP-based (consult [IMPOSSIBLE.md](IMPOSSIBLE.md))
+3. ✅ Review implemented protocols in [IMPLEMENTED.md](IMPLEMENTED.md)
 4. ✅ Read the full documentation in [docs/](docs/)
 
 ## Quick Start Checklist
 
 ### 1. Protocol Selection
 - [ ] Protocol uses TCP (not UDP, ICMP, or raw sockets)
-- [ ] Not listed as "Currently Implementing" in [node_modules/mutex.md](node_modules/mutex.md)
-- [ ] Not listed as "Impossible" in [docs/IMPOSSIBLE.md](docs/IMPOSSIBLE.md)
-- [ ] Not already completed in [docs/IMPLEMENTED.md](docs/IMPLEMENTED.md)
+- [ ] Not listed as "Currently Implementing" in [../node_modules/mutex.md](../node_modules/mutex.md)
+- [ ] Not listed as "Impossible" in [IMPOSSIBLE.md](IMPOSSIBLE.md)
+- [ ] Not already completed in [IMPLEMENTED.md](IMPLEMENTED.md)
 
 ### 2. Mark as In Progress
-**IMPORTANT**: Update [node_modules/mutex.md](node_modules/mutex.md):
+**IMPORTANT**: Update [../node_modules/mutex.md](../node_modules/mutex.md):
 ```markdown
 ## Currently Implementing:
 - YourProtocol (Port XXXX) - Brief description
@@ -27,9 +27,9 @@ Before starting, **ALWAYS**:
 
 ### 3. Research Phase
 - [ ] Read RFC or official protocol specification
-- [ ] Study [docs/TCP_PROTOCOLS.md](docs/TCP_PROTOCOLS.md) for protocol details
-- [ ] Check if protocol-specific docs exist in [docs/protocols/](docs/protocols/)
-- [ ] Review implementation patterns in [docs/protocols/IMPLEMENTATION_GUIDE.md](docs/protocols/IMPLEMENTATION_GUIDE.md)
+- [ ] Study [TCP_PROTOCOLS.md](TCP_PROTOCOLS.md) for protocol details
+- [ ] Check if protocol-specific docs exist in [protocols/](protocols/)
+- [ ] Review implementation patterns in [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md)
 
 ## Implementation Process
 
@@ -93,7 +93,7 @@ tests/protocols/
 ├── {protocol}.test.ts      # Unit tests
 └── {protocol}.integration.test.ts  # Integration tests
 
-docs/protocols/
+protocols/
 └── {PROTOCOL}.md           # Implementation documentation
 ```
 
@@ -259,9 +259,9 @@ docker run -d -p 6379:6379 redis:latest
 
 Create or update:
 
-1. **[docs/protocols/{PROTOCOL}.md](docs/protocols/)** - Implementation details
-2. **[docs/IMPLEMENTED.md](docs/IMPLEMENTED.md)** - Add to implemented list
-3. **[node_modules/mutex.md](node_modules/mutex.md)** - Move to "Completed This Session"
+1. **[protocols/{PROTOCOL}.md](protocols/)** - Implementation details
+2. **[IMPLEMENTED.md](IMPLEMENTED.md)** - Add to implemented list
+3. **[../node_modules/mutex.md](../node_modules/mutex.md)** - Move to "Completed This Session"
 4. **[README.md](README.md)** - Update if adding major feature
 
 ## Completion Checklist
@@ -307,18 +307,18 @@ npm run worker:deploy
 Study these for patterns:
 
 ### Simple Protocols (Start Here)
-- **Echo** - [docs/protocols/ECHO.md](docs/protocols/ECHO.md)
-- **Whois** - [docs/protocols/WHOIS.md](docs/protocols/WHOIS.md)
-- **Redis** - [docs/protocols/REDIS.md](docs/protocols/REDIS.md)
+- **Echo** - [protocols/ECHO.md](protocols/ECHO.md)
+- **Whois** - [protocols/WHOIS.md](protocols/WHOIS.md)
+- **Redis** - [protocols/REDIS.md](protocols/REDIS.md)
 
 ### Medium Complexity
-- **MQTT** - [docs/protocols/MQTT.md](docs/protocols/MQTT.md)
-- **IRC** - [docs/protocols/IRC.md](docs/protocols/IRC.md)
-- **MySQL** - [docs/protocols/MYSQL.md](docs/protocols/MYSQL.md)
+- **MQTT** - [protocols/MQTT.md](protocols/MQTT.md)
+- **IRC** - [protocols/IRC.md](protocols/IRC.md)
+- **MySQL** - [protocols/MYSQL.md](protocols/MYSQL.md)
 
 ### Advanced
-- **SSH** - [docs/protocols/SSH.md](docs/protocols/SSH.md)
-- **FTP** - See [docs/FTP_CODE_REVIEW.md](docs/FTP_CODE_REVIEW.md)
+- **SSH** - [protocols/SSH.md](protocols/SSH.md)
+- **FTP** - See [FTP_CODE_REVIEW.md](FTP_CODE_REVIEW.md)
 
 ## Common Pitfalls
 
@@ -342,19 +342,19 @@ Study these for patterns:
 
 ## Getting Help
 
-- **Patterns**: [docs/protocols/IMPLEMENTATION_GUIDE.md](docs/protocols/IMPLEMENTATION_GUIDE.md)
-- **Quick Reference**: [docs/protocols/QUICK_REFERENCE.md](docs/protocols/QUICK_REFERENCE.md)
-- **Security**: [docs/CLOUDFLARE_DETECTION.md](docs/CLOUDFLARE_DETECTION.md)
-- **Testing**: [docs/API_TESTING.md](docs/API_TESTING.md)
-- **Architecture**: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Patterns**: [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md)
+- **Quick Reference**: [protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md)
+- **Security**: [CLOUDFLARE_DETECTION.md](CLOUDFLARE_DETECTION.md)
+- **Testing**: [API_TESTING.md](API_TESTING.md)
+- **Architecture**: [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## After Completion
 
 When you finish implementing a protocol:
 
-1. ✅ Update [docs/IMPLEMENTED.md](docs/IMPLEMENTED.md)
-2. ✅ Move to "Completed This Session" in [node_modules/mutex.md](node_modules/mutex.md)
-3. ✅ Create protocol documentation in [docs/protocols/](docs/protocols/)
+1. ✅ Update [IMPLEMENTED.md](IMPLEMENTED.md)
+2. ✅ Move to "Completed This Session" in [../node_modules/mutex.md](../node_modules/mutex.md)
+3. ✅ Create protocol documentation in [protocols/](protocols/)
 4. ✅ Deploy to production
 5. ✅ Test live deployment
 6. ✅ **Reread this guide before starting next protocol**

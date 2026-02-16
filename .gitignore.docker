@@ -1,0 +1,31 @@
+# Docker Test Server - Generated and sensitive files
+
+# SSL certificates
+docker/nginx/ssl/*.key
+docker/nginx/ssl/*.crt
+docker/nginx/ssl/*.pem
+
+# Mail server data
+docker/mailserver/config/postfix-accounts.cf
+docker/mailserver/config/postfix-virtual.cf
+
+# SSH keys
+docker/openssh/authorized_keys
+docker/openssh/*.pub
+docker/openssh/*.key
+
+# Environment variables
+.env
+
+# Docker volumes (if mounted locally)
+docker/volumes/
+
+# Logs
+*.log
+docker/**/*.log
+
+# Temporary files
+*.tmp
+*.swp
+*~
+.DS_Store

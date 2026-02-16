@@ -1,0 +1,16 @@
+═══════════════════════════════════════════════════════════
+  ⚓ Multi-Protocol Test Server - SSH Access
+═══════════════════════════════════════════════════════════
+
+  This is a TEST SERVER for protocol development and testing.
+
+  ⏱  Session Timeout: 15 minutes of inactivity
+  🔐 Authentication: Password or public key
+
+  Default credentials:
+    Username: testuser
+    Password: testpass123
+
+  ⚠️  WARNING: Do not use in production!
+
+═══════════════════════════════════════════════════════════

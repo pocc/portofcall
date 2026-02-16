@@ -20,6 +20,15 @@ import {
   handleFTPRename,
 } from './ftp';
 import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect } from './ssh';
+import {
+  handleSFTPConnect,
+  handleSFTPList,
+  handleSFTPDownload,
+  handleSFTPUpload,
+  handleSFTPDelete,
+  handleSFTPMkdir,
+  handleSFTPRename,
+} from './sftp';
 import { handleTelnetConnect, handleTelnetWebSocket } from './telnet';
 import { handleSMTPConnect, handleSMTPSend } from './smtp';
 import { handleSubmissionConnect, handleSubmissionSend } from './submission';
@@ -27,6 +36,7 @@ import { handlePOP3Connect, handlePOP3List, handlePOP3Retrieve } from './pop3';
 import { handleIMAPConnect, handleIMAPList, handleIMAPSelect } from './imap';
 import { handleMySQLConnect, handleMySQLQuery } from './mysql';
 import { handlePostgreSQLConnect } from './postgres';
+import { handleOracleConnect } from './oracle';
 import { handleRedisConnect, handleRedisCommand } from './redis';
 import { handleMQTTConnect } from './mqtt';
 import { handleLDAPConnect } from './ldap';
@@ -40,6 +50,7 @@ import { handleDaytimeGet } from './daytime';
 import { handleFingerQuery } from './finger';
 import { handleTimeGet } from './time';
 import { handleChargenStream } from './chargen';
+import { handleDiscardSend } from './discard';
 import { handleGeminiFetch } from './gemini';
 import { handleGopherFetch } from './gopher';
 import { handleIRCConnect, handleIRCWebSocket } from './irc';
@@ -106,7 +117,6 @@ import { handleDictDefine, handleDictMatch, handleDictDatabases } from './dict';
 import { handleSipOptions, handleSipRegister } from './sip';
 import { handleSipsOptions, handleSipsRegister } from './sips';
 import { handleQotdFetch } from './qotd';
-import { handleDiscardTest, handleDiscardWebSocket } from './discard';
 import { handleLPDProbe, handleLPDQueue } from './lpd';
 import { handleMinecraftStatus, handleMinecraftPing } from './minecraft';
 import { handleOracleTNSConnect, handleOracleTNSProbe } from './oracle-tns';
@@ -215,6 +225,7 @@ import { handleMDNSQuery, handleMDNSDiscover } from './mdns';
 import { handleLLMNRQuery } from './llmnr';
 import { handleHSRPProbe, handleHSRPListen } from './hsrp';
 import { handleVentriloStatus, handleVentriloConnect } from './ventrilo';
+import { handleNapsterConnect, handleNapsterLogin, handleNapsterStats } from './napster';
 import { handleXMPPS2SProbe, handleXMPPS2SFederationTest } from './xmpps2s';
 import { handleMSNProbe, handleMSNClientVersion } from './msn';
 import { handleYMSGProbe, handleYMSGVersionDetect } from './ymsg';
@@ -294,6 +305,11 @@ export default {
     // CHARGEN API endpoint
     if (url.pathname === '/api/chargen/stream') {
       return handleChargenStream(request);
+    }
+
+    // DISCARD API endpoint
+    if (url.pathname === '/api/discard/send') {
+      return handleDiscardSend(request);
     }
 
     // GEMINI API endpoint
@@ -430,6 +446,35 @@ export default {
       return handleSSHDisconnect(request);
     }
 
+    // SFTP API endpoints
+    if (url.pathname === '/api/sftp/connect') {
+      return handleSFTPConnect(request);
+    }
+
+    if (url.pathname === '/api/sftp/list') {
+      return handleSFTPList(request);
+    }
+
+    if (url.pathname === '/api/sftp/download') {
+      return handleSFTPDownload(request);
+    }
+
+    if (url.pathname === '/api/sftp/upload') {
+      return handleSFTPUpload(request);
+    }
+
+    if (url.pathname === '/api/sftp/delete') {
+      return handleSFTPDelete(request);
+    }
+
+    if (url.pathname === '/api/sftp/mkdir') {
+      return handleSFTPMkdir(request);
+    }
+
+    if (url.pathname === '/api/sftp/rename') {
+      return handleSFTPRename(request);
+    }
+
     // Telnet API endpoints
     if (url.pathname === '/api/telnet/connect') {
       // Check for WebSocket upgrade
@@ -491,6 +536,11 @@ export default {
 
     if (url.pathname === '/api/mysql/query') {
       return handleMySQLQuery(request);
+    }
+
+    // Oracle TNS
+    if (url.pathname === '/api/oracle/connect') {
+      return handleOracleConnect(request);
     }
 
     // PostgreSQL API endpoints
@@ -931,19 +981,6 @@ export default {
     // QOTD API endpoint
     if (url.pathname === '/api/qotd/fetch') {
       return handleQotdFetch(request);
-    }
-
-    // DISCARD API endpoints
-    if (url.pathname === '/api/discard/test') {
-      return handleDiscardTest(request);
-    }
-
-    if (url.pathname === '/api/discard/connect') {
-      const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
-        return handleDiscardWebSocket(request);
-      }
-      return new Response('WebSocket upgrade required', { status: 426 });
     }
 
     // LPD API endpoints
@@ -2061,6 +2098,19 @@ export default {
 
     if (url.pathname === '/api/ventrilo/connect') {
       return handleVentriloConnect(request);
+    }
+
+    // Napster API endpoints
+    if (url.pathname === '/api/napster/connect') {
+      return handleNapsterConnect(request);
+    }
+
+    if (url.pathname === '/api/napster/login') {
+      return handleNapsterLogin(request);
+    }
+
+    if (url.pathname === '/api/napster/stats') {
+      return handleNapsterStats(request);
     }
 
     // Informix API endpoints

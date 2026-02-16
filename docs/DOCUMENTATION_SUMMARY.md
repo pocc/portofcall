@@ -112,7 +112,7 @@ Overview of the Port of Call documentation structure and recent updates.
   - New documentation index
   - Improved navigation
 
-- **[../ADD_PROTOCOL.md](../ADD_PROTOCOL.md)** ⭐ COMPLETELY REWRITTEN
+- **[ADD_PROTOCOL.md](ADD_PROTOCOL.md)** ⭐ COMPLETELY REWRITTEN
   - Step-by-step implementation checklist
   - Complete code templates
   - Security considerations
@@ -167,14 +167,14 @@ Examples:
 1. [GETTING_STARTED.md](GETTING_STARTED.md) (15 min)
 2. [PROJECT_OVERVIEW.md](PROJECT_OVERVIEW.md) (10 min)
 3. [ARCHITECTURE.md](ARCHITECTURE.md) (20 min)
-4. [../ADD_PROTOCOL.md](../ADD_PROTOCOL.md) (30 min)
+4. [ADD_PROTOCOL.md](ADD_PROTOCOL.md) (30 min)
 5. [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md) (1 hour)
 6. Pick a simple protocol: [protocols/ECHO.md](protocols/ECHO.md)
 
 ### For Experienced Developers
 **Quick path**:
 1. [GETTING_STARTED.md](GETTING_STARTED.md) - Skim structure
-2. [../ADD_PROTOCOL.md](../ADD_PROTOCOL.md) - Implementation workflow
+2. [ADD_PROTOCOL.md](ADD_PROTOCOL.md) - Implementation workflow
 3. [protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md) - Code templates
 4. [IMPLEMENTED.md](IMPLEMENTED.md) - What's done
 5. [TCP_PROTOCOLS.md](TCP_PROTOCOLS.md) - What's available
@@ -220,7 +220,7 @@ Examples:
 3. **[docs/DOCUMENTATION_SUMMARY.md](DOCUMENTATION_SUMMARY.md)** - This file!
 
 ### Major Rewrites
-1. **[ADD_PROTOCOL.md](../ADD_PROTOCOL.md)** - Complete rewrite with:
+1. **[ADD_PROTOCOL.md](ADD_PROTOCOL.md)** - Complete rewrite with:
    - Step-by-step checklist
    - Complete code templates
    - Security best practices
@@ -278,7 +278,7 @@ API_TESTING.md → IMPLEMENTED.md (update)
 - **docs/** - Core documentation
 - **docs/protocols/** - Protocol-specific documentation
 - **node_modules/mutex.md** - Work-in-progress tracker
-- **ADD_PROTOCOL.md** - Implementation guide (root level)
+- **ADD_PROTOCOL.md** - Implementation guide (now in docs/)
 - **README.md** - Project overview (root level)
 
 ### Naming Conventions
@@ -310,7 +310,7 @@ Each major doc should include:
 - [SOCKETS_API.md](SOCKETS_API.md)
 
 **Implementation**
-- [ADD_PROTOCOL.md](../ADD_PROTOCOL.md)
+- [ADD_PROTOCOL.md](ADD_PROTOCOL.md)
 - [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md)
 - [protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md)
 
@@ -327,7 +327,7 @@ Each major doc should include:
 
 **Testing**
 - [API_TESTING.md](API_TESTING.md)
-- Testing sections in [ADD_PROTOCOL.md](../ADD_PROTOCOL.md)
+- Testing sections in [ADD_PROTOCOL.md](ADD_PROTOCOL.md)
 - Per-protocol tests in [IMPLEMENTED.md](IMPLEMENTED.md)
 
 ## 🎓 Learning Path
@@ -339,14 +339,14 @@ Each major doc should include:
 - Explore [SOCKETS_API.md](SOCKETS_API.md)
 
 ### Week 2: Implementation Basics
-- Read [ADD_PROTOCOL.md](../ADD_PROTOCOL.md)
+- Read [ADD_PROTOCOL.md](ADD_PROTOCOL.md)
 - Study [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md)
 - Review simple protocols: [ECHO](protocols/ECHO.md), [WHOIS](protocols/WHOIS.md)
 - Set up dev environment
 
 ### Week 3: First Protocol
 - Pick a simple protocol
-- Follow [ADD_PROTOCOL.md](../ADD_PROTOCOL.md) step-by-step
+- Follow [ADD_PROTOCOL.md](ADD_PROTOCOL.md) step-by-step
 - Write tests per [API_TESTING.md](API_TESTING.md)
 - Update [IMPLEMENTED.md](IMPLEMENTED.md)
 
@@ -389,7 +389,7 @@ Each major doc should include:
 - Check this file - Overall documentation structure
 
 ### Implementation Questions
-- [ADD_PROTOCOL.md](../ADD_PROTOCOL.md) - Step-by-step guide
+- [ADD_PROTOCOL.md](ADD_PROTOCOL.md) - Step-by-step guide
 - [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md) - Detailed patterns
 - [protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md) - Quick answers
 

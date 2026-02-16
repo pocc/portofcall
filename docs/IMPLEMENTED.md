@@ -25,6 +25,21 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ✅ Passing (14/14)
 - **Documentation**: docs/SSH_AUTHENTICATION.md
 
+### SFTP (SSH File Transfer Protocol)
+- **Port**: 22 (SSH subsystem)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Runs over SSH connection (port 22)
+  - Password authentication
+  - Private key authentication (Ed25519, RSA, ECDSA)
+  - WebSocket tunnel for SFTP protocol
+  - Connectivity testing (HTTP mode)
+  - File operations (list, download, upload, delete, mkdir, rename) via WebSocket
+  - Client-side SFTP protocol implementation required
+- **UI**: Yes (connection form with auth options, file browser placeholder)
+- **Tests**: ⚠️ Awaiting deployment (7 integration tests)
+- **Documentation**: docs/protocols/SFTP.md
+
 ### FTP (File Transfer Protocol)
 - **Port**: 21 (default)
 - **Status**: ✅ Complete
@@ -315,6 +330,25 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ✅ 10 integration tests
 - **Documentation**: docs/protocols/xmpp.md
 
+### Matrix
+- **Port**: 8448 (default federation), 443 (client-server), 8008 (alternative)
+- **Status**: ✅ Complete
+- **Features**:
+  - Homeserver discovery and health checking
+  - Supported spec versions detection (/_matrix/client/versions)
+  - Login flow enumeration (password, SSO, token methods)
+  - Federation server version detection (/_matrix/federation/v1/version)
+  - Well-known server/client discovery
+  - Public rooms directory query
+  - Capabilities detection
+  - Arbitrary Matrix API endpoint queries (GET/POST/PUT/DELETE)
+  - Bearer token authentication support
+  - HTTP/1.1 over raw TCP socket implementation
+  - Quick query buttons for common endpoints
+- **UI**: Yes (connection form with API query interface)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: docs/protocols/MATRIX.md
+
 ### Minecraft RCON (Source RCON Protocol)
 - **Port**: 25575 (default)
 - **Status**: ✅ Complete (not yet deployed)
@@ -571,6 +605,19 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (3 real-world tests)
 
+### Discard (RFC 863)
+- **Port**: 9 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Fire-and-forget data sending
+  - Throughput measurement
+  - Configurable data size (max 1MB)
+  - Duration and bandwidth statistics
+  - Input validation
+- **UI**: Yes (data input with throughput stats)
+- **Tests**: ⚠️ Awaiting deployment (9 integration tests)
+- **Documentation**: README.md
+
 ### Neo4j (Bolt Protocol)
 - **Port**: 7687 (default)
 - **Status**: ✅ Complete (not yet deployed)
@@ -622,6 +669,44 @@ This document tracks all protocols that have been fully implemented in Port of C
   - Raw TCP HTTP request construction
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (2 real-world tests)
+
+### Docker API (Engine API)
+- **Port**: 2375 (HTTP), 2376 (HTTPS)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Health check via /_ping endpoint
+  - Version detection (GET /version)
+  - System information retrieval (GET /info)
+  - Container listing, inspection, start/stop (GET/POST /containers/*)
+  - Image management (GET /images/json)
+  - Network and volume queries
+  - Arbitrary API endpoint queries (GET/POST/DELETE)
+  - Raw HTTP/1.1 over TCP socket
+  - Chunked transfer encoding support
+  - Quick query buttons for common operations
+- **UI**: Yes (connection test + API query interface with quick actions)
+- **Tests**: ✅ Passing (14 integration tests)
+- **Documentation**: docs/protocols/DOCKER.md
+- **Security Note**: Docker API without TLS provides unrestricted daemon access - use only with trusted hosts
+
+### etcd (Distributed Key-Value Store)
+- **Port**: 2379 (client), 2380 (peer)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Health check with version/status/cluster info
+  - Query endpoint for v3 HTTP/JSON Gateway API
+  - Key-value operations (get/put/delete with base64 encoding)
+  - Lease management (grant/revoke TTL)
+  - Server status and maintenance endpoints
+  - Basic Auth support
+  - Base64 key/value encoding/decoding
+  - Raw HTTP/1.1 over TCP socket
+  - Chunked transfer encoding support
+  - Quick query buttons for common operations
+- **UI**: Yes (connection test + query interface with quick actions)
+- **Tests**: ✅ Passing (26 integration tests)
+- **Documentation**: docs/protocols/ETCD.md
+- **Use Cases**: Kubernetes cluster coordination, distributed configuration, service discovery
 
 ### AJP (Apache JServ Protocol)
 - **Port**: 8009 (default)
@@ -683,6 +768,36 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ⚠️ Awaiting deployment (8 integration tests)
 - **Documentation**: README.md
 
+### Ventrilo (Gaming VoIP)
+- **Port**: 3784 (TCP control), 3785 (UDP voice)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TCP connectivity testing
+  - Server status query (name, version, users, channels)
+  - Proprietary protocol parsing (reverse-engineered)
+  - Support for v2.x and v3.x server versions
+  - Binary response parsing with null-terminated strings
+  - User count and channel statistics
+  - Raw hex dump for debugging unsupported formats
+- **UI**: Yes (status query with stats display)
+- **Tests**: ⚠️ Awaiting deployment (6 integration tests)
+- **Documentation**: docs/protocols/VENTRILO.md
+
+### Napster (Legacy P2P File Sharing)
+- **Port**: 6699 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TCP connectivity testing
+  - LOGIN command with username/password authentication
+  - Server statistics query (users, files, data size)
+  - Text-based protocol (newline-terminated commands)
+  - Response parsing for server info, MOTD, version
+  - OpenNap server compatibility
+  - Historical protocol (1999-2001 original Napster)
+- **UI**: Yes (login form + stats display)
+- **Tests**: ⚠️ Awaiting deployment (9 integration tests)
+- **Note**: File transfers (P2P) not implemented - out of scope
+
 ## 🔒 Security Features
 
 ### Cloudflare Detection
@@ -693,9 +808,9 @@ This document tracks all protocols that have been fully implemented in Port of C
 
 ## Summary
 
-- **Total Implemented**: 53 protocols + 1 security feature
+- **Total Implemented**: 60 protocols + 1 security feature
 - **Deployed & Passing**: 14 protocols
-- **Awaiting Deployment**: 39 protocols
-- **Real-World Usage Tests**: 214 integration tests covering all protocols with realistic hosts/ports/parameters
+- **Awaiting Deployment**: 46 protocols
+- **Real-World Usage Tests**: 270 integration tests covering all protocols with realistic hosts/ports/parameters
 - **Test Coverage** (by protocol):
-  - POP3 (18), IMAP (17), Redis (17), SSH (14), SMTP (14), MQTT (13), LDAP (13), MySQL (12), SMB (10), Echo (9), PostgreSQL (9), Telnet (9), Syslog (11+11), SOCKS4 (10+7), WHOIS (8+8), TCP Ping (6), Cloudflare Detection (5), DNS (7), Memcached (6), SOCKS5 (3), Modbus (5), MongoDB (4), Graphite (4), RCON (5), Git (4), ZooKeeper (4), Rsync (5), IRC (4), Gopher (4), Gemini (3), NNTP (3), AMQP (3), Kafka (3), RTSP (3), CHARGEN (3), Cassandra (3), STOMP (2), TDS (2), VNC (2), Neo4j (2), RTMP (2), TACACS+ (2), HL7 (2), Elasticsearch (2), AJP (2), XMPP (2), RDP (2), NATS (2), JetDirect (2), Daytime (4), Time (4), Finger (6)
+  - POP3 (18), IMAP (17), Redis (17), Docker (14), SSH (14), SMTP (14), MQTT (13), LDAP (13), MySQL (12), SMB (10), Discard (9), Echo (9), PostgreSQL (9), Telnet (9), Syslog (11+11), SOCKS4 (10+7), WHOIS (8+8), SFTP (7), TCP Ping (6), Cloudflare Detection (5), DNS (7), Memcached (6), SOCKS5 (3), Modbus (5), MongoDB (4), Graphite (4), RCON (5), Git (4), ZooKeeper (4), Rsync (5), IRC (4), Gopher (4), Gemini (3), NNTP (3), AMQP (3), Kafka (3), RTSP (3), CHARGEN (3), Cassandra (3), STOMP (2), TDS (2), VNC (2), Neo4j (2), RTMP (2), TACACS+ (2), HL7 (2), Elasticsearch (2), AJP (2), XMPP (2), RDP (2), NATS (2), JetDirect (2), Daytime (4), Time (4), Finger (6)

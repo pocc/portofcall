@@ -13,6 +13,7 @@ const DaytimeClient = lazy(() => import('./components/DaytimeClient'));
 const FingerClient = lazy(() => import('./components/FingerClient'));
 const TimeClient = lazy(() => import('./components/TimeClient'));
 const ChargenClient = lazy(() => import('./components/ChargenClient'));
+const DiscardClient = lazy(() => import('./components/DiscardClient'));
 const GeminiClient = lazy(() => import('./components/GeminiClient'));
 const FTPClient = lazy(() => import('./components/FTPClient'));
 const SSHClient = lazy(() => import('./components/SSHClient'));
@@ -23,6 +24,8 @@ const POP3Client = lazy(() => import('./components/POP3Client'));
 const IMAPClient = lazy(() => import('./components/IMAPClient'));
 const MySQLClient = lazy(() => import('./components/MySQLClient'));
 const PostgreSQLClient = lazy(() => import('./components/PostgreSQLClient'));
+const OracleClient = lazy(() => import('./components/OracleClient'));
+const MaxDBClient = lazy(() => import('./components/MaxDBClient'));
 const RedisClient = lazy(() => import('./components/RedisClient'));
 const MQTTClient = lazy(() => import('./components/MQTTClient'));
 const LDAPClient = lazy(() => import('./components/LDAPClient'));
@@ -56,6 +59,7 @@ const HL7Client = lazy(() => import('./components/HL7Client'));
 const ElasticsearchClient = lazy(() => import('./components/ElasticsearchClient'));
 const AJPClient = lazy(() => import('./components/AJPClient'));
 const RCONClient = lazy(() => import('./components/RCONClient'));
+const SourceRCONClient = lazy(() => import('./components/SourceRCONClient'));
 const NNTPClient = lazy(() => import('./components/NNTPClient'));
 const RDPClient = lazy(() => import('./components/RDPClient'));
 const XMPPClient = lazy(() => import('./components/XMPPClient'));
@@ -79,6 +83,8 @@ const NinePClient = lazy(() => import('./components/NinePClient'));
 const KerberosClient = lazy(() => import('./components/KerberosClient'));
 const SCCPClient = lazy(() => import('./components/SCCPClient'));
 const MatrixClient = lazy(() => import('./components/MatrixClient'));
+const CDPClient = lazy(() => import('./components/CDPClient'));
+const NodeInspectorClient = lazy(() => import('./components/NodeInspectorClient'));
 const ISCSIClient = lazy(() => import('./components/ISCSIClient'));
 const WebSocketClient = lazy(() => import('./components/WebSocketClient'));
 const H323Client = lazy(() => import('./components/H323Client'));
@@ -93,7 +99,6 @@ const DICTClient = lazy(() => import('./components/DICTClient'));
 const SIPClient = lazy(() => import('./components/SIPClient'));
 const QOTDClient = lazy(() => import('./components/QOTDClient'));
 const LPDClient = lazy(() => import('./components/LPDClient'));
-const DiscardClient = lazy(() => import('./components/DiscardClient'));
 const MinecraftClient = lazy(() => import('./components/MinecraftClient'));
 const ZabbixClient = lazy(() => import('./components/ZabbixClient'));
 const IdentClient = lazy(() => import('./components/IdentClient'));
@@ -193,6 +198,7 @@ type Protocol =
   | 'finger'
   | 'time'
   | 'chargen'
+  | 'discard'
   | 'gemini'
   | 'ftp'
   | 'ssh'
@@ -203,6 +209,8 @@ type Protocol =
   | 'imap'
   | 'mysql'
   | 'postgres'
+  | 'oracle'
+  | 'maxdb'
   | 'redis'
   | 'mqtt'
   | 'ldap'
@@ -236,6 +244,7 @@ type Protocol =
   | 'elasticsearch'
   | 'ajp'
   | 'rcon'
+  | 'sourcercon'
   | 'nntp'
   | 'rdp'
   | 'xmpp'
@@ -259,6 +268,8 @@ type Protocol =
   | 'kerberos'
   | 'sccp'
   | 'matrix'
+  | 'cdp'
+  | 'node-inspector'
   | 'iscsi'
   | 'websocket'
   | 'h323'
@@ -273,7 +284,6 @@ type Protocol =
   | 'sip'
   | 'qotd'
   | 'lpd'
-  | 'discard'
   | 'minecraft'
   | 'zabbix'
   | 'ident'
@@ -408,6 +418,8 @@ function App() {
         return <TimeClient onBack={handleBack} />;
       case 'chargen':
         return <ChargenClient onBack={handleBack} />;
+      case 'discard':
+        return <DiscardClient onBack={handleBack} />;
       case 'gemini':
         return <GeminiClient onBack={handleBack} />;
       case 'ftp':
@@ -428,6 +440,10 @@ function App() {
         return <MySQLClient onBack={handleBack} />;
       case 'postgres':
         return <PostgreSQLClient onBack={handleBack} />;
+      case 'oracle':
+        return <OracleClient onBack={handleBack} />;
+      case 'maxdb':
+        return <MaxDBClient onBack={handleBack} />;
       case 'redis':
         return <RedisClient onBack={handleBack} />;
       case 'mqtt':
@@ -494,6 +510,8 @@ function App() {
         return <AJPClient onBack={handleBack} />;
       case 'rcon':
         return <RCONClient onBack={handleBack} />;
+      case 'sourcercon':
+        return <SourceRCONClient onBack={handleBack} />;
       case 'nntp':
         return <NNTPClient onBack={handleBack} />;
       case 'rdp':
@@ -540,6 +558,10 @@ function App() {
         return <SCCPClient onBack={handleBack} />;
       case 'matrix':
         return <MatrixClient onBack={handleBack} />;
+      case 'cdp':
+        return <CDPClient onBack={handleBack} />;
+      case 'node-inspector':
+        return <NodeInspectorClient onBack={handleBack} />;
       case 'iscsi':
         return <ISCSIClient onBack={handleBack} />;
       case 'websocket':
@@ -568,8 +590,6 @@ function App() {
         return <QOTDClient onBack={handleBack} />;
       case 'lpd':
         return <LPDClient onBack={handleBack} />;
-      case 'discard':
-        return <DiscardClient onBack={handleBack} />;
       case 'minecraft':
         return <MinecraftClient onBack={handleBack} />;
       case 'zabbix':
@@ -738,8 +758,6 @@ function App() {
         return <RabbitMQClient onBack={handleBack} />;
       case 'nomad':
         return <NomadClient onBack={handleBack} />;
-      case 'ircs':
-        return <IRCSClient onBack={handleBack} />;
       case 'ldp-mpls':
         return <LDPClient onBack={handleBack} />;
       case 'firebird':

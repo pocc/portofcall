@@ -179,7 +179,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 - [🏗️ Architecture](docs/ARCHITECTURE.md) - Technical architecture
 
 ### Implementation
-- **[ADD_PROTOCOL Guide](ADD_PROTOCOL.md)** - Step-by-step protocol implementation
+- **[ADD_PROTOCOL Guide](docs/ADD_PROTOCOL.md)** - Step-by-step protocol implementation
 - [Implementation Guide](docs/protocols/IMPLEMENTATION_GUIDE.md) - Patterns and best practices
 - [Protocol Mutex](node_modules/mutex.md) - Track work in progress
 - [Implemented Protocols](docs/IMPLEMENTED.md) - Complete status (53+ protocols)

@@ -1,0 +1,47 @@
+# SSH Server Configuration for Test Server
+# 15-minute session timeout enforced
+
+Port 2222
+Protocol 2
+
+# Authentication
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication yes
+PermitEmptyPasswords no
+ChallengeResponseAuthentication no
+
+# Session timeouts (15 minutes = 900 seconds)
+ClientAliveInterval 60
+ClientAliveCountMax 15
+
+# Login grace time (2 minutes)
+LoginGraceTime 120
+
+# Security
+StrictModes yes
+MaxAuthTries 3
+MaxSessions 10
+
+# Logging
+SyslogFacility AUTH
+LogLevel INFO
+
+# Subsystems
+Subsystem sftp /usr/lib/ssh/sftp-server
+
+# Network
+TCPKeepAlive yes
+UseDNS no
+
+# Forwarding
+AllowTcpForwarding yes
+X11Forwarding no
+PrintMotd yes
+PrintLastLog yes
+
+# Environment
+AcceptEnv LANG LC_*
+
+# Banner
+Banner /etc/ssh/banner

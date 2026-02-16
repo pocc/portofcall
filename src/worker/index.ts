@@ -63,6 +63,7 @@ import { handleRsyncConnect, handleRsyncModule } from './rsync';
 import { handleTDSConnect } from './tds';
 import { handleVNCConnect } from './vnc';
 import { handleSPICEConnect } from './spice';
+import { handleBattlenetConnect } from './battlenet';
 import { handleNeo4jConnect } from './neo4j';
 import { handleRTMPConnect } from './rtmp';
 import { handleTacacsProbe, handleTacacsAuthenticate } from './tacacs';
@@ -213,9 +214,18 @@ import { handleRIPRequest, handleRIPProbe } from './rip';
 import { handleMDNSQuery, handleMDNSDiscover } from './mdns';
 import { handleLLMNRQuery } from './llmnr';
 import { handleHSRPProbe, handleHSRPListen } from './hsrp';
+import { handleVentriloStatus, handleVentriloConnect } from './ventrilo';
 import { handleXMPPS2SProbe, handleXMPPS2SFederationTest } from './xmpps2s';
 import { handleMSNProbe, handleMSNClientVersion } from './msn';
 import { handleYMSGProbe, handleYMSGVersionDetect } from './ymsg';
+import { handleOSCARProbe, handleOSCARPing } from './oscar';
+import { handleJabberComponentProbe, handleJabberComponentHandshake } from './jabber-component';
+import { handleMMSProbe, handleMMSDescribe } from './mms';
+import { handleRealAudioProbe, handleRealAudioDescribe } from './realaudio';
+import { handleShoutCastProbe, handleShoutCastInfo } from './shoutcast';
+import { handleMumbleProbe, handleMumbleVersion } from './mumble';
+import { handleSybaseProbe, handleSybaseVersion } from './sybase';
+import { handleInformixProbe, handleInformixVersion } from './informix';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
@@ -597,6 +607,11 @@ export default {
     // SPICE API endpoint
     if (url.pathname === '/api/spice/connect') {
       return handleSPICEConnect(request);
+    }
+
+    // Battle.net BNCS API endpoint
+    if (url.pathname === '/api/battlenet/connect') {
+      return handleBattlenetConnect(request);
     }
 
     // Neo4j Bolt API endpoint
@@ -1974,6 +1989,87 @@ export default {
 
     if (url.pathname === '/api/ymsg/version') {
       return handleYMSGVersionDetect(request);
+    }
+
+    // OSCAR (AIM/ICQ) API endpoints
+    if (url.pathname === '/api/oscar/probe') {
+      return handleOSCARProbe(request);
+    }
+
+    if (url.pathname === '/api/oscar/ping') {
+      return handleOSCARPing(request);
+    }
+
+    // Jabber Component API endpoints
+    if (url.pathname === '/api/jabber-component/probe') {
+      return handleJabberComponentProbe(request);
+    }
+
+    if (url.pathname === '/api/jabber-component/handshake') {
+      return handleJabberComponentHandshake(request);
+    }
+
+    // MMS (Microsoft Media Server) API endpoints
+    if (url.pathname === '/api/mms/probe') {
+      return handleMMSProbe(request);
+    }
+
+    if (url.pathname === '/api/mms/describe') {
+      return handleMMSDescribe(request);
+    }
+
+    // RealAudio API endpoints
+    if (url.pathname === '/api/realaudio/probe') {
+      return handleRealAudioProbe(request);
+    }
+
+    if (url.pathname === '/api/realaudio/describe') {
+      return handleRealAudioDescribe(request);
+    }
+
+    // SHOUTcast API endpoints
+    if (url.pathname === '/api/shoutcast/probe') {
+      return handleShoutCastProbe(request);
+    }
+
+    if (url.pathname === '/api/shoutcast/info') {
+      return handleShoutCastInfo(request);
+    }
+
+    // Mumble API endpoints
+    if (url.pathname === '/api/mumble/probe') {
+      return handleMumbleProbe(request);
+    }
+
+    if (url.pathname === '/api/mumble/version') {
+      return handleMumbleVersion(request);
+    }
+
+    // Sybase API endpoints
+    if (url.pathname === '/api/sybase/probe') {
+      return handleSybaseProbe(request);
+    }
+
+    if (url.pathname === '/api/sybase/version') {
+      return handleSybaseVersion(request);
+    }
+
+    // Ventrilo API endpoints
+    if (url.pathname === '/api/ventrilo/status') {
+      return handleVentriloStatus(request);
+    }
+
+    if (url.pathname === '/api/ventrilo/connect') {
+      return handleVentriloConnect(request);
+    }
+
+    // Informix API endpoints
+    if (url.pathname === '/api/informix/probe') {
+      return handleInformixProbe(request);
+    }
+
+    if (url.pathname === '/api/informix/version') {
+      return handleInformixVersion(request);
     }
 
     // Serve static assets (built React app)

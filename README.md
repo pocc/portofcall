@@ -152,14 +152,47 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 - 🔌 **Protocol Bridges**: Connect legacy services to modern web apps
 - 🎓 **Educational Tools**: Interactive networking protocol demos
 
+## 📊 Current Status
+
+- **53+ Protocols Implemented** (14 deployed, 39 awaiting deployment)
+- **214+ Integration Tests** passing
+- **90+ Protocol Documentation Files** in [docs/protocols/](docs/protocols/)
+- **Live Demo**: [portofcall.ross.gg](https://portofcall.ross.gg)
+
+### Supported Protocols
+
+**Databases**: MySQL, PostgreSQL, Redis, MongoDB, Memcached, Cassandra, Neo4j, InfluxDB, Elasticsearch, TDS
+**Email**: SMTP, POP3, IMAP
+**Messaging**: MQTT, NATS, XMPP, IRC, STOMP, AMQP, Kafka
+**Remote Access**: SSH, Telnet, VNC, RDP
+**File Transfer**: FTP, SFTP
+**Network Tools**: Whois, DNS, Echo, Ping, Syslog
+**DevOps**: Docker, Git, ZooKeeper, etcd, Consul, Rsync
+**And many more!** See [docs/IMPLEMENTED.md](docs/IMPLEMENTED.md) for complete list.
+
 ## Documentation
 
+### Getting Started
+- **[Getting Started Guide](docs/GETTING_STARTED.md)** ⭐ Start here!
+- **[Documentation Index](docs/README.md)** - Complete documentation catalog
 - [📖 Project Overview](docs/PROJECT_OVERVIEW.md) - Concept and goals
 - [🏗️ Architecture](docs/ARCHITECTURE.md) - Technical architecture
+
+### Implementation
+- **[ADD_PROTOCOL Guide](ADD_PROTOCOL.md)** - Step-by-step protocol implementation
+- [Implementation Guide](docs/protocols/IMPLEMENTATION_GUIDE.md) - Patterns and best practices
+- [Protocol Mutex](node_modules/mutex.md) - Track work in progress
+- [Implemented Protocols](docs/IMPLEMENTED.md) - Complete status (53+ protocols)
+
+### Reference
 - [🔌 Sockets API Reference](docs/SOCKETS_API.md) - API details and examples
+- [TCP Protocols List](docs/TCP_PROTOCOLS.md) - All implementable protocols
+- [Impossible Protocols](docs/IMPOSSIBLE.md) - What can't be done (UDP, ICMP, etc.)
+
+### Security & Features
 - [🔐 SSH Authentication](docs/SSH_AUTHENTICATION.md) - Password & private key authentication
 - [☁️ Cloudflare Detection](docs/CLOUDFLARE_DETECTION.md) - Connection restrictions
-- [📝 Naming History](docs/NAMING_HISTORY.md) - How we chose the name
+- [API Testing Guide](docs/API_TESTING.md) - Testing strategies
 
 ## Tech Stack
 

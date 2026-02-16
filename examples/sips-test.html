@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SIPS Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .note {
+      background: #2d2d30;
+      border-left: 3px solid #4ec9b0;
+      padding: 10px;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+    .icon {
+      font-size: 24px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+<body>
+  <h1><span class="icon">🔒</span> SIPS Protocol Tester</h1>
+
+  <div class="note">
+    <strong>Note:</strong> SIPS (SIP Secure, RFC 3261/5630) is SIP over TLS. It provides encrypted
+    signaling for VoIP calls, video conferences, and instant messaging. This tester sends SIPS
+    OPTIONS or REGISTER requests to a SIP server over TLS (port 5061).
+  </div>
+
+  <div class="section">
+    <h2>Connection Settings</h2>
+
+    <label for="host">SIPS Server Host:</label>
+    <input type="text" id="host" placeholder="sip.example.com" value="sip.example.com">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="5061" value="5061">
+
+    <label for="timeout">Timeout (ms):</label>
+    <input type="number" id="timeout" placeholder="15000" value="15000">
+  </div>
+
+  <div class="section">
+    <h2>SIP URIs</h2>
+
+    <label for="fromUri">From URI (Your SIP Address):</label>
+    <input type="text" id="fromUri" placeholder="sips:alice@example.com" value="sips:alice@example.com">
+
+    <label for="toUri">To URI (Destination, optional for OPTIONS):</label>
+    <input type="text" id="toUri" placeholder="sips:bob@example.com">
+
+    <div class="note">
+      <strong>SIPS URI Format:</strong> sips:user@domain
+      <br>Example: sips:alice@example.com
+      <br>Note: Use "sips:" scheme for encrypted connections
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Authentication (for REGISTER)</h2>
+
+    <label for="username">Username (optional):</label>
+    <input type="text" id="username" placeholder="alice">
+
+    <label for="password">Password (optional):</label>
+    <input type="password" id="password" placeholder="secret">
+
+    <div class="note">
+      <strong>Note:</strong> Most SIP servers require authentication for REGISTER.
+      This implementation sends the initial request without credentials.
+      If the server responds with 401 Unauthorized, you would need to implement
+      digest authentication (follow-up request with Authorization header).
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Actions</h2>
+    <button id="testOptions">Send OPTIONS Request</button>
+    <button id="testRegister">Send REGISTER Request</button>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready. Click "Send OPTIONS Request" or "Send REGISTER Request" to begin.</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    const output = document.getElementById('output');
+
+    function log(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      output.innerHTML = '';
+    }
+
+    async function sendOptions() {
+      clearOutput();
+      log('Sending SIPS OPTIONS request...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const fromUri = document.getElementById('fromUri').value;
+      const toUri = document.getElementById('toUri').value;
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !fromUri) {
+        log('Error: Host and From URI are required', 'error');
+        return;
+      }
+
+      const optionsBtn = document.getElementById('testOptions');
+      optionsBtn.disabled = true;
+      optionsBtn.textContent = 'Sending...';
+
+      log(`Connecting to ${host}:${port} via TLS`, 'info');
+      log(`From: ${fromUri}`, 'info');
+      if (toUri) {
+        log(`To: ${toUri}`, 'info');
+      }
+      log('', 'info');
+
+      try {
+        const response = await fetch(`${API_BASE}/api/sips/options`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            host,
+            port,
+            fromUri,
+            toUri: toUri || undefined,
+            timeout
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ OPTIONS request successful!`, 'success');
+          log('', 'info');
+          log('Response Details:', 'success');
+          log(`  Status: ${data.statusCode} ${data.statusText}`, 'success');
+          log(`  Call-ID: ${data.callId}`, 'info');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+          log('', 'info');
+
+          if (data.headers) {
+            log('Headers:', 'info');
+            for (const [key, value] of Object.entries(data.headers)) {
+              log(`  ${key}: ${value}`, 'info');
+            }
+          }
+
+          if (data.body) {
+            log('', 'info');
+            log('Body:', 'info');
+            log(data.body, 'info');
+          }
+        } else {
+          log(`✗ OPTIONS request failed`, 'error');
+          if (data.statusCode) {
+            log(`  Status: ${data.statusCode} ${data.statusText}`, 'error');
+          }
+          log(`  Error: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        optionsBtn.disabled = false;
+        optionsBtn.textContent = 'Send OPTIONS Request';
+      }
+    }
+
+    async function sendRegister() {
+      clearOutput();
+      log('Sending SIPS REGISTER request...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const fromUri = document.getElementById('fromUri').value;
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !fromUri) {
+        log('Error: Host and From URI are required', 'error');
+        return;
+      }
+
+      const registerBtn = document.getElementById('testRegister');
+      registerBtn.disabled = true;
+      registerBtn.textContent = 'Registering...';
+
+      log(`Connecting to ${host}:${port} via TLS`, 'info');
+      log(`From: ${fromUri}`, 'info');
+      if (username) {
+        log(`Username: ${username}`, 'info');
+      }
+      log('', 'info');
+
+      try {
+        const requestBody = {
+          host,
+          port,
+          fromUri,
+          timeout
+        };
+
+        if (username) {
+          requestBody.username = username;
+        }
+
+        if (password) {
+          requestBody.password = password;
+        }
+
+        const response = await fetch(`${API_BASE}/api/sips/register`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ REGISTER successful!`, 'success');
+          log('', 'info');
+          log('Response Details:', 'success');
+          log(`  Status: ${data.statusCode} ${data.statusText}`, 'success');
+          log(`  Call-ID: ${data.callId}`, 'info');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+          log('', 'info');
+
+          if (data.headers) {
+            log('Headers:', 'info');
+            for (const [key, value] of Object.entries(data.headers)) {
+              log(`  ${key}: ${value}`, 'info');
+            }
+          }
+
+          if (data.headers && data.headers['Expires']) {
+            log('', 'info');
+            log(`Registration expires in ${data.headers['Expires']} seconds`, 'success');
+          }
+        } else {
+          log(`✗ REGISTER failed`, 'error');
+          if (data.statusCode) {
+            log(`  Status: ${data.statusCode} ${data.statusText}`, 'error');
+
+            if (data.statusCode === 401 || data.statusCode === 407) {
+              log('', 'error');
+              log('  Server requires authentication.', 'error');
+              log('  This implementation sends initial request without credentials.', 'error');
+              log('  Full digest authentication would require a follow-up request.', 'error');
+            }
+          }
+          log(`  Error: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        registerBtn.disabled = false;
+        registerBtn.textContent = 'Send REGISTER Request';
+      }
+    }
+
+    // Event listeners
+    document.getElementById('testOptions').addEventListener('click', sendOptions);
+    document.getElementById('testRegister').addEventListener('click', sendRegister);
+  </script>
+</body>
+</html>

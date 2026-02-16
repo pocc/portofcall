@@ -62,6 +62,7 @@ import { handleRtspOptions, handleRtspDescribe } from './rtsp';
 import { handleRsyncConnect, handleRsyncModule } from './rsync';
 import { handleTDSConnect } from './tds';
 import { handleVNCConnect } from './vnc';
+import { handleSPICEConnect } from './spice';
 import { handleNeo4jConnect } from './neo4j';
 import { handleRTMPConnect } from './rtmp';
 import { handleTacacsProbe, handleTacacsAuthenticate } from './tacacs';
@@ -102,6 +103,7 @@ import { handleMGCPAudit, handleMGCPCommand } from './mgcp';
 import { handleFTPSConnect } from './ftps';
 import { handleDictDefine, handleDictMatch, handleDictDatabases } from './dict';
 import { handleSipOptions, handleSipRegister } from './sip';
+import { handleSipsOptions, handleSipsRegister } from './sips';
 import { handleQotdFetch } from './qotd';
 import { handleDiscardTest, handleDiscardWebSocket } from './discard';
 import { handleLPDProbe, handleLPDQueue } from './lpd';
@@ -111,6 +113,7 @@ import { handleIdentQuery } from './ident';
 import { handleZabbixConnect, handleZabbixAgent } from './zabbix';
 import { handleMpdStatus, handleMpdCommand } from './mpd';
 import { handleBeanstalkdConnect, handleBeanstalkdCommand } from './beanstalkd';
+import { handleBeatsSend, handleBeatsConnect } from './beats';
 import { handleClamAVPing, handleClamAVVersion, handleClamAVStats } from './clamav';
 import { handleLMTPConnect, handleLMTPSend } from './lmtp';
 import { handleManageSieveConnect, handleManageSieveList } from './managesieve';
@@ -120,6 +123,8 @@ import { handleSMPPConnect, handleSMPPProbe } from './smpp';
 import { handleSVNConnect } from './svn';
 import { handleTeamSpeakConnect, handleTeamSpeakCommand } from './teamspeak';
 import { handleRadiusProbe, handleRadiusAuth } from './radius';
+import { handleRadsecAuth, handleRadsecConnect } from './radsec';
+import { handleXmppS2SPing, handleXmppS2SConnect } from './xmpp-s2s';
 import { handleNRPEQuery, handleNRPEVersion } from './nrpe';
 import { handleRloginConnect, handleRloginWebSocket } from './rlogin';
 import { handleS7commConnect } from './s7comm';
@@ -200,6 +205,17 @@ import { handleSNMPGet, handleSNMPWalk } from './snmp';
 import { handleNTPQuery, handleNTPSync } from './ntp';
 import { handleMsrpSend, handleMsrpConnect } from './msrp';
 import { handleL2TPConnect, handleL2TPHello } from './l2tp';
+import { handleTURNAllocate, handleTURNProbe } from './turn';
+import { handleCoAPRequest, handleCoAPDiscover } from './coap';
+import { handleIKEProbe, handleIKEVersionDetect } from './ike';
+import { handleSSDPDiscover, handleSSDPSearch } from './ssdp';
+import { handleRIPRequest, handleRIPProbe } from './rip';
+import { handleMDNSQuery, handleMDNSDiscover } from './mdns';
+import { handleLLMNRQuery } from './llmnr';
+import { handleHSRPProbe, handleHSRPListen } from './hsrp';
+import { handleXMPPS2SProbe, handleXMPPS2SFederationTest } from './xmpps2s';
+import { handleMSNProbe, handleMSNClientVersion } from './msn';
+import { handleYMSGProbe, handleYMSGVersionDetect } from './ymsg';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
@@ -578,6 +594,11 @@ export default {
       return handleVNCConnect(request);
     }
 
+    // SPICE API endpoint
+    if (url.pathname === '/api/spice/connect') {
+      return handleSPICEConnect(request);
+    }
+
     // Neo4j Bolt API endpoint
     if (url.pathname === '/api/neo4j/connect') {
       return handleNeo4jConnect(request);
@@ -874,6 +895,15 @@ export default {
       return handleSipRegister(request);
     }
 
+    // SIPS (SIP over TLS) API endpoints
+    if (url.pathname === '/api/sips/options') {
+      return handleSipsOptions(request);
+    }
+
+    if (url.pathname === '/api/sips/register') {
+      return handleSipsRegister(request);
+    }
+
     // MSRP API endpoints
     if (url.pathname === '/api/msrp/send') {
       return handleMsrpSend(request);
@@ -960,6 +990,15 @@ export default {
       return handleBeanstalkdCommand(request);
     }
 
+    // Beats (Elastic Beats/Lumberjack) API endpoints
+    if (url.pathname === '/api/beats/send') {
+      return handleBeatsSend(request);
+    }
+
+    if (url.pathname === '/api/beats/connect') {
+      return handleBeatsConnect(request);
+    }
+
     // ClamAV API endpoints
     if (url.pathname === '/api/clamav/ping') {
       return handleClamAVPing(request);
@@ -1035,6 +1074,24 @@ export default {
 
     if (url.pathname === '/api/radius/auth') {
       return handleRadiusAuth(request);
+    }
+
+    // RADSEC (RADIUS over TLS) API endpoints
+    if (url.pathname === '/api/radsec/auth') {
+      return handleRadsecAuth(request);
+    }
+
+    if (url.pathname === '/api/radsec/connect') {
+      return handleRadsecConnect(request);
+    }
+
+    // XMPP S2S API endpoints
+    if (url.pathname === '/api/xmpp-s2s/ping') {
+      return handleXmppS2SPing(request);
+    }
+
+    if (url.pathname === '/api/xmpp-s2s/connect') {
+      return handleXmppS2SConnect(request);
     }
 
     // NRPE API endpoints
@@ -1822,6 +1879,101 @@ export default {
 
     if (url.pathname === '/api/l2tp/hello') {
       return handleL2TPHello(request);
+    }
+
+    // TURN API endpoints
+    if (url.pathname === '/api/turn/allocate') {
+      return handleTURNAllocate(request);
+    }
+
+    if (url.pathname === '/api/turn/probe') {
+      return handleTURNProbe(request);
+    }
+
+    // CoAP API endpoints
+    if (url.pathname === '/api/coap/request') {
+      return handleCoAPRequest(request);
+    }
+
+    if (url.pathname === '/api/coap/discover') {
+      return handleCoAPDiscover(request);
+    }
+
+    // IKE/ISAKMP API endpoints
+    if (url.pathname === '/api/ike/probe') {
+      return handleIKEProbe(request);
+    }
+
+    if (url.pathname === '/api/ike/version') {
+      return handleIKEVersionDetect(request);
+    }
+
+    // SSDP API endpoints
+    if (url.pathname === '/api/ssdp/discover') {
+      return handleSSDPDiscover(request);
+    }
+
+    if (url.pathname === '/api/ssdp/search') {
+      return handleSSDPSearch(request);
+    }
+
+    // RIP API endpoints
+    if (url.pathname === '/api/rip/request') {
+      return handleRIPRequest(request);
+    }
+
+    if (url.pathname === '/api/rip/probe') {
+      return handleRIPProbe(request);
+    }
+
+    // mDNS API endpoints
+    if (url.pathname === '/api/mdns/query') {
+      return handleMDNSQuery(request);
+    }
+
+    if (url.pathname === '/api/mdns/discover') {
+      return handleMDNSDiscover(request);
+    }
+
+    // LLMNR API endpoint
+    if (url.pathname === '/api/llmnr/query') {
+      return handleLLMNRQuery(request);
+    }
+
+    // HSRP API endpoints
+    if (url.pathname === '/api/hsrp/probe') {
+      return handleHSRPProbe(request);
+    }
+
+    if (url.pathname === '/api/hsrp/listen') {
+      return handleHSRPListen(request);
+    }
+
+    // XMPP S2S API endpoints
+    if (url.pathname === '/api/xmpps2s/probe') {
+      return handleXMPPS2SProbe(request);
+    }
+
+    if (url.pathname === '/api/xmpps2s/federation') {
+      return handleXMPPS2SFederationTest(request);
+    }
+
+    // MSN/MSNP API endpoints
+    if (url.pathname === '/api/msn/probe') {
+      return handleMSNProbe(request);
+    }
+
+    if (url.pathname === '/api/msn/version') {
+      return handleMSNClientVersion(request);
+    }
+
+    // YMSG (Yahoo Messenger) API endpoints
+    if (url.pathname === '/api/ymsg/probe') {
+      return handleYMSGProbe(request);
+    }
+
+    if (url.pathname === '/api/ymsg/version') {
+      return handleYMSGVersionDetect(request);
     }
 
     // Serve static assets (built React app)

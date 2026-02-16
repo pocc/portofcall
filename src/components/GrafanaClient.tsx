@@ -1,9 +1,15 @@
 import { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
-import { SectionHeader, FormField, ActionButton, StatusMessage, ConnectionInfo, ResultDisplay } from './SharedComponents';
+import { SectionHeader, FormField, ActionButton, StatusMessage, ConnectionInfo } from './SharedComponents';
 
 interface GrafanaClientProps {
   onBack: () => void;
+}
+
+interface GrafanaResponse {
+  error?: string;
+  details?: string;
+  [key: string]: unknown;
 }
 
 type TabType = 'health' | 'datasources' | 'dashboards';
@@ -42,7 +48,7 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
       const response = await fetch(
         `/api/grafana/health?hostname=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}`
       );
-      const data = await response.json();
+      const data = await response.json() as GrafanaResponse;
 
       if (data.error) {
         setHealthError(data.error + (data.details ? ': ' + data.details : ''));
@@ -65,7 +71,7 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
       const response = await fetch(
         `/api/grafana/datasources?hostname=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}`
       );
-      const data = await response.json();
+      const data = await response.json() as GrafanaResponse;
 
       if (data.error) {
         setDatasourcesError(data.error + (data.details ? ': ' + data.details : ''));
@@ -88,7 +94,7 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
       const response = await fetch(
         `/api/grafana/dashboards?hostname=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}&query=${encodeURIComponent(query)}&limit=${encodeURIComponent(limit)}`
       );
-      const data = await response.json();
+      const data = await response.json() as GrafanaResponse;
 
       if (data.error) {
         setDashboardsError(data.error + (data.details ? ': ' + data.details : ''));

@@ -30,17 +30,17 @@ const TFTP_OPCODE = {
   ERROR: 5, // Error packet
 } as const;
 
-// TFTP Error Codes
-const TFTP_ERROR = {
-  NOT_DEFINED: 0,
-  FILE_NOT_FOUND: 1,
-  ACCESS_VIOLATION: 2,
-  DISK_FULL: 3,
-  ILLEGAL_OPERATION: 4,
-  UNKNOWN_TID: 5,
-  FILE_EXISTS: 6,
-  NO_SUCH_USER: 7,
-} as const;
+// TFTP Error Codes (for reference)
+// const TFTP_ERROR = {
+//   NOT_DEFINED: 0,
+//   FILE_NOT_FOUND: 1,
+//   ACCESS_VIOLATION: 2,
+//   DISK_FULL: 3,
+//   ILLEGAL_OPERATION: 4,
+//   UNKNOWN_TID: 5,
+//   FILE_EXISTS: 6,
+//   NO_SUCH_USER: 7,
+// } as const;
 
 // TFTP Mode
 type TFTPMode = 'netascii' | 'octet' | 'mail';
@@ -289,7 +289,7 @@ export async function handleTFTPRead(request: Request): Promise<Response> {
 
     while (!done) {
       const readPromise = reader.read();
-      const result = await Promise.race([readPromise, timeoutPromise]);
+      const result = await Promise.race([readPromise, timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
 
       if (result.done) {
         break;
@@ -409,7 +409,7 @@ export async function handleTFTPWrite(request: Request): Promise<Response> {
     await writer.write(wrqPacket);
 
     // Wait for ACK 0
-    const ackResult = await Promise.race([reader.read(), timeoutPromise]);
+    const ackResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (ackResult.done) {
       throw new Error('Connection closed by server');
     }
@@ -441,7 +441,7 @@ export async function handleTFTPWrite(request: Request): Promise<Response> {
       await writer.write(dataPacket);
 
       // Wait for ACK
-      const ackResult = await Promise.race([reader.read(), timeoutPromise]);
+      const ackResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
       if (ackResult.done) {
         throw new Error('Connection closed by server');
       }

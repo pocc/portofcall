@@ -4,6 +4,25 @@ interface ActiveMQClientProps {
   onBack: () => void;
 }
 
+interface ActiveMQResponse {
+  success?: boolean;
+  isCloudflare?: boolean;
+  error?: string;
+  message?: string;
+  wireFormat?: {
+    version?: number;
+  };
+  broker?: {
+    brokerName?: string;
+    brokerURL?: string;
+    brokerId?: string;
+    networkConnection?: boolean;
+    duplex?: boolean;
+  };
+  capabilities?: string[];
+  commands?: string[];
+}
+
 export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('61616');
@@ -30,7 +49,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as ActiveMQResponse;
 
       if (data.isCloudflare) {
         setResult(`🔒 Cloudflare Protection Detected\n\n${data.error}`);
@@ -86,7 +105,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as ActiveMQResponse;
 
       if (data.isCloudflare) {
         setResult(`🔒 Cloudflare Protection Detected\n\n${data.error}`);

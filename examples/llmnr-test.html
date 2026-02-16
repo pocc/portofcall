@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LLMNR Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 1000px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 600px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .record-card {
+      background: #2d2d30;
+      padding: 15px;
+      margin: 10px 0;
+      border-radius: 5px;
+      border-left: 3px solid #4ec9b0;
+    }
+    .record-card h3 {
+      margin: 0 0 10px 0;
+      color: #4ec9b0;
+    }
+    .record-card p {
+      margin: 5px 0;
+      color: #d4d4d4;
+    }
+    .common-names {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .name-item {
+      background: #2d2d30;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .name-item:hover {
+      background: #3c3c3c;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 LLMNR Name Resolution Test</h1>
+
+  <div class="section">
+    <h2>Network Settings</h2>
+
+    <label for="host">Target Host/IP:</label>
+    <input type="text" id="host" placeholder="192.168.1.1" value="192.168.1.1">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="5355" value="5355">
+
+    <p style="color: #9cdcfe; font-size: 12px; margin-top: 10px;">
+      💡 Note: LLMNR typically uses UDP multicast (224.0.0.252:5355), but this implementation uses TCP unicast.
+      Target a specific Windows host's IP address that supports LLMNR.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Name Resolution Query</h2>
+
+    <label for="name">Hostname to Resolve:</label>
+    <input type="text" id="name" placeholder="DESKTOP-PC" value="DESKTOP-PC">
+
+    <div class="common-names">
+      <strong style="grid-column: 1 / -1;">Common Windows Hostnames:</strong>
+      <div class="name-item" onclick="setName('DESKTOP-PC')">DESKTOP-PC</div>
+      <div class="name-item" onclick="setName('WIN10-LAPTOP')">WIN10-LAPTOP</div>
+      <div class="name-item" onclick="setName('SERVER-01')">SERVER-01</div>
+      <div class="name-item" onclick="setName('WORKSTATION')">WORKSTATION</div>
+    </div>
+
+    <label for="type">Query Type:</label>
+    <select id="type">
+      <option value="1" selected>A - IPv4 Address</option>
+      <option value="28">AAAA - IPv6 Address</option>
+      <option value="255">ANY - All Records</option>
+    </select>
+
+    <label for="timeout">Timeout (milliseconds):</label>
+    <input type="number" id="timeout" placeholder="10000" value="10000" min="1000" max="30000">
+
+    <button onclick="queryName()">Query Name</button>
+    <button onclick="clearOutput()">Clear Results</button>
+  </div>
+
+  <div class="section">
+    <h2>Resolved Addresses</h2>
+    <div id="results"></div>
+  </div>
+
+  <div class="section">
+    <h2>Raw Output</h2>
+    <div id="output">Ready to query LLMNR names...</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    function setName(name) {
+      document.getElementById('name').value = name;
+    }
+
+    function log(message, type = 'info') {
+      const output = document.getElementById('output');
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      document.getElementById('output').innerHTML = '';
+      document.getElementById('results').innerHTML = '';
+    }
+
+    function displayResults(answers) {
+      const resultsDiv = document.getElementById('results');
+
+      if (!answers || answers.length === 0) {
+        resultsDiv.innerHTML = '<p style="color: #f48771;">No records found</p>';
+        return;
+      }
+
+      let html = `<p style="color: #4ec9b0; font-weight: bold;">Found ${answers.length} record(s):</p>`;
+
+      answers.forEach((record, index) => {
+        html += '<div class="record-card">';
+        html += `<h3>Record ${index + 1}</h3>`;
+
+        if (record.name) {
+          html += `<p><strong>Name:</strong> ${record.name}</p>`;
+        }
+
+        if (record.address) {
+          html += `<p><strong>Address:</strong> ${record.address}</p>`;
+        }
+
+        const typeNames = {
+          1: 'A (IPv4)',
+          28: 'AAAA (IPv6)',
+          255: 'ANY'
+        };
+        html += `<p><strong>Type:</strong> ${typeNames[record.type] || record.type}</p>`;
+
+        if (record.ttl !== undefined) {
+          html += `<p><strong>TTL:</strong> ${record.ttl} seconds</p>`;
+        }
+
+        html += '</div>';
+      });
+
+      resultsDiv.innerHTML = html;
+    }
+
+    async function queryName() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const name = document.getElementById('name').value;
+      const type = parseInt(document.getElementById('type').value);
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !name) {
+        log('❌ Host and hostname are required', 'error');
+        return;
+      }
+
+      clearOutput();
+      log(`🔍 Querying LLMNR for "${name}" on ${host}:${port}...`);
+
+      const typeNames = {
+        1: 'A (IPv4)',
+        28: 'AAAA (IPv6)',
+        255: 'ANY'
+      };
+      log(`   Query Type: ${typeNames[type] || type}`);
+      log(`   Timeout: ${timeout}ms`);
+      log('');
+      log('⏳ Waiting for response...', 'info');
+
+      try {
+        const response = await fetch(`${API_BASE}/api/llmnr/query`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            host,
+            port,
+            name,
+            type,
+            timeout,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✅ Query successful!`, 'success');
+          log('');
+
+          if (data.answers && data.answers.length > 0) {
+            displayResults(data.answers);
+
+            data.answers.forEach((record, index) => {
+              log(`Record ${index + 1}:`, 'success');
+              if (record.name) {
+                log(`   Name: ${record.name}`, 'info');
+              }
+              if (record.address) {
+                log(`   Address: ${record.address}`, 'info');
+              }
+              const typeNames = {
+                1: 'A (IPv4)',
+                28: 'AAAA (IPv6)',
+                255: 'ANY'
+              };
+              log(`   Type: ${typeNames[record.type] || record.type}`, 'info');
+              if (record.ttl !== undefined) {
+                log(`   TTL: ${record.ttl} seconds`, 'info');
+              }
+              log('');
+            });
+          } else {
+            log('⚠️  No records found', 'error');
+            displayResults([]);
+            log('');
+            log('Possible reasons:', 'info');
+            log('  • Name does not exist or is not responding', 'info');
+            log('  • Host does not support LLMNR', 'info');
+            log('  • Wrong IP address or port', 'info');
+            log('  • Firewall blocking LLMNR traffic', 'info');
+          }
+        } else {
+          log(`❌ Query failed: ${data.error}`, 'error');
+          displayResults([]);
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+        displayResults([]);
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,14 +1,27 @@
 import { useState } from 'react';
-import ProtocolClientLayout from './ProtocolClientLayout';
-import SectionHeader from './SectionHeader';
-import FormField from './FormField';
-import ActionButton from './ActionButton';
-import ResultDisplay from './ResultDisplay';
-import HelpSection from './HelpSection';
-import { useFormValidation } from '../hooks/useFormValidation';
+import ProtocolClientLayout, {
+  SectionHeader,
+  FormField,
+  ActionButton,
+  ResultDisplay,
+  HelpSection,
+} from './ProtocolClientLayout';
+import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 
 interface FirebirdClientProps {
   onBack: () => void;
+}
+
+interface FirebirdResponse {
+  success?: boolean;
+  error?: string;
+  version?: string;
+  protocol?: number;
+  architecture?: number;
+  accepted?: boolean;
+  responseLength?: number;
+  responseHex?: string;
+  rawOpcode?: number;
 }
 
 export default function FirebirdClient({ onBack }: FirebirdClientProps) {
@@ -18,15 +31,14 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
   const [result, setResult] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const { errors, validateForm } = useFormValidation();
+  const { errors, validateAll } = useFormValidation({
+    host: [validationRules.required('Host is required')],
+    port: [validationRules.port()],
+  });
 
   const handleProbe = async () => {
-    const validation = validateForm({
-      host: { value: host, required: true, label: 'Host' },
-      port: { value: port, type: 'port', label: 'Port' },
-    });
-
-    if (!validation.isValid) return;
+    const isValid = validateAll({ host, port });
+    if (!isValid) return;
 
     setLoading(true);
     setResult('');
@@ -42,7 +54,7 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as FirebirdResponse;
 
       if (data.success) {
         setResult(
@@ -67,12 +79,8 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
   };
 
   const handleVersion = async () => {
-    const validation = validateForm({
-      host: { value: host, required: true, label: 'Host' },
-      port: { value: port, type: 'port', label: 'Port' },
-    });
-
-    if (!validation.isValid) return;
+    const isValid = validateAll({ host, port });
+    if (!isValid) return;
 
     setLoading(true);
     setResult('');
@@ -88,7 +96,7 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as FirebirdResponse;
 
       if (data.success) {
         setResult(
@@ -115,15 +123,15 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
   return (
     <ProtocolClientLayout
       title="Firebird SQL Database"
-      description="Probe Firebird database servers and detect version information"
       onBack={onBack}
     >
       <SectionHeader
+        stepNumber={1}
         title="Connection Settings"
-        description="Configure Firebird server connection"
       />
 
       <FormField
+        id="host"
         label="Host"
         value={host}
         onChange={setHost}
@@ -132,6 +140,7 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
       />
 
       <FormField
+        id="port"
         label="Port"
         value={port}
         onChange={setPort}
@@ -141,6 +150,7 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
       />
 
       <FormField
+        id="database"
         label="Database Path"
         value={database}
         onChange={setDatabase}
@@ -149,35 +159,23 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
       />
 
       <div className="flex gap-3">
-        <ActionButton onClick={handleProbe} loading={loading} label="Probe (Connect)" />
+        <ActionButton onClick={handleProbe} loading={loading}>
+          Probe (Connect)
+        </ActionButton>
         <ActionButton
           onClick={handleVersion}
           loading={loading}
-          label="Get Server Info"
           variant="secondary"
-        />
+        >
+          Get Server Info
+        </ActionButton>
       </div>
 
       {result && <ResultDisplay result={result} />}
 
       <HelpSection
         title="About Firebird Protocol"
-        items={[
-          'Firebird uses a binary wire protocol on port 3050',
-          'Client sends op_connect (opcode 1) with database path and protocol version',
-          'Server responds with op_accept (2), op_reject (3), or op_response (9)',
-          'Protocol uses big-endian 32-bit integers and length-prefixed strings',
-          'Probe detects Firebird servers and extracts protocol/architecture info',
-          'Used by Firebird 2.x, 3.x, and 4.x databases',
-          'Common database paths: /opt/firebird/examples/empbuild/employee.fdb (Linux), C:\\Program Files\\Firebird\\examples\\empbuild\\employee.fdb (Windows)',
-        ]}
-        rfcs={[
-          {
-            number: 'Firebird',
-            title: 'Wire Protocol Documentation',
-            url: 'https://firebirdsql.org/file/documentation/html/en/refdocs/fblangref40/firebird-40-language-reference.html',
-          },
-        ]}
+        description="Firebird uses a binary wire protocol on port 3050. Client sends op_connect (opcode 1) with database path and protocol version. Server responds with op_accept (2), op_reject (3), or op_response (9). Protocol uses big-endian 32-bit integers and length-prefixed strings. Probe detects Firebird servers and extracts protocol/architecture info. Used by Firebird 2.x, 3.x, and 4.x databases. Common database paths: /opt/firebird/examples/empbuild/employee.fdb (Linux), C:\\Program Files\\Firebird\\examples\\empbuild\\employee.fdb (Windows)."
       />
     </ProtocolClientLayout>
   );

@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>XMPP S2S Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .xml {
+      color: #ce9178;
+    }
+    .note {
+      background: #2d2d30;
+      border-left: 3px solid #4ec9b0;
+      padding: 10px;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+    .icon {
+      font-size: 24px;
+      vertical-align: middle;
+    }
+    .checkbox-container {
+      display: flex;
+      align-items: center;
+      margin: 10px 0;
+    }
+    .checkbox-container input[type="checkbox"] {
+      width: auto;
+      margin-right: 10px;
+    }
+  </style>
+</head>
+<body>
+  <h1><span class="icon">💬</span> XMPP S2S Protocol Tester</h1>
+
+  <div class="note">
+    <strong>Note:</strong> XMPP Server-to-Server (S2S, RFC 6120/7590) enables federated
+    instant messaging between XMPP servers. This tester establishes an S2S stream
+    connection on port 5269 and optionally sends an IQ ping stanza.
+  </div>
+
+  <div class="section">
+    <h2>Connection Settings</h2>
+
+    <label for="host">XMPP Server Host:</label>
+    <input type="text" id="host" placeholder="jabber.org" value="jabber.org">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="5269" value="5269">
+
+    <label for="fromDomain">From Domain (Your Server):</label>
+    <input type="text" id="fromDomain" placeholder="example.com" value="example.com">
+
+    <label for="toDomain">To Domain (Remote Server):</label>
+    <input type="text" id="toDomain" placeholder="jabber.org (defaults to host)" value="">
+
+    <div class="checkbox-container">
+      <input type="checkbox" id="useTLS" checked>
+      <label for="useTLS" style="margin: 0;">Use TLS (Direct TLS on port 5269)</label>
+    </div>
+
+    <label for="timeout">Timeout (ms):</label>
+    <input type="number" id="timeout" placeholder="15000" value="15000">
+
+    <div class="note">
+      <strong>Federation:</strong> XMPP S2S allows servers to communicate. Most public
+      servers require valid DNS SRV records and may reject connections from unknown domains.
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Actions</h2>
+    <button id="testConnect">Test Connection (Stream Open)</button>
+    <button id="sendPing">Send IQ Ping</button>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready. Click "Test Connection" or "Send IQ Ping" to begin.</div>
+  </div>
+
+  <div class="section">
+    <h2>Example XML Stream</h2>
+    <div class="note">
+      <strong>Client → Server (Stream Opening):</strong>
+      <pre class="xml">&lt;?xml version='1.0'?&gt;
+&lt;stream:stream
+  xmlns='jabber:server'
+  xmlns:stream='http://etherx.jabber.org/streams'
+  from='example.com'
+  to='jabber.org'
+  version='1.0'&gt;</pre>
+
+      <strong>Server → Client (Stream Response + Features):</strong>
+      <pre class="xml">&lt;?xml version='1.0'?&gt;
+&lt;stream:stream
+  xmlns='jabber:server'
+  xmlns:stream='http://etherx.jabber.org/streams'
+  from='jabber.org'
+  to='example.com'
+  id='s2s-abc123'
+  version='1.0'&gt;
+
+&lt;stream:features&gt;
+  &lt;starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'&gt;
+    &lt;required/&gt;
+  &lt;/starttls&gt;
+  &lt;dialback xmlns='urn:xmpp:features:dialback'/&gt;
+&lt;/stream:features&gt;</pre>
+
+      <strong>Client → Server (IQ Ping):</strong>
+      <pre class="xml">&lt;iq type='get' id='ping1' to='jabber.org' from='example.com'&gt;
+  &lt;ping xmlns='urn:xmpp:ping'/&gt;
+&lt;/iq&gt;</pre>
+
+      <strong>Server → Client (IQ Result):</strong>
+      <pre class="xml">&lt;iq type='result' id='ping1' from='jabber.org' to='example.com'/&gt;</pre>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    const output = document.getElementById('output');
+
+    function log(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      output.innerHTML = '';
+    }
+
+    async function testConnection() {
+      clearOutput();
+      log('Testing XMPP S2S connection (stream opening)...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const fromDomain = document.getElementById('fromDomain').value;
+      const toDomain = document.getElementById('toDomain').value;
+      const useTLS = document.getElementById('useTLS').checked;
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !fromDomain) {
+        log('Error: Host and fromDomain are required', 'error');
+        return;
+      }
+
+      const testBtn = document.getElementById('testConnect');
+      testBtn.disabled = true;
+      testBtn.textContent = 'Connecting...';
+
+      try {
+        const requestBody = {
+          host,
+          port,
+          fromDomain,
+          useTLS,
+          timeout
+        };
+
+        if (toDomain) {
+          requestBody.toDomain = toDomain;
+        }
+
+        const response = await fetch(`${API_BASE}/api/xmpp-s2s/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ XMPP S2S stream established!`, 'success');
+          log(`  Host: ${data.host}:${data.port}`, 'info');
+          log(`  Stream ID: ${data.streamId}`, 'success');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+          log('', 'info');
+
+          if (data.features && data.features.length > 0) {
+            log('Server Features:', 'success');
+            data.features.forEach(feature => {
+              log(`  - ${feature}`, 'info');
+            });
+            log('', 'info');
+          }
+
+          if (data.stanzas && data.stanzas.length > 0) {
+            log('Received Stanzas:', 'info');
+            data.stanzas.forEach(stanza => {
+              log(`  ${stanza}`, 'xml');
+            });
+          }
+        } else {
+          log(`✗ Connection failed: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = 'Test Connection (Stream Open)';
+      }
+    }
+
+    async function sendPing() {
+      clearOutput();
+      log('Sending XMPP S2S IQ ping...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const fromDomain = document.getElementById('fromDomain').value;
+      const toDomain = document.getElementById('toDomain').value;
+      const useTLS = document.getElementById('useTLS').checked;
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host || !fromDomain) {
+        log('Error: Host and fromDomain are required', 'error');
+        return;
+      }
+
+      const pingBtn = document.getElementById('sendPing');
+      pingBtn.disabled = true;
+      pingBtn.textContent = 'Sending Ping...';
+
+      log(`Opening stream to ${host}:${port}`, 'info');
+      log(`From: ${fromDomain}`, 'info');
+      log(`To: ${toDomain || host}`, 'info');
+      log('', 'info');
+
+      try {
+        const requestBody = {
+          host,
+          port,
+          fromDomain,
+          useTLS,
+          timeout
+        };
+
+        if (toDomain) {
+          requestBody.toDomain = toDomain;
+        }
+
+        const response = await fetch(`${API_BASE}/api/xmpp-s2s/ping`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ IQ ping successful!`, 'success');
+          log('', 'info');
+          log('Response Details:', 'success');
+          log(`  Stream ID: ${data.streamId}`, 'info');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+
+          if (data.features && data.features.length > 0) {
+            log('', 'info');
+            log('Server Features:', 'info');
+            data.features.forEach(feature => {
+              log(`  - ${feature}`, 'info');
+            });
+          }
+
+          if (data.stanzas && data.stanzas.length > 0) {
+            log('', 'info');
+            log('Received Stanzas:', 'success');
+            data.stanzas.forEach(stanza => {
+              log(`  ${stanza}`, 'xml');
+            });
+          }
+        } else {
+          log(`✗ Ping failed`, 'error');
+          log(`  Error: ${data.error}`, 'error');
+
+          if (data.streamId) {
+            log(`  Stream ID: ${data.streamId}`, 'error');
+          }
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        pingBtn.disabled = false;
+        pingBtn.textContent = 'Send IQ Ping';
+      }
+    }
+
+    // Event listeners
+    document.getElementById('testConnect').addEventListener('click', testConnection);
+    document.getElementById('sendPing').addEventListener('click', sendPing);
+
+    // Allow Enter key to test connection
+    document.getElementById('fromDomain').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        testConnection();
+      }
+    });
+  </script>
+</body>
+</html>

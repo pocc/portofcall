@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CoAP Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, select, textarea {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .server-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .server-item {
+      background: #2d2d30;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .server-item:hover {
+      background: #3c3c3c;
+    }
+  </style>
+</head>
+<body>
+  <h1>📡 CoAP Protocol Tester</h1>
+
+  <div class="section">
+    <h2>CoAP Server Settings</h2>
+
+    <label for="host">CoAP Server Host:</label>
+    <input type="text" id="host" placeholder="coap.me" value="coap.me">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="5683" value="5683">
+
+    <div class="server-list">
+      <strong>Public CoAP Test Servers (click to use):</strong>
+      <div class="server-item" onclick="setServer('coap.me', '5683')">coap.me:5683 - CoAP Test Server</div>
+      <div class="server-item" onclick="setServer('californium.eclipseprojects.io', '5683')">californium.eclipseprojects.io:5683 - Eclipse Californium</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>CoAP Request</h2>
+
+    <label for="method">Method:</label>
+    <select id="method">
+      <option value="GET" selected>GET</option>
+      <option value="POST">POST</option>
+      <option value="PUT">PUT</option>
+      <option value="DELETE">DELETE</option>
+    </select>
+
+    <label for="path">Resource Path:</label>
+    <input type="text" id="path" placeholder="/test" value="/test">
+
+    <div class="server-list" style="margin-bottom: 15px;">
+      <strong>Common Test Resources (click to use):</strong>
+      <div class="server-item" onclick="setPath('/test')">GET /test - Simple test resource</div>
+      <div class="server-item" onclick="setPath('/hello')">GET /hello - Hello world resource</div>
+      <div class="server-item" onclick="setPath('/large')">GET /large - Large payload test</div>
+      <div class="server-item" onclick="setPath('/query')">GET /query - Query parameter test</div>
+      <div class="server-item" onclick="setPath('/.well-known/core')">GET /.well-known/core - Resource discovery</div>
+    </div>
+
+    <label for="payload">Payload (for POST/PUT):</label>
+    <textarea id="payload" placeholder='{"temperature": 23.5}'></textarea>
+
+    <label for="contentFormat">Content Format:</label>
+    <select id="contentFormat">
+      <option value="0" selected>text/plain (0)</option>
+      <option value="40">application/link-format (40)</option>
+      <option value="41">application/xml (41)</option>
+      <option value="42">application/octet-stream (42)</option>
+      <option value="50">application/json (50)</option>
+      <option value="60">application/cbor (60)</option>
+    </select>
+
+    <label>
+      <input type="checkbox" id="confirmable" checked>
+      Confirmable (requires ACK)
+    </label>
+
+    <button onclick="sendCoAPRequest()">Send Request</button>
+    <button onclick="discoverResources()">Discover Resources</button>
+    <button onclick="clearOutput()">Clear Output</button>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready to send CoAP requests...</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    function setServer(host, port) {
+      document.getElementById('host').value = host;
+      document.getElementById('port').value = port;
+    }
+
+    function setPath(path) {
+      document.getElementById('path').value = path;
+    }
+
+    function log(message, type = 'info') {
+      const output = document.getElementById('output');
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      document.getElementById('output').innerHTML = '';
+    }
+
+    async function sendCoAPRequest() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const method = document.getElementById('method').value;
+      const path = document.getElementById('path').value;
+      const payload = document.getElementById('payload').value.trim();
+      const contentFormat = parseInt(document.getElementById('contentFormat').value);
+      const confirmable = document.getElementById('confirmable').checked;
+
+      if (!host || !path) {
+        log('❌ Host and path are required', 'error');
+        return;
+      }
+
+      log(`📡 Sending CoAP ${method} request to ${host}:${port}${path}...`);
+      if (payload) {
+        log(`   Payload: ${payload.substring(0, 50)}${payload.length > 50 ? '...' : ''}`);
+      }
+      log(`   Content-Format: ${contentFormat}`);
+      log(`   Confirmable: ${confirmable}`);
+
+      try {
+        const requestBody = {
+          host,
+          port,
+          method,
+          path,
+          confirmable,
+          timeout: 10000,
+        };
+
+        if (payload) {
+          requestBody.payload = payload;
+          requestBody.contentFormat = contentFormat;
+        }
+
+        const response = await fetch(`${API_BASE}/api/coap/request`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log('✅ CoAP request successful!', 'success');
+          log('');
+          log(`📊 Response Code: ${data.code} (${data.codeName})`, 'success');
+          log(`   Class: ${data.codeClass}, Detail: ${data.codeDetail}`, 'info');
+
+          if (data.contentFormat !== undefined) {
+            const formatNames = {
+              0: 'text/plain',
+              40: 'application/link-format',
+              41: 'application/xml',
+              42: 'application/octet-stream',
+              50: 'application/json',
+              60: 'application/cbor',
+            };
+            log(`   Content-Format: ${data.contentFormat} (${formatNames[data.contentFormat] || 'unknown'})`, 'info');
+          }
+
+          if (data.payload) {
+            log('');
+            log('📄 Payload:', 'success');
+            log(data.payload, 'info');
+          }
+
+          if (data.options && Object.keys(data.options).length > 0) {
+            log('');
+            log('⚙️  Options:', 'info');
+            for (const [optNum, optVal] of Object.entries(data.options)) {
+              log(`   Option ${optNum}: ${optVal}`, 'info');
+            }
+          }
+
+        } else {
+          log(`❌ CoAP request failed: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+      }
+    }
+
+    async function discoverResources() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+
+      if (!host) {
+        log('❌ Host is required', 'error');
+        return;
+      }
+
+      log(`🔍 Discovering resources on ${host}:${port}...`);
+      log('   Sending GET /.well-known/core', 'info');
+
+      try {
+        const response = await fetch(`${API_BASE}/api/coap/discover?host=${encodeURIComponent(host)}&port=${port}`, {
+          method: 'GET',
+        });
+
+        const data = await response.json();
+
+        if (data.success && data.payload) {
+          log('✅ Resource discovery successful!', 'success');
+          log('');
+          log('📋 Available Resources:', 'success');
+          log(data.payload, 'info');
+
+          // Try to parse link-format if it's a valid response
+          if (data.contentFormat === 40) {
+            log('');
+            log('💡 Tip: These are CoAP resources in link-format', 'info');
+            log('   Format: </path>;attr1=val1;attr2=val2', 'info');
+          }
+        } else {
+          log(`❌ Resource discovery failed: ${data.error || 'No resources found'}`, 'error');
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+      }
+    }
+
+    // Update payload visibility based on method
+    document.getElementById('method').addEventListener('change', (e) => {
+      const payloadField = document.getElementById('payload');
+      const contentFormatField = document.getElementById('contentFormat');
+
+      if (e.target.value === 'GET' || e.target.value === 'DELETE') {
+        payloadField.disabled = true;
+        contentFormatField.disabled = true;
+        payloadField.style.opacity = '0.5';
+        contentFormatField.style.opacity = '0.5';
+      } else {
+        payloadField.disabled = false;
+        contentFormatField.disabled = false;
+        payloadField.style.opacity = '1';
+        contentFormatField.style.opacity = '1';
+      }
+    });
+
+    // Initialize
+    document.getElementById('method').dispatchEvent(new Event('change'));
+  </script>
+</body>
+</html>

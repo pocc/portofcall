@@ -31,14 +31,14 @@ const WIREFORMAT_INFO = 1;
 const BROKER_INFO = 2;
 
 // OpenWire Data Types
-const NULL_TYPE = 0;
+// const NULL_TYPE = 0;
 const BOOLEAN_TYPE = 1;
-const BYTE_TYPE = 2;
-const SHORT_TYPE = 4;
+// const BYTE_TYPE = 2;
+// const SHORT_TYPE = 4;
 const INTEGER_TYPE = 5;
 const LONG_TYPE = 6;
 const STRING_TYPE = 8;
-const BYTE_ARRAY_TYPE = 10;
+// const BYTE_ARRAY_TYPE = 10;
 
 interface WireFormatInfo {
   version: number;
@@ -341,7 +341,7 @@ function parseWireFormatInfo(data: Uint8Array): WireFormatInfo {
  */
 function parseBrokerInfo(data: Uint8Array): BrokerInfo {
   let offset = 0;
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  // const _view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const result: BrokerInfo = {};
 
   try {

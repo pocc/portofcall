@@ -47,6 +47,7 @@ const RtspClient = lazy(() => import('./components/RtspClient'));
 const RsyncClient = lazy(() => import('./components/RsyncClient'));
 const TDSClient = lazy(() => import('./components/TDSClient'));
 const VNCClient = lazy(() => import('./components/VNCClient'));
+const SPICEClient = lazy(() => import('./components/SPICEClient'));
 const Neo4jClient = lazy(() => import('./components/Neo4jClient'));
 const RTMPClient = lazy(() => import('./components/RTMPClient'));
 const TacacsClient = lazy(() => import('./components/TacacsClient'));
@@ -225,6 +226,7 @@ type Protocol =
   | 'rsync'
   | 'tds'
   | 'vnc'
+  | 'spice'
   | 'neo4j'
   | 'rtmp'
   | 'tacacs'
@@ -472,6 +474,8 @@ function App() {
         return <TDSClient onBack={handleBack} />;
       case 'vnc':
         return <VNCClient onBack={handleBack} />;
+      case 'spice':
+        return <SPICEClient onBack={handleBack} />;
       case 'neo4j':
         return <Neo4jClient onBack={handleBack} />;
       case 'rtmp':

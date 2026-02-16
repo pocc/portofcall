@@ -89,7 +89,7 @@ enum AVPType {
  * Build an L2TP control message with AVPs
  */
 function buildL2TPMessage(
-  messageType: L2TPMessageType,
+  _messageType: L2TPMessageType,
   tunnelId: number,
   sessionId: number,
   ns: number,
@@ -283,7 +283,7 @@ export async function handleL2TPConnect(request: Request): Promise<Response> {
         // Assigned Tunnel ID
         {
           type: AVPType.AssignedTunnelID,
-          value: Buffer.allocUnsafe(2).fill(0).writeUInt16BE(localTunnelId, 0) && Buffer.allocUnsafe(2).fill(0),
+          value: Buffer.alloc(2), // Will be filled below
         },
         // Receive Window Size
         {

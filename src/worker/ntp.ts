@@ -29,13 +29,13 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 const NTP_EPOCH_OFFSET = 2208988800; // Seconds between 1900 and 1970
 const NTP_PACKET_SIZE = 48;
 
-// Leap Indicator values
-const LEAP_INDICATOR = {
-  NO_WARNING: 0,
-  LAST_MINUTE_61: 1,
-  LAST_MINUTE_59: 2,
-  ALARM: 3,
-} as const;
+// Leap Indicator values (for reference)
+// const LEAP_INDICATOR = {
+//   NO_WARNING: 0,
+//   LAST_MINUTE_61: 1,
+//   LAST_MINUTE_59: 2,
+//   ALARM: 3,
+// } as const;
 
 // NTP Mode values
 const NTP_MODE = {
@@ -172,7 +172,7 @@ function parseNTPResponse(buffer: Uint8Array, t1: number, t4: number): Omit<NTPR
   // Byte 0: LI (2 bits) + Version (3 bits) + Mode (3 bits)
   const byte0 = buffer[0];
   const leapIndicator = (byte0 >>> 6) & 0x3;
-  const version = (byte0 >>> 3) & 0x7;
+  // const _version = (byte0 >>> 3) & 0x7;
   const mode = byte0 & 0x7;
 
   // Verify this is a server response
@@ -184,7 +184,7 @@ function parseNTPResponse(buffer: Uint8Array, t1: number, t4: number): Omit<NTPR
   const stratum = buffer[1];
 
   // Poll interval (log2 seconds)
-  const poll = buffer[2];
+  // const _poll = buffer[2];
 
   // Precision (log2 seconds, signed)
   const precision = buffer[3] > 127 ? buffer[3] - 256 : buffer[3];
@@ -206,8 +206,8 @@ function parseNTPResponse(buffer: Uint8Array, t1: number, t4: number): Omit<NTPR
   }
 
   // Timestamps
-  const referenceTimestamp = readNTPTimestamp(buffer, 16);
-  const originTimestamp = readNTPTimestamp(buffer, 24); // t1 (our original transmit time)
+  // const _referenceTimestamp = readNTPTimestamp(buffer, 16);
+  // const _originTimestamp = readNTPTimestamp(buffer, 24); // t1 (our original transmit time)
   const receiveTimestamp = readNTPTimestamp(buffer, 32); // t2 (server receive time)
   const transmitTimestamp = readNTPTimestamp(buffer, 40); // t3 (server transmit time)
 

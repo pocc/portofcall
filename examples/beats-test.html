@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Beats Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 900px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, textarea, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      font-size: 12px;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    button:disabled {
+      background: #555;
+      cursor: not-allowed;
+    }
+    button.secondary {
+      background: #2d7a3e;
+    }
+    button.secondary:hover {
+      background: #3a9450;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 500px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .note {
+      background: #2d2d30;
+      border-left: 3px solid #4ec9b0;
+      padding: 10px;
+      margin: 10px 0;
+      font-size: 13px;
+    }
+    .icon {
+      font-size: 24px;
+      vertical-align: middle;
+    }
+    .event-template {
+      background: #2d2d30;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 3px;
+      cursor: pointer;
+      border: 1px solid #3c3c3c;
+    }
+    .event-template:hover {
+      background: #3c3c3c;
+    }
+  </style>
+</head>
+<body>
+  <h1><span class="icon">📊</span> Beats Protocol Tester</h1>
+
+  <div class="note">
+    <strong>Note:</strong> The Beats protocol (Lumberjack v2) is used by Elastic Beats
+    (Filebeat, Metricbeat, etc.) to send logs and metrics to Logstash or Elasticsearch.
+    This tester sends JSON events to a Beats-compatible server on port 5044.
+  </div>
+
+  <div class="section">
+    <h2>Connection Settings</h2>
+
+    <label for="host">Logstash/Beats Server Host:</label>
+    <input type="text" id="host" placeholder="logstash.example.com" value="localhost">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="5044" value="5044">
+
+    <label for="windowSize">Window Size (max unacknowledged events):</label>
+    <input type="number" id="windowSize" placeholder="1000" value="1000">
+
+    <label for="timeout">Timeout (ms):</label>
+    <input type="number" id="timeout" placeholder="15000" value="15000">
+  </div>
+
+  <div class="section">
+    <h2>Events to Send</h2>
+
+    <label for="events">JSON Events Array:</label>
+    <textarea id="events" placeholder='[{"message":"Log message","level":"info"}]'>[
+  {
+    "message": "Application started successfully",
+    "level": "info",
+    "service": "web-api",
+    "host": "server-01",
+    "timestamp": "2024-02-16T10:30:00Z"
+  },
+  {
+    "message": "User authentication completed",
+    "level": "info",
+    "service": "web-api",
+    "user": "alice",
+    "timestamp": "2024-02-16T10:30:15Z"
+  }
+]</textarea>
+
+    <div class="note">
+      <strong>Event Templates:</strong> Click to load example events
+      <div class="event-template" onclick="loadTemplate('simple')">
+        <strong>Simple Log</strong> - Basic log message
+      </div>
+      <div class="event-template" onclick="loadTemplate('structured')">
+        <strong>Structured Event</strong> - Detailed structured log
+      </div>
+      <div class="event-template" onclick="loadTemplate('metrics')">
+        <strong>Metrics Event</strong> - System metrics data
+      </div>
+      <div class="event-template" onclick="loadTemplate('error')">
+        <strong>Error Event</strong> - Application error with stack trace
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>Actions</h2>
+    <button id="testConnect">Test Connection</button>
+    <button id="sendEvents" class="secondary">Send Events</button>
+  </div>
+
+  <div class="section">
+    <h2>Output</h2>
+    <div id="output">Ready. Click "Test Connection" or "Send Events" to begin.</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+    const output = document.getElementById('output');
+
+    const templates = {
+      simple: [
+        {
+          message: "Simple log message",
+          level: "info",
+          timestamp: new Date().toISOString()
+        }
+      ],
+      structured: [
+        {
+          "@timestamp": new Date().toISOString(),
+          message: "User action performed",
+          level: "info",
+          user: { id: "12345", name: "Alice" },
+          action: "page_view",
+          resource: "/dashboard",
+          duration_ms: 125,
+          service: { name: "web-app", version: "1.2.3" },
+          host: { name: "server-01", ip: "192.168.1.10" }
+        }
+      ],
+      metrics: [
+        {
+          "@timestamp": new Date().toISOString(),
+          metricset: { name: "system", module: "system" },
+          system: {
+            cpu: { cores: 4, total: { pct: 0.45 } },
+            memory: { total: 16_777_216_000, used: { pct: 0.67 } },
+            disk: { used: { pct: 0.52 } }
+          },
+          host: { name: "server-01" }
+        }
+      ],
+      error: [
+        {
+          "@timestamp": new Date().toISOString(),
+          message: "Database connection failed",
+          level: "error",
+          error: {
+            type: "ConnectionError",
+            message: "ECONNREFUSED: Connection refused",
+            stack_trace: "Error: ECONNREFUSED\\n    at TCPConnectWrap.afterConnect\\n    at Database.connect"
+          },
+          service: { name: "api-server" },
+          host: { name: "server-02" }
+        }
+      ]
+    };
+
+    function loadTemplate(name) {
+      const template = templates[name];
+      if (template) {
+        document.getElementById('events').value = JSON.stringify(template, null, 2);
+        log(`Loaded ${name} template`, 'info');
+      }
+    }
+
+    function log(message, type = 'info') {
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      output.innerHTML = '';
+    }
+
+    async function testConnection() {
+      clearOutput();
+      log('Testing Beats connection...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const timeout = parseInt(document.getElementById('timeout').value);
+
+      if (!host) {
+        log('Error: Host is required', 'error');
+        return;
+      }
+
+      const testBtn = document.getElementById('testConnect');
+      testBtn.disabled = true;
+      testBtn.textContent = 'Connecting...';
+
+      try {
+        const response = await fetch(`${API_BASE}/api/beats/connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ host, port, timeout })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ Connection successful!`, 'success');
+          log(`  Host: ${data.host}:${data.port}`, 'info');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+          log(`  ${data.message}`, 'success');
+        } else {
+          log(`✗ Connection failed: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        testBtn.disabled = false;
+        testBtn.textContent = 'Test Connection';
+      }
+    }
+
+    async function sendEvents() {
+      clearOutput();
+      log('Sending events via Beats protocol...', 'info');
+
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const windowSize = parseInt(document.getElementById('windowSize').value);
+      const timeout = parseInt(document.getElementById('timeout').value);
+      const eventsText = document.getElementById('events').value;
+
+      if (!host) {
+        log('Error: Host is required', 'error');
+        return;
+      }
+
+      let events;
+      try {
+        events = JSON.parse(eventsText);
+      } catch (e) {
+        log('Error: Invalid JSON in events field', 'error');
+        log(`  ${e.message}`, 'error');
+        return;
+      }
+
+      if (!Array.isArray(events) || events.length === 0) {
+        log('Error: Events must be a non-empty array', 'error');
+        return;
+      }
+
+      const sendBtn = document.getElementById('sendEvents');
+      sendBtn.disabled = true;
+      sendBtn.textContent = 'Sending...';
+
+      log(`Connecting to ${host}:${port}`, 'info');
+      log(`Sending ${events.length} event(s)`, 'info');
+      log(`Window size: ${windowSize}`, 'info');
+      log('', 'info');
+
+      try {
+        const response = await fetch(`${API_BASE}/api/beats/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            host,
+            port,
+            events,
+            windowSize,
+            timeout
+          })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✓ Events sent successfully!`, 'success');
+          log('', 'info');
+          log('Response Details:', 'success');
+          log(`  Events sent: ${data.eventsSent}`, 'success');
+          log(`  Acknowledged: ${data.acknowledged}`, 'success');
+          log(`  RTT: ${data.rtt}ms`, 'info');
+
+          if (data.acknowledged === data.eventsSent) {
+            log('', 'success');
+            log('✓ All events acknowledged by server', 'success');
+          } else {
+            log('', 'error');
+            log(`⚠ Warning: Only ${data.acknowledged} of ${data.eventsSent} events acknowledged`, 'error');
+          }
+        } else {
+          log(`✗ Send failed`, 'error');
+          log(`  Error: ${data.error}`, 'error');
+        }
+      } catch (error) {
+        log(`✗ Request failed: ${error.message}`, 'error');
+      } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send Events';
+      }
+    }
+
+    // Event listeners
+    document.getElementById('testConnect').addEventListener('click', testConnection);
+    document.getElementById('sendEvents').addEventListener('click', sendEvents);
+  </script>
+</body>
+</html>

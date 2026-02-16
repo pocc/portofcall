@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SSDP Protocol Test</title>
+  <style>
+    body {
+      font-family: 'Courier New', monospace;
+      max-width: 1000px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+    }
+    h1 {
+      color: #4ec9b0;
+      border-bottom: 2px solid #4ec9b0;
+      padding-bottom: 10px;
+    }
+    .section {
+      background: #252526;
+      padding: 20px;
+      margin: 20px 0;
+      border-radius: 5px;
+      border: 1px solid #3c3c3c;
+    }
+    label {
+      display: block;
+      margin: 10px 0 5px 0;
+      color: #9cdcfe;
+      font-weight: bold;
+    }
+    input, select {
+      width: 100%;
+      padding: 10px;
+      background: #3c3c3c;
+      border: 1px solid #555;
+      color: #d4d4d4;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+    button {
+      background: #0e639c;
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      margin: 15px 5px 0 0;
+      cursor: pointer;
+      border-radius: 3px;
+      font-weight: bold;
+      font-size: 14px;
+    }
+    button:hover {
+      background: #1177bb;
+    }
+    #output {
+      background: #1e1e1e;
+      border: 1px solid #3c3c3c;
+      padding: 15px;
+      margin-top: 15px;
+      white-space: pre-wrap;
+      font-family: 'Courier New', monospace;
+      max-height: 600px;
+      overflow-y: auto;
+      border-radius: 3px;
+    }
+    .success {
+      color: #4ec9b0;
+    }
+    .error {
+      color: #f48771;
+    }
+    .info {
+      color: #9cdcfe;
+    }
+    .device-card {
+      background: #2d2d30;
+      padding: 15px;
+      margin: 10px 0;
+      border-radius: 5px;
+      border-left: 3px solid #4ec9b0;
+    }
+    .device-card h3 {
+      margin: 0 0 10px 0;
+      color: #4ec9b0;
+    }
+    .device-card p {
+      margin: 5px 0;
+      color: #d4d4d4;
+    }
+    .device-card a {
+      color: #9cdcfe;
+      text-decoration: none;
+    }
+    .device-card a:hover {
+      text-decoration: underline;
+    }
+    .target-list {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 5px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .target-item {
+      background: #2d2d30;
+      padding: 5px 10px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .target-item:hover {
+      background: #3c3c3c;
+    }
+  </style>
+</head>
+<body>
+  <h1>🔍 SSDP/UPnP Device Discovery</h1>
+
+  <div class="section">
+    <h2>Network Settings</h2>
+
+    <label for="host">Target Host/IP:</label>
+    <input type="text" id="host" placeholder="192.168.1.1" value="192.168.1.1">
+
+    <label for="port">Port:</label>
+    <input type="number" id="port" placeholder="1900" value="1900">
+
+    <p style="color: #9cdcfe; font-size: 12px; margin-top: 10px;">
+      💡 Note: SSDP typically uses UDP multicast (239.255.255.250:1900), but this implementation uses TCP unicast.
+      You may need to target a specific SSDP-capable device's IP address.
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>Device Discovery</h2>
+
+    <label for="searchTarget">Search Target (ST):</label>
+    <select id="searchTarget">
+      <option value="ssdp:all" selected>ssdp:all - All devices and services</option>
+      <option value="upnp:rootdevice">upnp:rootdevice - Root devices only</option>
+      <option value="urn:schemas-upnp-org:device:MediaServer:1">MediaServer - DLNA/UPnP media servers</option>
+      <option value="urn:schemas-upnp-org:device:MediaRenderer:1">MediaRenderer - Media playback devices</option>
+      <option value="urn:schemas-upnp-org:device:InternetGatewayDevice:1">InternetGatewayDevice - Routers</option>
+      <option value="urn:schemas-upnp-org:device:WANDevice:1">WANDevice - WAN devices</option>
+      <option value="urn:schemas-upnp-org:device:WANConnectionDevice:1">WANConnectionDevice - WAN connections</option>
+    </select>
+
+    <div class="target-list">
+      <strong>Quick Select:</strong>
+      <div class="target-item" onclick="setSearchTarget('ssdp:all')">ssdp:all - Discover all devices</div>
+      <div class="target-item" onclick="setSearchTarget('upnp:rootdevice')">upnp:rootdevice - Root devices</div>
+      <div class="target-item" onclick="setSearchTarget('urn:schemas-upnp-org:device:MediaServer:1')">Media Servers (DLNA)</div>
+      <div class="target-item" onclick="setSearchTarget('urn:schemas-upnp-org:device:InternetGatewayDevice:1')">Internet Gateway Devices (Routers)</div>
+    </div>
+
+    <label for="maxWait">Max Wait Time (MX, seconds):</label>
+    <input type="number" id="maxWait" placeholder="3" value="3" min="1" max="120">
+
+    <button onclick="discoverDevices()">Discover Devices</button>
+    <button onclick="clearOutput()">Clear Results</button>
+  </div>
+
+  <div class="section">
+    <h2>Discovered Devices</h2>
+    <div id="devices"></div>
+  </div>
+
+  <div class="section">
+    <h2>Raw Output</h2>
+    <div id="output">Ready to discover SSDP/UPnP devices...</div>
+  </div>
+
+  <script>
+    const API_BASE = window.location.origin;
+
+    function setSearchTarget(target) {
+      document.getElementById('searchTarget').value = target;
+    }
+
+    function log(message, type = 'info') {
+      const output = document.getElementById('output');
+      const timestamp = new Date().toLocaleTimeString();
+      const className = type === 'error' ? 'error' : type === 'success' ? 'success' : 'info';
+      output.innerHTML += `<span class="${className}">[${timestamp}] ${message}</span>\n`;
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function clearOutput() {
+      document.getElementById('output').innerHTML = '';
+      document.getElementById('devices').innerHTML = '';
+    }
+
+    function displayDevices(devices) {
+      const devicesDiv = document.getElementById('devices');
+
+      if (!devices || devices.length === 0) {
+        devicesDiv.innerHTML = '<p style="color: #f48771;">No devices found</p>';
+        return;
+      }
+
+      let html = `<p style="color: #4ec9b0; font-weight: bold;">Found ${devices.length} device(s):</p>`;
+
+      devices.forEach((device, index) => {
+        html += '<div class="device-card">';
+        html += `<h3>Device ${index + 1}</h3>`;
+
+        if (device.searchTarget) {
+          html += `<p><strong>Type:</strong> ${device.searchTarget}</p>`;
+        }
+
+        if (device.uniqueServiceName) {
+          html += `<p><strong>USN:</strong> ${device.uniqueServiceName}</p>`;
+        }
+
+        if (device.location) {
+          html += `<p><strong>Location:</strong> <a href="${device.location}" target="_blank">${device.location}</a></p>`;
+        }
+
+        if (device.server) {
+          html += `<p><strong>Server:</strong> ${device.server}</p>`;
+        }
+
+        if (device.cacheControl) {
+          html += `<p><strong>Cache-Control:</strong> ${device.cacheControl}</p>`;
+        }
+
+        if (device.date) {
+          html += `<p><strong>Date:</strong> ${device.date}</p>`;
+        }
+
+        html += '</div>';
+      });
+
+      devicesDiv.innerHTML = html;
+    }
+
+    async function discoverDevices() {
+      const host = document.getElementById('host').value;
+      const port = parseInt(document.getElementById('port').value);
+      const searchTarget = document.getElementById('searchTarget').value;
+      const maxWait = parseInt(document.getElementById('maxWait').value);
+
+      if (!host) {
+        log('❌ Host is required', 'error');
+        return;
+      }
+
+      clearOutput();
+      log(`🔍 Discovering SSDP devices on ${host}:${port}...`);
+      log(`   Search Target: ${searchTarget}`);
+      log(`   Max Wait: ${maxWait} seconds`);
+      log('');
+      log('⏳ Waiting for responses...', 'info');
+
+      try {
+        const response = await fetch(`${API_BASE}/api/ssdp/discover`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            host,
+            port,
+            searchTarget,
+            maxWait,
+            timeout: (maxWait + 5) * 1000,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+          log(`✅ Discovery completed!`, 'success');
+          log(`   Found ${data.count} device(s)`, 'success');
+          log('');
+
+          if (data.devices && data.devices.length > 0) {
+            displayDevices(data.devices);
+
+            data.devices.forEach((device, index) => {
+              log(`Device ${index + 1}:`, 'success');
+              if (device.searchTarget) {
+                log(`   ST: ${device.searchTarget}`, 'info');
+              }
+              if (device.uniqueServiceName) {
+                log(`   USN: ${device.uniqueServiceName}`, 'info');
+              }
+              if (device.location) {
+                log(`   Location: ${device.location}`, 'info');
+              }
+              if (device.server) {
+                log(`   Server: ${device.server}`, 'info');
+              }
+              log('');
+            });
+
+            log('💡 Tip: Click on Location URLs to view device description XML', 'info');
+          } else {
+            log('⚠️  No devices responded', 'error');
+            log('');
+            log('Possible reasons:', 'info');
+            log('  • No SSDP-capable devices on this host/port', 'info');
+            log('  • Device does not support TCP (only UDP multicast)', 'info');
+            log('  • Firewall blocking SSDP traffic', 'info');
+            log('  • Wrong IP address or port', 'info');
+          }
+        } else {
+          log(`❌ Discovery failed: ${data.error}`, 'error');
+          displayDevices([]);
+        }
+      } catch (error) {
+        log(`❌ Request failed: ${error.message}`, 'error');
+        displayDevices([]);
+      }
+    }
+  </script>
+</body>
+</html>

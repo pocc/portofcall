@@ -378,6 +378,143 @@ export async function handleZMTPProbe(request: Request): Promise<Response> {
   }
 }
 
+/** Build a ZMTP short message frame (data ≤ 255 bytes) */
+function buildMessageFrame(data: Uint8Array, more = false): Uint8Array {
+  if (data.length > 255) {
+    // Long frame: flags|0x02 + 8-byte BE length
+    const frame = new Uint8Array(1 + 8 + data.length);
+    frame[0] = (more ? 0x01 : 0x00) | 0x02;
+    const view = new DataView(frame.buffer);
+    view.setBigUint64(1, BigInt(data.length), false);
+    frame.set(data, 9);
+    return frame;
+  }
+  const frame = new Uint8Array(2 + data.length);
+  frame[0] = more ? 0x01 : 0x00;
+  frame[1] = data.length;
+  frame.set(data, 2);
+  return frame;
+}
+
+/** Build a ZMTP SUBSCRIBE command frame for SUB sockets */
+function buildSubscribeCommand(topic: string): Uint8Array {
+  const topicBytes = new TextEncoder().encode(topic);
+  const subName = new TextEncoder().encode('SUBSCRIBE');
+  const body = new Uint8Array(1 + subName.length + topicBytes.length);
+  body[0] = subName.length;
+  body.set(subName, 1);
+  body.set(topicBytes, 1 + subName.length);
+  const frame = new Uint8Array(2 + body.length);
+  frame[0] = 0x04; // command flag
+  frame[1] = body.length;
+  frame.set(body, 2);
+  return frame;
+}
+
+/**
+ * Send a message to a ZMTP endpoint after completing the handshake
+ * POST /api/zmtp/send
+ */
+export async function handleZMTPSend(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as {
+      host?: string; port?: number; socketType?: string; topic?: string;
+      message?: string; timeout?: number;
+    };
+    if (!body.host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const { host, port = 5555, socketType = 'PUSH', topic = '', message = '', timeout = 10000 } = body;
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    await Promise.race([socket.opened, timeoutPromise]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    try {
+      // Greeting
+      await writer.write(buildZMTPGreeting());
+      await readResponse(reader, 3000, 64);
+      // READY
+      await writer.write(buildReadyCommand(socketType.toUpperCase()));
+      await readResponse(reader, 3000, 256);
+      const enc = new TextEncoder();
+      // Send message (with topic prefix for PUB)
+      if (socketType.toUpperCase() === 'PUB' && topic) {
+        await writer.write(buildMessageFrame(enc.encode(topic), true));
+      }
+      await writer.write(buildMessageFrame(enc.encode(message)));
+      // For REQ/DEALER, wait for reply
+      let reply: string | null = null;
+      if (['REQ', 'DEALER'].includes(socketType.toUpperCase())) {
+        const replyData = await readResponse(reader, Math.min(timeout, 3000), 65536);
+        if (replyData.length > 2) reply = new TextDecoder().decode(replyData.slice(2));
+      }
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({ success: true, host, port, socketType, messageSent: message, reply }),
+        { headers: { 'Content-Type': 'application/json' } });
+    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Subscribe and receive messages from a ZMTP endpoint
+ * POST /api/zmtp/recv
+ */
+export async function handleZMTPRecv(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as {
+      host?: string; port?: number; socketType?: string; topic?: string; timeoutMs?: number;
+    };
+    if (!body.host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const { host, port = 5555, socketType = 'SUB', topic = '', timeoutMs = 2000 } = body;
+    const socket = connect(`${host}:${port}`);
+    const connTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connect timeout')), 10000));
+    await Promise.race([socket.opened, connTimeout]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    try {
+      await writer.write(buildZMTPGreeting());
+      await readResponse(reader, 3000, 64);
+      await writer.write(buildReadyCommand(socketType.toUpperCase()));
+      await readResponse(reader, 3000, 256);
+      if (socketType.toUpperCase() === 'SUB') {
+        await writer.write(buildSubscribeCommand(topic));
+      }
+      // Collect messages for timeoutMs
+      const messages: string[] = [];
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        const chunk = await readResponse(reader, remaining, 65536);
+        if (chunk.length === 0) break;
+        // Parse frames: skip flag+length, decode payload
+        let off = 0;
+        while (off < chunk.length) {
+          const flags = chunk[off]; off++;
+          const isLong = (flags & 0x02) !== 0;
+          const isCmd = (flags & 0x04) !== 0;
+          let len: number;
+          if (isLong) { if (off + 8 > chunk.length) break; len = Number(new DataView(chunk.buffer.slice(off, off + 8)).getBigUint64(0, false)); off += 8; }
+          else { if (off >= chunk.length) break; len = chunk[off]; off++; }
+          if (off + len > chunk.length) break;
+          if (!isCmd && len > 0) messages.push(new TextDecoder().decode(chunk.slice(off, off + len)));
+          off += len;
+        }
+      }
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({ success: true, host, port, socketType, topic, messages, count: messages.length }),
+        { headers: { 'Content-Type': 'application/json' } });
+    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
 /**
  * Perform a full ZMTP handshake including READY command exchange
  */

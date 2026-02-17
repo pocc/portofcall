@@ -473,6 +473,484 @@ export async function handleTURNAllocate(request: Request): Promise<Response> {
   }
 }
 
+interface TURNPermissionRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  username: string;
+  password: string;
+  peerAddress: string;
+}
+
+interface TURNPermissionResponse {
+  success: boolean;
+  host: string;
+  port: number;
+  relayedAddress?: { ip: string; port: number };
+  reflexiveAddress?: { ip: string; port: number };
+  permissionCreated?: boolean;
+  peerAddress?: string;
+  rtt?: number;
+  error?: string;
+}
+
+/**
+ * Allocate a TURN relay and create a permission for a peer address.
+ *
+ * Step 1: Send unauthenticated Allocate — expect 401 with realm+nonce.
+ * Step 2: Re-send authenticated Allocate with HMAC-SHA1 MESSAGE-INTEGRITY.
+ * Step 3: Send CreatePermission for the specified peer address.
+ *
+ * The HMAC key is MD5(username:realm:password) per RFC 5389 / RFC 8656.
+ */
+export async function handleTURNPermission(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as TURNPermissionRequest;
+    const {
+      host,
+      port = 3478,
+      timeout = 15000,
+      username,
+      password,
+      peerAddress,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false, host: '', port,
+        error: 'Host is required',
+      } satisfies TURNPermissionResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!username || !password) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: 'username and password are required',
+      } satisfies TURNPermissionResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!peerAddress) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: 'peerAddress is required',
+      } satisfies TURNPermissionResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: 'Port must be between 1 and 65535',
+      } satisfies TURNPermissionResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const start = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // -----------------------------------------------------------------
+      // Helper: read one complete STUN/TURN message from the stream
+      // -----------------------------------------------------------------
+      async function readTURNMessage(): Promise<Buffer | null> {
+        let buf = Buffer.alloc(0);
+        while (true) {
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (done || !value) return buf.length >= 20 ? buf : null;
+          buf = Buffer.concat([buf, Buffer.from(value)]);
+          if (buf.length >= 4) {
+            const msgLen = buf.readUInt16BE(2) + 20; // header + attributes
+            if (buf.length >= msgLen) return buf.slice(0, msgLen);
+          }
+        }
+      }
+
+      // -----------------------------------------------------------------
+      // Step 1: Unauthenticated Allocate (expect 401 with realm+nonce)
+      // -----------------------------------------------------------------
+      const txId1 = Buffer.allocUnsafe(12);
+      for (let i = 0; i < 12; i++) txId1[i] = Math.floor(Math.random() * 256);
+
+      const requestedTransportAttr = Buffer.from([17, 0, 0, 0]); // UDP
+      const allocate1 = buildTURNMessage(TURNMessageType.AllocateRequest, txId1, [
+        { type: TURNAttributeType.RequestedTransport, value: requestedTransportAttr },
+      ]);
+
+      await writer.write(allocate1);
+      const resp1Data = await readTURNMessage();
+
+      if (!resp1Data) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({
+          success: false, host, port,
+          error: 'No response from TURN server (Step 1)',
+        } satisfies TURNPermissionResponse), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const resp1 = parseTURNMessage(resp1Data);
+      if (!resp1) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({
+          success: false, host, port,
+          error: 'Invalid TURN response (Step 1)',
+        } satisfies TURNPermissionResponse), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // -----------------------------------------------------------------
+      // If we got a 401, parse realm+nonce and re-authenticate
+      // -----------------------------------------------------------------
+      let realm: string | undefined;
+      let nonce: string | undefined;
+      let relayedAddress: { ip: string; port: number } | undefined;
+      let reflexiveAddress: { ip: string; port: number } | undefined;
+
+      if (resp1.messageType === TURNMessageType.AllocateErrorResponse) {
+        // Extract realm and nonce from error response
+        for (const attr of resp1.attributes) {
+          if (attr.type === TURNAttributeType.Realm) realm = attr.value.toString('utf8');
+          if (attr.type === TURNAttributeType.Nonce) nonce = attr.value.toString('utf8');
+        }
+
+        // Check for 401 error code
+        let is401 = false;
+        for (const attr of resp1.attributes) {
+          if (attr.type === TURNAttributeType.ErrorCode && attr.value.length >= 4) {
+            const errClass = attr.value.readUInt8(2);
+            const errNum = attr.value.readUInt8(3);
+            if (errClass * 100 + errNum === 401) is401 = true;
+          }
+        }
+
+        if (!is401 || !realm || !nonce) {
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return new Response(JSON.stringify({
+            success: false, host, port,
+            error: `Allocate rejected (not 401 or missing realm/nonce)`,
+          } satisfies TURNPermissionResponse), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Compute long-term credential key: MD5(username:realm:password) per RFC 5389 §15.4.
+        // SubtleCrypto has no MD5 support; use a pure-JS implementation.
+        // Pure-JS MD5 implementation (RFC 1321)
+        function md5(input: Uint8Array): Uint8Array {
+          // Per-round shift amounts
+          const s = [
+            7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
+            5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
+            4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
+            6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,
+          ];
+          // Precomputed table K[i] = floor(abs(sin(i+1)) * 2^32)
+          const K = [
+            0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+            0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+            0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+            0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+            0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+            0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+            0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+            0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+            0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+            0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+            0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+            0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+            0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+            0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+            0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+            0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+          ];
+
+          // Pre-processing: add padding
+          const msgLen = input.length;
+          const bitLen = msgLen * 8;
+          const padLen = ((msgLen % 64) < 56) ? (56 - msgLen % 64) : (120 - msgLen % 64);
+          const padded = new Uint8Array(msgLen + padLen + 8);
+          padded.set(input);
+          padded[msgLen] = 0x80;
+          // Append bit length as little-endian 64-bit
+          const dataView = new DataView(padded.buffer);
+          dataView.setUint32(msgLen + padLen, bitLen & 0xffffffff, true);
+          dataView.setUint32(msgLen + padLen + 4, Math.floor(bitLen / 0x100000000), true);
+
+          let a0 = 0x67452301;
+          let b0 = 0xefcdab89;
+          let c0 = 0x98badcfe;
+          let d0 = 0x10325476;
+
+          for (let chunk = 0; chunk < padded.length; chunk += 64) {
+            const M = new Uint32Array(16);
+            const chunkView = new DataView(padded.buffer, chunk, 64);
+            for (let j = 0; j < 16; j++) M[j] = chunkView.getUint32(j * 4, true);
+
+            let A = a0, B = b0, C = c0, D = d0;
+
+            for (let i = 0; i < 64; i++) {
+              let F: number, g: number;
+              if (i < 16) {
+                F = (B & C) | (~B & D); g = i;
+              } else if (i < 32) {
+                F = (D & B) | (~D & C); g = (5 * i + 1) % 16;
+              } else if (i < 48) {
+                F = B ^ C ^ D; g = (3 * i + 5) % 16;
+              } else {
+                F = C ^ (B | ~D); g = (7 * i) % 16;
+              }
+              F = (F + A + K[i] + M[g]) >>> 0;
+              A = D; D = C; C = B;
+              B = (B + ((F << s[i]) | (F >>> (32 - s[i])))) >>> 0;
+            }
+
+            a0 = (a0 + A) >>> 0;
+            b0 = (b0 + B) >>> 0;
+            c0 = (c0 + C) >>> 0;
+            d0 = (d0 + D) >>> 0;
+          }
+
+          const result = new Uint8Array(16);
+          const rv = new DataView(result.buffer);
+          rv.setUint32(0, a0, true);
+          rv.setUint32(4, b0, true);
+          rv.setUint32(8, c0, true);
+          rv.setUint32(12, d0, true);
+          return result;
+        }
+
+        // Compute key = MD5(username:realm:password)
+        const encoder = new TextEncoder();
+        const keyInput = encoder.encode(`${username}:${realm}:${password}`);
+        const hmacKey = md5(keyInput);
+
+        // HMAC-SHA1 using SubtleCrypto
+        async function hmacSha1(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+          const cryptoKey = await crypto.subtle.importKey(
+            'raw', key as Uint8Array<ArrayBuffer>, { name: 'HMAC', hash: 'SHA-1' }, false, ['sign']
+          );
+          const sig = await crypto.subtle.sign('HMAC', cryptoKey, data as Uint8Array<ArrayBuffer>);
+          return new Uint8Array(sig);
+        }
+
+        // Build authenticated Allocate
+        const txId2 = Buffer.allocUnsafe(12);
+        for (let i = 0; i < 12; i++) txId2[i] = Math.floor(Math.random() * 256);
+
+        const authAttrs: Array<{ type: number; value: Buffer }> = [
+          { type: TURNAttributeType.RequestedTransport, value: requestedTransportAttr },
+          { type: TURNAttributeType.Username, value: Buffer.from(username, 'utf8') },
+          { type: TURNAttributeType.Realm, value: Buffer.from(realm, 'utf8') },
+          { type: TURNAttributeType.Nonce, value: Buffer.from(nonce, 'utf8') },
+        ];
+
+        // Build message without MESSAGE-INTEGRITY to compute HMAC over it
+        const allocate2NoMic = buildTURNMessage(TURNMessageType.AllocateRequest, txId2, authAttrs);
+
+        // MESSAGE-INTEGRITY is HMAC-SHA1 over the message up to (but not including) MI attribute,
+        // with the length field set as if MI were present (+24 bytes).
+        // Adjust length in header to include the pending MI attribute (4 + 20 = 24 bytes)
+        const msgForHmac = Buffer.from(allocate2NoMic);
+        const newLen = msgForHmac.readUInt16BE(2) + 24; // add MI attr size
+        msgForHmac.writeUInt16BE(newLen, 2);
+
+        const mic = await hmacSha1(hmacKey, msgForHmac);
+
+        authAttrs.push({ type: TURNAttributeType.MessageIntegrity, value: Buffer.from(mic) });
+
+        const allocate2 = buildTURNMessage(TURNMessageType.AllocateRequest, txId2, authAttrs);
+
+        await writer.write(allocate2);
+        const resp2Data = await readTURNMessage();
+
+        if (!resp2Data) {
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return new Response(JSON.stringify({
+            success: false, host, port,
+            error: 'No response from TURN server (authenticated Allocate)',
+          } satisfies TURNPermissionResponse), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const resp2 = parseTURNMessage(resp2Data);
+        if (!resp2 || resp2.messageType !== TURNMessageType.AllocateResponse) {
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          let errMsg = 'Authenticated Allocate failed';
+          if (resp2) {
+            for (const attr of resp2.attributes) {
+              if (attr.type === TURNAttributeType.ErrorCode && attr.value.length >= 4) {
+                const ec = attr.value.readUInt8(2) * 100 + attr.value.readUInt8(3);
+                const reason = attr.value.subarray(4).toString('utf8');
+                errMsg = `Allocate error ${ec}: ${reason}`;
+              }
+            }
+          }
+          return new Response(JSON.stringify({
+            success: false, host, port, error: errMsg,
+          } satisfies TURNPermissionResponse), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Parse relayed and reflexive addresses from Allocate Success
+        for (const attr of resp2.attributes) {
+          if (attr.type === TURNAttributeType.XorRelayedAddress) {
+            const dec = xorDecodeAddress(attr.value, resp2.transactionId);
+            if (dec) relayedAddress = { ip: dec.address, port: dec.port };
+          } else if (attr.type === TURNAttributeType.XorMappedAddress) {
+            const dec = xorDecodeAddress(attr.value, resp2.transactionId);
+            if (dec) reflexiveAddress = { ip: dec.address, port: dec.port };
+          }
+        }
+
+        // -----------------------------------------------------------------
+        // Step 3: CreatePermission for peerAddress
+        // -----------------------------------------------------------------
+        // Build XOR-PEER-ADDRESS attribute from peerAddress (IPv4 only)
+        const peerParts = peerAddress.split('.');
+        if (peerParts.length !== 4) {
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return new Response(JSON.stringify({
+            success: false, host, port,
+            error: 'peerAddress must be an IPv4 address (e.g. "192.0.2.1")',
+          } satisfies TURNPermissionResponse), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const magicCookie = 0x2112A442;
+        const peerAddrBuf = Buffer.allocUnsafe(8);
+        peerAddrBuf[0] = 0x00; // reserved
+        peerAddrBuf[1] = 0x01; // family IPv4
+        // XOR port with high 16 bits of magic cookie (use port 0 for permission)
+        peerAddrBuf.writeUInt16BE(0 ^ (magicCookie >> 16), 2);
+        // XOR each octet with magic cookie bytes
+        const peerIpInt = (parseInt(peerParts[0]) << 24) | (parseInt(peerParts[1]) << 16) |
+                          (parseInt(peerParts[2]) << 8) | parseInt(peerParts[3]);
+        peerAddrBuf.writeUInt32BE((peerIpInt ^ magicCookie) >>> 0, 4);
+
+        const txId3 = Buffer.allocUnsafe(12);
+        for (let i = 0; i < 12; i++) txId3[i] = Math.floor(Math.random() * 256);
+
+        const permAttrs: Array<{ type: number; value: Buffer }> = [
+          { type: 0x0012, value: peerAddrBuf }, // XOR-PEER-ADDRESS
+          { type: TURNAttributeType.Username, value: Buffer.from(username, 'utf8') },
+          { type: TURNAttributeType.Realm, value: Buffer.from(realm, 'utf8') },
+          { type: TURNAttributeType.Nonce, value: Buffer.from(nonce, 'utf8') },
+        ];
+
+        const permNoMic = buildTURNMessage(TURNMessageType.CreatePermissionRequest, txId3, permAttrs);
+        const permForHmac = Buffer.from(permNoMic);
+        permForHmac.writeUInt16BE(permForHmac.readUInt16BE(2) + 24, 2);
+        const permMic = await hmacSha1(hmacKey, permForHmac);
+        permAttrs.push({ type: TURNAttributeType.MessageIntegrity, value: Buffer.from(permMic) });
+
+        const createPermMsg = buildTURNMessage(TURNMessageType.CreatePermissionRequest, txId3, permAttrs);
+        await writer.write(createPermMsg);
+
+        const resp3Data = await readTURNMessage();
+        let permissionCreated = false;
+        if (resp3Data) {
+          const resp3 = parseTURNMessage(resp3Data);
+          // CreatePermission Success Response = 0x0108
+          if (resp3 && resp3.messageType === 0x0108) permissionCreated = true;
+        }
+
+        const rtt = Date.now() - start;
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+
+        return new Response(JSON.stringify({
+          success: true,
+          host,
+          port,
+          relayedAddress,
+          reflexiveAddress,
+          permissionCreated,
+          peerAddress,
+          rtt,
+        } satisfies TURNPermissionResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+
+      } else if (resp1.messageType === TURNMessageType.AllocateResponse) {
+        // Server accepted without auth — parse addresses
+        for (const attr of resp1.attributes) {
+          if (attr.type === TURNAttributeType.XorRelayedAddress) {
+            const dec = xorDecodeAddress(attr.value, resp1.transactionId);
+            if (dec) relayedAddress = { ip: dec.address, port: dec.port };
+          } else if (attr.type === TURNAttributeType.XorMappedAddress) {
+            const dec = xorDecodeAddress(attr.value, resp1.transactionId);
+            if (dec) reflexiveAddress = { ip: dec.address, port: dec.port };
+          }
+        }
+
+        const rtt = Date.now() - start;
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+
+        return new Response(JSON.stringify({
+          success: true,
+          host,
+          port,
+          relayedAddress,
+          reflexiveAddress,
+          permissionCreated: false,
+          peerAddress,
+          rtt,
+        } satisfies TURNPermissionResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } else {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({
+          success: false, host, port,
+          error: `Unexpected response type: 0x${resp1.messageType.toString(16)}`,
+        } satisfies TURNPermissionResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      host: '',
+      port: 3478,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies TURNPermissionResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /**
  * Probe TURN server with basic Allocate request (no authentication).
  * Useful for checking if a TURN server is running and responsive.

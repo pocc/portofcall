@@ -1,584 +1,367 @@
-# IRC Protocol Implementation Plan
+# IRC / IRCS — Implementation Reference
 
-## Overview
+**Protocol:** IRC (RFC 1459 / RFC 2812) + IRCv3 extensions
+**Files:** `src/worker/irc.ts`, `src/worker/ircs.ts`
+**Ports:** 6667 (plaintext IRC), 6697 (implicit-TLS IRCS)
+**Routes:**
+- `POST /api/irc/connect` — connection probe (plaintext)
+- `GET /api/irc/connect` (WebSocket upgrade) — interactive session (plaintext)
+- `POST /api/ircs/connect` — connection probe (TLS)
+- `GET /api/ircs/connect` (WebSocket upgrade) — interactive session (TLS)
 
-**Protocol:** IRC (Internet Relay Chat)
-**Port:** 6667 (plaintext), 6697 (SSL)
-**RFC:** [RFC 1459](https://tools.ietf.org/html/rfc1459), [RFC 2812](https://tools.ietf.org/html/rfc2812)
-**Complexity:** Low-Medium
-**Purpose:** Real-time text chat
+---
 
-IRC is a **classic internet protocol** still actively used. A browser-based client brings IRC to modern web users without installing dedicated software.
+## Connection Probe
 
-### Use Cases
-- Connect to IRC communities from anywhere
-- Developer chat rooms (Freenode, Libera.Chat)
-- Open source project channels
-- Tech support channels
-- Retro computing enthusiasts
-- Educational - learn IRC commands
-
-## Protocol Specification
-
-### IRC Message Format
-
-Simple line-based protocol:
+### Request
 
 ```
-[: <prefix> ] <command> <params> \r\n
+POST /api/irc/connect           (plaintext)
+POST /api/ircs/connect          (TLS)
+Content-Type: application/json
 ```
 
-### Example Commands
-
-```
-NICK username               - Set nickname
-USER user 0 * :realname    - Identify user
-JOIN #channel              - Join channel
-PRIVMSG #channel :message  - Send message
-PART #channel              - Leave channel
-QUIT :message              - Disconnect
-PING :server               - Keepalive
-PONG :server               - Respond to ping
-```
-
-### Example Session
-
-```
-Client → Server: NICK alice
-Client → Server: USER alice 0 * :Alice Smith
-
-Server → Client: :server 001 alice :Welcome to IRC
-Server → Client: :server 376 alice :End of /MOTD
-
-Client → Server: JOIN #test
-
-Server → Client: :alice!~alice@host JOIN #test
-Server → Client: :server 332 alice #test :Welcome to #test
-Server → Client: :server 353 alice = #test :alice bob charlie
-
-Client → Server: PRIVMSG #test :Hello everyone!
-
-Server → Client: :alice!~alice@host PRIVMSG #test :Hello everyone!
-
-Client → Server: QUIT :Goodbye
+```json
+{
+  "host": "irc.libera.chat",
+  "port": 6667,
+  "nickname": "porttest",
+  "username": "porttest",
+  "realname": "Port of Call",
+  "password": "serverpass",
+  "channels": []
+}
 ```
 
-### Numeric Replies
+All fields except `host` and `nickname` are optional. `password` is the IRC server password (`PASS`), not NickServ/SASL.
 
-| Code | Name | Meaning |
-|------|------|---------|
-| 001 | RPL_WELCOME | Welcome message |
-| 332 | RPL_TOPIC | Channel topic |
-| 353 | RPL_NAMREPLY | Channel user list |
-| 433 | ERR_NICKNAMEINUSE | Nickname taken |
-| 461 | ERR_NEEDMOREPARAMS | Missing parameters |
+### What it does
 
-## Worker Implementation
+1. Connects TCP (plaintext) or TLS (IRCS)
+2. Sends `CAP LS 302` + `NICK` + `USER` (and optionally `PASS`)
+3. Reads server output until `376 End of /MOTD` or `422 MOTD File Missing` (whichever comes first, 10 s cap)
+4. Sends `QUIT`, closes
 
-### IRC Client
+### Response
 
+```json
+{
+  "success": true,
+  "host": "irc.libera.chat",
+  "port": 6667,
+  "tls": false,
+  "rtt": 42,
+  "nickname": "porttest",
+  "welcome": "Welcome to the Libera.Chat Internet Relay Chat Network porttest",
+  "serverInfo": "chopin.libera.chat InspIRCd-3 dioswkgxXbe-c bIiklmnopstv :abcdefghijklmnopqrstuvwxyz",
+  "motd": "...",
+  "messagesReceived": 32,
+  "messages": [...]
+}
+```
+
+`rtt` (ms from TCP open to `socket.opened`) is only present in IRCS responses. `messages` is capped at 50 entries.
+
+### Important limits
+
+- `CAP END` is **not** sent during the probe — the server holds off some numerics until CAP negotiation ends. If the server sends 376 before CAP END, the probe terminates normally. If not, it times out at 10 s.
+- Nickname collision (`433 ERR_NICKNAMEINUSE`) is **not** retried — the probe returns a partial failure with the 433 message included in `messages`.
+- SASL is **not** performed in the probe.
+
+---
+
+## Interactive WebSocket Session
+
+### Connecting
+
+```
+GET /api/irc/connect?host=...&nickname=...    (plaintext, port 6667)
+GET /api/ircs/connect?host=...&nickname=...   (TLS, port 6697)
+Upgrade: websocket
+```
+
+Query parameters:
+
+| Param | Default | Description |
+|-------|---------|-------------|
+| `host` | (required) | IRC server hostname |
+| `port` | 6667 / 6697 | TCP port |
+| `nickname` | (required) | IRC nick (validated with `validateNickname`) |
+| `username` | = nickname | USER ident |
+| `realname` | = nickname | USER gecos / real name |
+| `password` | `` | Server password (PASS command) |
+| `channels` | `` | Comma-separated channels to auto-join after 376/422 |
+| `saslUsername` | `` | SASL PLAIN account name (enables SASL) |
+| `saslPassword` | `` | SASL PLAIN password |
+
+### Registration sequence
+
+**Without SASL:**
+```
+→ CAP LS 302
+→ NICK <nick>
+→ USER <user> 0 * :<realname>
+← CAP * LS <caps>           (worker sends CAP END, reports caps via irc-caps event)
+← 001 :Welcome ...
+← 376 :End of /MOTD         (worker auto-joins channels, registration complete)
+```
+
+**With SASL PLAIN** (`saslUsername` + `saslPassword` provided, server has `sasl` cap):
+```
+→ CAP LS 302
+→ NICK <nick>
+→ USER <user> 0 * :<realname>
+← CAP * LS ... sasl ...      (worker sends CAP REQ :sasl)
+→ CAP REQ :sasl
+← CAP * ACK :sasl            (worker sends AUTHENTICATE PLAIN)
+→ AUTHENTICATE PLAIN
+← AUTHENTICATE +             (worker sends base64 creds)
+→ AUTHENTICATE <base64(account\0account\0password)>
+← 900 * <nick> <account> :You are now logged in
+← 903 * :SASL authentication successful  (worker sends CAP END)
+→ CAP END
+← 001 :Welcome ...
+← 376 :End of /MOTD
+```
+
+If SASL fails (904/905/906/907), the WebSocket closes with an `irc-sasl-failed` event.
+
+---
+
+## Worker → Browser events
+
+All inbound IRC lines are forwarded as:
+
+```json
+{ "type": "irc-message", "raw": ":nick!user@host PRIVMSG #chan :hello", "parsed": { ... } }
+```
+
+`parsed` shape:
 ```typescript
-// src/worker/protocols/irc/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface IRCConfig {
-  server: string;
-  port: number;
-  nickname: string;
-  username?: string;
-  realname?: string;
-  password?: string; // Server password
-  channels?: string[];
-}
-
-export interface IRCMessage {
-  prefix?: string;
-  command: string;
-  params: string[];
-  timestamp: number;
-}
-
-export class IRCClient {
-  private socket: Socket;
-  private messages: IRCMessage[] = [];
-  private connected = false;
-
-  constructor(private config: IRCConfig) {}
-
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.server}:${this.config.port}`);
-    await this.socket.opened;
-
-    // Start reading messages
-    this.readMessages();
-
-    // Send registration
-    if (this.config.password) {
-      await this.send(`PASS ${this.config.password}`);
-    }
-
-    await this.send(`NICK ${this.config.nickname}`);
-    await this.send(
-      `USER ${this.config.username || this.config.nickname} 0 * :${
-        this.config.realname || this.config.nickname
-      }`
-    );
-
-    this.connected = true;
-  }
-
-  private async readMessages(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // Process complete lines
-        let newlineIndex;
-        while ((newlineIndex = buffer.indexOf('\r\n')) !== -1) {
-          const line = buffer.substring(0, newlineIndex);
-          buffer = buffer.substring(newlineIndex + 2);
-
-          const msg = this.parseLine(line);
-          this.messages.push(msg);
-
-          // Auto-respond to PING
-          if (msg.command === 'PING') {
-            await this.send(`PONG ${msg.params[0]}`);
-          }
-        }
-      }
-    } catch (error) {
-      console.error('IRC read error:', error);
-    }
-  }
-
-  private parseLine(line: string): IRCMessage {
-    let prefix: string | undefined;
-    let command: string;
-    const params: string[] = [];
-
-    let pos = 0;
-
-    // Parse prefix
-    if (line[0] === ':') {
-      const spacePos = line.indexOf(' ', 1);
-      prefix = line.substring(1, spacePos);
-      pos = spacePos + 1;
-    }
-
-    // Parse command
-    const spacePos = line.indexOf(' ', pos);
-    if (spacePos === -1) {
-      command = line.substring(pos);
-    } else {
-      command = line.substring(pos, spacePos);
-      pos = spacePos + 1;
-    }
-
-    // Parse params
-    while (pos < line.length) {
-      if (line[pos] === ':') {
-        // Trailing param (rest of line)
-        params.push(line.substring(pos + 1));
-        break;
-      }
-
-      const nextSpace = line.indexOf(' ', pos);
-      if (nextSpace === -1) {
-        params.push(line.substring(pos));
-        break;
-      }
-
-      params.push(line.substring(pos, nextSpace));
-      pos = nextSpace + 1;
-    }
-
-    return {
-      prefix,
-      command,
-      params,
-      timestamp: Date.now(),
-    };
-  }
-
-  private async send(message: string): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(message + '\r\n'));
-    writer.releaseLock();
-  }
-
-  async join(channel: string): Promise<void> {
-    await this.send(`JOIN ${channel}`);
-  }
-
-  async part(channel: string, message?: string): Promise<void> {
-    await this.send(`PART ${channel}${message ? ' :' + message : ''}`);
-  }
-
-  async sendMessage(target: string, message: string): Promise<void> {
-    await this.send(`PRIVMSG ${target} :${message}`);
-  }
-
-  async setNick(nickname: string): Promise<void> {
-    await this.send(`NICK ${nickname}`);
-  }
-
-  getMessages(): IRCMessage[] {
-    return this.messages;
-  }
-
-  clearMessages(): void {
-    this.messages = [];
-  }
-
-  async quit(message: string = 'Goodbye'): Promise<void> {
-    await this.send(`QUIT :${message}`);
-    await this.socket.close();
-    this.connected = false;
-  }
+{
+  tags?: Record<string, string>;  // IRCv3 @key=value tags, if present
+  prefix?: string;                // "nick!user@host" or "server.name"
+  command: string;                // "PRIVMSG", "001", "CAP", etc.
+  params: string[];               // positional parameters
+  timestamp: number;              // Date.now() when line was processed
 }
 ```
 
-### WebSocket Tunnel
+**IRCv3 message tags** — if the server sends a line like:
+```
+@time=2024-01-01T12:00:00.000Z;msgid=abc123 :nick!user@host PRIVMSG #chan :hello
+```
+…`parsed.tags` will be `{ "time": "2024-01-01T12:00:00.000Z", "msgid": "abc123" }`. Tag values are unescaped per IRCv3 spec (`\:` → `;`, `\s` → space, `\\` → `\`).
 
-```typescript
-// src/worker/protocols/irc/tunnel.ts
+Additional event types:
 
-export async function ircTunnel(
-  request: Request,
-  config: IRCConfig
-): Promise<Response> {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
+| Event | When sent |
+|-------|-----------|
+| `{ type: "irc-connected", host, port, tls?, message }` | TCP connection established, before registration |
+| `{ type: "irc-caps", caps: string[] }` | Server `CAP LS` received; `caps` = available capability names |
+| `{ type: "irc-cap-ack", caps: string[] }` | Server acknowledged requested caps |
+| `{ type: "irc-cap-nak", caps: string }` | Server rejected requested caps |
+| `{ type: "irc-sasl-success", message }` | 903 — SASL authentication accepted |
+| `{ type: "irc-sasl-failed", code, message }` | 904/905/906/907 — SASL authentication rejected |
+| `{ type: "irc-disconnected", message }` | Server closed the TCP connection |
+| `{ type: "error", error }` | Worker-side error |
 
-  server.accept();
+---
 
-  (async () => {
-    try {
-      const irc = new IRCClient(config);
-      await irc.connect();
+## Browser → Worker commands
 
-      server.send(JSON.stringify({ type: 'connected' }));
+Send JSON over the WebSocket. Any string that fails `JSON.parse` is sent verbatim as a raw IRC line (with `\r\n` appended).
 
-      // Auto-join channels
-      if (config.channels) {
-        for (const channel of config.channels) {
-          await irc.join(channel);
-        }
-      }
+### Full command reference
 
-      // Handle commands from browser
-      server.addEventListener('message', async (event) => {
-        try {
-          const msg = JSON.parse(event.data);
+```json
+{ "type": "raw", "command": "WHOIS porttest" }
+```
+Send any raw IRC command. No length or safety checks are applied.
 
-          switch (msg.type) {
-            case 'join':
-              await irc.join(msg.channel);
-              break;
+```json
+{ "type": "privmsg", "target": "#libera", "message": "hello" }
+```
+Send a `PRIVMSG`. `target` may be a channel or a nick.
 
-            case 'part':
-              await irc.part(msg.channel, msg.message);
-              break;
+```json
+{ "type": "notice", "target": "#libera", "message": "announcement" }
+```
+Send a `NOTICE`. Servers and IRC etiquette distinguish NOTICE from PRIVMSG: servers do not auto-reply to NOTICEs.
 
-            case 'message':
-              await irc.sendMessage(msg.target, msg.message);
-              break;
+```json
+{ "type": "join", "channel": "#linux" }
+```
+Join a channel. Key-protected channels: `{ "type": "raw", "command": "JOIN #secret key" }`.
 
-            case 'nick':
-              await irc.setNick(msg.nickname);
-              break;
+```json
+{ "type": "part", "channel": "#linux", "message": "goodbye" }
+```
+Part a channel. `message` is optional.
 
-            case 'getMessages':
-              const messages = irc.getMessages();
-              server.send(JSON.stringify({
-                type: 'messages',
-                messages,
-              }));
-              irc.clearMessages();
-              break;
-          }
-        } catch (error) {
-          server.send(JSON.stringify({
-            type: 'error',
-            error: error instanceof Error ? error.message : 'Unknown error',
-          }));
-        }
-      });
+```json
+{ "type": "nick", "nickname": "newnick" }
+```
+Change nickname. The server may reject with `433 ERR_NICKNAMEINUSE`.
 
-      // Poll for new messages
-      const interval = setInterval(() => {
-        const messages = irc.getMessages();
-        if (messages.length > 0) {
-          server.send(JSON.stringify({
-            type: 'messages',
-            messages,
-          }));
-          irc.clearMessages();
-        }
-      }, 500);
+```json
+{ "type": "topic", "channel": "#dev", "topic": "new topic" }
+```
+Set channel topic. Omit `topic` to query the current topic.
 
-      server.addEventListener('close', () => {
-        clearInterval(interval);
-        irc.quit('Connection closed');
-      });
+```json
+{ "type": "names", "channel": "#linux" }
+```
+Request nick list for a channel. Expect `353 RPL_NAMREPLY` + `366 RPL_ENDOFNAMES` messages.
 
-    } catch (error) {
-      server.send(JSON.stringify({
-        type: 'error',
-        error: error instanceof Error ? error.message : 'Connection failed',
-      }));
-      server.close();
+```json
+{ "type": "whois", "nickname": "alice" }
+```
+Query user info. Expect `311 RPL_WHOISUSER` + related numerics.
+
+```json
+{ "type": "mode", "target": "#linux", "mode": "+o", "params": "alice" }
+```
+Set a channel or user mode. `params` is optional (required for some modes like `+o`, `+b`, `+l`).
+
+```json
+{ "type": "kick", "channel": "#linux", "user": "troll", "reason": "off-topic" }
+```
+Kick a user. Requires channel operator status (+o). `reason` is optional.
+
+```json
+{ "type": "invite", "nick": "alice", "channel": "#private" }
+```
+Invite a user to a channel.
+
+```json
+{ "type": "away", "message": "lunch" }
+```
+Set away status. Omit `message` (or send `""`) to return from away.
+
+```json
+{ "type": "ctcp", "target": "#linux", "ctcp": "ACTION", "args": "nods" }
+```
+Send a CTCP request via `PRIVMSG`. Common ctcp values: `ACTION` (/me), `VERSION`, `PING`, `TIME`, `CLIENTINFO`. Args are optional.
+
+```json
+{ "type": "ctcp-reply", "target": "alice", "ctcp": "VERSION", "args": "Port of Call 1.0" }
+```
+Send a CTCP reply via `NOTICE`. Used to respond to incoming CTCP queries.
+
+```json
+{ "type": "userhost", "nicks": ["alice", "bob", "charlie"] }
+```
+Query `USERHOST` for up to 5 nicks. Returns `302 RPL_USERHOST` with `nick=±user@host` entries.
+
+```json
+{ "type": "list" }
+```
+Request the full channel list (`LIST`). On large networks this returns thousands of lines and may cause flooding. Prefer `LIST #pattern` via `raw`.
+
+```json
+{ "type": "quit", "message": "be back later" }
+```
+Send QUIT and close the session.
+
+```json
+{ "type": "cap", "subcommand": "LIST" }
+{ "type": "cap", "subcommand": "REQ", "params": "away-notify account-notify" }
+```
+Send arbitrary `CAP` commands mid-session (for dynamic capability negotiation).
+
+---
+
+## Detecting CTCP in incoming messages
+
+Incoming CTCP requests arrive as `PRIVMSG` with `\x01` delimiters in the last param:
+
+```javascript
+ws.onmessage = ({ data }) => {
+  const { type, parsed } = JSON.parse(data);
+  if (type === 'irc-message' && parsed.command === 'PRIVMSG') {
+    const text = parsed.params[1] ?? '';
+    if (text.startsWith('\x01') && text.endsWith('\x01')) {
+      const inner = text.slice(1, -1);
+      const [ctcp, ...args] = inner.split(' ');
+      console.log('CTCP', ctcp, args.join(' '), 'from', parsed.prefix);
+      // Reply with ctcp-reply:
+      ws.send(JSON.stringify({ type: 'ctcp-reply', target: parsed.prefix.split('!')[0], ctcp, args: '...' }));
     }
-  })();
+  }
+};
+```
 
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
+---
+
+## Minimal browser snippet
+
+```javascript
+const ws = new WebSocket(
+  'wss://portofcall.example/api/ircs/connect' +
+  '?host=irc.libera.chat&nickname=porttest&channels=%23libera' +
+  '&saslUsername=myaccount&saslPassword=secret'
+);
+
+ws.onmessage = ({ data }) => {
+  const msg = JSON.parse(data);
+  switch (msg.type) {
+    case 'irc-connected':   console.log('TCP open'); break;
+    case 'irc-caps':        console.log('Server caps:', msg.caps); break;
+    case 'irc-sasl-success':console.log('Authenticated'); break;
+    case 'irc-sasl-failed': console.error('SASL fail:', msg.message); break;
+    case 'irc-message':
+      const { parsed } = msg;
+      if (parsed.command === 'PRIVMSG') {
+        console.log(`<${parsed.prefix?.split('!')[0]}> ${parsed.params[1]}`);
+      }
+      break;
+    case 'irc-disconnected': ws.close(); break;
+  }
+};
+
+// After registration (wait for irc-message with command "376" or "422")
+function sendMessage(target, text) {
+  ws.send(JSON.stringify({ type: 'privmsg', target, message: text }));
+}
+function meAction(channel, action) {
+  ws.send(JSON.stringify({ type: 'ctcp', target: channel, ctcp: 'ACTION', args: action }));
 }
 ```
 
-## Web UI Design
+---
 
-### IRC Chat Interface
+## Nickname validation
 
-```typescript
-// src/components/IRCClient.tsx
+`validateNickname(nick)` enforces RFC 2812: 1–30 chars, starts with `[a-zA-Z\[\]\\` + backtick + `_^{|}]`, rest may also include digits and `-`. Applied at the HTTP level; the server may have stricter rules.
 
-export function IRCClient() {
-  const [server, setServer] = useState('irc.libera.chat');
-  const [port, setPort] = useState(6667);
-  const [nickname, setNickname] = useState('');
-  const [connected, setConnected] = useState(false);
+---
 
-  const [channels, setChannels] = useState<string[]>([]);
-  const [activeChannel, setActiveChannel] = useState<string>('');
-  const [messages, setMessages] = useState<Map<string, IRCMessage[]>>(new Map());
-  const [input, setInput] = useState('');
+## Known limitations
 
-  const ws = useRef<WebSocket | null>(null);
+- **No STARTTLS** — plaintext IRC (`/api/irc/connect`) uses no TLS; for encrypted connections use `/api/ircs/connect` (implicit TLS port 6697). There is no mid-stream STARTTLS upgrade.
+- **CAP LS sent in probe but CAP END is not guaranteed** — the probe exits on `376`/`422` regardless of CAP negotiation state. Some servers hold that numeric until CAP END; those probes will time out at 10 s.
+- **SASL mechanisms** — only `PLAIN` is implemented. `EXTERNAL`, `SCRAM-SHA-256`, `ECDSA-NIST256P-CHALLENGE` (used by some servers) are not supported.
+- **Multi-line CAP LS** — large `CAP LS` responses use multiple continuation lines ending with `*`. The implementation reads the last line (the one without `*`). Capabilities only listed in a continuation line may be missed. This is rare in practice.
+- **No flood throttling** — the `raw` command type allows unrestricted writes. IRC servers apply flood-protection kicks; the Worker does not rate-limit outbound lines.
+- **No DCC** — Direct Client-to-Client file transfer / chat requires P2P connections; not possible from a Worker.
 
-  const connect = () => {
-    ws.current = new WebSocket('/api/irc/connect');
+---
 
-    ws.current.onopen = () => {
-      ws.current?.send(JSON.stringify({
-        server,
-        port,
-        nickname,
-        channels: ['#port-of-call'], // Auto-join
-      }));
-    };
+## Public servers for testing
 
-    ws.current.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
+| Network | Plaintext | TLS | Notes |
+|---------|-----------|-----|-------|
+| Libera.Chat | `irc.libera.chat:6667` | `irc.libera.chat:6697` | SASL required for registered accounts |
+| OFTC | `irc.oftc.net:6667` | `irc.oftc.net:6697` | Debian/open source community |
+| EFnet | `irc.efnet.org:6667` | — | Legacy network, no SASL |
+| IRCNet | `open.ircnet.net:6667` | — | European network |
 
-      if (msg.type === 'connected') {
-        setConnected(true);
-      } else if (msg.type === 'messages') {
-        // Process IRC messages
-        for (const ircMsg of msg.messages) {
-          processIRCMessage(ircMsg);
-        }
-      }
-    };
-  };
-
-  const processIRCMessage = (msg: IRCMessage) => {
-    // Extract channel/user from message
-    const target = msg.params[0];
-
-    if (msg.command === 'JOIN' && msg.prefix?.startsWith(nickname)) {
-      setChannels(prev => [...prev, target]);
-      if (!activeChannel) setActiveChannel(target);
-    } else if (msg.command === 'PRIVMSG') {
-      addMessage(target, msg);
-    }
-
-    // Handle numeric replies
-    if (/^\d{3}$/.test(msg.command)) {
-      addMessage('server', msg);
-    }
-  };
-
-  const addMessage = (channel: string, msg: IRCMessage) => {
-    setMessages(prev => {
-      const updated = new Map(prev);
-      const channelMsgs = updated.get(channel) || [];
-      updated.set(channel, [...channelMsgs, msg]);
-      return updated;
-    });
-  };
-
-  const sendMessage = () => {
-    if (input.startsWith('/')) {
-      // Handle IRC commands
-      const [cmd, ...args] = input.substring(1).split(' ');
-
-      if (cmd === 'join') {
-        ws.current?.send(JSON.stringify({
-          type: 'join',
-          channel: args[0],
-        }));
-      } else if (cmd === 'part') {
-        ws.current?.send(JSON.stringify({
-          type: 'part',
-          channel: activeChannel,
-        }));
-      }
-    } else {
-      // Regular message
-      ws.current?.send(JSON.stringify({
-        type: 'message',
-        target: activeChannel,
-        message: input,
-      }));
-
-      // Show own message
-      addMessage(activeChannel, {
-        prefix: `${nickname}!~user@host`,
-        command: 'PRIVMSG',
-        params: [activeChannel, input],
-        timestamp: Date.now(),
-      });
-    }
-
-    setInput('');
-  };
-
-  return (
-    <div className="irc-client">
-      {!connected ? (
-        <div className="connection-form">
-          <h2>Connect to IRC</h2>
-          <input
-            type="text"
-            placeholder="Server"
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-          />
-          <input
-            type="number"
-            placeholder="Port"
-            value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
-          />
-          <input
-            type="text"
-            placeholder="Nickname"
-            value={nickname}
-            onChange={(e) => setNickname(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <div className="chat-interface">
-          <div className="channel-list">
-            <h3>Channels</h3>
-            {channels.map(ch => (
-              <div
-                key={ch}
-                className={ch === activeChannel ? 'active' : ''}
-                onClick={() => setActiveChannel(ch)}
-              >
-                {ch}
-              </div>
-            ))}
-          </div>
-
-          <div className="chat-area">
-            <div className="messages">
-              {(messages.get(activeChannel) || []).map((msg, i) => (
-                <div key={i} className="message">
-                  <span className="timestamp">
-                    {new Date(msg.timestamp).toLocaleTimeString()}
-                  </span>
-                  <span className="sender">
-                    {msg.prefix?.split('!')[0] || 'server'}
-                  </span>
-                  <span className="content">
-                    {msg.params[msg.params.length - 1]}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            <div className="input-area">
-              <input
-                type="text"
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                placeholder="Type message or /command"
-              />
-              <button onClick={sendMessage}>Send</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-## Security
-
-### Nickname Validation
-
-```typescript
-function validateNickname(nick: string): boolean {
-  // IRC nicknames: 1-9 chars, alphanumeric + special chars
-  return /^[a-zA-Z\[\]\\`_^{|}][a-zA-Z0-9\[\]\\`_^{|}-]{0,8}$/.test(nick);
-}
-```
-
-### Rate Limiting
-
-```typescript
-// IRC servers typically rate limit (flood protection)
-const MESSAGE_DELAY = 500; // ms between messages
-```
-
-## Testing
-
-### Public IRC Servers
-
-```
-irc.libera.chat:6667
-irc.libera.chat:6697 (SSL)
-irc.freenode.net:6667
-```
+---
 
 ## Resources
 
-- **RFC 2812**: [IRC Protocol](https://tools.ietf.org/html/rfc2812)
-- **Libera.Chat**: [IRC Network](https://libera.chat/)
-- **IRC Command Reference**: [Modern IRC](https://modern.ircdocs.horse/)
-
-## Next Steps
-
-1. Implement IRC client with message parsing
-2. Build chat UI with channels
-3. Add user list display
-4. Implement IRC commands (/join, /part, /nick, etc.)
-5. Add color/formatting support (mIRC colors)
-6. Create channel search/discovery
-7. Add private message (DM) support
-
-## Notes
-
-- IRC is **line-based** and relatively simple
-- Perfect for demonstrating **real-time messaging**
-- Still actively used by open source communities
-- Consider SSL/TLS support (port 6697)
-- Retro appeal for older internet users
+- [RFC 2812](https://tools.ietf.org/html/rfc2812) — IRC Client Protocol
+- [Modern IRC (ircdocs.horse)](https://modern.ircdocs.horse/) — authoritative modern reference
+- [IRCv3 Specifications](https://ircv3.net/specs/) — capabilities, message tags, SASL
+- [IRCv3 SASL](https://ircv3.net/specs/extensions/sasl-3.1) — authentication framework

@@ -63,6 +63,16 @@ const METHOD_EXCHANGE_DECLARE_OK = 11;
 // Basic class = 60
 const CLASS_BASIC          = 60;
 const METHOD_BASIC_PUBLISH = 40;
+const METHOD_BASIC_GET       = 70;
+const METHOD_BASIC_GET_OK    = 71;
+const METHOD_BASIC_GET_EMPTY = 72;
+const METHOD_BASIC_ACK       = 29;
+const METHOD_BASIC_NACK      = 120;
+
+// Confirm class = 85 (publisher confirms, RabbitMQ extension — de-facto standard)
+const CLASS_CONFIRM            = 85;
+const METHOD_CONFIRM_SELECT    = 10;
+const METHOD_CONFIRM_SELECT_OK = 11;
 
 // ---- Frame Building Helpers --------------------------------------------------
 
@@ -329,12 +339,14 @@ function buildChannelOpen(): Uint8Array {
   return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_CHANNEL, METHOD_CHANNEL_OPEN, reserved1));
 }
 
-function buildExchangeDeclare(exchange: string): Uint8Array {
+function buildExchangeDeclare(exchange: string, type = 'direct', durable = false): Uint8Array {
+  // flags byte: bit0=passive, bit1=durable, bit2=auto-delete, bit3=internal, bit4=no-wait
+  const flags = (durable ? 0x02 : 0x00);
   const args = concat(
     new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
     encodeShortString(exchange),
-    encodeShortString('direct'),
-    new Uint8Array([0x00]),        // flags byte: passive|durable|auto-delete|internal|no-wait = 0
+    encodeShortString(type),
+    new Uint8Array([flags]),
     encodeFieldTable({}),          // arguments (empty table)
   );
   return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE, args));
@@ -391,6 +403,40 @@ function buildConnectionClose(): Uint8Array {
   return buildFrame(FRAME_METHOD, 0, buildMethodPayload(CLASS_CONNECTION, METHOD_CONNECTION_CLOSE, args));
 }
 
+function buildConfirmSelect(): Uint8Array {
+  // Confirm.Select: nowait=false (1 byte)
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_CONFIRM, METHOD_CONFIRM_SELECT, new Uint8Array([0x00])));
+}
+
+function buildBasicAck(deliveryTag: bigint, multiple: boolean): Uint8Array {
+  const args = new Uint8Array(9);
+  const view = new DataView(args.buffer);
+  view.setBigUint64(0, deliveryTag, false);
+  args[8] = multiple ? 1 : 0;
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_BASIC, METHOD_BASIC_ACK, args));
+}
+
+function buildBasicGet(queue: string, noAck: boolean): Uint8Array {
+  const args = concat(
+    new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
+    encodeShortString(queue),
+    new Uint8Array([noAck ? 0x01 : 0x00]),
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_BASIC, METHOD_BASIC_GET, args));
+}
+
+function buildQueueBind(queue: string, exchange: string, routingKey: string): Uint8Array {
+  const args = concat(
+    new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
+    encodeShortString(queue),
+    encodeShortString(exchange),
+    encodeShortString(routingKey),
+    new Uint8Array([0x00]),        // no-wait = false
+    encodeFieldTable({}),          // arguments
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_QUEUE, 20 /* Queue.Bind */, args));
+}
+
 // ---- Core Publish Logic (shared with amqps.ts) -------------------------------
 
 export interface AMQPPublishParams {
@@ -404,6 +450,8 @@ export interface AMQPPublishParams {
   message: string;
   timeout: number;
   secureTransport?: 'on' | 'off';
+  exchangeType?: string;  // 'direct' | 'fanout' | 'topic' | 'headers'
+  durable?: boolean;
 }
 
 export interface AMQPPublishResult {
@@ -421,6 +469,8 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
     host, port, username, password, vhost,
     exchange, routingKey, message: msgText,
     secureTransport = 'off',
+    exchangeType = 'direct',
+    durable = false,
   } = params;
 
   const connectOptions = secureTransport === 'on'
@@ -467,7 +517,7 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
 
     // Step 10: Optionally declare exchange (skip for default "")
     if (exchange !== '') {
-      await writer.write(buildExchangeDeclare(exchange));
+      await writer.write(buildExchangeDeclare(exchange, exchangeType, durable));
       await expectMethod(reader, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK);
     }
 
@@ -662,6 +712,8 @@ export async function handleAMQPPublish(request: Request): Promise<Response> {
       password?: string;
       vhost?: string;
       exchange?: string;
+      exchangeType?: string;
+      durable?: boolean;
       routingKey?: string;
       message?: string;
       timeout?: number;
@@ -669,14 +721,16 @@ export async function handleAMQPPublish(request: Request): Promise<Response> {
 
     const {
       host,
-      port       = 5672,
-      username   = 'guest',
-      password   = 'guest',
-      vhost      = '/',
-      exchange   = '',
-      routingKey = '',
-      message    = '',
-      timeout    = 15000,
+      port         = 5672,
+      username     = 'guest',
+      password     = 'guest',
+      vhost        = '/',
+      exchange     = '',
+      exchangeType = 'direct',
+      durable      = false,
+      routingKey   = '',
+      message      = '',
+      timeout      = 15000,
     } = body;
 
     if (!host) {
@@ -700,7 +754,7 @@ export async function handleAMQPPublish(request: Request): Promise<Response> {
 
     const publishPromise = doAMQPPublish({
       host, port, username, password, vhost,
-      exchange, routingKey, message, timeout,
+      exchange, exchangeType, durable, routingKey, message, timeout,
       secureTransport: 'off',
     });
 
@@ -720,5 +774,705 @@ export async function handleAMQPPublish(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+
+// ---- AMQP Consume Support ---------------------------------------------------
+
+// Queue class = 50
+const CLASS_QUEUE             = 50;
+const METHOD_QUEUE_DECLARE    = 10;
+const METHOD_QUEUE_DECLARE_OK = 11;
+
+// Additional Basic methods
+const METHOD_BASIC_CONSUME    = 20;
+const METHOD_BASIC_CONSUME_OK = 21;
+const METHOD_BASIC_DELIVER    = 60;
+
+export interface AMQPConsumedMessage {
+  exchange: string;
+  routing_key: string;
+  body_text: string;
+}
+
+export interface AMQPConsumeResult {
+  success: boolean;
+  host: string;
+  port: number;
+  queue: string;
+  messages: AMQPConsumedMessage[];
+  messageCount: number;
+}
+
+function buildQueueDeclare(queue: string): Uint8Array {
+  const args = concat(
+    new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
+    encodeShortString(queue),
+    new Uint8Array([0x00]),        // flags byte: passive|durable|exclusive|auto-delete|no-wait = all 0
+    encodeFieldTable({}),          // arguments (empty table)
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_QUEUE, METHOD_QUEUE_DECLARE, args));
+}
+
+function buildBasicConsume(queue: string): Uint8Array {
+  // flags byte: no-local=bit0=0, no-ack=bit1=1, exclusive=bit2=0, no-wait=bit3=0 => 0x02
+  const args = concat(
+    new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
+    encodeShortString(queue),
+    encodeShortString(''),         // consumer-tag (empty = server-assigned)
+    new Uint8Array([0x02]),        // flags: no-ack=true
+    encodeFieldTable({}),          // arguments (empty table)
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_BASIC, METHOD_BASIC_CONSUME, args));
+}
+
+/** Read a frame with a timeout; returns null if timeout elapses first. */
+async function readFrameWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<{ frameType: number; channel: number; payload: Uint8Array } | null> {
+  const framePromise = readFrame(reader);
+  const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs));
+  return Promise.race([framePromise, timeoutPromise]);
+}
+
+/**
+ * Core AMQP consume logic (shared between plain and TLS connections).
+ * Full 0-9-1 flow: handshake → Channel.Open → Queue.Declare → Basic.Consume →
+ * collect Basic.Deliver+ContentHeader+ContentBody frames.
+ */
+export async function doAMQPConsume(
+  host: string,
+  port: number,
+  username: string,
+  password: string,
+  vhost: string,
+  queue: string,
+  maxMessages: number,
+  timeoutMs: number,
+  secureTransport: 'on' | 'off',
+): Promise<AMQPConsumeResult> {
+  const connectOptions = secureTransport === 'on'
+    ? { secureTransport: 'on' as const, allowHalfOpen: false }
+    : { allowHalfOpen: false };
+
+  const socket = connect(`${host}:${port}`, connectOptions);
+  await socket.opened;
+
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+
+  try {
+    // Full AMQP handshake
+    await writer.write(AMQP_PROTOCOL_HEADER);
+    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+    await writer.write(buildConnectionStartOk(username, password));
+
+    const tuneArgs   = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+    const tuneView   = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
+    const channelMax = tuneView.getUint16(0, false);
+    const frameMax   = tuneView.getUint32(2, false);
+    const heartbeat  = tuneView.getUint16(6, false);
+
+    await writer.write(buildConnectionTuneOk(channelMax, frameMax, heartbeat));
+    await writer.write(buildConnectionOpen(vhost));
+    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+
+    // Open channel 1
+    await writer.write(buildChannelOpen());
+    await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+
+    // Queue.Declare
+    await writer.write(buildQueueDeclare(queue));
+    await expectMethod(reader, CLASS_QUEUE, METHOD_QUEUE_DECLARE_OK);
+
+    // Basic.Consume
+    await writer.write(buildBasicConsume(queue));
+    await expectMethod(reader, CLASS_BASIC, METHOD_BASIC_CONSUME_OK);
+
+    // Collect Basic.Deliver frames until timeout or maxMessages reached
+    const messages: AMQPConsumedMessage[] = [];
+    const deadline = Date.now() + timeoutMs;
+
+    while (messages.length < maxMessages) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+
+      const frame = await readFrameWithTimeout(reader, remaining);
+      if (frame === null) break; // timed out
+
+      // Only process METHOD frames
+      if (frame.frameType !== FRAME_METHOD) continue;
+
+      const classId  = (frame.payload[0] << 8) | frame.payload[1];
+      const methodId = (frame.payload[2] << 8) | frame.payload[3];
+
+      if (classId !== CLASS_BASIC || methodId !== METHOD_BASIC_DELIVER) continue;
+
+      // Parse Basic.Deliver arguments (after the 4-byte class+method header)
+      const args = frame.payload.subarray(4);
+      let pos = 0;
+
+      // consumer-tag (short string)
+      const consumerTagR = readShortString(args, pos);
+      pos += consumerTagR.bytesRead;
+
+      // delivery-tag (uint64, 8 bytes)
+      pos += 8;
+
+      // redelivered (boolean, 1 byte)
+      pos += 1;
+
+      // exchange (short string)
+      const exchangeR = readShortString(args, pos);
+      pos += exchangeR.bytesRead;
+
+      // routing-key (short string)
+      const routingKeyR = readShortString(args, pos);
+
+      // Read Content-Header frame
+      const headerFrame = await readFrame(reader);
+      if (headerFrame.frameType !== FRAME_HEADER) {
+        throw new Error(`Expected Content-Header frame, got type ${headerFrame.frameType}`);
+      }
+
+      // class-id(2B) + weight(2B) + body-size(8B BE) = 12 bytes before properties
+      const hv = new DataView(headerFrame.payload.buffer, headerFrame.payload.byteOffset);
+      const bodySizeHi = hv.getUint32(4, false);
+      const bodySizeLo = hv.getUint32(8, false);
+      // Combine as a JS number (safe up to 2^53 bytes)
+      const bodySize = bodySizeHi * 0x100000000 + bodySizeLo;
+
+      // Collect Content-Body frames until we have bodySize bytes
+      let collected = new Uint8Array(0);
+      while (collected.length < bodySize) {
+        const bodyFrame = await readFrame(reader);
+        if (bodyFrame.frameType !== FRAME_BODY) {
+          throw new Error(`Expected Content-Body frame, got type ${bodyFrame.frameType}`);
+        }
+        const merged = new Uint8Array(collected.length + bodyFrame.payload.length);
+        merged.set(collected);
+        merged.set(bodyFrame.payload, collected.length);
+        collected = merged;
+      }
+
+      messages.push({
+        exchange:    exchangeR.value,
+        routing_key: routingKeyR.value,
+        body_text:   decoder.decode(collected),
+      });
+    }
+
+    // Graceful close
+    await writer.write(buildChannelClose());
+    try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+    await writer.write(buildConnectionClose());
+    try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+
+    return {
+      success: true,
+      host,
+      port,
+      queue,
+      messages,
+      messageCount: messages.length,
+    };
+  } finally {
+    try { await writer.close();  } catch { /* ignore */ }
+    try { await reader.cancel(); } catch { /* ignore */ }
+    try { await socket.close();  } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Handle AMQP message consuming
+ * POST /api/amqp/consume
+ *
+ * Performs a full AMQP 0-9-1 connection, declares the queue, starts consuming,
+ * collects messages for up to timeoutMs ms, then closes cleanly.
+ *
+ * Request body: { host, port, username, password, vhost, queue, maxMessages?, timeoutMs? }
+ */
+export async function handleAMQPConsume(request: Request): Promise<Response> {
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      queue: string;
+      maxMessages?: number;
+      timeoutMs?: number;
+    }>();
+
+    const {
+      host,
+      port        = 5672,
+      username    = 'guest',
+      password    = 'guest',
+      vhost       = '/',
+      queue,
+      maxMessages = 10,
+      timeoutMs   = 3000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!queue) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: queue' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const result = await doAMQPConsume(
+      host, port, username, password, vhost, queue, maxMessages, timeoutMs, 'off',
+    );
+
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Consume failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// ---- Publisher Confirms -----------------------------------------------------
+
+/**
+ * Handle AMQP publisher confirms (guaranteed delivery).
+ * POST /api/amqp/confirm-publish
+ *
+ * Activates RabbitMQ publisher confirms (Confirm.Select), publishes a message,
+ * and waits for Basic.Ack or Basic.Nack from the broker.
+ * Returns { acked, deliveryTag, multiple } so callers know if the message
+ * was durably stored.
+ *
+ * Request body: { host, port, username, password, vhost, exchange, exchangeType,
+ *                 durable, routingKey, message, timeout }
+ */
+export async function handleAMQPConfirmPublish(request: Request): Promise<Response> {
+  const start = Date.now();
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      exchange?: string;
+      exchangeType?: string;
+      durable?: boolean;
+      routingKey?: string;
+      message?: string;
+      timeout?: number;
+    }>();
+
+    const {
+      host,
+      port         = 5672,
+      username     = 'guest',
+      password     = 'guest',
+      vhost        = '/',
+      exchange     = '',
+      exchangeType = 'direct',
+      durable      = false,
+      routingKey   = '',
+      message      = '',
+      timeout      = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const doIt = async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      try {
+        // Full handshake
+        await writer.write(AMQP_PROTOCOL_HEADER);
+        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+        await writer.write(buildConnectionStartOk(username, password));
+        const tuneArgs = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+        const tv = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
+        await writer.write(buildConnectionTuneOk(tv.getUint16(0, false), tv.getUint32(2, false), tv.getUint16(6, false)));
+        await writer.write(buildConnectionOpen(vhost));
+        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+        await writer.write(buildChannelOpen());
+        await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+
+        // Activate publisher confirms
+        await writer.write(buildConfirmSelect());
+        await expectMethod(reader, CLASS_CONFIRM, METHOD_CONFIRM_SELECT_OK);
+
+        // Optionally declare exchange
+        if (exchange !== '') {
+          await writer.write(buildExchangeDeclare(exchange, exchangeType, durable));
+          await expectMethod(reader, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK);
+        }
+
+        // Publish
+        const bodyBytes = encoder.encode(message);
+        await writer.write(buildBasicPublish(exchange, routingKey));
+        await writer.write(buildContentHeader(bodyBytes.length));
+        await writer.write(buildContentBody(message));
+
+        // Wait for Basic.Ack or Basic.Nack (delivery tag 1)
+        let acked = false;
+        let deliveryTag = 0n;
+        let multiple = false;
+
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const frame = await readFrame(reader);
+          if (frame.frameType !== FRAME_METHOD) continue;
+          const classId  = (frame.payload[0] << 8) | frame.payload[1];
+          const methodId = (frame.payload[2] << 8) | frame.payload[3];
+          if (classId !== CLASS_BASIC) continue;
+          if (methodId === METHOD_BASIC_ACK || methodId === METHOD_BASIC_NACK) {
+            const args = frame.payload.subarray(4);
+            const dv = new DataView(args.buffer, args.byteOffset);
+            deliveryTag = dv.getBigUint64(0, false);
+            multiple = args[8] !== 0;
+            acked = (methodId === METHOD_BASIC_ACK);
+            break;
+          }
+        }
+
+        // Graceful close
+        await writer.write(buildChannelClose());
+        try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+        await writer.write(buildConnectionClose());
+        try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+
+        return {
+          success: true,
+          host, port, exchange, routingKey,
+          messageSize: bodyBytes.length,
+          acked,
+          deliveryTag: deliveryTag.toString(),
+          multiple,
+          latencyMs: Date.now() - start,
+        };
+      } finally {
+        try { await writer.close(); } catch { /* ignore */ }
+        try { await reader.cancel(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    };
+
+    const result = await Promise.race([
+      doIt(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Confirm-publish timeout')), timeout)),
+    ]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Confirm-publish failed',
+      latencyMs: Date.now() - start,
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---- Queue Bind --------------------------------------------------------------
+
+/**
+ * Bind a queue to an exchange with a routing key.
+ * POST /api/amqp/bind
+ *
+ * Use after declaring an exchange and queue to set up routing.
+ * For fanout exchanges the routingKey is ignored by the broker but must be present.
+ *
+ * Request body: { host, port, username, password, vhost, queue, exchange, routingKey, timeout }
+ */
+export async function handleAMQPBind(request: Request): Promise<Response> {
+  const start = Date.now();
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      queue: string;
+      exchange: string;
+      routingKey?: string;
+      timeout?: number;
+    }>();
+
+    const {
+      host,
+      port       = 5672,
+      username   = 'guest',
+      password   = 'guest',
+      vhost      = '/',
+      queue,
+      exchange,
+      routingKey = '',
+      timeout    = 10000,
+    } = body;
+
+    if (!host || !queue || !exchange) {
+      return new Response(JSON.stringify({ error: 'host, queue, and exchange are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const doIt = async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      try {
+        // Full handshake
+        await writer.write(AMQP_PROTOCOL_HEADER);
+        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+        await writer.write(buildConnectionStartOk(username, password));
+        const tuneArgs = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+        const tv = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
+        await writer.write(buildConnectionTuneOk(tv.getUint16(0, false), tv.getUint32(2, false), tv.getUint16(6, false)));
+        await writer.write(buildConnectionOpen(vhost));
+        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+        await writer.write(buildChannelOpen());
+        await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+
+        // Queue.Bind
+        await writer.write(buildQueueBind(queue, exchange, routingKey));
+        await expectMethod(reader, CLASS_QUEUE, 21 /* Queue.BindOk */);
+
+        // Graceful close
+        await writer.write(buildChannelClose());
+        try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+        await writer.write(buildConnectionClose());
+        try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+
+        return {
+          success: true,
+          host, port, queue, exchange, routingKey, vhost,
+          latencyMs: Date.now() - start,
+        };
+      } finally {
+        try { await writer.close(); } catch { /* ignore */ }
+        try { await reader.cancel(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    };
+
+    const result = await Promise.race([
+      doIt(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Bind timeout')), timeout)),
+    ]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Bind failed',
+      latencyMs: Date.now() - start,
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---- Basic.Get (synchronous pull) -------------------------------------------
+
+/**
+ * Pull a single message from a queue (Basic.Get).
+ * POST /api/amqp/get
+ *
+ * Unlike Basic.Consume (which is push-based and requires a timeout), Basic.Get
+ * is a synchronous pull — the server responds with either Basic.GetOk (with
+ * the message content) or Basic.GetEmpty.
+ *
+ * Request body: { host, port, username, password, vhost, queue, ack?, timeout }
+ *   ack: false (default) = no-ack mode (message is auto-acked); true = explicit ack
+ */
+export async function handleAMQPGet(request: Request): Promise<Response> {
+  const start = Date.now();
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      queue: string;
+      ack?: boolean;
+      timeout?: number;
+    }>();
+
+    const {
+      host,
+      port     = 5672,
+      username = 'guest',
+      password = 'guest',
+      vhost    = '/',
+      queue,
+      ack      = false,
+      timeout  = 10000,
+    } = body;
+
+    if (!host || !queue) {
+      return new Response(JSON.stringify({ error: 'host and queue are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const doIt = async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      try {
+        // Full handshake
+        await writer.write(AMQP_PROTOCOL_HEADER);
+        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+        await writer.write(buildConnectionStartOk(username, password));
+        const tuneArgs = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+        const tv = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
+        await writer.write(buildConnectionTuneOk(tv.getUint16(0, false), tv.getUint32(2, false), tv.getUint16(6, false)));
+        await writer.write(buildConnectionOpen(vhost));
+        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+        await writer.write(buildChannelOpen());
+        await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+
+        // Queue.Declare (passive=true so we don't accidentally create it)
+        await writer.write(buildQueueDeclare(queue));
+        const declareOkArgs = await expectMethod(reader, CLASS_QUEUE, METHOD_QUEUE_DECLARE_OK);
+        const dv = new DataView(declareOkArgs.buffer, declareOkArgs.byteOffset);
+        // Queue.DeclareOk: message-count(uint32) + consumer-count(uint32)
+        const queueMessageCount  = dv.getUint32(0, false);
+        const queueConsumerCount = dv.getUint32(4, false);
+
+        // Basic.Get
+        await writer.write(buildBasicGet(queue, !ack));
+        const getFrame = await readFrame(reader);
+        if (getFrame.frameType !== FRAME_METHOD) throw new Error(`Expected METHOD, got frame type ${getFrame.frameType}`);
+
+        const classId  = (getFrame.payload[0] << 8) | getFrame.payload[1];
+        const methodId = (getFrame.payload[2] << 8) | getFrame.payload[3];
+
+        let result: Record<string, unknown>;
+
+        if (classId === CLASS_BASIC && methodId === METHOD_BASIC_GET_EMPTY) {
+          result = {
+            success: true, host, port, queue,
+            empty: true, message: null,
+            queueMessageCount, queueConsumerCount,
+            latencyMs: Date.now() - start,
+          };
+        } else if (classId === CLASS_BASIC && methodId === METHOD_BASIC_GET_OK) {
+          const args = getFrame.payload.subarray(4);
+          let pos = 0;
+          const adv = new DataView(args.buffer, args.byteOffset);
+          const deliveryTag = adv.getBigUint64(pos, false); pos += 8;
+          const redelivered = args[pos] !== 0;             pos += 1;
+          const exR = readShortString(args, pos); pos += exR.bytesRead;
+          const rkR = readShortString(args, pos); pos += rkR.bytesRead;
+          const msgCount = adv.getUint32(pos, false);
+
+          // Read content header
+          const headerFrame = await readFrame(reader);
+          const hdv = new DataView(headerFrame.payload.buffer, headerFrame.payload.byteOffset);
+          const bodySizeHi = hdv.getUint32(4, false);
+          const bodySizeLo = hdv.getUint32(8, false);
+          const bodySize = bodySizeHi * 0x100000000 + bodySizeLo;
+
+          // Read body
+          let collected = new Uint8Array(0);
+          while (collected.length < bodySize) {
+            const bodyFrame = await readFrame(reader);
+            const merged = new Uint8Array(collected.length + bodyFrame.payload.length);
+            merged.set(collected);
+            merged.set(bodyFrame.payload, collected.length);
+            collected = merged;
+          }
+
+          // Ack if requested
+          if (ack) {
+            await writer.write(buildBasicAck(deliveryTag, false));
+          }
+
+          result = {
+            success: true, host, port, queue,
+            empty: false,
+            message: {
+              deliveryTag: deliveryTag.toString(),
+              redelivered,
+              exchange: exR.value,
+              routingKey: rkR.value,
+              body: decoder.decode(collected),
+              bodySize,
+            },
+            remainingMessages: msgCount,
+            queueMessageCount, queueConsumerCount,
+            latencyMs: Date.now() - start,
+          };
+        } else {
+          throw new Error(`Unexpected method: class=${classId} method=${methodId}`);
+        }
+
+        // Graceful close
+        await writer.write(buildChannelClose());
+        try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+        await writer.write(buildConnectionClose());
+        try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+
+        return result;
+      } finally {
+        try { await writer.close(); } catch { /* ignore */ }
+        try { await reader.cancel(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    };
+
+    const result = await Promise.race([
+      doIt(),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Get timeout')), timeout)),
+    ]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Get failed',
+      latencyMs: Date.now() - start,
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

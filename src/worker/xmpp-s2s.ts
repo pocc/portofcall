@@ -636,3 +636,194 @@ export async function handleXmppS2SPing(request: Request): Promise<Response> {
     });
   }
 }
+
+// ─── S2S DIALBACK (XEP-0220) ─────────────────────────────────────────────────
+
+function generateDialbackKey(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function readS2SUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  sentinel: string,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const deadline = Date.now() + timeoutMs;
+  const dec = new TextDecoder();
+
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const { value, done } = await Promise.race([
+      reader.read(),
+      new Promise<{ value?: Uint8Array; done: boolean }>((resolve) =>
+        setTimeout(() => resolve({ value: undefined, done: true }), remaining)),
+    ]);
+    if (done || !value) break;
+    chunks.push(value);
+    total += value.length;
+    if (total > maxBytes) break;
+    const text = dec.decode(chunks.reduce((a, c) => {
+      const m = new Uint8Array(a.length + c.length); m.set(a); m.set(c, a.length); return m;
+    }));
+    if (text.includes(sentinel)) return text;
+  }
+  if (chunks.length === 0) return '';
+  return dec.decode(chunks.reduce((a, c) => {
+    const m = new Uint8Array(a.length + c.length); m.set(a); m.set(c, a.length); return m;
+  }));
+}
+
+/**
+ * XMPP S2S stream negotiation — open stream and parse features.
+ * Request body: { host, port=5269, fromDomain, toDomain?, timeout=10000 }
+ */
+export async function handleXMPPS2SConnect(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; fromDomain: string; toDomain?: string; timeout?: number;
+    };
+    const { host, port = 5269, fromDomain, timeout = 10000 } = body;
+    const toDomain = body.toDomain ?? host;
+
+    if (!host || !fromDomain) {
+      return new Response(JSON.stringify({ success: false, error: 'host and fromDomain required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const start = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const header = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
+        await writer.write(new TextEncoder().encode(header));
+        writer.releaseLock();
+
+        const raw = await readS2SUntil(reader, '</stream:features>', 32768, timeout);
+        const latencyMs = Date.now() - start;
+        reader.releaseLock();
+        try { socket.close(); } catch { /* ignore */ }
+
+        const streamId = parseStreamOpen(raw);
+        const features = parseStreamFeatures(raw);
+        const domainMatch = raw.match(/<stream:stream[^>]+from=['"]([\w.\-]+)['"]/);
+        const versionMatch = raw.match(/<stream:stream[^>]+version=['"]([\d.]+)['"]/);
+
+        return {
+          success: !!streamId,
+          streamId: streamId ?? undefined,
+          serverDomain: domainMatch?.[1] ?? toDomain,
+          features,
+          version: versionMatch?.[1] ?? '1.0',
+          latencyMs,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * XMPP S2S Dialback (XEP-0220) — send dialback key and parse result.
+ * Request body: { host, port=5269, fromDomain, toDomain?, timeout=10000 }
+ */
+export async function handleXMPPS2SDialback(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; fromDomain: string; toDomain?: string; timeout?: number;
+    };
+    const { host, port = 5269, fromDomain, timeout = 10000 } = body;
+    const toDomain = body.toDomain ?? host;
+
+    if (!host || !fromDomain) {
+      return new Response(JSON.stringify({ success: false, error: 'host and fromDomain required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const start = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        // Step 1: Send stream header
+        const header = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
+        await writer.write(new TextEncoder().encode(header));
+
+        // Step 2: Read stream features
+        let raw = await readS2SUntil(reader, '</stream:features>', 32768, timeout);
+        const streamId = parseStreamOpen(raw);
+        const features = parseStreamFeatures(raw);
+        const tlsOffered = features.includes('STARTTLS');
+
+        // Step 3: Send dialback key
+        const key = generateDialbackKey();
+        const dbResult = `<db:result from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
+        await writer.write(new TextEncoder().encode(dbResult));
+        writer.releaseLock();
+
+        // Step 4: Read dialback response
+        const resp = await readS2SUntil(reader, 'db:result', 32768, Math.min(timeout, 5000)).catch(() => '');
+        raw += resp;
+        const latencyMs = Date.now() - start;
+        reader.releaseLock();
+        try { socket.close(); } catch { /* ignore */ }
+
+        let dialbackResult: 'valid' | 'invalid' | 'error' | 'pending' = 'pending';
+        if (raw.match(/<db:result[^>]+type=['"]valid['"]/)) dialbackResult = 'valid';
+        else if (raw.match(/<db:result[^>]+type=['"]invalid['"]/)) dialbackResult = 'invalid';
+        else if (raw.includes('<stream:error')) dialbackResult = 'error';
+
+        return {
+          success: dialbackResult === 'valid',
+          streamId: streamId ?? undefined,
+          features,
+          dialbackResult,
+          tlsOffered,
+          latencyMs,
+          raw: raw.slice(0, 4096),
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

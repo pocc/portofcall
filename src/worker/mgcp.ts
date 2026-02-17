@@ -274,6 +274,142 @@ export async function handleMGCPCommand(request: Request): Promise<Response> {
   }
 }
 
+interface MGCPCallSetupRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  endpoint: string;
+  callId?: string;
+  connectionMode?: string;
+}
+
+/**
+ * Handle MGCP call setup: CRCX (create connection) followed by DLCX (delete connection).
+ * Returns connection details parsed from the 200 OK SDP response, plus DLCX status.
+ */
+export async function handleMGCPCallSetup(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MGCPCallSetupRequest;
+    const {
+      host,
+      port = 2427,
+      timeout = 15000,
+      endpoint,
+      connectionMode = 'recvonly',
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!endpoint) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Endpoint is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const callId = body.callId || generateCallId();
+    const fqEndpoint = endpoint.includes('@') ? endpoint : `${endpoint}@${host}`;
+
+    // Generate two sequential transaction IDs
+    const txBase = Math.floor(100000 + Math.random() * 899999);
+    const txIdCrcx = txBase.toString();
+    const txIdDlcx = (txBase + 1).toString();
+
+    // Build CRCX command
+    // L: p:20 = packetization 20ms, a:PCMU = G.711 µ-law
+    const crcxCommand =
+      `CRCX ${txIdCrcx} ${fqEndpoint} MGCP 1.0\r\n` +
+      `C: ${callId}\r\n` +
+      `L: p:20, a:PCMU\r\n` +
+      `M: ${connectionMode}\r\n` +
+      `\r\n`;
+
+    const start = Date.now();
+    const crcxResult = await sendMgcpCommand(host, port, crcxCommand, timeout);
+    const crcxCode = crcxResult.responseCode;
+
+    // Parse connection ID and local SDP from 200 OK response
+    // MGCP 200 responses may include:
+    //   I: <connectionId>  (connection identifier)
+    // Followed by an SDP body with c= (connection address) and m= (media port)
+    let connectionId = crcxResult.params['I'] ?? crcxResult.params['i'] ?? '';
+    let sdpIp = '';
+    let sdpPort = 0;
+    let sdpCodec = '';
+
+    // Parse SDP lines from the raw response
+    const rawLines = crcxResult.raw.split('\r\n');
+    for (const line of rawLines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('I:') || trimmed.startsWith('i:')) {
+        // Connection ID line: "I: abc123"
+        connectionId = trimmed.substring(2).trim();
+      } else if (trimmed.startsWith('c=IN IP4 ') || trimmed.startsWith('c=IN IP6 ')) {
+        // SDP connection line: "c=IN IP4 192.168.1.1"
+        sdpIp = trimmed.split(' ').pop() ?? '';
+      } else if (trimmed.startsWith('m=audio ')) {
+        // SDP media line: "m=audio 49152 RTP/AVP 0"
+        const parts = trimmed.split(' ');
+        sdpPort = parseInt(parts[1] ?? '0', 10);
+        // payload type is parts[3] — map 0→PCMU, 8→PCMA, etc.
+        const pt = parts[3] ?? '';
+        sdpCodec = pt === '0' ? 'PCMU' : pt === '8' ? 'PCMA' : pt ? `PT${pt}` : 'PCMU';
+      }
+    }
+
+    let dlcxCode = 0;
+
+    // Only attempt DLCX if CRCX succeeded (200) and we have a connection ID
+    if (crcxCode === 200 && connectionId) {
+      const dlcxCommand =
+        `DLCX ${txIdDlcx} ${fqEndpoint} MGCP 1.0\r\n` +
+        `C: ${callId}\r\n` +
+        `I: ${connectionId}\r\n` +
+        `\r\n`;
+
+      const dlcxResult = await sendMgcpCommand(host, port, dlcxCommand, timeout);
+      dlcxCode = dlcxResult.responseCode;
+    }
+
+    const rtt = Date.now() - start;
+
+    return new Response(JSON.stringify({
+      success: true,
+      crcxCode,
+      connectionId,
+      localSdp: {
+        ip: sdpIp,
+        port: sdpPort,
+        codec: sdpCodec,
+      },
+      dlcxCode,
+      rtt,
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'MGCP call setup failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /**
  * Map MGCP response codes to human-readable text.
  */

@@ -577,6 +577,131 @@ export async function handleNSQSubscribe(request: Request): Promise<Response> {
 }
 
 /**
+ * Handle NSQ deferred publish — publish a message to a topic with a delay (DPUB)
+ *
+ * POST /api/nsq/dpub
+ * Body: { host, port?, topic, message, defer_time_ms, timeout? }
+ * defer_time_ms: milliseconds to delay before delivery (1-3600000)
+ */
+export async function handleNSQDeferredPublish(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      topic: string;
+      message: string;
+      defer_time_ms: number;
+      timeout?: number;
+    };
+
+    if (!body.host || !body.topic || !body.message || body.defer_time_ms === undefined) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, topic, message, defer_time_ms' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(body.topic)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid topic name' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const deferMs = Math.max(0, Math.min(3600000, Math.floor(body.defer_time_ms)));
+    const host = body.host;
+    const port = body.port || 4150;
+    const timeout = body.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Send V2 magic + IDENTIFY
+        await writer.write(new TextEncoder().encode(NSQ_MAGIC_V2));
+
+        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'portofcall.ross.gg' });
+        const identifyBytes = new TextEncoder().encode(identifyPayload);
+        const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
+        const idSizeBuf = new Uint8Array(4);
+        new DataView(idSizeBuf.buffer).setInt32(0, identifyBytes.length, false);
+        const identifyFrame = new Uint8Array(identifyCmd.length + idSizeBuf.length + identifyBytes.length);
+        identifyFrame.set(identifyCmd); identifyFrame.set(idSizeBuf, identifyCmd.length);
+        identifyFrame.set(identifyBytes, identifyCmd.length + idSizeBuf.length);
+        await writer.write(identifyFrame);
+
+        const identifyResp = await readFrame(reader, 5000);
+        if (identifyResp.frameType === 1) throw new Error(`NSQ IDENTIFY error: ${identifyResp.data}`);
+
+        // Build DPUB command: "DPUB <topic> <defer_time_ms>\n" + [4B size][message]
+        const enc = new TextEncoder();
+        const msgBytes = enc.encode(body.message);
+        const dpubCmd = enc.encode(`DPUB ${body.topic} ${deferMs}\n`);
+        const msgSize = new Uint8Array(4);
+        new DataView(msgSize.buffer).setInt32(0, msgBytes.length, false);
+
+        const dpubFrame = new Uint8Array(dpubCmd.length + 4 + msgBytes.length);
+        let off = 0;
+        dpubFrame.set(dpubCmd, off); off += dpubCmd.length;
+        dpubFrame.set(msgSize, off); off += 4;
+        dpubFrame.set(msgBytes, off);
+
+        await writer.write(dpubFrame);
+
+        const dpubResp = await readFrame(reader, 5000);
+        if (dpubResp.frameType === 1) throw new Error(`NSQ DPUB error: ${dpubResp.data}`);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          topic: body.topic,
+          deferMs,
+          messageBytes: msgBytes.length,
+          response: dpubResp.data,
+          message: `Message queued for delivery to '${body.topic}' after ${deferMs}ms`,
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Deferred publish failed' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
  * Handle NSQ multi-publish — atomically publish multiple messages to a topic (MPUB)
  */
 export async function handleNSQMultiPublish(request: Request): Promise<Response> {

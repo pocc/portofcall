@@ -401,6 +401,223 @@ export async function handleMsrpSend(request: Request): Promise<Response> {
 }
 
 /**
+ * Build an MSRP REPORT request (receipt notification).
+ */
+function encodeMsrpReport(params: {
+  transactionId: string;
+  toPath: string;
+  fromPath: string;
+  messageId: string;
+  byteRange: string;
+  statusCode: number;
+}): string {
+  const { transactionId, toPath, fromPath, messageId, byteRange, statusCode } = params;
+  const statusText = statusCode === 200 ? 'OK' : 'Error';
+  const report = [
+    `MSRP ${transactionId} REPORT`,
+    `To-Path: ${toPath}`,
+    `From-Path: ${fromPath}`,
+    `Message-ID: ${messageId}`,
+    `Byte-Range: ${byteRange}`,
+    `Status: 000 ${statusCode} ${statusText}`,
+    `-------${transactionId}$`,
+  ].join('\r\n');
+  return report;
+}
+
+/**
+ * Send multiple MSRP SEND messages over a single TCP connection,
+ * collecting 200 OK responses and sending REPORT receipts for each.
+ */
+export async function handleMsrpSession(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      fromPath: string;
+      toPath: string;
+      messages: string[];
+    };
+
+    const {
+      host,
+      port = 2855,
+      fromPath,
+      toPath,
+      timeout = 15000,
+    } = body;
+    const messages = body.messages || [];
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!fromPath || !toPath) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'fromPath and toPath are required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'messages array must be non-empty',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const start = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const reports: Array<{ tid: string; status: number; messageId: string }> = [];
+      let sent = 0;
+      let acknowledged = 0;
+
+      /**
+       * Read the next complete MSRP message from the stream.
+       * A message ends with the end-line: -------<tid>[$|+|-]
+       */
+      async function readNextMsrpMessage(tid: string): Promise<string> {
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const endMarkerPrefix = `-------${tid}`;
+
+        const readTimeoutPromise = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('Response timeout')), timeout);
+        });
+
+        try {
+          while (true) {
+            const { value, done } = await Promise.race([reader.read(), readTimeoutPromise]);
+            if (done) break;
+            if (value) {
+              chunks.push(value);
+              totalBytes += value.length;
+              if (totalBytes > 16384) break;
+              const combined = new Uint8Array(totalBytes);
+              let off = 0;
+              for (const c of chunks) { combined.set(c, off); off += c.length; }
+              const text = new TextDecoder().decode(combined);
+              if (text.includes(endMarkerPrefix)) return text;
+            }
+          }
+        } catch {
+          // timeout or stream closed — return what we have
+        }
+
+        const combined = new Uint8Array(totalBytes);
+        let off = 0;
+        for (const c of chunks) { combined.set(c, off); off += c.length; }
+        return new TextDecoder().decode(combined);
+      }
+
+      for (let i = 0; i < messages.length; i++) {
+        const content = messages[i];
+        // Padded transaction ID: tid001, tid002, ...
+        const tid = `tid${String(i + 1).padStart(3, '0')}`;
+        const msgId = generateMessageId();
+        const contentBytes = new TextEncoder().encode(content).length;
+
+        // Last message uses '$' (end of message), intermediate could use '+' for chunking
+        // For simplicity all messages are sent as complete (single-chunk, '$')
+        const msrpRequest = [
+          `MSRP ${tid} SEND`,
+          `To-Path: ${toPath}`,
+          `From-Path: ${fromPath}`,
+          `Message-ID: ${msgId}`,
+          `Byte-Range: 1-${contentBytes}/${contentBytes}`,
+          `Content-Type: text/plain`,
+          '',
+          content,
+          `-------${tid}$`,
+        ].join('\r\n');
+
+        const requestBytes = new TextEncoder().encode(msrpRequest);
+        await writer.write(requestBytes);
+        sent++;
+
+        // Read the 200 OK response for this SEND
+        const responseText = await readNextMsrpMessage(tid);
+        const parsed = parseMsrpResponse(responseText);
+
+        const statusCode = parsed?.statusCode ?? 0;
+        reports.push({ tid, status: statusCode, messageId: msgId });
+
+        if (statusCode >= 200 && statusCode < 300) {
+          acknowledged++;
+
+          // Send REPORT receipt notification
+          const reportMsg = encodeMsrpReport({
+            transactionId: `rpt${String(i + 1).padStart(3, '0')}`,
+            toPath,
+            fromPath,
+            messageId: msgId,
+            byteRange: `1-${contentBytes}/${contentBytes}`,
+            statusCode: 200,
+          });
+          await writer.write(new TextEncoder().encode(reportMsg));
+        }
+      }
+
+      const rtt = Date.now() - start;
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        sent,
+        acknowledged,
+        reports,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
  * Establish a persistent MSRP connection for interactive messaging.
  * This would use WebSocket upgrade for bidirectional communication.
  */

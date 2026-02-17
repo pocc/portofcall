@@ -174,6 +174,186 @@ function parseQAP1Response(data: Uint8Array): {
   };
 }
 
+// QAP1 SEXP XT type codes
+const XT_NULL          = 0;
+const XT_INT           = 1;
+const XT_DOUBLE        = 2;
+const XT_STR_SINGLE    = 3;
+const XT_VECTOR        = 16;
+const XT_ARRAY_INT     = 32;
+const XT_ARRAY_DOUBLE  = 33;
+const XT_ARRAY_STR     = 34;
+const XT_ARRAY_BOOL    = 36;
+const XT_HAS_ATTR      = 0x80;
+const XT_IS_LONG       = 0x40;
+
+type SexpValue =
+  | { type: 'null' }
+  | { type: 'string'; value: string }
+  | { type: 'strings'; values: string[] }
+  | { type: 'integer'; values: number[] }
+  | { type: 'double'; values: number[] }
+  | { type: 'logical'; values: boolean[] }
+  | { type: 'vector'; elements: SexpValue[] }
+  | { type: 'raw'; hex: string };
+
+/**
+ * Parse a QAP1 SEXP starting at `offset` within `data`.
+ * Returns the parsed value and the number of bytes consumed.
+ */
+function parseSEXP(data: Uint8Array, offset: number): { value: SexpValue; consumed: number } {
+  if (offset + 4 > data.length) return { value: { type: 'null' }, consumed: 0 };
+
+  const dv = new DataView(data.buffer, data.byteOffset);
+
+  const typeRaw = data[offset];
+  const xtType  = typeRaw & 0x3f;
+  const hasAttr = (typeRaw & XT_HAS_ATTR) !== 0;
+  const isLong  = (typeRaw & XT_IS_LONG) !== 0;
+
+  let len: number;
+  let headerLen: number;
+
+  if (isLong) {
+    // 8-byte length (low 32 bits at offset+4, then next 4 = high bits — usually 0)
+    len = dv.getUint32(offset + 4, true);
+    headerLen = 8;
+  } else {
+    len = data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16);
+    headerLen = 4;
+  }
+
+  let dataStart = offset + headerLen;
+  const consumed = headerLen + len;
+
+  // Skip attribute SEXP if present (we only care about the data)
+  if (hasAttr) {
+    const attr = parseSEXP(data, dataStart);
+    dataStart += attr.consumed;
+  }
+
+  const end = offset + consumed;
+
+  switch (xtType) {
+    case XT_NULL:
+      return { value: { type: 'null' }, consumed };
+
+    case XT_INT: {
+      if (dataStart + 4 > data.length) break;
+      const v = dv.getInt32(dataStart, true);
+      return { value: { type: 'integer', values: [v] }, consumed };
+    }
+
+    case XT_DOUBLE: {
+      if (dataStart + 8 > data.length) break;
+      const v = dv.getFloat64(dataStart, true);
+      return { value: { type: 'double', values: [v] }, consumed };
+    }
+
+    case XT_STR_SINGLE: {
+      const nullIdx = data.indexOf(0, dataStart);
+      const strEnd = (nullIdx === -1 || nullIdx >= end) ? end : nullIdx;
+      const v = new TextDecoder().decode(data.slice(dataStart, strEnd));
+      return { value: { type: 'string', value: v }, consumed };
+    }
+
+    case XT_ARRAY_INT: {
+      const count = Math.floor((end - dataStart) / 4);
+      const values: number[] = [];
+      for (let i = 0; i < count; i++) {
+        values.push(dv.getInt32(dataStart + i * 4, true));
+      }
+      return { value: { type: 'integer', values }, consumed };
+    }
+
+    case XT_ARRAY_DOUBLE: {
+      const count = Math.floor((end - dataStart) / 8);
+      const values: number[] = [];
+      for (let i = 0; i < count; i++) {
+        values.push(dv.getFloat64(dataStart + i * 8, true));
+      }
+      return { value: { type: 'double', values }, consumed };
+    }
+
+    case XT_ARRAY_STR: {
+      // Null-separated strings
+      const values: string[] = [];
+      let pos = dataStart;
+      while (pos < end) {
+        const nullIdx = data.indexOf(0, pos);
+        const strEnd = (nullIdx === -1 || nullIdx >= end) ? end : nullIdx;
+        if (strEnd > pos) {
+          values.push(new TextDecoder().decode(data.slice(pos, strEnd)));
+        }
+        pos = strEnd + 1;
+      }
+      return { value: { type: 'strings', values }, consumed };
+    }
+
+    case XT_ARRAY_BOOL: {
+      const count = Math.floor((end - dataStart) / 1);
+      const values: boolean[] = [];
+      for (let i = 0; i < count; i++) {
+        values.push(data[dataStart + i] !== 0);
+      }
+      return { value: { type: 'logical', values }, consumed };
+    }
+
+    case XT_VECTOR: {
+      const elements: SexpValue[] = [];
+      let pos = dataStart;
+      while (pos < end) {
+        const child = parseSEXP(data, pos);
+        if (child.consumed === 0) break;
+        elements.push(child.value);
+        pos += child.consumed;
+      }
+      return { value: { type: 'vector', elements }, consumed };
+    }
+
+    default: {
+      // Unknown/unsupported type — return raw hex
+      const slice = data.slice(dataStart, Math.min(end, dataStart + 64));
+      const hex = Array.from(slice).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      return { value: { type: 'raw', hex }, consumed };
+    }
+  }
+
+  return { value: { type: 'null' }, consumed };
+}
+
+/**
+ * Extract a structured result from the QAP1 response payload.
+ * Walks the DT_SEXP wrapper to reach the inner SEXP value.
+ */
+function extractSEXPResult(data: Uint8Array): SexpValue | null {
+  // Skip 16-byte QAP1 response header
+  let offset = 16;
+  if (offset >= data.length) return null;
+
+  // DT_SEXP (10) header: type(1) + len(3)
+  while (offset < data.length - 4) {
+    const type = data[offset] & 0x3f;
+    let len: number;
+    let headerLen: number;
+    if ((data[offset] & XT_IS_LONG) !== 0) {
+      if (offset + 8 > data.length) break;
+      len = new DataView(data.buffer, data.byteOffset).getUint32(offset + 4, true);
+      headerLen = 8;
+    } else {
+      len = data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16);
+      headerLen = 4;
+    }
+
+    if (type === DT_SEXP) {
+      const inner = parseSEXP(data, offset + headerLen);
+      return inner.value;
+    }
+    offset += headerLen + len;
+  }
+  return null;
+}
+
 /**
  * Try to extract string data from a QAP1 SEXP response
  */
@@ -518,10 +698,15 @@ export async function handleRserveEval(request: Request): Promise<Response> {
       const rtt = Date.now() - startTime;
 
       const respHeader = parseQAP1Response(evalResponse);
-      let resultStr = null;
+      let resultStr: string | null = null;
+      let resultValue: SexpValue | null = null;
 
       if (respHeader && respHeader.isOK && evalResponse.length > 16) {
-        resultStr = extractStringFromSEXP(evalResponse);
+        resultValue = extractSEXPResult(evalResponse);
+        // Also keep legacy string extraction for the message field
+        if (resultValue?.type === 'string') resultStr = resultValue.value;
+        else if (resultValue?.type === 'strings') resultStr = resultValue.values.join(', ');
+        else resultStr = extractStringFromSEXP(evalResponse);
       }
 
       writer.releaseLock();
@@ -540,7 +725,8 @@ export async function handleRserveEval(request: Request): Promise<Response> {
           expression,
           evalSuccess: respHeader ? respHeader.isOK : false,
           evalError: respHeader && respHeader.isError ? `Error code: ${respHeader.errorCode}` : null,
-          result: resultStr,
+          result: resultValue ?? resultStr,
+          resultString: resultStr,
           responseBytes: evalResponse.length,
           responseHex: toHex(evalResponse),
           protocol: 'Rserve',

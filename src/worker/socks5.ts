@@ -316,3 +316,180 @@ export async function handleSocks5Connect(request: Request): Promise<Response> {
     );
   }
 }
+
+/**
+ * Relay an HTTP GET request through a SOCKS5 proxy, verifying end-to-end connectivity.
+ *
+ * POST /api/socks5/relay
+ * Body: { proxyHost, proxyPort?, destHost, destPort?, path?, username?, password?, timeout? }
+ */
+export async function handleSocks5Relay(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      proxyHost: string;
+      proxyPort?: number;
+      destHost: string;
+      destPort?: number;
+      path?: string;
+      username?: string;
+      password?: string;
+      timeout?: number;
+    };
+
+    const {
+      proxyHost,
+      proxyPort = 1080,
+      destHost,
+      destPort = 80,
+      path = '/',
+      username,
+      password,
+      timeout = 15000,
+    } = body;
+
+    if (!proxyHost || !destHost) {
+      return new Response(JSON.stringify({ success: false, error: 'proxyHost and destHost required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(proxyHost);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(proxyHost, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${proxyHost}:${proxyPort}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      async function readBytes(n: number): Promise<Uint8Array> {
+        const buf = new Uint8Array(n);
+        let off = 0;
+        while (off < n) {
+          const { value, done } = await reader.read();
+          if (done || !value) throw new Error('Connection closed');
+          const take = Math.min(n - off, value.length);
+          buf.set(value.subarray(0, take), off);
+          off += take;
+        }
+        return buf;
+      }
+
+      try {
+        // Step 1: Client greeting — offer NO_AUTH and optionally USERPASS
+        const methods = username ? [AUTH_NONE, AUTH_USERPASS] : [AUTH_NONE];
+        const greeting = new Uint8Array([0x05, methods.length, ...methods]);
+        await writer.write(greeting);
+
+        // Step 2: Server selects method
+        const methodReply = await readBytes(2);
+        if (methodReply[0] !== 0x05) throw new Error('Not a SOCKS5 server');
+        const selectedMethod = methodReply[1];
+        if (selectedMethod === AUTH_NO_ACCEPTABLE) throw new Error('No acceptable auth methods');
+
+        // Step 3: Authenticate if USERPASS selected
+        if (selectedMethod === AUTH_USERPASS) {
+          const user = new TextEncoder().encode(username || '');
+          const pass = new TextEncoder().encode(password || '');
+          const authMsg = new Uint8Array([0x01, user.length, ...user, pass.length, ...pass]);
+          await writer.write(authMsg);
+          const authReply = await readBytes(2);
+          if (authReply[1] !== 0x00) throw new Error('SOCKS5 authentication failed');
+        }
+
+        // Step 4: CONNECT request to destination
+        const destBytes = new TextEncoder().encode(destHost);
+        const connectReq = new Uint8Array([
+          0x05, 0x01, 0x00,                    // VER=5, CMD=CONNECT, RSV=0
+          ATYP_DOMAIN, destBytes.length, ...destBytes, // ATYP=domain
+          (destPort >> 8) & 0xff, destPort & 0xff,     // port
+        ]);
+        await writer.write(connectReq);
+
+        // Step 5: Read CONNECT reply
+        const replyHeader = await readBytes(4);
+        if (replyHeader[1] !== 0x00) {
+          throw new Error(`CONNECT failed: ${REPLY_NAMES[replyHeader[1]] || `code ${replyHeader[1]}`}`);
+        }
+        // Skip bound address
+        const atyp = replyHeader[3];
+        if (atyp === ATYP_IPV4) await readBytes(6);
+        else if (atyp === ATYP_DOMAIN) { const len = (await readBytes(1))[0]; await readBytes(len + 2); }
+        else if (atyp === ATYP_IPV6) await readBytes(18);
+
+        const tunnelTime = Date.now() - startTime;
+
+        // Step 6: Send HTTP/1.0 GET through the tunnel
+        const httpReq = `GET ${path} HTTP/1.0\r\nHost: ${destHost}\r\nConnection: close\r\n\r\n`;
+        await writer.write(new TextEncoder().encode(httpReq));
+
+        // Step 7: Read HTTP response (up to 4KB)
+        const chunks: Uint8Array[] = [];
+        let totalLen = 0;
+        const readDeadline = Date.now() + Math.min(8000, timeout - (Date.now() - startTime));
+        while (Date.now() < readDeadline && totalLen < 4096) {
+          const remaining = readDeadline - Date.now();
+          const st = new Promise<{ value: undefined; done: true }>((resolve) =>
+            setTimeout(() => resolve({ value: undefined, done: true }), remaining));
+          const { value, done } = await Promise.race([reader.read(), st]);
+          if (done || !value) break;
+          chunks.push(value);
+          totalLen += value.length;
+        }
+
+        const responseBytes = new Uint8Array(totalLen);
+        let off = 0;
+        for (const c of chunks) { responseBytes.set(c, off); off += c.length; }
+        const responseText = new TextDecoder('utf-8', { fatal: false }).decode(responseBytes);
+
+        // Parse status line
+        const statusMatch = responseText.match(/^HTTP\/[\d.]+ (\d+) ([^\r\n]*)/);
+        const httpStatus = statusMatch ? parseInt(statusMatch[1]) : 0;
+        const httpStatusText = statusMatch ? statusMatch[2] : '';
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        return {
+          success: true,
+          proxyHost, proxyPort,
+          destHost, destPort,
+          authMethod: AUTH_METHOD_NAMES[selectedMethod] || `method ${selectedMethod}`,
+          tunnelTimeMs: tunnelTime,
+          totalTimeMs: Date.now() - startTime,
+          httpStatus,
+          httpStatusText,
+          responsePreview: responseText.substring(0, 500),
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

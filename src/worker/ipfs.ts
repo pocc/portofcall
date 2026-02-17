@@ -268,3 +268,394 @@ export async function handleIPFSProbe(request: Request): Promise<Response> {
     );
   }
 }
+
+
+// ─── IPFS HTTP API (Add, Cat, Node Info) ─────────────────────────────────────
+
+interface IPFSAddRequest {
+  host: string;
+  port?: number;
+  content?: string;
+  filename?: string;
+  timeout?: number;
+}
+
+interface IPFSCatRequest {
+  host: string;
+  port?: number;
+  cid: string;
+  timeout?: number;
+}
+
+interface IPFSNodeInfoRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+}
+
+/**
+ * Add content to IPFS via the HTTP API POST /api/v0/add.
+ *
+ * POST /api/ipfs/add
+ * Body: { host, port?, content?, filename?, timeout? }
+ *
+ * Sends content as multipart/form-data and returns the resulting CID.
+ */
+export async function handleIPFSAdd(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as IPFSAddRequest;
+    const {
+      host,
+      port = 5001,
+      content = 'Hello IPFS',
+      filename = 'test.txt',
+      timeout = 10000,
+    } = body;
+
+    if (!host || host.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const form = new FormData();
+    form.append('file', new Blob([content], { type: 'text/plain' }), filename);
+
+    const startTime = Date.now();
+    const response = await fetch(`http://${host}:${port}/api/v0/add`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.timeout(timeout),
+    });
+
+    if (!response.ok) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `IPFS API returned HTTP ${response.status}: ${response.statusText}`,
+          latencyMs: Date.now() - startTime,
+        }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const latencyMs = Date.now() - startTime;
+    const json = await response.json() as { Name?: string; Hash?: string; Size?: string };
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        cid: json.Hash,
+        size: json.Size,
+        name: json.Name,
+        latencyMs,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  } catch (error) {
+    const isTimeout = error instanceof Error &&
+      (error.message.includes('timeout') || (error as Error & { name: string }).name === 'TimeoutError');
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: isTimeout ? 'Request timeout' : (error instanceof Error ? error.message : 'Unknown error'),
+      }),
+      { status: isTimeout ? 504 : 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Retrieve content from IPFS by CID via the HTTP API POST /api/v0/cat.
+ *
+ * POST /api/ipfs/cat
+ * Body: { host, port?, cid, timeout? }
+ */
+export async function handleIPFSCat(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as IPFSCatRequest;
+    const { host, port = 5001, cid, timeout = 10000 } = body;
+
+    if (!host || host.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!cid || cid.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'CID is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const response = await fetch(
+      `http://${host}:${port}/api/v0/cat?arg=${encodeURIComponent(cid)}`,
+      { method: 'POST', signal: AbortSignal.timeout(timeout) },
+    );
+
+    if (!response.ok) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `IPFS API returned HTTP ${response.status}: ${response.statusText}`,
+          latencyMs: Date.now() - startTime,
+        }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const rawBytes = await response.arrayBuffer();
+    const latencyMs = Date.now() - startTime;
+    const content = new TextDecoder('utf-8', { fatal: false }).decode(rawBytes);
+
+    return new Response(
+      JSON.stringify({ success: true, content, size: rawBytes.byteLength, latencyMs }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  } catch (error) {
+    const isTimeout = error instanceof Error &&
+      (error.message.includes('timeout') || (error as Error & { name: string }).name === 'TimeoutError');
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: isTimeout ? 'Request timeout' : (error instanceof Error ? error.message : 'Unknown error'),
+      }),
+      { status: isTimeout ? 504 : 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+// ─── Pin operations ───────────────────────────────────────────────────────────
+
+/**
+ * POST /api/ipfs/pin-add
+ * Body: { host, port?, cid, timeout? }
+ * Pins a CID to the local IPFS node (prevents garbage collection).
+ */
+export async function handleIPFSPinAdd(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  try {
+    const body = await request.json() as { host: string; port?: number; cid: string; timeout?: number };
+    const { host, port = 5001, cid, timeout = 15000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!cid)  return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const startTime = Date.now();
+    const resp = await fetch(`http://${host}:${port}/api/v0/pin/add?arg=${encodeURIComponent(cid)}`, { method: 'POST', signal: AbortSignal.timeout(timeout) });
+    const latencyMs = Date.now() - startTime;
+    if (!resp.ok) return new Response(JSON.stringify({ success: false, error: `HTTP ${resp.status}: ${resp.statusText}`, latencyMs }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    const json = await resp.json() as { Pins?: string[] };
+    return new Response(JSON.stringify({ success: true, cid, pinned: json.Pins ?? [cid], latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * POST /api/ipfs/pin-ls
+ * Body: { host, port?, cid?, type?, timeout? }
+ * Lists pinned CIDs. type = 'all' | 'direct' | 'indirect' | 'recursive' (default 'all').
+ */
+export async function handleIPFSPinList(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  try {
+    const body = await request.json() as { host: string; port?: number; cid?: string; type?: string; timeout?: number };
+    const { host, port = 5001, cid, type = 'all', timeout = 10000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const startTime = Date.now();
+    let url = `http://${host}:${port}/api/v0/pin/ls?type=${encodeURIComponent(type)}`;
+    if (cid) url += `&arg=${encodeURIComponent(cid)}`;
+    const resp = await fetch(url, { method: 'POST', signal: AbortSignal.timeout(timeout) });
+    const latencyMs = Date.now() - startTime;
+    if (!resp.ok) return new Response(JSON.stringify({ success: false, error: `HTTP ${resp.status}: ${resp.statusText}`, latencyMs }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    const json = await resp.json() as { Keys?: Record<string, { Type: string }> };
+    const pins = Object.entries(json.Keys ?? {}).map(([k, v]) => ({ cid: k, type: v.Type }));
+    return new Response(JSON.stringify({ success: true, pinCount: pins.length, pins, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Remove a pin from the IPFS node — allows GC to collect the block.
+ *
+ * POST /api/ipfs/pin-rm
+ * Body: { host, port?, cid, recursive?, timeout? }
+ *
+ * Calls POST /api/v0/pin/rm?arg=CID&recursive=true
+ */
+export async function handleIPFSPinRm(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  try {
+    const body = await request.json() as { host: string; port?: number; cid: string; recursive?: boolean; timeout?: number };
+    const { host, port = 5001, cid, recursive = true, timeout = 15000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!cid) return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const startTime = Date.now();
+    const resp = await fetch(
+      `http://${host}:${port}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}&recursive=${recursive}`,
+      { method: 'POST', signal: AbortSignal.timeout(timeout) },
+    );
+    const latencyMs = Date.now() - startTime;
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      return new Response(JSON.stringify({ success: false, error: `HTTP ${resp.status}: ${text}`, latencyMs }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    const json = await resp.json() as { Pins?: string[] };
+    return new Response(JSON.stringify({ success: true, cid, removed: json.Pins ?? [cid], latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ─── PubSub ───────────────────────────────────────────────────────────────────
+
+/**
+ * Publish a message to an IPFS pubsub topic.
+ *
+ * POST /api/ipfs/pubsub-pub
+ * Body: { host, port?, topic, data, timeout? }
+ *
+ * Calls POST /api/v0/pubsub/pub?arg=TOPIC with data as binary body.
+ * Note: pubsub requires --enable-pubsub-experiment on go-ipfs / kubo ≥ 0.11.
+ */
+export async function handleIPFSPubsubPub(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  try {
+    const body = await request.json() as { host: string; port?: number; topic: string; data?: string; timeout?: number };
+    const { host, port = 5001, topic, data = '', timeout = 10000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!topic) return new Response(JSON.stringify({ success: false, error: 'topic is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const startTime = Date.now();
+    const resp = await fetch(
+      `http://${host}:${port}/api/v0/pubsub/pub?arg=${encodeURIComponent(topic)}`,
+      {
+        method: 'POST',
+        body: new TextEncoder().encode(data),
+        headers: { 'Content-Type': 'application/octet-stream' },
+        signal: AbortSignal.timeout(timeout),
+      },
+    );
+    const latencyMs = Date.now() - startTime;
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      return new Response(JSON.stringify({ success: false, error: `HTTP ${resp.status}: ${text}`, latencyMs }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ success: true, topic, dataLength: data.length, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * List all pubsub topics this node is currently subscribed to.
+ *
+ * POST /api/ipfs/pubsub-ls
+ * Body: { host, port?, timeout? }
+ *
+ * Calls POST /api/v0/pubsub/ls
+ */
+export async function handleIPFSPubsubLs(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  try {
+    const body = await request.json() as { host: string; port?: number; timeout?: number };
+    const { host, port = 5001, timeout = 10000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const startTime = Date.now();
+    const resp = await fetch(`http://${host}:${port}/api/v0/pubsub/ls`, { method: 'POST', signal: AbortSignal.timeout(timeout) });
+    const latencyMs = Date.now() - startTime;
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => '');
+      return new Response(JSON.stringify({ success: false, error: `HTTP ${resp.status}: ${text}`, latencyMs }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+    }
+    const json = await resp.json() as { Strings?: string[] };
+    const topics = json.Strings ?? [];
+    return new Response(JSON.stringify({ success: true, topicCount: topics.length, topics, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ─── Node info ────────────────────────────────────────────────────────────────
+
+/**
+ * Get IPFS node identity information via the HTTP API POST /api/v0/id.
+ *
+ * POST /api/ipfs/node-info
+ * Body: { host, port?, timeout? }
+ */
+export async function handleIPFSNodeInfo(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as IPFSNodeInfoRequest;
+    const { host, port = 5001, timeout = 10000 } = body;
+
+    if (!host || host.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const response = await fetch(`http://${host}:${port}/api/v0/id`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(timeout),
+    });
+
+    if (!response.ok) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `IPFS API returned HTTP ${response.status}: ${response.statusText}`,
+          latencyMs: Date.now() - startTime,
+        }),
+        { status: 502, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const latencyMs = Date.now() - startTime;
+    const json = await response.json() as {
+      ID?: string;
+      PublicKey?: string;
+      Addresses?: string[];
+      AgentVersion?: string;
+    };
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        id: json.ID,
+        publicKey: json.PublicKey,
+        addresses: json.Addresses,
+        agentVersion: json.AgentVersion,
+        latencyMs,
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  } catch (error) {
+    const isTimeout = error instanceof Error &&
+      (error.message.includes('timeout') || (error as Error & { name: string }).name === 'TimeoutError');
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: isTimeout ? 'Request timeout' : (error instanceof Error ? error.message : 'Unknown error'),
+      }),
+      { status: isTimeout ? 504 : 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}

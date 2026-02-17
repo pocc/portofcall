@@ -366,3 +366,297 @@ export async function handleHSRPListen(request: Request): Promise<Response> {
     });
   }
 }
+
+// ── HSRPv2 support ──────────────────────────────────────────────────────────
+
+/**
+ * Build an HSRPv2 Hello TLV packet.
+ *
+ * HSRPv2 uses TLV encoding with type=1 for the Group State TLV.
+ * Group State TLV (42 bytes total: type+len+40 data):
+ *   type(1)=1 | length(1)=40 | version(1)=1 | op_code(1) | state(1) | ip_version(1)
+ *   | hello_time_ms(4,BE) | hold_time_ms(4,BE) | priority(1) | group_id(1)
+ *   | reserved(2) | active_group_MAC(6) | virtual_IP(16) | standby_IP(16)
+ */
+function buildHSRPv2Hello(
+  group: number,
+  priority: number,
+  virtualIP = '0.0.0.0',
+): Uint8Array {
+  const tlv = new Uint8Array(42);
+  tlv[0] = 1;   // TLV type: Group State
+  tlv[1] = 40;  // TLV length
+  tlv[2] = 1;   // HSRPv2 version
+  tlv[3] = 0;   // Op code: Hello
+  tlv[4] = 8;   // State: Listen (safe probe state) — value 8 = Standby in HSRPv2
+  tlv[5] = 4;   // IP version: 4 (IPv4)
+
+  const dv = new DataView(tlv.buffer);
+  dv.setUint32(6, 3000, false);   // Hello time: 3000ms
+  dv.setUint32(10, 10000, false); // Hold time: 10000ms
+
+  tlv[14] = priority;
+  tlv[15] = group & 0xFF;
+  // MAC + IPs: leave mostly zero; write virtual IP in bytes [24-27]
+  const ipParts = virtualIP.split('.').map(p => parseInt(p) || 0);
+  tlv[24] = ipParts[0];
+  tlv[25] = ipParts[1];
+  tlv[26] = ipParts[2];
+  tlv[27] = ipParts[3];
+
+  return tlv;
+}
+
+/**
+ * Build an HSRPv1 Coup packet (op_code=1, priority=255).
+ *
+ * A Coup is sent by a router that wants to become Active by preempting the
+ * current Active router. priority=255 is the maximum and wins any election.
+ */
+function buildHSRPv1Coup(group: number, priority: number): Uint8Array {
+  const packet = new Uint8Array(20);
+  packet[0] = 0;               // Version: HSRPv1
+  packet[1] = 1;               // Op Code: Coup
+  packet[2] = 4;               // State: Speak
+  packet[3] = 3;               // Hello time: 3s
+  packet[4] = 10;              // Hold time: 10s
+  packet[5] = priority;        // Priority (255 = max)
+  packet[6] = group & 0xFF;    // Group
+  // bytes [7..15] = 0 (reserved + no auth)
+  // bytes [16..19] = 0.0.0.0 (virtual IP unknown for probe)
+  return packet;
+}
+
+/**
+ * Send an HSRPv1 Coup message to attempt Active router election.
+ *
+ * A Coup is sent when a router with higher priority wants to preempt the
+ * current Active router. Sending a Coup with priority=255 reveals whether
+ * authentication is required, the current Active router's priority and state,
+ * and the configured virtual IP.
+ *
+ * POST /api/hsrp/coup
+ * Body: { host, port=1985, group=0, priority=255, timeout=10000 }
+ */
+export async function handleHSRPCoup(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      group?: number;
+      priority?: number;
+      timeout?: number;
+    };
+    const { host, port = 1985, group = 0, priority = 255, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startMs = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const coupPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        await writer.write(buildHSRPv1Coup(group, priority));
+
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>(res =>
+            setTimeout(() => res({ value: undefined, done: true }), 3000)),
+        ]);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        if (done || !value || value.length < 20) {
+          return {
+            success: true,
+            host, port, group, priority,
+            tcpConnected: true,
+            coupSent: true,
+            response: null,
+            note: 'Coup sent — no response (HSRP is UDP multicast; TCP responses uncommon). Router received packet if reachable on TCP 1985.',
+            latencyMs: Date.now() - startMs,
+          };
+        }
+
+        const opCode      = value[1];
+        const state       = value[2];
+        const respPriority = value[5];
+        const respGroup   = value[6];
+        const authRaw     = value.slice(8, 16);
+        const nullIdx     = Array.from(authRaw).indexOf(0);
+        const authStr     = new TextDecoder().decode(authRaw.slice(0, nullIdx >= 0 ? nullIdx : 8));
+        const vip = `${value[16]}.${value[17]}.${value[18]}.${value[19]}`;
+
+        const opNames: Record<number, string>    = { 0: 'Hello', 1: 'Coup', 2: 'Resign' };
+        const stateNames: Record<number, string> = { 0: 'Initial', 1: 'Learn', 2: 'Listen', 4: 'Speak', 8: 'Standby', 16: 'Active' };
+
+        return {
+          success: true,
+          host, port, group, priority,
+          tcpConnected: true,
+          coupSent: true,
+          response: {
+            opCode: opNames[opCode] ?? `Unknown(${opCode})`,
+            state: stateNames[state] ?? `Unknown(${state})`,
+            priority: respPriority,
+            group: respGroup,
+            virtualIP: vip,
+            authentication: authStr || '(none — no plaintext auth)',
+          },
+          note: priority > respPriority
+            ? 'Our Coup priority exceeds Active router — election would succeed if preemption is enabled'
+            : 'Active router priority >= Coup priority — election would fail',
+          latencyMs: Date.now() - startMs,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([coupPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * HSRPv2 probe — sends HSRPv2 TLV Hello and reads response.
+ *
+ * HSRPv2 supports IPv6 virtual IPs and millisecond timers. Group numbers
+ * can be 0-4095 (encoded in group_id field of TLV).
+ *
+ * POST /api/hsrp/v2-probe
+ * Body: { host, port=1985, group=0, priority=50, timeout=10000 }
+ */
+export async function handleHSRPv2Probe(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      group?: number;
+      priority?: number;
+      timeout?: number;
+    };
+    const { host, port = 1985, group = 0, priority = 50, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startMs = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const probePromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        await writer.write(buildHSRPv2Hello(group, priority));
+
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>(res =>
+            setTimeout(() => res({ value: undefined, done: true }), 3000)),
+        ]);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        if (done || !value || value.length < 42) {
+          return {
+            success: true,
+            host, port, group, priority,
+            version: 'HSRPv2',
+            tcpConnected: true,
+            helloSent: true,
+            response: null,
+            note: 'HSRPv2 Hello sent — no response (HSRP is UDP multicast; TCP probing is non-standard).',
+            latencyMs: Date.now() - startMs,
+          };
+        }
+
+        const dv = new DataView(value.buffer, value.byteOffset, value.byteLength);
+        const tlvType   = value[0];
+        const tlvLen    = value[1];
+        const v2ver     = value[2];
+        const opCode    = value[3];
+        const state     = value[4];
+        const ipVersion = value[5];
+        const helloTimeMs = dv.getUint32(6, false);
+        const holdTimeMs  = dv.getUint32(10, false);
+        const respPrio  = value[14];
+        const respGroup = value[15];
+        const vip = `${value[24]}.${value[25]}.${value[26]}.${value[27]}`;
+
+        const opNames: Record<number, string>    = { 0: 'Hello', 1: 'Coup', 2: 'Resign' };
+        const stateNames: Record<number, string> = { 0: 'Initial', 1: 'Learn', 2: 'Listen', 4: 'Speak', 8: 'Standby', 16: 'Active' };
+
+        return {
+          success: true,
+          host, port, group, priority,
+          version: 'HSRPv2',
+          tcpConnected: true,
+          helloSent: true,
+          response: {
+            tlvType,
+            tlvLen,
+            hsrpVersion: v2ver,
+            opCode: opNames[opCode] ?? `Unknown(${opCode})`,
+            state: stateNames[state] ?? `Unknown(${state})`,
+            ipVersion: ipVersion === 4 ? 'IPv4' : ipVersion === 6 ? 'IPv6' : `Unknown(${ipVersion})`,
+            helloTimeMs,
+            holdTimeMs,
+            priority: respPrio,
+            group: respGroup,
+            virtualIP: vip,
+          },
+          latencyMs: Date.now() - startMs,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([probePromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

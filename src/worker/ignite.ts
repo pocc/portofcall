@@ -56,6 +56,8 @@ const CLIENT_CODE_THIN = 2;
 const OP_CACHE_GET_NAMES              = 1050; // 0x041A
 const OP_CACHE_GET_OR_CREATE_WITH_NAME = 1052; // 0x041C
 const OP_CACHE_GET                    = 1001; // 0x03E9
+const OP_CACHE_PUT                    = 1002; // 0x03EA
+const OP_CACHE_REMOVE                 = 1013; // 0x03F5
 
 // Ignite type codes
 const TYPE_STRING = 9;
@@ -70,6 +72,17 @@ interface IgniteBaseRequest {
 }
 
 interface IgniteCacheGetRequest extends IgniteBaseRequest {
+  cacheName: string;
+  key: string;
+}
+
+interface IgniteCachePutRequest extends IgniteBaseRequest {
+  cacheName: string;
+  key: string;
+  value: string;
+}
+
+interface IgniteCacheRemoveRequest extends IgniteBaseRequest {
   cacheName: string;
   key: string;
 }
@@ -683,6 +696,184 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
     return new Response(JSON.stringify({
       success: false,
       host, port, cacheName, key,
+      error: err instanceof Error ? err.message : 'Operation failed',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * POST /api/ignite/cache-put
+ *
+ * Stores a string key→value pair in a named Ignite IMap (OP_CACHE_PUT).
+ * If the cache does not exist it will be created first.
+ *
+ * Body: { host, port?, timeout?, cacheName, key, value }
+ */
+export async function handleIgniteCachePut(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return igniteError('Method not allowed', 405);
+
+  let body: IgniteCachePutRequest;
+  try { body = await request.json() as IgniteCachePutRequest; }
+  catch { return igniteError('Invalid JSON body', 400); }
+
+  const { host, port = 10800, timeout = 12000, cacheName, key, value } = body;
+  if (!host)      return igniteError('host is required', 400);
+  if (!cacheName) return igniteError('cacheName is required', 400);
+  if (key === undefined || key === null) return igniteError('key is required', 400);
+  if (value === undefined || value === null) return igniteError('value is required', 400);
+  if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+      status: 403, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const { socket, writer, reader } = await openIgniteSession(host, port, timeout);
+
+    try {
+      // Step 1: Ensure cache exists (OP_CACHE_GET_OR_CREATE_WITH_NAME)
+      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, BigInt(1), encodeCacheName(cacheName)));
+      const createResp = await readResponse(reader, Math.min(timeout, 5000));
+      const createHeader = parseResponseHeader(createResp);
+      if (createHeader.status !== 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Failed to access cache '${cacheName}': status ${createHeader.status}`,
+          host, port, cacheName, key,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      const cacheId = createHeader.payload.length >= 4
+        ? new DataView(createHeader.payload.buffer, createHeader.payload.byteOffset).getInt32(0, true)
+        : 0;
+
+      // Step 2: OP_CACHE_PUT — payload: [cache_id: int32 LE][flags: 1 byte][key: typed][value: typed]
+      const keyEncoded   = encodeString(key);
+      const valueEncoded = encodeString(value);
+      const putPayload   = new Uint8Array(4 + 1 + keyEncoded.length + valueEncoded.length);
+      new DataView(putPayload.buffer).setInt32(0, cacheId, true);
+      putPayload[4] = 0; // flags
+      putPayload.set(keyEncoded, 5);
+      putPayload.set(valueEncoded, 5 + keyEncoded.length);
+
+      await writer.write(buildRequest(OP_CACHE_PUT, BigInt(2), putPayload));
+      const putResp   = await readResponse(reader, Math.min(timeout, 5000));
+      const putHeader = parseResponseHeader(putResp);
+
+      if (putHeader.status !== 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Cache PUT failed: status ${putHeader.status}`,
+          host, port, cacheName, key, cacheId,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      }
+
+      return new Response(JSON.stringify({
+        success: true, host, port, cacheName, cacheId, key, value,
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+    }
+
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false, host, port, cacheName, key,
+      error: err instanceof Error ? err.message : 'Operation failed',
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * POST /api/ignite/cache-remove
+ *
+ * Removes a key from a named Ignite IMap (OP_CACHE_REMOVE).
+ *
+ * Body: { host, port?, timeout?, cacheName, key }
+ */
+export async function handleIgniteCacheRemove(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return igniteError('Method not allowed', 405);
+
+  let body: IgniteCacheRemoveRequest;
+  try { body = await request.json() as IgniteCacheRemoveRequest; }
+  catch { return igniteError('Invalid JSON body', 400); }
+
+  const { host, port = 10800, timeout = 12000, cacheName, key } = body;
+  if (!host)      return igniteError('host is required', 400);
+  if (!cacheName) return igniteError('cacheName is required', 400);
+  if (key === undefined || key === null) return igniteError('key is required', 400);
+  if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+
+  const { checkIfCloudflare, getCloudflareErrorMessage } = await import('./cloudflare-detector');
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+      status: 403, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const { socket, writer, reader } = await openIgniteSession(host, port, timeout);
+
+    try {
+      // Ensure cache exists first
+      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, BigInt(1), encodeCacheName(cacheName)));
+      const createResp   = await readResponse(reader, Math.min(timeout, 5000));
+      const createHeader = parseResponseHeader(createResp);
+      if (createHeader.status !== 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Failed to access cache '${cacheName}': status ${createHeader.status}`,
+          host, port, cacheName, key,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      }
+      const cacheId = createHeader.payload.length >= 4
+        ? new DataView(createHeader.payload.buffer, createHeader.payload.byteOffset).getInt32(0, true)
+        : 0;
+
+      // OP_CACHE_REMOVE — payload: [cache_id: int32 LE][flags: 1 byte][key: typed]
+      const keyEncoded    = encodeString(key);
+      const removePayload = new Uint8Array(4 + 1 + keyEncoded.length);
+      new DataView(removePayload.buffer).setInt32(0, cacheId, true);
+      removePayload[4] = 0; // flags
+      removePayload.set(keyEncoded, 5);
+
+      await writer.write(buildRequest(OP_CACHE_REMOVE, BigInt(2), removePayload));
+      const removeResp   = await readResponse(reader, Math.min(timeout, 5000));
+      const removeHeader = parseResponseHeader(removeResp);
+
+      if (removeHeader.status !== 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Cache REMOVE failed: status ${removeHeader.status}`,
+          host, port, cacheName, key, cacheId,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Response payload is a boolean: 1 byte, 0x02=null or boolean type, then value
+      let removed = false;
+      if (removeHeader.payload.length >= 2) {
+        // bool type code is 8, value follows
+        removed = removeHeader.payload[1] === 1;
+      }
+
+      return new Response(JSON.stringify({
+        success: true, host, port, cacheName, cacheId, key, removed,
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+    }
+
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false, host, port, cacheName, key,
       error: err instanceof Error ? err.message : 'Operation failed',
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   }

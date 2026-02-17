@@ -599,3 +599,445 @@ export async function handleOpenFlowEcho(request: Request): Promise<Response> {
     );
   }
 }
+
+// OpenFlow stats/multipart message types
+const OFPT_STATS_REQUEST_10 = 16;  // OF 1.0
+const OFPT_STATS_REPLY_10 = 17;    // OF 1.0
+const OFPT_MULTIPART_REQUEST_13 = 18; // OF 1.3+
+const OFPT_MULTIPART_REPLY_13 = 19;   // OF 1.3+
+
+// Stats body types (same values for OF 1.0 and 1.3)
+const OFPST_DESC = 0;   // Switch description
+const OFPST_FLOW = 1;   // Individual flow statistics
+const OFPST_TABLE = 3;  // Table statistics
+const OFPST_PORT = 4;   // Port statistics
+
+// OF 1.0 port structure size (48 bytes per port in FEATURES_REPLY, 104 bytes in PORT_STATS)
+const OF10_PORT_STATS_SIZE = 104;
+// OF 1.3 port stats size = 112 bytes
+const OF13_PORT_STATS_SIZE = 112;
+// OF 1.0 table stats size = 64 bytes
+const OF10_TABLE_STATS_SIZE = 64;
+// OF 1.3 table stats size = 24 bytes
+const OF13_TABLE_STATS_SIZE = 24;
+
+type StatsType = 'flow' | 'port' | 'table' | 'desc';
+
+/**
+ * Handle OpenFlow stats request — fetch statistics from an OpenFlow switch.
+ * Supports DESC, PORT, TABLE, and FLOW stats for both OF 1.0 and OF 1.3.
+ * POST /api/openflow/stats
+ */
+export async function handleOpenFlowStats(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      timeout?: number;
+      statsType?: StatsType;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const host = body.host;
+    const port = body.port !== undefined ? body.port : 6653;
+    const timeout = body.timeout || 10000;
+    const statsType: StatsType = body.statsType || 'desc';
+
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const validStatsTypes: StatsType[] = ['flow', 'port', 'table', 'desc'];
+    if (!validStatsTypes.includes(statsType)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'statsType must be one of: flow, port, table, desc' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    let xid = 1;
+    let negotiatedVersion = OFP_VERSION_1_3;
+
+    // ------------------------------------------------------------------
+    // 1. HELLO exchange
+    // ------------------------------------------------------------------
+    await writer.write(buildMessage(OFP_VERSION_1_3, OFPT_HELLO, xid++));
+
+    try {
+      const helloData = await readMessage(reader, timeout);
+      if (helloData) {
+        const parsed = parseMessage(helloData);
+        if (parsed && parsed.type === OFPT_HELLO) {
+          negotiatedVersion = Math.min(OFP_VERSION_1_3, parsed.version);
+        }
+      }
+    } catch {
+      // Continue with default version
+    }
+
+    // ------------------------------------------------------------------
+    // 2. FEATURES_REQUEST — required before stats on some switches
+    // ------------------------------------------------------------------
+    await writer.write(buildMessage(negotiatedVersion, OFPT_FEATURES_REQUEST, xid++));
+    try {
+      const featData = await readMessage(reader, timeout);
+      if (featData) {
+        const parsed = parseMessage(featData);
+        if (parsed && parsed.type !== OFPT_FEATURES_REPLY) {
+          // Non-fatal; continue
+        }
+      }
+    } catch {
+      // Continue
+    }
+
+    // ------------------------------------------------------------------
+    // 3. Build STATS_REQUEST / MULTIPART_REQUEST body
+    // ------------------------------------------------------------------
+    // Determine numeric body type
+    let statsBodyType: number;
+    switch (statsType) {
+      case 'desc':  statsBodyType = OFPST_DESC; break;
+      case 'flow':  statsBodyType = OFPST_FLOW; break;
+      case 'table': statsBodyType = OFPST_TABLE; break;
+      case 'port':  statsBodyType = OFPST_PORT; break;
+    }
+
+    // Build stats request payload
+    // Format: 2 bytes body-type + 2 bytes flags + optional body
+    let statsReqPayload: Uint8Array;
+
+    if (statsType === 'flow') {
+      // FLOW_STATS_REQUEST body (OF 1.0): match (40 bytes) + table_id + pad + out_port
+      // OF 1.3 flow stats request is different but we send a wildcard match
+      if (negotiatedVersion <= OFP_VERSION_1_0) {
+        // OF 1.0: 2 (type) + 2 (flags) + 40 (match) + 1 (table) + 1 (pad) + 2 (out_port)
+        statsReqPayload = new Uint8Array(48);
+        const sv = new DataView(statsReqPayload.buffer);
+        sv.setUint16(0, statsBodyType);
+        sv.setUint16(2, 0); // flags
+        // Match: wildcards = 0x003fffff (all wildcards) at offset 4
+        sv.setUint32(4, 0x003fffff); // all wildcards
+        statsReqPayload[44] = 0xff; // table_id = 0xff (all tables)
+        sv.setUint16(46, 0xffff);   // out_port = OFPP_NONE
+      } else {
+        // OF 1.3: 2 (type) + 2 (flags) + 4 (reserved) + OXM match (minimal: 4 bytes type+len)
+        statsReqPayload = new Uint8Array(16);
+        const sv = new DataView(statsReqPayload.buffer);
+        sv.setUint16(0, statsBodyType);
+        sv.setUint16(2, 0); // flags
+        // table_id = 0xff (all tables) at offset 4
+        statsReqPayload[4] = 0xff;
+        // out_port = OFPP_ANY = 0xffffffff at offset 8
+        sv.setUint32(8, 0xffffffff);
+        // out_group = OFPG_ANY = 0xffffffff at offset 12 (pad)
+        sv.setUint32(12, 0xffffffff);
+        // Minimal OXM match would follow — omit for now (empty match = match all)
+      }
+    } else if (statsType === 'port') {
+      // PORT_STATS_REQUEST: 2 (type) + 2 (flags) + 2 (port_no) + padding
+      if (negotiatedVersion <= OFP_VERSION_1_0) {
+        statsReqPayload = new Uint8Array(8);
+        const sv = new DataView(statsReqPayload.buffer);
+        sv.setUint16(0, statsBodyType);
+        sv.setUint16(2, 0); // flags
+        sv.setUint16(4, 0xffff); // OFPP_NONE = all ports (OF 1.0)
+      } else {
+        statsReqPayload = new Uint8Array(8);
+        const sv = new DataView(statsReqPayload.buffer);
+        sv.setUint16(0, statsBodyType);
+        sv.setUint16(2, 0); // flags
+        sv.setUint32(4, 0xffffffff); // OFPP_ANY = all ports (OF 1.3)
+      }
+    } else {
+      // DESC and TABLE require only the 2-byte type + 2-byte flags header (no body)
+      statsReqPayload = new Uint8Array(4);
+      const sv = new DataView(statsReqPayload.buffer);
+      sv.setUint16(0, statsBodyType);
+      sv.setUint16(2, 0); // flags
+    }
+
+    // Choose message type based on negotiated version
+    const statsReqType = negotiatedVersion <= OFP_VERSION_1_0
+      ? OFPT_STATS_REQUEST_10
+      : OFPT_MULTIPART_REQUEST_13;
+
+    await writer.write(buildMessage(negotiatedVersion, statsReqType, xid++, statsReqPayload));
+
+    // ------------------------------------------------------------------
+    // 4. Read STATS_REPLY / MULTIPART_REPLY (may come in multiple parts)
+    // ------------------------------------------------------------------
+    const statsReplyType = negotiatedVersion <= OFP_VERSION_1_0
+      ? OFPT_STATS_REPLY_10
+      : OFPT_MULTIPART_REPLY_13;
+
+    let replyPayload: Uint8Array | null = null;
+    let gotReply = false;
+
+    try {
+      // Read up to 3 messages looking for the stats reply
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const msgData = await readMessage(reader, timeout);
+        if (!msgData) break;
+        const parsed = parseMessage(msgData);
+        if (!parsed) break;
+        if (parsed.type === statsReplyType && parsed.payload.length >= 4) {
+          // payload starts with: 2 (type) + 2 (flags) + body
+          replyPayload = parsed.payload;
+          gotReply = true;
+          // Check MORE flag (bit 0 of flags) — for simplicity we read one reply
+          // flags are at offset 2 of payload
+          const flags = (parsed.payload[2] << 8) | parsed.payload[3];
+          if (!(flags & 0x0001)) break; // no MORE flag, we have all data
+        } else if (parsed.type === OFPT_ERROR) {
+          break;
+        }
+      }
+    } catch {
+      // Timeout reading stats reply
+    }
+
+    const rtt = Date.now() - startTime;
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    if (!gotReply || !replyPayload) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          host,
+          port,
+          rtt,
+          statsType,
+          protocol: 'OpenFlow',
+          negotiatedVersion,
+          negotiatedVersionName: VERSION_NAMES[negotiatedVersion] || 'Unknown',
+          error: 'No stats reply received — switch may not support this stats type',
+        }),
+        { headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // ------------------------------------------------------------------
+    // 5. Parse stats reply body (starts at offset 4 of payload: skip type+flags)
+    // ------------------------------------------------------------------
+    const statsBody = replyPayload.slice(4);
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let statsData: any = null;
+
+    if (statsType === 'desc') {
+      // DESC reply: five null-padded strings, each 256 bytes
+      // mfr_desc[256] + hw_desc[256] + sw_desc[256] + serial_num[32] + dp_desc[256]
+      function readPaddedString(offset: number, len: number): string {
+        const end = Math.min(offset + len, statsBody.length);
+        let termIdx = offset;
+        while (termIdx < end && statsBody[termIdx] !== 0) termIdx++;
+        const decoder = new TextDecoder();
+        return decoder.decode(statsBody.slice(offset, termIdx)).trim();
+      }
+
+      if (statsBody.length >= 1056) {
+        statsData = {
+          manufacturer: readPaddedString(0, 256),
+          hardware: readPaddedString(256, 256),
+          software: readPaddedString(512, 256),
+          serial: readPaddedString(768, 32),
+          datapath: readPaddedString(800, 256),
+        };
+      } else {
+        statsData = { error: `DESC body too short: ${statsBody.length} bytes` };
+      }
+
+    } else if (statsType === 'port') {
+      // PORT_STATS reply: array of port-stat structs
+      const portSize = negotiatedVersion <= OFP_VERSION_1_0 ? OF10_PORT_STATS_SIZE : OF13_PORT_STATS_SIZE;
+      const ports: object[] = [];
+      let offset = 0;
+
+      while (offset + portSize <= statsBody.length) {
+        if (negotiatedVersion <= OFP_VERSION_1_0) {
+          // OF 1.0 port stats: port_no(2) + pad(6) + rx_packets(8) + tx_packets(8) + ...
+          const ps = new DataView(statsBody.buffer, statsBody.byteOffset + offset, portSize);
+          ports.push({
+            portNo: ps.getUint16(0),
+            rxPackets: Number(ps.getBigUint64(8)),
+            txPackets: Number(ps.getBigUint64(16)),
+            rxBytes: Number(ps.getBigUint64(24)),
+            txBytes: Number(ps.getBigUint64(32)),
+            rxDropped: Number(ps.getBigUint64(40)),
+            txDropped: Number(ps.getBigUint64(48)),
+            rxErrors: Number(ps.getBigUint64(56)),
+            txErrors: Number(ps.getBigUint64(64)),
+          });
+        } else {
+          // OF 1.3 port stats: port_no(4) + pad(4) + rx_packets(8) + tx_packets(8) + ...
+          const ps = new DataView(statsBody.buffer, statsBody.byteOffset + offset, portSize);
+          ports.push({
+            portNo: ps.getUint32(0),
+            rxPackets: Number(ps.getBigUint64(8)),
+            txPackets: Number(ps.getBigUint64(16)),
+            rxBytes: Number(ps.getBigUint64(24)),
+            txBytes: Number(ps.getBigUint64(32)),
+            rxDropped: Number(ps.getBigUint64(40)),
+            txDropped: Number(ps.getBigUint64(48)),
+            rxErrors: Number(ps.getBigUint64(56)),
+            txErrors: Number(ps.getBigUint64(64)),
+          });
+        }
+        offset += portSize;
+      }
+      statsData = { ports };
+
+    } else if (statsType === 'table') {
+      // TABLE_STATS reply: array of table-stat structs
+      const tableSize = negotiatedVersion <= OFP_VERSION_1_0 ? OF10_TABLE_STATS_SIZE : OF13_TABLE_STATS_SIZE;
+      const tables: object[] = [];
+      let offset = 0;
+
+      while (offset + tableSize <= statsBody.length) {
+        if (negotiatedVersion <= OFP_VERSION_1_0) {
+          // OF 1.0: table_id(1) + pad(3) + name(32) + wildcards(4) + max_entries(4) + active_count(4)
+          //       + lookup_count(8) + matched_count(8)
+          const ts = new DataView(statsBody.buffer, statsBody.byteOffset + offset, tableSize);
+          const nameBytes = statsBody.slice(offset + 4, offset + 36);
+          let nameEnd = 0;
+          while (nameEnd < nameBytes.length && nameBytes[nameEnd] !== 0) nameEnd++;
+          const tableName = new TextDecoder().decode(nameBytes.slice(0, nameEnd));
+          tables.push({
+            tableId: ts.getUint8(0),
+            name: tableName,
+            maxEntries: ts.getUint32(40),
+            activeCount: ts.getUint32(44),
+            lookups: Number(ts.getBigUint64(48)),
+            matched: Number(ts.getBigUint64(56)),
+          });
+        } else {
+          // OF 1.3: table_id(1) + pad(3) + active_count(4) + lookup_count(8) + matched_count(8)
+          const ts = new DataView(statsBody.buffer, statsBody.byteOffset + offset, tableSize);
+          tables.push({
+            tableId: ts.getUint8(0),
+            activeCount: ts.getUint32(4),
+            lookups: Number(ts.getBigUint64(8)),
+            matched: Number(ts.getBigUint64(16)),
+          });
+        }
+        offset += tableSize;
+      }
+      statsData = { tables };
+
+    } else if (statsType === 'flow') {
+      // FLOW_STATS reply: variable-length flow records
+      const flows: object[] = [];
+
+      if (negotiatedVersion <= OFP_VERSION_1_0) {
+        // OF 1.0 flow stats: length(2) + table_id(1) + pad(1) + match(40) + duration_sec(4)
+        //   + duration_nsec(4) + priority(2) + idle_timeout(2) + hard_timeout(2) + pad(6)
+        //   + cookie(8) + packet_count(8) + byte_count(8) + actions[...]
+        let offset = 0;
+        while (offset + 4 <= statsBody.length) {
+          const fs = new DataView(statsBody.buffer, statsBody.byteOffset + offset, Math.min(88, statsBody.length - offset));
+          const flowLen = fs.getUint16(0);
+          if (flowLen < 88 || offset + flowLen > statsBody.length) break;
+          flows.push({
+            tableId: statsBody[offset + 2],
+            priority: fs.getUint16(58),
+            idleTimeout: fs.getUint16(60),
+            hardTimeout: fs.getUint16(62),
+            cookie: `0x${fs.getUint32(68).toString(16).padStart(8, '0')}${fs.getUint32(72).toString(16).padStart(8, '0')}`,
+            packetCount: Number(fs.getBigUint64(76)),
+            byteCount: Number(fs.getBigUint64(84)),
+          });
+          offset += flowLen;
+        }
+      } else {
+        // OF 1.3 flow stats: length(2) + table_id(1) + pad(1) + duration_sec(4) + duration_nsec(4)
+        //   + priority(2) + idle_timeout(2) + hard_timeout(2) + flags(2) + pad(4)
+        //   + cookie(8) + packet_count(8) + byte_count(8) + match + instructions
+        let offset = 0;
+        while (offset + 56 <= statsBody.length) {
+          const fs = new DataView(statsBody.buffer, statsBody.byteOffset + offset, Math.min(56, statsBody.length - offset));
+          const flowLen = fs.getUint16(0);
+          if (flowLen < 56 || offset + flowLen > statsBody.length) break;
+          flows.push({
+            tableId: statsBody[offset + 2],
+            priority: fs.getUint16(14),
+            idleTimeout: fs.getUint16(16),
+            hardTimeout: fs.getUint16(18),
+            flags: fs.getUint16(20),
+            cookie: `0x${fs.getUint32(24).toString(16).padStart(8, '0')}${fs.getUint32(28).toString(16).padStart(8, '0')}`,
+            packetCount: Number(fs.getBigUint64(32)),
+            byteCount: Number(fs.getBigUint64(40)),
+          });
+          offset += flowLen;
+        }
+      }
+      statsData = { flows };
+    }
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        statsType,
+        protocol: 'OpenFlow',
+        negotiatedVersion,
+        negotiatedVersionName: VERSION_NAMES[negotiatedVersion] || 'Unknown',
+        stats: statsData,
+      }),
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'OpenFlow stats failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}

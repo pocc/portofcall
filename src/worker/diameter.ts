@@ -590,3 +590,507 @@ export async function handleDiameterWatchdog(request: Request): Promise<Response
     });
   }
 }
+
+// Additional AVP codes for ACR and Auth
+const AVP_DESTINATION_REALM = 283;
+const AVP_SESSION_ID = 263;
+const AVP_ACCT_RECORD_TYPE = 480;
+const AVP_ACCT_RECORD_NUMBER = 485;
+const AVP_USER_NAME = 1;
+const AVP_ACCT_APPLICATION_ID = 259;
+const AVP_SUPPORTED_VENDOR_ID = 265;
+
+// Accounting record type names
+const ACCT_RECORD_TYPE_NAMES: Record<number, string> = {
+  1: 'EVENT_RECORD',
+  2: 'START_RECORD',
+  3: 'INTERIM_RECORD',
+  4: 'STOP_RECORD',
+};
+
+// Known Diameter application IDs
+const DIAMETER_APP_NAMES: Record<number, string> = {
+  0: 'Diameter Common Messages',
+  1: 'NASREQ (RFC 4005)',
+  2: 'Mobile IPv4 (RFC 4004)',
+  3: 'Diameter Base Accounting (RFC 6733)',
+  4: 'Credit Control (RFC 4006)',
+  5: 'EAP (RFC 4072)',
+  6: 'SIP (RFC 4740)',
+  16777216: 'Cx/Dx 3GPP (TS 29.229)',
+  16777217: 'Sh 3GPP (TS 29.329)',
+  16777236: 'Rx 3GPP (TS 29.214)',
+  16777238: 'Gx 3GPP (TS 29.212)',
+};
+
+/**
+ * Handle Diameter ACR (Accounting-Request) — sends CER, then ACR, parses ACA.
+ */
+export async function handleDiameterACR(request: Request): Promise<Response> {
+  try {
+    const options = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      originHost?: string;
+      originRealm?: string;
+      destinationRealm?: string;
+      sessionId?: string;
+      acctRecordType?: number;
+      username?: string;
+    };
+
+    if (!options.host) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameter: host',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = options.host;
+    const port = options.port || 3868;
+    const originHost = options.originHost || 'portofcall.ross.gg';
+    const originRealm = options.originRealm || 'ross.gg';
+    const destinationRealm = options.destinationRealm || originRealm;
+    const timeoutMs = options.timeout || 15000;
+    const acctRecordType = options.acctRecordType ?? 1; // Default: EVENT_RECORD
+    const sessionId = options.sessionId || `${originHost};${Date.now()};1`;
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const hopByHopId = Math.floor(Math.random() * 0xffffffff);
+        const endToEndId = Math.floor(Math.random() * 0xffffffff);
+
+        // Step 1: CER
+        const cerAvps = [
+          encodeStringAVP(AVP_ORIGIN_HOST, true, originHost),
+          encodeStringAVP(AVP_ORIGIN_REALM, true, originRealm),
+          encodeAddressAVP(AVP_HOST_IP_ADDRESS, true),
+          encodeUint32AVP(AVP_VENDOR_ID, true, 0),
+          encodeStringAVP(AVP_PRODUCT_NAME, false, 'PortOfCall'),
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, 0),
+          encodeUint32AVP(AVP_ACCT_APPLICATION_ID, true, 3), // Base Accounting
+        ];
+        const cer = buildDiameterMessage(CMD_CAPABILITIES_EXCHANGE, FLAG_REQUEST, 0, hopByHopId, endToEndId, cerAvps);
+        await writer.write(cer);
+        await readDiameterMessage(reader, timeoutMs);
+
+        // Step 2: ACR (command 271, application-id 3 = base accounting)
+        const acrAvps = [
+          encodeStringAVP(AVP_SESSION_ID, true, sessionId),
+          encodeStringAVP(AVP_ORIGIN_HOST, true, originHost),
+          encodeStringAVP(AVP_ORIGIN_REALM, true, originRealm),
+          encodeStringAVP(AVP_DESTINATION_REALM, true, destinationRealm),
+          encodeUint32AVP(AVP_ACCT_RECORD_TYPE, true, acctRecordType),
+          encodeUint32AVP(AVP_ACCT_RECORD_NUMBER, true, 1),
+          ...(options.username ? [encodeStringAVP(AVP_USER_NAME, true, options.username)] : []),
+        ];
+
+        const acrStart = Date.now();
+        const acr = buildDiameterMessage(
+          271, // Accounting-Request
+          FLAG_REQUEST,
+          3,   // Base Accounting application
+          hopByHopId + 1,
+          endToEndId + 1,
+          acrAvps,
+        );
+        await writer.write(acr);
+
+        // Step 3: Read ACA
+        const acaBytes = await readDiameterMessage(reader, timeoutMs);
+        const rtt = Date.now() - acrStart;
+        const aca = parseDiameterMessage(acaBytes);
+
+        const resultCodeAVP = aca.avps.find(a => a.code === AVP_RESULT_CODE);
+        let resultCode = 0;
+        if (resultCodeAVP && resultCodeAVP.value.length >= 4) {
+          resultCode = new DataView(resultCodeAVP.value.buffer, resultCodeAVP.value.byteOffset).getUint32(0, false);
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          resultCode,
+          resultCodeName: resultCode === RESULT_SUCCESS ? 'DIAMETER_SUCCESS' :
+            resultCode >= 3000 && resultCode < 4000 ? 'PROTOCOL_ERROR' :
+            resultCode >= 5000 ? 'PERMANENT_FAILURE' : `Code ${resultCode}`,
+          sessionId,
+          acctRecordType,
+          acctRecordTypeName: ACCT_RECORD_TYPE_NAMES[acctRecordType] || `Unknown (${acctRecordType})`,
+        };
+      } catch (error) {
+        reader.releaseLock();
+        writer.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'ACR failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Diameter Auth capability probe — sends CER/CEA and reports supported applications.
+ * Also sends a generic AAR (Authentication-Authorization-Request, command 265) when the server
+ * advertises Auth-Application-IDs, then parses the AAA response.
+ */
+export async function handleDiameterAuth(request: Request): Promise<Response> {
+  try {
+    const options = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      originHost?: string;
+      originRealm?: string;
+      destinationRealm?: string;
+    };
+
+    if (!options.host) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameter: host',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = options.host;
+    const port = options.port || 3868;
+    const originHost = options.originHost || 'portofcall.ross.gg';
+    const originRealm = options.originRealm || 'ross.gg';
+    const destinationRealm = options.destinationRealm || originRealm;
+    const timeoutMs = options.timeout || 15000;
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const hopByHopId = Math.floor(Math.random() * 0xffffffff);
+        const endToEndId = Math.floor(Math.random() * 0xffffffff);
+
+        // Step 1: CER advertising several auth app IDs
+        const cerAvps = [
+          encodeStringAVP(AVP_ORIGIN_HOST, true, originHost),
+          encodeStringAVP(AVP_ORIGIN_REALM, true, originRealm),
+          encodeAddressAVP(AVP_HOST_IP_ADDRESS, true),
+          encodeUint32AVP(AVP_VENDOR_ID, true, 0),
+          encodeStringAVP(AVP_PRODUCT_NAME, false, 'PortOfCall'),
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, 1),   // NASREQ
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, 4),   // Credit Control
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, 5),   // EAP
+          encodeUint32AVP(AVP_SUPPORTED_VENDOR_ID, false, 10415), // 3GPP
+        ];
+        const cer = buildDiameterMessage(CMD_CAPABILITIES_EXCHANGE, FLAG_REQUEST, 0, hopByHopId, endToEndId, cerAvps);
+        await writer.write(cer);
+
+        const ceaBytes = await readDiameterMessage(reader, timeoutMs);
+        const cea = parseDiameterMessage(ceaBytes);
+
+        // Collect all Auth-Application-Id and Acct-Application-Id AVPs from CEA
+        const appIds: number[] = [];
+        for (const avp of cea.avps) {
+          if (avp.code === AVP_AUTH_APPLICATION_ID || avp.code === AVP_ACCT_APPLICATION_ID) {
+            if (avp.value.length >= 4) {
+              appIds.push(new DataView(avp.value.buffer, avp.value.byteOffset).getUint32(0, false));
+            }
+          }
+        }
+
+        const supportedApps = [...new Set(appIds)].map(id => {
+          const name = DIAMETER_APP_NAMES[id] || `Unknown App (${id})`;
+          return `${id}: ${name}`;
+        });
+
+        // Step 2: Send AAR (command 265) targeting the first non-zero auth app found,
+        // or fall back to NASREQ (app 1). AAR probes auth capability.
+        const authAppId = appIds.find(id => id > 0) ?? 1;
+        const sessionId = `${originHost};${Date.now()};auth`;
+
+        const aarAvps = [
+          encodeStringAVP(AVP_SESSION_ID, true, sessionId),
+          encodeStringAVP(AVP_ORIGIN_HOST, true, originHost),
+          encodeStringAVP(AVP_ORIGIN_REALM, true, originRealm),
+          encodeStringAVP(AVP_DESTINATION_REALM, true, destinationRealm),
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, authAppId),
+        ];
+
+        const aarStart = Date.now();
+        const aar = buildDiameterMessage(
+          265, // AA-Request (AAR)
+          FLAG_REQUEST,
+          authAppId,
+          hopByHopId + 1,
+          endToEndId + 1,
+          aarAvps,
+        );
+        await writer.write(aar);
+
+        let resultCode = 0;
+        let rtt = 0;
+        try {
+          const aaaBytes = await readDiameterMessage(reader, timeoutMs);
+          rtt = Date.now() - aarStart;
+          const aaa = parseDiameterMessage(aaaBytes);
+          const rcAVP = aaa.avps.find(a => a.code === AVP_RESULT_CODE);
+          if (rcAVP && rcAVP.value.length >= 4) {
+            resultCode = new DataView(rcAVP.value.buffer, rcAVP.value.byteOffset).getUint32(0, false);
+          }
+        } catch {
+          // Server may close or not respond to AAR — that's fine, we still have CEA info
+          rtt = Date.now() - aarStart;
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          resultCode,
+          resultCodeName: resultCode === RESULT_SUCCESS ? 'DIAMETER_SUCCESS' :
+            resultCode === 0 ? 'NO_RESPONSE' :
+            resultCode >= 3000 && resultCode < 4000 ? 'PROTOCOL_ERROR' :
+            resultCode >= 5000 ? 'PERMANENT_FAILURE' : `Code ${resultCode}`,
+          supportedApps,
+          peerInfo: extractAVPInfo(cea.avps),
+        };
+      } catch (error) {
+        reader.releaseLock();
+        writer.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Auth probe failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// AVP code for Session-Termination-Request
+const AVP_TERMINATION_CAUSE = 295;
+const CMD_SESSION_TERMINATION = 275;
+
+/**
+ * Send a Diameter Session-Termination-Request (STR, command 275)
+ * POST /api/diameter/str
+ *
+ * Performs CER → CEA → STR → STA (Session-Termination-Answer).
+ * Useful for probing whether the peer supports session termination signalling.
+ *
+ * Request: { host, port?, timeout?, originHost?, originRealm?, sessionId?, terminationCause? }
+ *   terminationCause: 1=DIAMETER_LOGOUT (default), 2=SERVICE_NOT_PROVIDED, 4=SESSION_TIMEOUT
+ * Response: { success, host, port, rtt, resultCode, resultCodeName, sessionId }
+ */
+export async function handleDiameterSTR(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; timeout?: number;
+      originHost?: string; originRealm?: string;
+      sessionId?: string; terminationCause?: number;
+    };
+    const {
+      host, port = 3868, timeout: timeoutMs = 10000,
+      originHost = 'portofcall.probe',
+      originRealm = 'portofcall.example',
+      terminationCause = 1, // DIAMETER_LOGOUT
+    } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+
+    const sessionId = body.sessionId ?? `${originHost};${Date.now()};str`;
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const hopByHopId = Math.floor(Math.random() * 0xffffffff);
+        const endToEndId = Math.floor(Math.random() * 0xffffffff);
+
+        // Step 1: CER (capabilities exchange)
+        const cerAvps = [
+          encodeStringAVP(AVP_ORIGIN_HOST, true, originHost),
+          encodeStringAVP(AVP_ORIGIN_REALM, true, originRealm),
+          encodeAddressAVP(AVP_HOST_IP_ADDRESS, true),
+          encodeUint32AVP(AVP_VENDOR_ID, true, 0),
+          encodeStringAVP(AVP_PRODUCT_NAME, false, 'PortOfCall'),
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, 0),
+        ];
+        const cer = buildDiameterMessage(CMD_CAPABILITIES_EXCHANGE, FLAG_REQUEST, 0, hopByHopId, endToEndId, cerAvps);
+        await writer.write(cer);
+        await readDiameterMessage(reader, timeoutMs);
+
+        // Step 2: STR (session-termination-request, command 275)
+        const strAvps = [
+          encodeStringAVP(AVP_SESSION_ID, true, sessionId),
+          encodeStringAVP(AVP_ORIGIN_HOST, true, originHost),
+          encodeStringAVP(AVP_ORIGIN_REALM, true, originRealm),
+          encodeStringAVP(AVP_DESTINATION_REALM, true, originRealm),
+          encodeUint32AVP(AVP_AUTH_APPLICATION_ID, true, 0),
+          encodeUint32AVP(AVP_TERMINATION_CAUSE, true, terminationCause),
+        ];
+        const strStart = Date.now();
+        const strMsg = buildDiameterMessage(CMD_SESSION_TERMINATION, FLAG_REQUEST, 0, hopByHopId + 1, endToEndId + 1, strAvps);
+        await writer.write(strMsg);
+
+        let resultCode = 0;
+        let rtt = 0;
+        try {
+          const staBytes = await readDiameterMessage(reader, timeoutMs);
+          rtt = Date.now() - strStart;
+          const sta = parseDiameterMessage(staBytes);
+          const rcAVP = sta.avps.find(a => a.code === AVP_RESULT_CODE);
+          if (rcAVP && rcAVP.value.length >= 4) {
+            resultCode = new DataView(rcAVP.value.buffer, rcAVP.value.byteOffset).getUint32(0, false);
+          }
+        } catch {
+          rtt = Date.now() - strStart;
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        const CAUSE_NAMES: Record<number, string> = {
+          1: 'DIAMETER_LOGOUT', 2: 'SERVICE_NOT_PROVIDED', 4: 'SESSION_TIMEOUT', 8: 'USER_MOVED',
+        };
+        return {
+          success: true, host, port, rtt, sessionId,
+          terminationCause,
+          terminationCauseName: CAUSE_NAMES[terminationCause] ?? `Cause(${terminationCause})`,
+          resultCode,
+          resultCodeName: resultCode === RESULT_SUCCESS ? 'DIAMETER_SUCCESS' :
+            resultCode === 0 ? 'NO_RESPONSE' :
+            resultCode >= 3000 && resultCode < 4000 ? 'PROTOCOL_ERROR' :
+            resultCode >= 5000 ? 'PERMANENT_FAILURE' : `Code(${resultCode})`,
+        };
+      } catch (error) {
+        reader.releaseLock();
+        writer.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
+      }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'STR failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

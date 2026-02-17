@@ -253,9 +253,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">
                       Private key
-                      <span className="text-xs text-slate-400 ml-1">(Ed25519, unencrypted)</span>
+                      <span className="text-xs text-slate-400 ml-1">(OpenSSH Ed25519)</span>
                     </label>
-                    <p className="text-xs text-slate-400 mb-1">Key must be unencrypted — bcrypt KDF is unavailable in Web Crypto. Strip passphrase with: <code className="text-slate-300">ssh-keygen -p -N "" -f &lt;keyfile&gt;</code></p>
+                    <p className="text-xs text-slate-400 mb-1">Ed25519 only. Passphrase-protected keys are supported — enter the passphrase below.</p>
                     <textarea
                       value={privateKey}
                       onChange={(e) => setPrivateKey(e.target.value)}

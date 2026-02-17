@@ -420,3 +420,465 @@ export async function handleKubernetesQuery(request: Request): Promise<Response>
     );
   }
 }
+
+
+/**
+ * Fetch Kubernetes pod logs.
+ * GET /api/v1/namespaces/{ns}/pods/{pod}/log?container={container}&tailLines={N}&timestamps=true
+ *
+ * GET /api/kubernetes/logs
+ * Body: { host, port?, token?, namespace, pod, container?, tailLines?, timeout? }
+ */
+export async function handleKubernetesLogs(request: Request): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host: string;
+      port?: number;
+      token?: string;
+      namespace: string;
+      pod: string;
+      container?: string;
+      tailLines?: number;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 6443,
+      token,
+      namespace,
+      pod,
+      container,
+      tailLines = 100,
+      timeout = 20000,
+    } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!namespace) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'namespace is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (!pod) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'pod name is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const params = new URLSearchParams({ tailLines: String(tailLines), timestamps: 'true' });
+    if (container) params.set('container', container);
+    const logPath = `/api/v1/namespaces/${namespace}/pods/${pod}/log?${params.toString()}`;
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
+      const safePath = logPath.replace(/[^a-zA-Z0-9/_\-.=?&]/g, '');
+
+      const httpRequest = [
+        `GET ${safePath} HTTP/1.1\r\n`,
+        `Host: ${host}\r\n`,
+        authHeader,
+        `Accept: text/plain\r\n`,
+        `Connection: close\r\n`,
+        `User-Agent: portofcall/1.0\r\n`,
+        `\r\n`,
+      ].join('');
+
+      await writer.write(new TextEncoder().encode(httpRequest));
+      const rawResponse = await readHTTPResponse(reader, timeout - (Date.now() - startTime));
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!rawResponse) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No response received' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const parsed = parseHTTPResponse(rawResponse);
+
+      const lines = parsed.body
+        ? parsed.body.split('\n').filter(l => l.trim().length > 0)
+        : [];
+
+      return new Response(
+        JSON.stringify({
+          success: parsed.statusCode >= 200 && parsed.statusCode < 300,
+          host,
+          port,
+          namespace,
+          pod,
+          container: container || null,
+          tailLines,
+          httpStatus: parsed.statusCode,
+          lines,
+          lineCount: lines.length,
+          latencyMs,
+          authRequired: parsed.statusCode === 401 || parsed.statusCode === 403,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * List Kubernetes pods in a namespace with optional label selector.
+ * GET /api/v1/namespaces/{ns}/pods  or  GET /api/v1/pods (all namespaces)
+ * Returns pod names, status, and node.
+ *
+ * GET /api/kubernetes/pods
+ * Body: { host, port?, token?, namespace?, labelSelector?, timeout? }
+ */
+export async function handleKubernetesPodList(request: Request): Promise<Response> {
+  if (request.method !== 'GET' && request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host: string;
+      port?: number;
+      token?: string;
+      namespace?: string;
+      labelSelector?: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 6443,
+      token,
+      namespace,
+      labelSelector,
+      timeout = 20000,
+    } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const basePath = namespace
+      ? `/api/v1/namespaces/${namespace}/pods`
+      : '/api/v1/pods';
+
+    const params = new URLSearchParams();
+    if (labelSelector) params.set('labelSelector', labelSelector);
+    const fullPath = params.toString() ? `${basePath}?${params.toString()}` : basePath;
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
+      const safePath = fullPath.replace(/[^a-zA-Z0-9/_\-.=?&,!]/g, '');
+
+      const httpRequest = [
+        `GET ${safePath} HTTP/1.1\r\n`,
+        `Host: ${host}\r\n`,
+        authHeader,
+        `Accept: application/json\r\n`,
+        `Connection: close\r\n`,
+        `User-Agent: portofcall/1.0\r\n`,
+        `\r\n`,
+      ].join('');
+
+      await writer.write(new TextEncoder().encode(httpRequest));
+      const rawResponse = await readHTTPResponse(reader, timeout - (Date.now() - startTime));
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!rawResponse) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No response received' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const parsed = parseHTTPResponse(rawResponse);
+
+      interface PodItem {
+        metadata?: { name?: string; namespace?: string; labels?: Record<string, string> };
+        status?: { phase?: string; podIP?: string };
+        spec?: { nodeName?: string };
+      }
+
+      interface PodList {
+        items?: PodItem[];
+      }
+
+      let pods: Array<{ name: string; namespace: string; phase: string; ip: string; node: string; labels: Record<string, string> }> = [];
+      let rawBody: unknown = undefined;
+
+      if (parsed.body) {
+        try {
+          const podList = JSON.parse(parsed.body) as PodList;
+          rawBody = podList;
+          if (podList.items) {
+            pods = podList.items.map((item) => ({
+              name: item.metadata?.name || '',
+              namespace: item.metadata?.namespace || namespace || '',
+              phase: item.status?.phase || 'Unknown',
+              ip: item.status?.podIP || '',
+              node: item.spec?.nodeName || '',
+              labels: item.metadata?.labels || {},
+            }));
+          }
+        } catch {
+          rawBody = parsed.body.slice(0, 2048);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: parsed.statusCode >= 200 && parsed.statusCode < 300,
+          host,
+          port,
+          namespace: namespace || '(all)',
+          labelSelector: labelSelector || null,
+          httpStatus: parsed.statusCode,
+          pods,
+          podCount: pods.length,
+          body: parsed.statusCode < 200 || parsed.statusCode >= 300 ? rawBody : undefined,
+          latencyMs,
+          authRequired: parsed.statusCode === 401 || parsed.statusCode === 403,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Apply a Kubernetes resource manifest via server-side apply.
+ * Detects kind + name from the manifest, then:
+ * PATCH /api/v1/namespaces/{ns}/{kind}s/{name}
+ * Content-Type: application/apply-patch+yaml
+ *
+ * POST /api/kubernetes/apply
+ * Body: { host, port?, token?, namespace, manifest, timeout? }
+ */
+export async function handleKubernetesApply(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host: string;
+      port?: number;
+      token?: string;
+      namespace: string;
+      manifest: Record<string, unknown>;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 6443,
+      token,
+      namespace,
+      manifest,
+      timeout = 20000,
+    } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!namespace) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'namespace is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!manifest || typeof manifest !== 'object') {
+      return new Response(
+        JSON.stringify({ success: false, error: 'manifest must be a JSON object' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Extract kind and name from the manifest
+    const kind = (manifest['kind'] as string | undefined) || '';
+    const name = (manifest['metadata'] as Record<string, unknown> | undefined)?.['name'] as string | undefined || '';
+
+    if (!kind) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'manifest.kind is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (!name) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'manifest.metadata.name is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Build the API path — lowercase plural kind
+    const kindPlural = kind.toLowerCase() + 's';
+    const applyPath = `/api/v1/namespaces/${namespace}/${kindPlural}/${name}?fieldManager=portofcall&force=true`;
+
+    const manifestBody = JSON.stringify(manifest);
+    const bodyBytes = new TextEncoder().encode(manifestBody);
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
+      const safePath = applyPath.replace(/[^a-zA-Z0-9/_\-.=?&]/g, '');
+
+      const requestLine =
+        `PATCH ${safePath} HTTP/1.1\r\n` +
+        `Host: ${host}\r\n` +
+        authHeader +
+        `Content-Type: application/apply-patch+yaml\r\n` +
+        `Accept: application/json\r\n` +
+        `Content-Length: ${bodyBytes.length}\r\n` +
+        `Connection: close\r\n` +
+        `User-Agent: portofcall/1.0\r\n` +
+        `\r\n`;
+
+      await writer.write(new TextEncoder().encode(requestLine));
+      await writer.write(bodyBytes);
+
+      const rawResponse = await readHTTPResponse(reader, timeout - (Date.now() - startTime));
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      const latencyMs = Date.now() - startTime;
+
+      if (!rawResponse) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No response received' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      const parsed = parseHTTPResponse(rawResponse);
+
+      let jsonBody: unknown = undefined;
+      if (parsed.body) {
+        try {
+          jsonBody = JSON.parse(parsed.body);
+        } catch {
+          jsonBody = parsed.body.slice(0, 2048);
+        }
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: parsed.statusCode >= 200 && parsed.statusCode < 300,
+          host,
+          port,
+          namespace,
+          kind,
+          name,
+          httpStatus: parsed.statusCode,
+          httpStatusText: parsed.statusText || undefined,
+          body: jsonBody,
+          latencyMs,
+          authRequired: parsed.statusCode === 401 || parsed.statusCode === 403,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}

@@ -33,6 +33,27 @@ interface HL7ConnectRequest {
   timeout?: number;
 }
 
+interface HL7QueryRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  queryId?: string;
+  patientId?: string;
+  dateRange?: string;
+}
+
+interface HL7ADT_A08Request {
+  host: string;
+  port?: number;
+  timeout?: number;
+  patientId: string;
+  lastName: string;
+  firstName: string;
+  dob?: string;
+  sex?: string;
+  diagnosis?: string;
+}
+
 interface HL7SendRequest {
   host: string;
   port?: number;
@@ -197,6 +218,67 @@ function parseHL7Message(raw: string): {
     ackCode: msa?.fields[0],
     ackText: msa && msa.fields.length > 2 ? msa.fields[2] : undefined,
   };
+}
+
+/**
+ * Build a QRY^Q01 (Patient Query) message
+ */
+function buildQRY_Q01(
+  sendingApp: string,
+  sendingFac: string,
+  receivingApp: string,
+  receivingFac: string,
+  controlId: string,
+  queryId: string,
+  patientId: string,
+  dateRange: string,
+): string {
+  const ts = hl7Timestamp();
+  const segments = [
+    `MSH|^~\\&|${sendingApp}|${sendingFac}|${receivingApp}|${receivingFac}|${ts}||QRY^Q01|${controlId}|P|2.5`,
+    // QRD fields:
+    // 1: query date/time
+    // 2: query format code (R=record-oriented)
+    // 3: query priority (I=immediate)
+    // 4: query ID
+    // 5: deferred response type (blank)
+    // 6: deferred response date/time
+    // 7: quantity limited request (99^RD = 99 records)
+    // 8: who subject filter (patient ID)
+    // 9: what subject filter (@PID)
+    // 10: what department data code (blank)
+    // 11: what data code value qualifier (blank)
+    // 12: query results level (blank)
+    `QRD|${ts}|R|I|${queryId}|||99^RD|${patientId}^^^TestHosp^MR|@PID|||${dateRange}`,
+  ];
+  return segments.join('\r');
+}
+
+/**
+ * Build an ADT^A08 (Update Patient Information) message
+ */
+function buildADT_A08(
+  sendingApp: string,
+  sendingFac: string,
+  receivingApp: string,
+  receivingFac: string,
+  controlId: string,
+  patientId: string,
+  lastName: string,
+  firstName: string,
+  dob: string,
+  sex: string,
+  diagnosis: string,
+): string {
+  const ts = hl7Timestamp();
+  const segments = [
+    `MSH|^~\\&|${sendingApp}|${sendingFac}|${receivingApp}|${receivingFac}|${ts}||ADT^A08|${controlId}|P|2.5`,
+    `EVN|A08|${ts}`,
+    `PID|1||${patientId}^^^TestHosp^MR||${lastName}^${firstName}||${dob}|${sex}|||123 Test St^^TestCity^TS^12345^USA`,
+    `PV1|1|O|TestWard^101^A|E|||TestDoc^Test^MD||||${diagnosis ? '1' : ''}`,
+    ...(diagnosis ? [`DG1|1||${diagnosis}^${diagnosis}^ICD10|${diagnosis} Diagnosis||F`] : []),
+  ];
+  return segments.join('\r');
 }
 
 /**
@@ -448,6 +530,315 @@ export async function handleHL7Send(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Connection failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle HL7 Query - Send QRY^Q01 (Patient Query) and parse response
+ */
+export async function handleHL7Query(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as HL7QueryRequest;
+    const {
+      host,
+      port = 2575,
+      timeout = 10000,
+      queryId,
+      patientId = 'TESTPID001',
+      dateRange = '',
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        const controlId = `QRY${Date.now()}`;
+        const resolvedQueryId = queryId || `QID${Date.now()}`;
+
+        const hl7Message = buildQRY_Q01(
+          'PortOfCall',
+          'TestFacility',
+          '',
+          '',
+          controlId,
+          resolvedQueryId,
+          patientId,
+          dateRange,
+        );
+
+        // Wrap in MLLP and send
+        const mllpData = wrapMLLP(hl7Message);
+        await writer.write(mllpData);
+
+        // Read MLLP response (ACK, QCK, or data)
+        const chunks: Uint8Array[] = [];
+        let totalLength = 0;
+        let receivedEndBlock = false;
+
+        while (!receivedEndBlock) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          totalLength += value.length;
+
+          for (let i = 0; i < value.length; i++) {
+            if (value[i] === END_OF_BLOCK) {
+              receivedEndBlock = true;
+              break;
+            }
+          }
+        }
+
+        const rtt = Date.now() - startTime;
+
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        const responseText = unwrapMLLP(combined);
+        const parsedResponse = responseText.length > 0 ? parseHL7Message(responseText) : null;
+
+        await socket.close();
+
+        // Count non-header/non-control segments as data rows
+        const dataSegments = parsedResponse
+          ? parsedResponse.segments.filter(s => s.id !== 'MSH' && s.id !== 'MSA' && s.id !== 'QAK' && s.id !== 'QRD')
+          : [];
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          queryId: resolvedQueryId,
+          ackCode: parsedResponse?.ackCode ?? null,
+          messageCount: dataSegments.length,
+          segments: parsedResponse
+            ? parsedResponse.segments.map(s => ({ id: s.id, fieldCount: s.fields.length }))
+            : [],
+        };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
+      }), {
+        status: 504,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Query failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle HL7 ADT^A08 - Send Update Patient Information message and parse ACK
+ */
+export async function handleHL7ADT_A08(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as HL7ADT_A08Request;
+    const {
+      host,
+      port = 2575,
+      timeout = 10000,
+      patientId,
+      lastName,
+      firstName,
+      dob = '',
+      sex = '',
+      diagnosis = '',
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!patientId || !lastName || !firstName) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'patientId, lastName, and firstName are required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        const controlId = `A08${Date.now()}`;
+
+        const hl7Message = buildADT_A08(
+          'PortOfCall',
+          'TestFacility',
+          '',
+          '',
+          controlId,
+          patientId,
+          lastName,
+          firstName,
+          dob,
+          sex,
+          diagnosis,
+        );
+
+        // Wrap in MLLP and send
+        const mllpData = wrapMLLP(hl7Message);
+        await writer.write(mllpData);
+
+        // Read MLLP ACK response
+        const chunks: Uint8Array[] = [];
+        let totalLength = 0;
+        let receivedEndBlock = false;
+
+        while (!receivedEndBlock) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          totalLength += value.length;
+
+          for (let i = 0; i < value.length; i++) {
+            if (value[i] === END_OF_BLOCK) {
+              receivedEndBlock = true;
+              break;
+            }
+          }
+        }
+
+        const rtt = Date.now() - startTime;
+
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+
+        const responseText = unwrapMLLP(combined);
+        const parsedResponse = responseText.length > 0 ? parseHL7Message(responseText) : null;
+
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          messageControlId: controlId,
+          ackCode: parsedResponse?.ackCode ?? null,
+          ackText: parsedResponse?.ackText ?? null,
+        };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
+      }), {
+        status: 504,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'ADT^A08 failed',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

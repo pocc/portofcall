@@ -777,3 +777,156 @@ export async function handleFTPSUpload(request: Request): Promise<Response> {
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+export async function handleFTPSDelete(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username: string;
+      password: string;
+      path: string;
+      type?: 'file' | 'dir';
+      timeout?: number;
+    };
+    const { host, port = 21, username, password, path, type = 'file', timeout = 10000 } = body;
+    if (!host || !username || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, path required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const session = await openFTPSSession(host, port, timeout);
+    try {
+      await authenticateFTPSSession(session, username, password, timeout);
+
+      const cmd = type === 'dir' ? `RMD ${path}` : `DELE ${path}`;
+      await session.sendCommand(cmd);
+      const resp = await session.readResponse(timeout);
+
+      if (resp.code !== 250 && resp.code !== 257) {
+        throw new Error(`Delete failed: ${resp.code} ${resp.message}`);
+      }
+
+      await session.close();
+      return new Response(JSON.stringify({
+        success: true,
+        path,
+        type,
+        message: resp.message,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      await session.close();
+      throw err;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+export async function handleFTPSMkdir(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username: string;
+      password: string;
+      path: string;
+      timeout?: number;
+    };
+    const { host, port = 21, username, password, path, timeout = 10000 } = body;
+    if (!host || !username || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, path required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const session = await openFTPSSession(host, port, timeout);
+    try {
+      await authenticateFTPSSession(session, username, password, timeout);
+
+      await session.sendCommand(`MKD ${path}`);
+      const resp = await session.readResponse(timeout);
+      if (resp.code !== 257) {
+        throw new Error(`MKD failed: ${resp.code} ${resp.message}`);
+      }
+
+      // RFC 959: 257 reply contains quoted path e.g. 257 "/new/dir" created
+      const match = resp.message.match(/"([^"]+)"/);
+      const createdPath = match ? match[1] : path;
+
+      await session.close();
+      return new Response(JSON.stringify({
+        success: true,
+        path: createdPath,
+        message: resp.message,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      await session.close();
+      throw err;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+export async function handleFTPSRename(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username: string;
+      password: string;
+      from: string;
+      to: string;
+      timeout?: number;
+    };
+    const { host, port = 21, username, password, from, to, timeout = 10000 } = body;
+    if (!host || !username || !from || !to) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, from, to required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const session = await openFTPSSession(host, port, timeout);
+    try {
+      await authenticateFTPSSession(session, username, password, timeout);
+
+      // RNFR must respond with 350 (Ready for destination name)
+      await session.sendCommand(`RNFR ${from}`);
+      const rnfrResp = await session.readResponse(timeout);
+      if (rnfrResp.code !== 350) {
+        throw new Error(`RNFR failed: ${rnfrResp.code} ${rnfrResp.message}`);
+      }
+
+      // RNTO completes the rename
+      await session.sendCommand(`RNTO ${to}`);
+      const rntoResp = await session.readResponse(timeout);
+      if (rntoResp.code !== 250) {
+        throw new Error(`RNTO failed: ${rntoResp.code} ${rntoResp.message}`);
+      }
+
+      await session.close();
+      return new Response(JSON.stringify({
+        success: true,
+        from,
+        to,
+        message: rntoResp.message,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      await session.close();
+      throw err;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

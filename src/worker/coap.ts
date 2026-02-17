@@ -570,3 +570,537 @@ export async function handleCoAPDiscover(request: Request): Promise<Response> {
     });
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Block-wise option constants (RFC 7959)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COAP_BLOCK2_OPTION = 27; // Block2: server→client block transfer
+const COAP_BLOCK1_OPTION = 23; // Block1: client→server (reference only)
+
+/** Block SZX → byte size: 2^(SZX+4) */
+const SZX_TO_SIZE: Record<number, number> = {
+  0: 16, 1: 32, 2: 64, 3: 128, 4: 256, 5: 512, 6: 1024,
+};
+
+/**
+ * Decode a Block1/Block2 option value into NUM, M (more), SZX fields.
+ * The option value is 1, 2, or 3 bytes:
+ *   1 byte:  NNNNMSSS  (NUM in top 4 bits, M=bit 3, SZX=bits 2-0)
+ *   2 bytes: NNNNNNNNNNNNMSSS (big-endian 16-bit, bottom 4 bits = M+SZX)
+ *   3 bytes: NNNNNNNNNNNNNNNNNNNNMSSS (big-endian 24-bit)
+ */
+function decodeBlockOption(data: Uint8Array): { num: number; more: boolean; szx: number; blockSize: number } {
+  let raw = 0;
+  for (let i = 0; i < data.length; i++) {
+    raw = (raw << 8) | data[i];
+  }
+  const szx  = raw & 0x07;
+  const more = (raw & 0x08) !== 0;
+  const num  = raw >> 4;
+  return { num, more, szx, blockSize: SZX_TO_SIZE[szx] ?? 1024 };
+}
+
+/**
+ * Encode a Block2 option value for a request (NUM, M=0, SZX).
+ * NUM < 16  → 1 byte
+ * NUM < 4096 → 2 bytes
+ * else      → 3 bytes
+ */
+function encodeBlockOption(num: number, more: boolean, szx: number): Uint8Array {
+  const raw = (num << 4) | (more ? 0x08 : 0) | (szx & 0x07);
+  if (raw <= 0xFF) return new Uint8Array([raw]);
+  if (raw <= 0xFFFF) return new Uint8Array([(raw >> 8) & 0xFF, raw & 0xFF]);
+  return new Uint8Array([(raw >> 16) & 0xFF, (raw >> 8) & 0xFF, raw & 0xFF]);
+}
+
+/**
+ * Build a CoAP GET with a Block2 option requesting a specific block number.
+ * Used during block-wise transfer to fetch subsequent blocks.
+ */
+function buildCoAPBlockRequest(
+  path: string,
+  blockNum: number,
+  szx: number,
+  msgId: number
+): Uint8Array {
+  const tokenBytes = new Uint8Array([0xB1, 0x0C, 0xCA, 0xFE]); // fixed token for block session
+  const parts: Uint8Array[] = [];
+
+  // Header
+  const header = new Uint8Array(4);
+  header[0] = (1 << 6) | (COAP_TYPE.CONFIRMABLE << 4) | tokenBytes.length;
+  header[1] = COAP_METHOD.GET;
+  header[2] = (msgId >> 8) & 0xFF;
+  header[3] = msgId & 0xFF;
+  parts.push(header);
+  parts.push(tokenBytes);
+
+  // Uri-Path options
+  const pathSegments = path.split('/').filter(s => s.length > 0);
+  let prevOpt = 0;
+  const enc = new TextEncoder();
+  for (const seg of pathSegments) {
+    parts.push(encodeOption(COAP_OPTION.URI_PATH - prevOpt, enc.encode(seg)));
+    prevOpt = COAP_OPTION.URI_PATH;
+  }
+
+  // Block2 option (27) requesting specific block
+  const block2Val = encodeBlockOption(blockNum, false, szx);
+  parts.push(encodeOption(COAP_BLOCK2_OPTION - prevOpt, block2Val));
+
+  const totalLen = parts.reduce((s, p) => s + p.length, 0);
+  const msg = new Uint8Array(totalLen);
+  let off = 0;
+  for (const p of parts) { msg.set(p, off); off += p.length; }
+  return msg;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * CoAP Block-wise GET — RFC 7959 §2.
+ *
+ * Standard CoAP payloads are limited to ~1KB on constrained networks. For
+ * firmware images, configuration blobs, or large sensor logs, the Block2
+ * option negotiates a sequence of smaller responses that the client reassembles.
+ *
+ * Protocol flow:
+ *   Client → GET /resource (no Block2 option)
+ *   Server ← 2.05 Content + Block2(NUM=0, M=1, SZX=6) + payload[0..1023]
+ *   Client → GET /resource + Block2(NUM=1, SZX=6)
+ *   Server ← 2.05 Content + Block2(NUM=1, M=1, SZX=6) + payload[1024..2047]
+ *   ...
+ *   Client → GET /resource + Block2(NUM=N, SZX=6)
+ *   Server ← 2.05 Content + Block2(NUM=N, M=0, SZX=6) + payload[N*1024..end]
+ *
+ * POST /api/coap/block-get
+ * Body: { host, port?, path, szx?, maxBlocks?, timeout? }
+ *   szx: block size exponent 0-6 (default 6 = 1024 bytes per block)
+ *   maxBlocks: safety cap (default 64 = up to 64 KB at szx=6)
+ *   timeout: per-block timeout in ms (default 10000)
+ *
+ * Returns: { success, path, blocks, totalBytes, contentFormat, payload }
+ */
+export async function handleCoAPBlockGet(request: Request): Promise<Response> {
+  try {
+    const {
+      host,
+      port = 5683,
+      path,
+      szx = 6,
+      maxBlocks = 64,
+      timeout = 10000,
+    } = await request.json<{
+      host: string;
+      port?: number;
+      path: string;
+      szx?: number;
+      maxBlocks?: number;
+      timeout?: number;
+    }>();
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!path) {
+      return new Response(JSON.stringify({ success: false, error: 'path is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const szxClamped = Math.max(0, Math.min(6, szx));
+    const blockSize  = SZX_TO_SIZE[szxClamped] ?? 1024;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Block transfer timeout')), timeout)
+    );
+
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    const payloadChunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    let contentFormat: number | undefined;
+    let blocksReceived = 0;
+    let nextBlockNum = 0;
+
+    // Phase 1: initial GET with no Block2 option (let server choose block size)
+    const initMsg = buildCoAPRequest(COAP_METHOD.GET, path, undefined, true);
+    let msgId = (initMsg[2] << 8) | initMsg[3];
+    await writer.write(initMsg);
+
+    while (blocksReceived < maxBlocks) {
+      const result = await Promise.race([reader.read(), timeoutPromise]);
+      if (result.done || !result.value) break;
+
+      const resp = parseCoAPResponse(result.value);
+
+      // Content-Format from first response
+      if (contentFormat === undefined && resp.contentFormat !== undefined) {
+        contentFormat = resp.contentFormat;
+      }
+
+      // Check response for Block2 option in raw options
+      const rawOpts = result.value;
+      const { block2, rawPayload } = extractBlock2AndPayload(rawOpts);
+
+      if (rawPayload) {
+        payloadChunks.push(rawPayload);
+        totalBytes += rawPayload.length;
+      }
+      blocksReceived++;
+
+      if (!block2 || !block2.more) {
+        // No Block2 option (server returned everything in one go) or M=0 (last block)
+        break;
+      }
+
+      // More blocks to fetch — request next block with same SZX
+      nextBlockNum = block2.num + 1;
+      msgId = (msgId + 1) & 0xFFFF;
+      const blockReq = buildCoAPBlockRequest(path, nextBlockNum, block2.szx, msgId);
+      await writer.write(blockReq);
+    }
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    // Assemble full payload
+    const combined = new Uint8Array(totalBytes);
+    let off = 0;
+    for (const chunk of payloadChunks) { combined.set(chunk, off); off += chunk.length; }
+
+    let payloadStr: string;
+    try {
+      payloadStr = new TextDecoder('utf-8', { fatal: true }).decode(combined);
+    } catch {
+      payloadStr = btoa(String.fromCharCode(...combined));
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, path,
+      szx: szxClamped,
+      blockSize,
+      blocks: blocksReceived,
+      totalBytes,
+      contentFormat,
+      payload: payloadStr,
+      latencyMs: Date.now() - startTime,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Block GET failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Parse raw CoAP response bytes to extract Block2 option value and raw payload.
+ * We need the raw option bytes, not the decoded string, to access Block2.
+ */
+function extractBlock2AndPayload(data: Uint8Array): {
+  block2?: { num: number; more: boolean; szx: number };
+  rawPayload?: Uint8Array;
+} {
+  if (data.length < 4) return {};
+
+  const tokenLength = data[0] & 0x0F;
+  let offset = 4 + tokenLength;
+  let prevOpt = 0;
+  let block2: { num: number; more: boolean; szx: number } | undefined;
+  let rawPayload: Uint8Array | undefined;
+
+  while (offset < data.length) {
+    const byte = data[offset];
+    if (byte === 0xFF) {
+      rawPayload = data.slice(offset + 1);
+      break;
+    }
+    const deltaNibble  = (byte >> 4) & 0xF;
+    const lengthNibble = byte & 0xF;
+    offset++;
+
+    const deltaResult  = decodeOptionDeltaLength(deltaNibble,  data, offset);
+    offset += deltaResult.bytesRead;
+    const lenResult    = decodeOptionDeltaLength(lengthNibble, data, offset);
+    offset += lenResult.bytesRead;
+
+    const optNum  = prevOpt + deltaResult.value;
+    const optData = data.slice(offset, offset + lenResult.value);
+    offset += lenResult.value;
+    prevOpt = optNum;
+
+    if (optNum === COAP_BLOCK2_OPTION) {
+      block2 = decodeBlockOption(optData);
+    }
+  }
+
+  return { block2, rawPayload };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Observe option (RFC 7641)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COAP_OBSERVE_OPTION = 6;
+
+/**
+ * CoAP Observe — RFC 7641.
+ *
+ * Observe allows a CoAP client to register interest in a resource and receive
+ * notifications whenever it changes, without polling. It is the cornerstone
+ * of real-time IoT monitoring (temperature sensors, door states, motion detectors).
+ *
+ * Protocol flow (subscribe):
+ *   Client → GET /resource + Observe=0 (register)
+ *   Server ← 2.05 Content + Observe=N + payload    (current value, CON or NON)
+ *   Server ← 2.05 Content + Observe=N+k + payload  (on change, unsolicited)
+ *   ...
+ *   Client → GET /resource + Observe=1 (deregister) OR RST to any notification
+ *
+ * Observe sequence numbers are monotonically increasing mod 2^24. A receiver
+ * should reject notifications with a stale sequence (with modular comparison).
+ *
+ * This endpoint:
+ *   1. Sends GET with Observe=0 to subscribe.
+ *   2. Returns the first notification received (the current resource value).
+ *   3. Waits up to `observeMs` for a second notification (a change event).
+ *   4. Sends RST to cancel the subscription before closing.
+ *
+ * POST /api/coap/observe
+ * Body: { host, port?, path, observeMs?, timeout? }
+ *   observeMs: how long to wait for a second notification (default 5000)
+ *   timeout:   connection + first notification timeout (default 10000)
+ *
+ * Returns: {
+ *   success, path,
+ *   initial: { observeSeq, contentFormat, payload },
+ *   update?:  { observeSeq, contentFormat, payload },  -- if a change arrived in observeMs
+ *   latencyMs
+ * }
+ */
+export async function handleCoAPObserve(request: Request): Promise<Response> {
+  try {
+    const {
+      host,
+      port = 5683,
+      path,
+      observeMs = 5000,
+      timeout = 10000,
+    } = await request.json<{
+      host: string;
+      port?: number;
+      path: string;
+      observeMs?: number;
+      timeout?: number;
+    }>();
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!path) {
+      return new Response(JSON.stringify({ success: false, error: 'path is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const connTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, connTimeout]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    // Build GET + Observe=0 (register)
+    const enc = new TextEncoder();
+    const parts: Uint8Array[] = [];
+
+    const msgId   = Math.floor(Math.random() * 0x10000);
+    const token   = new Uint8Array([0x4F, 0xB5, 0xE1, 0x33]); // fixed token for observe session
+    const header  = new Uint8Array(4);
+    header[0] = (1 << 6) | (COAP_TYPE.CONFIRMABLE << 4) | token.length;
+    header[1] = COAP_METHOD.GET;
+    header[2] = (msgId >> 8) & 0xFF;
+    header[3] = msgId & 0xFF;
+    parts.push(header);
+    parts.push(token);
+
+    // Observe option = 0 (register), option number 6
+    let prevOpt = 0;
+    parts.push(encodeOption(COAP_OBSERVE_OPTION - prevOpt, new Uint8Array([0])));
+    prevOpt = COAP_OBSERVE_OPTION;
+
+    // Uri-Path
+    for (const seg of path.split('/').filter(s => s.length > 0)) {
+      parts.push(encodeOption(COAP_OPTION.URI_PATH - prevOpt, enc.encode(seg)));
+      prevOpt = COAP_OPTION.URI_PATH;
+    }
+
+    const observeMsg = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
+    let off = 0;
+    for (const p of parts) { observeMsg.set(p, off); off += p.length; }
+
+    await writer.write(observeMsg);
+
+    /**
+     * Parse an Observe notification: extract the Observe sequence number,
+     * Content-Format, and payload from a raw CoAP response.
+     */
+    function parseObserveNotification(data: Uint8Array): {
+      observeSeq?: number;
+      contentFormat?: number;
+      payload?: string;
+      messageId: number;
+      type: number;
+    } {
+      if (data.length < 4) return { messageId: 0, type: 0 };
+      const msgType    = (data[0] >> 4) & 0x3;
+      const tokenLen   = data[0] & 0x0F;
+      const messageId  = (data[2] << 8) | data[3];
+      let pos = 4 + tokenLen;
+      let prev = 0;
+      let observeSeq: number | undefined;
+      let contentFormat: number | undefined;
+      let rawPayload: Uint8Array | undefined;
+
+      while (pos < data.length) {
+        if (data[pos] === 0xFF) { rawPayload = data.slice(pos + 1); break; }
+        const dNib = (data[pos] >> 4) & 0xF;
+        const lNib = data[pos] & 0xF;
+        pos++;
+        const dRes = decodeOptionDeltaLength(dNib, data, pos); pos += dRes.bytesRead;
+        const lRes = decodeOptionDeltaLength(lNib, data, pos); pos += lRes.bytesRead;
+        const optN = prev + dRes.value;
+        const optD = data.slice(pos, pos + lRes.value);
+        pos += lRes.value;
+        prev = optN;
+
+        if (optN === COAP_OBSERVE_OPTION) {
+          let seq = 0;
+          for (let i = 0; i < optD.length; i++) seq = (seq << 8) | optD[i];
+          observeSeq = seq;
+        } else if (optN === COAP_OPTION.CONTENT_FORMAT) {
+          let cf = 0;
+          for (let i = 0; i < optD.length; i++) cf = (cf << 8) | optD[i];
+          contentFormat = cf;
+        }
+      }
+
+      let payload: string | undefined;
+      if (rawPayload) {
+        try {
+          payload = new TextDecoder('utf-8', { fatal: true }).decode(rawPayload);
+        } catch {
+          payload = btoa(String.fromCharCode(...rawPayload));
+        }
+      }
+      return { observeSeq, contentFormat, payload, messageId, type: msgType };
+    }
+
+    // Wait for first notification (current resource value)
+    const firstResult = await Promise.race([reader.read(), connTimeout]);
+    if (firstResult.done || !firstResult.value) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'No response to Observe registration',
+      }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const initial = parseObserveNotification(firstResult.value);
+
+    // Wait up to observeMs for a second notification (a state change)
+    let update: ReturnType<typeof parseObserveNotification> | undefined;
+    try {
+      const updateTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('observe_timeout')), observeMs)
+      );
+      const secondResult = await Promise.race([reader.read(), updateTimeout]);
+      if (!secondResult.done && secondResult.value) {
+        update = parseObserveNotification(secondResult.value);
+      }
+    } catch {
+      // No second notification arrived within observeMs — normal
+    }
+
+    // Send RST to deregister (cancel subscription)
+    const rstMsg = new Uint8Array([
+      (1 << 6) | (COAP_TYPE.RESET << 4) | token.length,
+      0x00,
+      (initial.messageId >> 8) & 0xFF,
+      initial.messageId & 0xFF,
+      ...token,
+    ]);
+    try { await writer.write(rstMsg); } catch { /* ignore if socket closing */ }
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, path,
+      subscribed: true,
+      initial: {
+        observeSeq: initial.observeSeq,
+        contentFormat: initial.contentFormat,
+        payload: initial.payload,
+      },
+      ...(update !== undefined && {
+        update: {
+          observeSeq: update.observeSeq,
+          contentFormat: update.contentFormat,
+          payload: update.payload,
+        },
+      }),
+      latencyMs: Date.now() - startTime,
+      note: update === undefined
+        ? `No change notification arrived within ${observeMs}ms. Resource may be static or change interval exceeds observeMs.`
+        : 'Received initial value and one change notification.',
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Observe failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// Suppress unused import warning — COAP_BLOCK1_OPTION is defined for reference
+void COAP_BLOCK1_OPTION;

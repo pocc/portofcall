@@ -852,3 +852,553 @@ function packInteger(value: number): Uint8Array {
     ]);
   }
 }
+
+/**
+ * Handle a Neo4j Cypher query with parameters via the Bolt protocol.
+ * Same as handleNeo4jQuery but accepts a `params` map passed as the second
+ * argument to the Bolt RUN message.
+ */
+export async function handleNeo4jQueryParams(request: Request): Promise<Response> {
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let socket: ReturnType<typeof connect> | null = null;
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      query: string;
+      params?: Record<string, unknown>;
+      database?: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 7687,
+      username = 'neo4j',
+      password = '',
+      query,
+      params = {},
+      database,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!query) {
+      return new Response(JSON.stringify({ success: false, error: 'Query is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const session = await openBoltSession(host, port, username, password, timeout);
+    writer = session.writer;
+    reader = session.reader;
+    socket = session.socket;
+    const { boltVersion, majorVersion, serverInfo } = session;
+
+    // Encode params as a PackStream Map
+    const packedParams = packValueMap(params);
+
+    const emptyMap = packMap([]);
+
+    // RUN with params
+    let runMessage: Uint8Array;
+    if (majorVersion >= 4) {
+      const runMeta = database ? packMap([['db', packString(database)]]) : emptyMap;
+      runMessage = packStruct(0x10, [packString(query), packedParams, runMeta]);
+    } else {
+      runMessage = packStruct(0x10, [packString(query), packedParams]);
+    }
+
+    // PULL
+    let pullMessage: Uint8Array;
+    if (majorVersion >= 4) {
+      pullMessage = packStruct(0x3F, [packMap([['n', packInteger(-1)]])]);
+    } else {
+      pullMessage = packStruct(0x3F, []);
+    }
+
+    await writer.write(buildChunkedMessage(runMessage));
+    await writer.write(buildChunkedMessage(pullMessage));
+
+    const allMessages = await readBoltMessages(reader, timeout);
+
+    let columns: string[] = [];
+    const rows: unknown[][] = [];
+    let serverVersion = String(serverInfo.server || '');
+    let queryError: string | null = null;
+    let foundRunSuccess = false;
+
+    for (const msg of allMessages) {
+      if (msg.tag === 0x7F) {
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        queryError = String(meta.message || 'Query failed');
+        break;
+      }
+      if (msg.tag === 0x70 && !foundRunSuccess) {
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        const fieldsList = meta.fields as unknown[] | undefined;
+        if (Array.isArray(fieldsList)) {
+          columns = fieldsList.map(f => String(f));
+        }
+        foundRunSuccess = true;
+        continue;
+      }
+      if (msg.tag === 0x71) {
+        const recordData = msg.fields[0];
+        if (Array.isArray(recordData)) rows.push(recordData);
+        continue;
+      }
+      if (msg.tag === 0x70 && foundRunSuccess) {
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        if (meta.server) serverVersion = String(meta.server);
+        break;
+      }
+    }
+
+    try {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+    } catch { /* ignore */ }
+    writer = null;
+    reader = null;
+    socket = null;
+
+    if (queryError) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        boltVersion,
+        error: queryError,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      boltVersion,
+      serverVersion,
+      columns,
+      rows,
+      rowCount: rows.length,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    try {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
+      if (socket) socket.close();
+    } catch { /* ignore */ }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Encode a plain JS object as a PackStream Map.
+ * Supports string, number, boolean, and null values.
+ */
+function packValueMap(obj: Record<string, unknown>): Uint8Array {
+  const entries: [string, Uint8Array][] = [];
+  for (const [key, value] of Object.entries(obj)) {
+    entries.push([key, packAnyValue(value)]);
+  }
+  return packMap(entries);
+}
+
+/**
+ * Encode a JS value as PackStream bytes.
+ */
+function packAnyValue(value: unknown): Uint8Array {
+  if (value === null || value === undefined) {
+    return new Uint8Array([0xC0]); // null
+  }
+  if (typeof value === 'boolean') {
+    return new Uint8Array([value ? 0xC3 : 0xC2]);
+  }
+  if (typeof value === 'number') {
+    if (Number.isInteger(value)) {
+      return packInteger(value);
+    }
+    // Float64
+    const buf = new Uint8Array(9);
+    buf[0] = 0xC1;
+    new DataView(buf.buffer).setFloat64(1, value, false);
+    return buf;
+  }
+  if (typeof value === 'string') {
+    return packString(value);
+  }
+  if (Array.isArray(value)) {
+    const count = value.length;
+    const parts: Uint8Array[] = [];
+    if (count < 16) {
+      parts.push(new Uint8Array([0x90 | count]));
+    } else {
+      parts.push(new Uint8Array([0xD4, count]));
+    }
+    for (const item of value) parts.push(packAnyValue(item));
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const result = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { result.set(p, off); off += p.length; }
+    return result;
+  }
+  if (typeof value === 'object') {
+    return packValueMap(value as Record<string, unknown>);
+  }
+  // Fallback: encode as string
+  return packString(String(value));
+}
+
+/**
+ * Handle Neo4j schema discovery.
+ * Runs CALL db.labels(), CALL db.relationshipTypes(), and CALL db.propertyKeys()
+ * and returns the results.
+ */
+export async function handleNeo4jSchema(request: Request): Promise<Response> {
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let socket: ReturnType<typeof connect> | null = null;
+
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host') || '';
+    const portStr = url.searchParams.get('port') || '7687';
+    const username = url.searchParams.get('username') || 'neo4j';
+    const password = url.searchParams.get('password') || '';
+    const port = parseInt(portStr, 10);
+    const timeout = 15000;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required (query param)' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Valid port required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const session = await openBoltSession(host, port, username, password, timeout);
+    writer = session.writer;
+    reader = session.reader;
+    socket = session.socket;
+    const { boltVersion, majorVersion } = session;
+
+    const emptyMap = packMap([]);
+
+    async function runQuery(q: string): Promise<string[]> {
+      let run: Uint8Array;
+      let pull: Uint8Array;
+
+      if (majorVersion >= 4) {
+        run = packStruct(0x10, [packString(q), emptyMap, emptyMap]);
+        pull = packStruct(0x3F, [packMap([['n', packInteger(-1)]])]);
+      } else {
+        run = packStruct(0x10, [packString(q), emptyMap]);
+        pull = packStruct(0x3F, []);
+      }
+
+      await writer!.write(buildChunkedMessage(run));
+      await writer!.write(buildChunkedMessage(pull));
+
+      const msgs = await readBoltMessages(reader!, 10000);
+      const results: string[] = [];
+
+      for (const msg of msgs) {
+        if (msg.tag === 0x7F) {
+          // Query failed — return empty
+          return [];
+        }
+        if (msg.tag === 0x71) {
+          // RECORD — first field is the value
+          const row = msg.fields[0];
+          if (Array.isArray(row) && row.length > 0) {
+            results.push(String(row[0]));
+          }
+        }
+      }
+      return results;
+    }
+
+    const labels = await runQuery('CALL db.labels()');
+    const relTypes = await runQuery('CALL db.relationshipTypes()');
+    const propKeys = await runQuery('CALL db.propertyKeys()');
+
+    try {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+    } catch { /* ignore */ }
+    writer = null;
+    reader = null;
+    socket = null;
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      boltVersion,
+      schema: {
+        labels,
+        relationshipTypes: relTypes,
+        propertyKeys: propKeys,
+      },
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    try {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
+      if (socket) socket.close();
+    } catch { /* ignore */ }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Neo4j node creation.
+ * Runs CREATE (n:{label} $props) RETURN n with the provided properties as params.
+ * Returns the created node data.
+ */
+export async function handleNeo4jCreate(request: Request): Promise<Response> {
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let socket: ReturnType<typeof connect> | null = null;
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      label: string;
+      properties?: Record<string, unknown>;
+      database?: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 7687,
+      username = 'neo4j',
+      password = '',
+      label,
+      properties = {},
+      database,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!label) {
+      return new Response(JSON.stringify({ success: false, error: 'Label is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate label (letters, digits, underscore — no spaces or special chars)
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(label)) {
+      return new Response(JSON.stringify({ success: false, error: 'Label must be a valid identifier' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const session = await openBoltSession(host, port, username, password, timeout);
+    writer = session.writer;
+    reader = session.reader;
+    socket = session.socket;
+    const { boltVersion, majorVersion } = session;
+
+    const query = `CREATE (n:\`${label}\` $props) RETURN n`;
+    const packedParams = packMap([['props', packValueMap(properties)]]);
+
+    const emptyMap = packMap([]);
+    let runMessage: Uint8Array;
+    let pullMessage: Uint8Array;
+
+    if (majorVersion >= 4) {
+      const runMeta = database ? packMap([['db', packString(database)]]) : emptyMap;
+      runMessage = packStruct(0x10, [packString(query), packedParams, runMeta]);
+      pullMessage = packStruct(0x3F, [packMap([['n', packInteger(-1)]])]);
+    } else {
+      runMessage = packStruct(0x10, [packString(query), packedParams]);
+      pullMessage = packStruct(0x3F, []);
+    }
+
+    await writer.write(buildChunkedMessage(runMessage));
+    await writer.write(buildChunkedMessage(pullMessage));
+
+    const allMessages = await readBoltMessages(reader, timeout);
+
+    let createdNode: unknown = null;
+    let queryError: string | null = null;
+    let foundRunSuccess = false;
+
+    for (const msg of allMessages) {
+      if (msg.tag === 0x7F) {
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        queryError = String(meta.message || 'Create failed');
+        break;
+      }
+      if (msg.tag === 0x70 && !foundRunSuccess) {
+        foundRunSuccess = true;
+        continue;
+      }
+      if (msg.tag === 0x71) {
+        // RECORD — the first element is the returned node
+        const row = msg.fields[0];
+        if (Array.isArray(row) && row.length > 0) {
+          createdNode = row[0];
+        }
+        continue;
+      }
+      if (msg.tag === 0x70 && foundRunSuccess) {
+        break;
+      }
+    }
+
+    try {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+    } catch { /* ignore */ }
+    writer = null;
+    reader = null;
+    socket = null;
+
+    if (queryError) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        boltVersion,
+        error: queryError,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      boltVersion,
+      label,
+      node: createdNode,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    try {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
+      if (socket) socket.close();
+    } catch { /* ignore */ }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

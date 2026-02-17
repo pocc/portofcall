@@ -276,6 +276,137 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
 }
 
 /**
+ * Run a search query against a Sonic collection
+ * POST /api/sonic/query
+ */
+export async function handleSonicQuery(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; password?: string; timeout?: number;
+      collection: string; bucket: string; terms: string; limit?: number;
+    };
+    const { host, port = 1491, password, timeout = 10000, collection, bucket, terms, limit = 10 } = body;
+    if (!host || !collection || !bucket || !terms) {
+      return new Response(JSON.stringify({ success: false, error: 'host, collection, bucket, and terms are required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    await Promise.race([socket.opened, timeoutPromise]);
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    try {
+      // CONNECTED banner
+      await readLine(reader, timeoutPromise);
+      // START search
+      const startCmd = password ? `START search ${password}` : 'START search';
+      const started = await sendCommand(writer, reader, timeoutPromise, startCmd);
+      if (!started.startsWith('STARTED')) throw new Error(`Failed to start search mode: ${started}`);
+      // QUERY
+      const queryCmd = `QUERY ${collection} ${bucket} "${terms.replace(/"/g, '\\"')}" LIMIT(${limit})`;
+      const pendingLine = await sendCommand(writer, reader, timeoutPromise, queryCmd);
+      let results: string[] = [];
+      if (pendingLine.startsWith('PENDING')) {
+        // Wait for EVENT line
+        const eventLine = await readLine(reader, timeoutPromise);
+        const eventMatch = eventLine.match(/^EVENT QUERY \S+ (.+)$/);
+        if (eventMatch) results = eventMatch[1].trim().split(' ').filter(Boolean);
+      }
+      await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({ success: true, host, port, collection, bucket, terms, results, count: results.length }),
+        { headers: { 'Content-Type': 'application/json' } });
+    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Push text into a Sonic collection for indexing
+ * POST /api/sonic/push
+ */
+export async function handleSonicPush(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; password?: string; timeout?: number;
+      collection: string; bucket: string; objectId: string; text: string;
+    };
+    const { host, port = 1491, password, timeout = 10000, collection, bucket, objectId, text } = body;
+    if (!host || !collection || !bucket || !objectId || !text) {
+      return new Response(JSON.stringify({ success: false, error: 'host, collection, bucket, objectId, and text are required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    await Promise.race([socket.opened, timeoutPromise]);
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    try {
+      await readLine(reader, timeoutPromise);
+      const startCmd = password ? `START ingest ${password}` : 'START ingest';
+      const started = await sendCommand(writer, reader, timeoutPromise, startCmd);
+      if (!started.startsWith('STARTED')) throw new Error(`Failed to start ingest mode: ${started}`);
+      const pushCmd = `PUSH ${collection} ${bucket} ${objectId} "${text.replace(/"/g, '\\"')}"`;
+      const pushResp = await sendCommand(writer, reader, timeoutPromise, pushCmd);
+      const ok = pushResp === 'OK';
+      await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({ success: ok, host, port, collection, bucket, objectId, response: pushResp }),
+        { headers: { 'Content-Type': 'application/json' } });
+    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Get search suggestions from Sonic
+ * POST /api/sonic/suggest
+ */
+export async function handleSonicSuggest(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; password?: string; timeout?: number;
+      collection: string; bucket: string; word: string; limit?: number;
+    };
+    const { host, port = 1491, password, timeout = 10000, collection, bucket, word, limit = 5 } = body;
+    if (!host || !collection || !bucket || !word) {
+      return new Response(JSON.stringify({ success: false, error: 'host, collection, bucket, and word are required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    await Promise.race([socket.opened, timeoutPromise]);
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    try {
+      await readLine(reader, timeoutPromise);
+      const startCmd = password ? `START search ${password}` : 'START search';
+      const started = await sendCommand(writer, reader, timeoutPromise, startCmd);
+      if (!started.startsWith('STARTED')) throw new Error(`Failed to start search mode: ${started}`);
+      const suggestCmd = `SUGGEST ${collection} ${bucket} "${word.replace(/"/g, '\\"')}" LIMIT(${limit})`;
+      const pendingLine = await sendCommand(writer, reader, timeoutPromise, suggestCmd);
+      let suggestions: string[] = [];
+      if (pendingLine.startsWith('PENDING')) {
+        const eventLine = await readLine(reader, timeoutPromise);
+        const eventMatch = eventLine.match(/^EVENT SUGGEST \S+ (.+)$/);
+        if (eventMatch) suggestions = eventMatch[1].trim().split(' ').filter(Boolean);
+      }
+      await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({ success: true, host, port, collection, bucket, word, suggestions }),
+        { headers: { 'Content-Type': 'application/json' } });
+    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Send a PING to a Sonic instance
  * POST /api/sonic/ping
  */

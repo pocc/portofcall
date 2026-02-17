@@ -550,6 +550,149 @@ export async function handleGrafanaDashboard(request: Request): Promise<Response
   }
 }
 
+// ---- write helpers ----------------------------------------------------------
+
+/**
+ * Build HTTP/1.1 POST headers with JSON body, with optional Grafana auth.
+ */
+function buildPostRequest(
+  hostname: string,
+  path: string,
+  body: string,
+  token?: string,
+  apiKey?: string,
+): string {
+  const bodyBytes = new TextEncoder().encode(body).length;
+  const lines = [
+    `POST ${path} HTTP/1.1`,
+    `Host: ${hostname}`,
+    'Connection: close',
+    'Content-Type: application/json',
+    'Accept: application/json',
+    'User-Agent: PortOfCall/1.0',
+    `Content-Length: ${bodyBytes}`,
+  ];
+  if (token) lines.push(`Authorization: Bearer ${token}`);
+  else if (apiKey) lines.push(`X-Grafana-API-Key: ${apiKey}`);
+  lines.push('', body);
+  return lines.join('\r\n');
+}
+
+/** Send an HTTP POST request over an open socket and return the parsed response. */
+async function httpPost(
+  socket: Socket,
+  hostname: string,
+  path: string,
+  body: string,
+  token?: string,
+  apiKey?: string,
+): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+  try {
+    await writer.write(new TextEncoder().encode(buildPostRequest(hostname, path, body, token, apiKey)));
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    while (totalBytes < 10 * 1024 * 1024) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) { chunks.push(value); totalBytes += value.length; }
+    }
+    return parseHttpResponse(new TextDecoder().decode(mergeU8(chunks, totalBytes)));
+  } finally {
+    reader.releaseLock();
+    writer.releaseLock();
+  }
+}
+
+// ---- write endpoint handlers ------------------------------------------------
+
+/**
+ * Create a new Grafana dashboard.
+ * POST /api/dashboards/db
+ *
+ * Request: { host, port?, timeout?, token?, apiKey?, title?, tags?, folderId? }
+ * Response: { success, statusCode, dashboard, endpoint }
+ */
+export async function handleGrafanaDashboardCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as GrafanaBaseRequest & {
+      title?: string;
+      tags?: string[];
+      folderId?: number;
+    };
+    const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+    if (!host) return jsonError('host is required', 400);
+
+    const title = body.title ?? 'PortOfCall Test Dashboard';
+    const tags = body.tags ?? ['portofcall'];
+    const folderId = body.folderId ?? 0;
+
+    const dashboardPayload = JSON.stringify({
+      dashboard: { title, tags, timezone: 'browser', schemaVersion: 16, version: 0, panels: [] },
+      folderId,
+      overwrite: false,
+    });
+
+    const socket = await openSocket(host, port, timeout);
+    try {
+      const result = await httpPost(socket, host, '/api/dashboards/db', dashboardPayload, token, apiKey);
+      if (result.statusCode === 401 || result.statusCode === 403) {
+        return jsonOk({ success: false, statusCode: result.statusCode, error: 'Authentication required', endpoint: `${host}:${port}` });
+      }
+      return jsonOk({ success: result.statusCode === 200, statusCode: result.statusCode, dashboard: parseJsonBody(result.body), endpoint: `${host}:${port}` });
+    } finally {
+      socket.close();
+    }
+  } catch (e) {
+    return jsonError(e instanceof Error ? e.message : 'Failed to create dashboard', 500);
+  }
+}
+
+/**
+ * Create a Grafana annotation.
+ * POST /api/annotations
+ *
+ * Request: { host, port?, timeout?, token?, apiKey?, text?, tags?, time?, timeEnd?, dashboardId?, panelId? }
+ * Response: { success, statusCode, annotation, endpoint }
+ */
+export async function handleGrafanaAnnotationCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as GrafanaBaseRequest & {
+      text?: string;
+      tags?: string[];
+      time?: number;
+      timeEnd?: number;
+      dashboardId?: number;
+      panelId?: number;
+    };
+    const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+    if (!host) return jsonError('host is required', 400);
+
+    const annotation: Record<string, unknown> = {
+      text: body.text ?? 'PortOfCall annotation',
+      tags: body.tags ?? ['portofcall'],
+      time: body.time ?? Date.now(),
+    };
+    if (body.timeEnd !== undefined) annotation.timeEnd = body.timeEnd;
+    if (body.dashboardId !== undefined) annotation.dashboardId = body.dashboardId;
+    if (body.panelId !== undefined) annotation.panelId = body.panelId;
+
+    const socket = await openSocket(host, port, timeout);
+    try {
+      const result = await httpPost(socket, host, '/api/annotations', JSON.stringify(annotation), token, apiKey);
+      if (result.statusCode === 401 || result.statusCode === 403) {
+        return jsonOk({ success: false, statusCode: result.statusCode, error: 'Authentication required', endpoint: `${host}:${port}` });
+      }
+      return jsonOk({ success: result.statusCode === 200, statusCode: result.statusCode, annotation: parseJsonBody(result.body), endpoint: `${host}:${port}` });
+    } finally {
+      socket.close();
+    }
+  } catch (e) {
+    return jsonError(e instanceof Error ? e.message : 'Failed to create annotation', 500);
+  }
+}
+
 // ---- helpers ----------------------------------------------------------------
 
 function jsonOk(data: unknown): Response {

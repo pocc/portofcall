@@ -449,3 +449,259 @@ export async function handleMpdCommand(request: Request): Promise<Response> {
     });
   }
 }
+
+
+// === Playback Control Handlers ===
+
+interface MpdPlaybackRequest {
+  host: string;
+  port?: number;
+  password?: string;
+  timeout?: number;
+}
+
+interface MpdPlayRequest extends MpdPlaybackRequest {
+  songpos?: number;
+}
+
+interface MpdAddRequest extends MpdPlaybackRequest {
+  uri: string;
+}
+
+interface MpdSeekRequest extends MpdPlaybackRequest {
+  songpos: number;
+  time: number;
+}
+
+interface MpdPlaybackResponse {
+  success: boolean;
+  server: string;
+  version?: string;
+  command?: string;
+  raw?: string;
+  error?: string;
+}
+
+/**
+ * Shared helper: validate host/port and run a single MPD command.
+ */
+async function runPlaybackCommand(
+  host: string,
+  port: number,
+  password: string | undefined,
+  timeout: number,
+  command: string,
+): Promise<{ version: string; raw: string; error?: string }> {
+  if (!host) throw new Error('Host is required');
+  if (port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) throw new Error('Invalid host format');
+  const { version, responses } = await mpdSession(host, port, password, [command], timeout);
+  const raw = responses[0];
+  const err = getAckError(raw);
+  return { version, raw, error: err ?? undefined };
+}
+
+function buildPlaybackResponse(
+  success: boolean,
+  host: string,
+  port: number,
+  version: string | undefined,
+  command: string,
+  raw: string | undefined,
+  error: string | undefined,
+): Response {
+  const body: MpdPlaybackResponse = {
+    success,
+    server: `${host}:${port}`,
+    version,
+    command,
+    raw: raw?.substring(0, 1000),
+    error,
+  };
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * Handle MPD play -- optionally start at a given queue position.
+ * POST body: { host, port?, password?, songpos?, timeout? }
+ */
+export async function handleMpdPlay(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MpdPlayRequest;
+    const { host, port = DEFAULT_PORT, password, timeout = 10000 } = body;
+    const songpos = body.songpos;
+    const cmd = songpos !== undefined ? `play ${songpos}` : 'play';
+    try {
+      const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
+      return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
+    } catch (e) {
+      return buildPlaybackResponse(false, host, port, undefined, cmd, undefined,
+        e instanceof Error ? e.message : 'Unknown error');
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies MpdPlaybackResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle MPD pause -- send pause 1 to stop playback.
+ * POST body: { host, port?, password?, timeout? }
+ */
+export async function handleMpdPause(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MpdPlaybackRequest;
+    const { host, port = DEFAULT_PORT, password, timeout = 10000 } = body;
+    const cmd = 'pause 1';
+    try {
+      const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
+      return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
+    } catch (e) {
+      return buildPlaybackResponse(false, host, port, undefined, cmd, undefined,
+        e instanceof Error ? e.message : 'Unknown error');
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies MpdPlaybackResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle MPD next -- skip to next track in queue.
+ * POST body: { host, port?, password?, timeout? }
+ */
+export async function handleMpdNext(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MpdPlaybackRequest;
+    const { host, port = DEFAULT_PORT, password, timeout = 10000 } = body;
+    const cmd = 'next';
+    try {
+      const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
+      return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
+    } catch (e) {
+      return buildPlaybackResponse(false, host, port, undefined, cmd, undefined,
+        e instanceof Error ? e.message : 'Unknown error');
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies MpdPlaybackResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle MPD previous -- skip to previous track in queue.
+ * POST body: { host, port?, password?, timeout? }
+ */
+export async function handleMpdPrev(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MpdPlaybackRequest;
+    const { host, port = DEFAULT_PORT, password, timeout = 10000 } = body;
+    const cmd = 'previous';
+    try {
+      const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
+      return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
+    } catch (e) {
+      return buildPlaybackResponse(false, host, port, undefined, cmd, undefined,
+        e instanceof Error ? e.message : 'Unknown error');
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies MpdPlaybackResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle MPD add -- add a URI to the current queue.
+ * POST body: { host, port?, password?, uri, timeout? }
+ */
+export async function handleMpdAdd(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MpdAddRequest;
+    const { host, port = DEFAULT_PORT, password, timeout = 10000, uri } = body;
+    if (!uri) {
+      return new Response(JSON.stringify({
+        success: false, server: '',
+        error: 'URI is required',
+      } satisfies MpdPlaybackResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (/[\r\n]/.test(uri)) {
+      return new Response(JSON.stringify({
+        success: false, server: '',
+        error: 'URI must not contain newlines',
+      } satisfies MpdPlaybackResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cmd = `add ${uri}`;
+    try {
+      const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
+      return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
+    } catch (e) {
+      return buildPlaybackResponse(false, host, port, undefined, cmd, undefined,
+        e instanceof Error ? e.message : 'Unknown error');
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies MpdPlaybackResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle MPD seek -- seek within a specific song in the queue.
+ * POST body: { host, port?, password?, songpos, time, timeout? }
+ */
+export async function handleMpdSeek(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as MpdSeekRequest;
+    const { host, port = DEFAULT_PORT, password, timeout = 10000 } = body;
+    const { songpos, time } = body;
+    if (songpos === undefined || time === undefined) {
+      return new Response(JSON.stringify({
+        success: false, server: '',
+        error: 'songpos and time are required',
+      } satisfies MpdPlaybackResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cmd = `seek ${songpos} ${time}`;
+    try {
+      const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
+      return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
+    } catch (e) {
+      return buildPlaybackResponse(false, host, port, undefined, cmd, undefined,
+        e instanceof Error ? e.message : 'Unknown error');
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies MpdPlaybackResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

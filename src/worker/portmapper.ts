@@ -95,6 +95,7 @@ const RPC_CALL = 0;
 
 // Portmapper procedures
 const PMAPPROC_NULL = 0;
+const PMAPPROC_GETPORT = 3;
 const PMAPPROC_DUMP = 4;
 
 // Auth flavors
@@ -480,6 +481,125 @@ export async function handlePortmapperDump(request: Request): Promise<Response> 
       };
 
       return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Portmapper GETPORT — look up the port for a specific RPC program
+ *
+ * POST /api/portmapper/getport
+ * Body: { host, port?, program, version, protocol?, timeout? }
+ * protocol: "tcp" | "udp" (default "tcp")
+ */
+export async function handlePortmapperGetPort(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      program: number;
+      version?: number;
+      protocol?: string;
+      timeout?: number;
+    };
+
+    const { host, port = 111, timeout = 10000 } = body;
+    const program = body.program;
+    const version = body.version ?? 1;
+    const protocolStr = (body.protocol ?? 'tcp').toLowerCase();
+    const protocolNum = protocolStr === 'udp' ? 17 : 6;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!program) {
+      return new Response(JSON.stringify({ success: false, error: 'program is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Build GETPORT args: [program:4][version:4][protocol:4][port:4]
+    const args = new Uint8Array(16);
+    const argsView = new DataView(args.buffer);
+    argsView.setUint32(0, program);
+    argsView.setUint32(4, version);
+    argsView.setUint32(8, protocolNum);
+    argsView.setUint32(12, 0);
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const rpcCall = buildRpcCall(PMAPPROC_GETPORT, args);
+      const frame = buildRecordMark(rpcCall);
+      await writer.write(frame);
+
+      const responseData = await readRpcResponse(reader, timeout);
+      const rtt = Date.now() - startTime;
+
+      const { offset } = parseRpcReply(responseData);
+
+      // GETPORT response: single uint32 — the port number (0 = not registered)
+      if (offset + 4 > responseData.length) {
+        throw new Error('GETPORT response too short');
+      }
+      const view = new DataView(responseData.buffer, responseData.byteOffset, responseData.byteLength);
+      const servicePort = view.getUint32(offset);
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        program,
+        programName: RPC_PROGRAMS[program] || `unknown (${program})`,
+        version,
+        protocol: protocolStr.toUpperCase(),
+        servicePort,
+        registered: servicePort !== 0,
+        rtt,
+        message: servicePort !== 0
+          ? `Program ${program} (${RPC_PROGRAMS[program] || 'unknown'}) v${version} is registered at ${protocolStr.toUpperCase()} port ${servicePort}`
+          : `Program ${program} (${RPC_PROGRAMS[program] || 'unknown'}) v${version} is not registered via ${protocolStr.toUpperCase()}`,
+      }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });

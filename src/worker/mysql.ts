@@ -169,6 +169,35 @@ async function computeAuthToken(password: string, scramble: Uint8Array): Promise
   return token;
 }
 
+
+// ---------------------------------------------------------------------------
+// caching_sha2_password auth token
+// scramble = XOR(SHA256(password), SHA256(SHA256(SHA256(password)), nonce))
+// ---------------------------------------------------------------------------
+async function computeSHA2AuthToken(password: string, nonce: Uint8Array): Promise<Uint8Array> {
+  const enc = new TextEncoder();
+  const passwordBytes = enc.encode(password);
+
+  // SHA256(password)
+  const sha256Pass = new Uint8Array(await crypto.subtle.digest('SHA-256', passwordBytes));
+
+  // SHA256(SHA256(password))
+  const sha256sha256Pass = new Uint8Array(await crypto.subtle.digest('SHA-256', sha256Pass));
+
+  // SHA256(SHA256(SHA256(password)) || nonce)
+  const combined = new Uint8Array(sha256sha256Pass.length + nonce.length);
+  combined.set(sha256sha256Pass);
+  combined.set(nonce, sha256sha256Pass.length);
+  const sha256Combined = new Uint8Array(await crypto.subtle.digest('SHA-256', combined));
+
+  // XOR(SHA256(password), SHA256(SHA256(SHA256(password)) || nonce))
+  const token = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    token[i] = sha256Pass[i] ^ sha256Combined[i];
+  }
+  return token;
+}
+
 // ---------------------------------------------------------------------------
 // Handshake parsing (Protocol v10)
 // ---------------------------------------------------------------------------
@@ -279,7 +308,8 @@ async function buildHandshakeResponse(
   password: string,
   database: string | undefined,
   scramble: Uint8Array,
-  charset: number
+  charset: number,
+  authPluginName = 'mysql_native_password',
 ): Promise<Uint8Array> {
   // Capability flags
   let capabilities =
@@ -296,14 +326,18 @@ async function buildHandshakeResponse(
   // Auth token
   let authToken: Uint8Array;
   if (password) {
-    authToken = await computeAuthToken(password, scramble);
+    if (authPluginName === 'caching_sha2_password') {
+      authToken = await computeSHA2AuthToken(password, scramble);
+    } else {
+      authToken = await computeAuthToken(password, scramble);
+    }
   } else {
     authToken = new Uint8Array(0);
   }
 
   const enc = new TextEncoder();
   const usernameBytes = enc.encode(username);
-  const pluginName = enc.encode('mysql_native_password');
+  const pluginName = enc.encode(authPluginName);
   const dbBytes = database ? enc.encode(database) : null;
 
   // Payload layout (Protocol 4.1):
@@ -550,7 +584,8 @@ async function mysqlConnect(
       password,
       database,
       handshake.scramble,
-      handshake.charset
+      handshake.charset,
+      handshake.authPluginName,
     );
     await writer.write(buildPacket(responsePayload, 1));
 
@@ -564,7 +599,28 @@ async function mysqlConnect(
       throw new Error(`MySQL auth error ${errCode}: ${message}`);
     }
 
-    if (authPayload[0] !== 0x00) {
+    // Handle caching_sha2_password auth-more-data (0x01 prefix)
+    if (authPayload[0] === 0x01 && handshake.authPluginName === 'caching_sha2_password') {
+      const statusByte = authPayload[1];
+      if (statusByte === 0x03) {
+        // Fast auth succeeded (password was cached) — read the final OK packet
+        const { payload: okPayload } = await readPacket(reader, buffer);
+        if (okPayload[0] === 0xff) {
+          const errCode = okPayload[1] | (okPayload[2] << 8);
+          const message = new TextDecoder().decode(okPayload.slice(9));
+          throw new Error(`MySQL auth error ${errCode}: ${message}`);
+        }
+        // 0x00 = OK, proceed
+      } else if (statusByte === 0x04) {
+        // Full auth required — server wants RSA-encrypted password
+        // Request server public key by sending 0x02
+        await writer.write(buildPacket(new Uint8Array([0x02]), 3));
+        // Read the PEM public key packet (type 0x01 with key data)
+        await readPacket(reader, buffer);
+        // RSA-OAEP encryption not supported without Node crypto; return error
+        throw new Error('caching_sha2_password full RSA auth required — use SSL/TLS connection');
+      }
+    } else if (authPayload[0] !== 0x00) {
       // Could be auth switch request or other — for probe mode this is fine
       // We don't handle auth plugin switch here; just note success reaching auth step
     }
@@ -844,6 +900,200 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
         success: false,
         error: error instanceof Error ? error.message : 'Query failed',
       }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handler: handleMySQLShowDatabases
+// ---------------------------------------------------------------------------
+
+/**
+ * Connect to MySQL and run SHOW DATABASES.
+ * POST /api/mysql/databases
+ * Body: { host, port?, username?, password?, timeout? }
+ */
+export async function handleMySQLShowDatabases(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(
+        JSON.stringify({ error: 'Method not allowed' }),
+        { status: 405, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const options = (await request.json()) as Partial<MySQLConnectionOptions>;
+
+    if (!options.host) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required parameter: host' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = options.host;
+    const port = options.port || 3306;
+    const username = options.username || 'root';
+    const password = options.password || '';
+    const timeoutMs = options.timeout || 30000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const queryPromise: Promise<Response> = (async () => {
+      const { handshake, resultSet } = await mysqlConnect(
+        host, port, username, password, undefined, 'SHOW DATABASES'
+      );
+
+      if (!resultSet) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No result set returned' }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const databases = resultSet.rows.map((row) => row[0] ?? '').filter(Boolean);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          serverVersion: handshake.serverVersion,
+          databases,
+          count: databases.length,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
+    );
+
+    try {
+      return await Promise.race([queryPromise, timeoutPromise]);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Query failed' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP handler: handleMySQLShowTables
+// ---------------------------------------------------------------------------
+
+/**
+ * Connect to MySQL, select a database, and run SHOW TABLES.
+ * POST /api/mysql/tables
+ * Body: { host, port?, username?, password?, database, timeout? }
+ */
+export async function handleMySQLShowTables(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(
+        JSON.stringify({ error: 'Method not allowed' }),
+        { status: 405, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const options = (await request.json()) as Partial<MySQLConnectionOptions>;
+
+    if (!options.host) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required parameter: host' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!options.database) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required parameter: database' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = options.host;
+    const port = options.port || 3306;
+    const username = options.username || 'root';
+    const password = options.password || '';
+    const database = options.database;
+    const timeoutMs = options.timeout || 30000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const queryPromise: Promise<Response> = (async () => {
+      // Connect with the database selected, then SHOW TABLES
+      const { handshake, resultSet } = await mysqlConnect(
+        host, port, username, password, database, 'SHOW TABLES'
+      );
+
+      if (!resultSet) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No result set returned' }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      const tables = resultSet.rows.map((row) => row[0] ?? '').filter(Boolean);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          database,
+          serverVersion: handshake.serverVersion,
+          tables,
+          count: tables.length,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
+    );
+
+    try {
+      return await Promise.race([queryPromise, timeoutPromise]);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Query failed' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

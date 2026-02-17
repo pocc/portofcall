@@ -196,6 +196,111 @@ export async function handleRloginConnect(request: Request): Promise<Response> {
   }
 }
 
+interface RloginBannerResult {
+  success: boolean;
+  connected: boolean;
+  banner: string;
+  raw: string;
+  latencyMs: number;
+  error?: string;
+}
+
+/**
+ * Connect to an Rlogin server, send the initial preamble, and return the
+ * server banner / terminal prompt without starting an interactive session.
+ *
+ * POST /api/rlogin/banner
+ * Body: { host, port?, localUser?, remoteUser?, terminalType?, terminalSpeed?, timeout? }
+ */
+export async function handleRloginBanner(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as {
+      host: string;
+      port?: number;
+      localUser?: string;
+      remoteUser?: string;
+      terminalType?: string;
+      terminalSpeed?: string;
+      timeout?: number;
+    };
+    const {
+      host,
+      port = 513,
+      localUser = 'guest',
+      remoteUser = 'guest',
+      terminalType = 'xterm',
+      terminalSpeed = '38400',
+      timeout: timeoutMs = 10000,
+    } = body;
+
+    if (!host) {
+      return new Response(
+        JSON.stringify({ success: false, connected: false, banner: '', raw: '', latencyMs: 0, error: 'Host is required' } satisfies RloginBannerResult),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
+    );
+
+    const socket = connect(`${host}:${port}`);
+
+    const connectionPromise = (async (): Promise<RloginBannerResult> => {
+      const startTime = Date.now();
+      await socket.opened;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        // Rlogin preamble: null byte + localUser + null + remoteUser + null + term/speed + null
+        const preamble = new TextEncoder().encode(
+          `\0${localUser}\0${remoteUser}\0${terminalType}/${terminalSpeed}\0`,
+        );
+        await writer.write(preamble);
+
+        // Read the server's response (banner / prompt)
+        const readTimeout = new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true as const }), 4000),
+        );
+        const { value, done } = await Promise.race([reader.read(), readTimeout]);
+
+        const latencyMs = Date.now() - startTime;
+        const rawBytes = !done && value ? value : new Uint8Array(0);
+        const raw = new TextDecoder('utf-8', { fatal: false }).decode(rawBytes);
+        // Strip control chars for display except newline/tab
+        const banner = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        return { success: true, connected: true, banner: banner || '(no banner)', raw, latencyMs };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* already released */ }
+        try { reader.releaseLock(); } catch { /* already released */ }
+        socket.close(); throw err;
+      }
+    })();
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      return new Response(
+        JSON.stringify({ success: false, connected: false, banner: '', raw: '', latencyMs: 0, error: error instanceof Error ? error.message : 'Connection timeout' } satisfies RloginBannerResult),
+        { status: 500, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, connected: false, banner: '', raw: '', latencyMs: 0, error: error instanceof Error ? error.message : 'Connection failed' } satisfies RloginBannerResult),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
 /**
  * Open a persistent WebSocket tunnel for interactive Rlogin sessions
  */

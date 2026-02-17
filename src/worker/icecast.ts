@@ -343,6 +343,181 @@ export async function handleIcecastStatus(request: Request): Promise<Response> {
 }
 
 /**
+ * Mount a source stream on an Icecast server using the ICY source protocol.
+ *
+ * The ICY source protocol is used by streaming clients (like Winamp/Liquidsoap)
+ * to push an audio stream to an Icecast server. The client authenticates with
+ * the source password and streams audio data.
+ *
+ * POST /api/icecast/source
+ * Body: { host, port?, mountpoint?, password, contentType?, streamName?,
+ *         description?, burstBytes?, timeout? }
+ */
+export async function handleIcecastSource(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      mountpoint?: string;
+      password?: string;
+      contentType?: string;
+      streamName?: string;
+      description?: string;
+      burstBytes?: number;
+      timeout?: number;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!body.password) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Source password is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = body.host;
+    const port = body.port ?? 8000;
+    const mountpoint = (body.mountpoint ?? '/stream').replace(/^([^/])/, '/$1');
+    const password = body.password;
+    const contentType = body.contentType ?? 'audio/mpeg';
+    const streamName = body.streamName ?? 'Port of Call Test Stream';
+    const description = body.description ?? 'Test mount by Port of Call';
+    // Stream a brief burst of silence (32 bytes of MP3 silence header) then disconnect
+    const burstBytes = Math.min(body.burstBytes ?? 32, 1024);
+    const timeout = Math.min(body.timeout ?? 10000, 30000);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const startTime = Date.now();
+
+    const work = (async () => {
+      // ICY source protocol: "source" is the implicit username
+      const credentials = btoa(`source:${password}`);
+
+      // Build SOURCE request (Icecast legacy ICY protocol)
+      const sourceRequest = [
+        `SOURCE ${mountpoint} HTTP/1.0`,
+        `Authorization: Basic ${credentials}`,
+        `Content-Type: ${contentType}`,
+        `ice-name: ${streamName}`,
+        `ice-description: ${description}`,
+        `ice-public: 0`,
+        `User-Agent: PortOfCall/1.0`,
+        `Transfer-Encoding: chunked`,
+        '',
+        '',
+      ].join('\r\n');
+
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        await writer.write(new TextEncoder().encode(sourceRequest));
+
+        // Read server response (OK2 or HTTP 200/401/403)
+        let responseBuf = '';
+        const responseDeadline = Date.now() + Math.min(timeout, 5000);
+        while (Date.now() < responseDeadline) {
+          const rem = responseDeadline - Date.now();
+          const timer = new Promise<{ value: undefined; done: true }>((r) =>
+            setTimeout(() => r({ value: undefined, done: true as const }), rem)
+          );
+          const { value, done } = await Promise.race([reader.read(), timer]);
+          if (done || !value) break;
+          responseBuf += new TextDecoder().decode(value);
+          if (responseBuf.includes('\r\n') || responseBuf.includes('\n')) break;
+        }
+
+        const latencyMs = Date.now() - startTime;
+
+        // Check for successful mount
+        const accepted =
+          responseBuf.trim().startsWith('OK2') ||
+          responseBuf.includes('HTTP/1.0 200') ||
+          responseBuf.includes('HTTP/1.1 200');
+        const authFailed =
+          responseBuf.includes('401') || responseBuf.includes('403') ||
+          responseBuf.toLowerCase().includes('forbidden') ||
+          responseBuf.toLowerCase().includes('unauthorized');
+
+        if (accepted) {
+          // Stream a brief burst of silence then disconnect
+          const silence = new Uint8Array(burstBytes); // zeroed bytes
+          await writer.write(silence).catch(() => { /* ignore */ });
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        const responseLine = responseBuf.split('\n')[0]?.trim() ?? '';
+
+        return {
+          success: accepted,
+          host,
+          port,
+          mountpoint,
+          latencyMs,
+          serverResponse: responseLine || '(no response)',
+          ...(accepted ? { bytesSent: burstBytes, contentType, streamName } : {}),
+          ...(authFailed ? { error: 'Authentication failed — check source password' } : {}),
+          ...(!accepted && !authFailed ? { error: `Mount rejected: ${responseLine}` } : {}),
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([
+      work,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      ),
+    ]);
+
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Icecast source mount failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
  * Get admin stats from Icecast (requires authentication)
  */
 export async function handleIcecastAdmin(request: Request): Promise<Response> {

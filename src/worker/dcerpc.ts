@@ -503,6 +503,403 @@ export async function handleDCERPCConnect(request: Request): Promise<Response> {
   }
 }
 
+// DCE/RPC Request PDU packet type
+const PTYPE_REQUEST = 0;
+const PTYPE_RESPONSE = 2;
+const PTYPE_FAULT = 3;
+
+// Well-known EPM endpoint UUIDs for service name lookup
+const EPM_UUID_TO_SERVICE: Record<string, string> = {
+  'e1af8308-5d1f-11c9-91a4-08002b14a0fa': 'Endpoint Mapper (EPMAPPER)',
+  '12345778-1234-abcd-ef00-0123456789ac': 'Security Account Manager (SAMR)',
+  '12345778-1234-abcd-ef00-0123456789ab': 'Local Security Authority (LSARPC)',
+  '4b324fc8-1670-01d3-1278-5a47bf6ee188': 'Server Service (SRVSVC)',
+  '6bffd098-a112-3610-9833-46c3f87e345a': 'Workstation Service (WKSSVC)',
+  '12345678-1234-abcd-ef00-01234567cffb': 'Netlogon Service',
+  '338cd001-2244-31f1-aaaa-900038001003': 'Windows Registry (WINREG)',
+  '367abb81-9844-35f1-ad32-98f038001003': 'Service Control Manager (SVCCTL)',
+  '82273fdc-e32a-18c3-3f78-827929dc23ea': 'EventLog (EVENTLOG)',
+  'f5cc59b4-4264-101a-8c59-08002b2f8426': 'File Replication Service (NTFRS)',
+  '1ff70682-0a51-30e8-076d-740be8cee98b': 'Task Scheduler (ATSVC)',
+  '378e52b0-c0a9-11cf-822d-00aa0051e40f': 'Task Scheduler v1 (ATSVC)',
+  '86d35949-83c9-4044-b424-db363231fd0c': 'Task Scheduler v2',
+  '3919286a-b10c-11d0-9ba8-00c04fd92ef5': 'Directory Service (DSROLE)',
+  'e3514235-4b06-11d1-ab04-00c04fc2dcd2': 'Directory Replication Service (DRSUAPI)',
+  'c9ac6db5-82b7-4e55-ae8a-e464ed7b4277': 'System Event Notification (SENS)',
+  '2f5f6521-cb55-1059-b446-00df0bce31db': 'Unimodem LRPC Interface',
+  '4fc742e0-4a10-11cf-8273-00aa004ae673': 'Distributed File System (DFS)',
+  '50abc2a4-574d-40b3-9d66-ee4fd5fba076': 'DNS Server (DNSSERVER)',
+  'afa8bd80-7d8a-11c9-bef4-08002b102989': 'NetDDE (NDDEAPI)',
+  '45f52c28-7f9f-101a-b52b-08002b2efabe': 'WINS (WINSIF)',
+};
+
+// EPM protocol tower floor IDs (per MS-RPCE and DCE/RPC spec)
+const EPM_PROTOCOL_DOD_TCP  = 0x07; // TCP/IP
+const EPM_PROTOCOL_DOD_UDP  = 0x08; // UDP/IP
+const EPM_PROTOCOL_IP       = 0x09; // IP address
+const EPM_PROTOCOL_SMB      = 0x0f; // Named Pipe over SMB
+const EPM_PROTOCOL_NCALRPC  = 0x10; // NCALRPC (local RPC / named pipe)
+
+const EPM_PROTOCOL_NAMES: Record<number, string> = {
+  [EPM_PROTOCOL_DOD_TCP]:  'TCP',
+  [EPM_PROTOCOL_DOD_UDP]:  'UDP',
+  [EPM_PROTOCOL_IP]:       'IP',
+  [EPM_PROTOCOL_SMB]:      'Named Pipe (SMB)',
+  [EPM_PROTOCOL_NCALRPC]:  'LRPC/Named Pipe',
+};
+
+/**
+ * Build EPM Bind + Request PDUs as separate buffers
+ */
+function buildEPMPDUs(): { bindPDU: Uint8Array; requestPDU: Uint8Array } {
+  const epm = WELL_KNOWN_INTERFACES.epm;
+  const bindPDU = buildBindPDU(epm.uuid, epm.version);
+
+  // NDR body for ept_lookup (opnum 2)
+  const ndrBody = new Uint8Array(56);
+  const ndrView = new DataView(ndrBody.buffer);
+
+  // inquiry_type = 0 (all entries)
+  ndrView.setUint32(0, 0, true);
+  // object pointer = 1 (non-null, points to null GUID inline)
+  ndrView.setUint32(4, 1, true);
+  // null GUID 16 bytes at offset 8 — already zero
+  // interface pointer = 0 (null)
+  ndrView.setUint32(24, 0, true);
+  // vers_option = 0
+  ndrView.setUint32(28, 0, true);
+  // entry_handle (20 bytes) at offset 32 — all zeros
+  // max_ents at offset 52
+  ndrView.setUint32(52, 500, true);
+
+  const fragLen = 16 + 8 + ndrBody.length;
+  const requestPDU = new Uint8Array(fragLen);
+  const reqView = new DataView(requestPDU.buffer);
+
+  requestPDU[0] = 5;
+  requestPDU[1] = 0;
+  requestPDU[2] = PTYPE_REQUEST;
+  requestPDU[3] = 0x03;
+  requestPDU[4] = 0x10;
+
+  reqView.setUint16(8, fragLen, true);
+  reqView.setUint16(10, 0, true);
+  reqView.setUint32(12, 2, true); // call_id = 2
+
+  reqView.setUint32(16, ndrBody.length, true); // alloc_hint
+  reqView.setUint16(20, 0, true);              // context_id
+  reqView.setUint16(22, 2, true);              // opnum = 2 (ept_lookup)
+
+  requestPDU.set(ndrBody, 24);
+
+  return { bindPDU, requestPDU };
+}
+
+/**
+ * Parse EPM tower floors to extract endpoint information.
+ * Each floor: lhs_len(2LE) + lhs_data(lhs_len) + rhs_len(2LE) + rhs_data(rhs_len)
+ */
+function parseTower(data: Uint8Array, offset: number): {
+  protocol: string;
+  host: string | null;
+  port: number | null;
+  pipe: string | null;
+} | null {
+  if (offset + 2 > data.length) return null;
+
+  const view = new DataView(data.buffer, data.byteOffset);
+  const floorCount = view.getUint16(offset, true);
+  offset += 2;
+
+  let tcpPort: number | null = null;
+  let ipHost: string | null = null;
+  let protocol = 'unknown';
+  let pipe: string | null = null;
+
+  for (let f = 0; f < floorCount && f < 10; f++) {
+    if (offset + 4 > data.length) break;
+
+    const lhsLen = view.getUint16(offset, true);
+    offset += 2;
+
+    if (offset + lhsLen > data.length) break;
+    const lhs = data.slice(offset, offset + lhsLen);
+    offset += lhsLen;
+
+    if (offset + 2 > data.length) break;
+    const rhsLen = view.getUint16(offset, true);
+    offset += 2;
+
+    if (offset + rhsLen > data.length) break;
+    const rhs = data.slice(offset, offset + rhsLen);
+    offset += rhsLen;
+
+    if (lhsLen < 1) continue;
+    const protId = lhs[0];
+
+    if (protId === EPM_PROTOCOL_DOD_TCP && rhsLen >= 2) {
+      tcpPort = (rhs[0] << 8) | rhs[1];
+      protocol = EPM_PROTOCOL_NAMES[protId] || 'TCP';
+    } else if (protId === EPM_PROTOCOL_DOD_UDP && rhsLen >= 2) {
+      tcpPort = (rhs[0] << 8) | rhs[1];
+      protocol = EPM_PROTOCOL_NAMES[protId] || 'UDP';
+    } else if (protId === EPM_PROTOCOL_IP && rhsLen >= 4) {
+      ipHost = `${rhs[0]}.${rhs[1]}.${rhs[2]}.${rhs[3]}`;
+    } else if (protId === EPM_PROTOCOL_SMB && rhsLen > 0) {
+      pipe = new TextDecoder().decode(rhs).replace(/\0/g, '');
+      protocol = EPM_PROTOCOL_NAMES[protId] || 'Named Pipe (SMB)';
+    } else if (protId === EPM_PROTOCOL_NCALRPC && rhsLen > 0) {
+      pipe = new TextDecoder().decode(rhs).replace(/\0/g, '');
+      protocol = EPM_PROTOCOL_NAMES[protId] || 'LRPC';
+    } else if (EPM_PROTOCOL_NAMES[protId]) {
+      protocol = EPM_PROTOCOL_NAMES[protId];
+    }
+  }
+
+  return { protocol, host: ipHost, port: tcpPort, pipe };
+}
+
+/**
+ * Parse the NDR response body from an ept_lookup Response PDU.
+ * Extracts entries with UUID, annotation, and endpoint towers.
+ */
+function parseEPMLookupResponse(pdu: Uint8Array): Array<{
+  uuid: string;
+  version: string;
+  annotation: string;
+  endpoint: { protocol: string; host: string | null; port: number | null; pipe: string | null };
+  serviceName: string;
+}> {
+  const entries: Array<{
+    uuid: string;
+    version: string;
+    annotation: string;
+    endpoint: { protocol: string; host: string | null; port: number | null; pipe: string | null };
+    serviceName: string;
+  }> = [];
+
+  // Response PDU body starts at offset 24 (16 header + 8 stub header: alloc_hint+ctx_id+cancel_count+reserved)
+  if (pdu.length < 24) return entries;
+
+  const view = new DataView(pdu.buffer, pdu.byteOffset);
+
+  // Skip PDU header (16) + alloc_hint(4) + context_id(2) + cancel_count(1) + reserved(1) = 24
+  let offset = 24;
+
+  if (offset + 4 > pdu.length) return entries;
+
+  // num_ents (4 bytes LE)
+  const numEnts = view.getUint32(offset, true);
+  offset += 4;
+
+  // Array conformant size (4 bytes)
+  if (offset + 4 > pdu.length) return entries;
+  const arraySize = view.getUint32(offset, true);
+  offset += 4;
+
+  const count = Math.min(numEnts, arraySize, 500);
+
+  for (let i = 0; i < count; i++) {
+    if (offset + 20 > pdu.length) break;
+
+    // Each entry: ept_entry_t
+    // object: GUID (16 bytes)
+    const uuidStr = bytesToUuid(pdu, offset);
+    offset += 16;
+
+    // tower pointer (4 bytes) — referent ID
+    if (offset + 4 > pdu.length) break;
+    offset += 4; // skip referent
+
+    // annotation_offset (4 bytes) and annotation_length (4 bytes) for conformant string
+    if (offset + 8 > pdu.length) break;
+    offset += 4; // offset always 0
+    const annoLen = view.getUint32(offset, true);
+    offset += 4;
+
+    // annotation string (annoLen bytes, padded to 4-byte boundary)
+    let annotation = '';
+    if (annoLen > 0 && offset + annoLen <= pdu.length) {
+      const annoBytes = pdu.slice(offset, offset + annoLen);
+      annotation = new TextDecoder().decode(annoBytes).replace(/\0/g, '').trim();
+    }
+    const paddedAnnoLen = annoLen + (4 - (annoLen % 4)) % 4;
+    offset += paddedAnnoLen;
+
+    // tower (inline, twr_p_t pointer then actual tower):
+    // tower_length (4 bytes) then floor data
+    if (offset + 4 > pdu.length) break;
+    const towerLen = view.getUint32(offset, true);
+    offset += 4;
+
+    let endpoint = { protocol: 'unknown', host: null as string | null, port: null as number | null, pipe: null as string | null };
+    if (towerLen > 0 && offset + towerLen <= pdu.length) {
+      const towerData = pdu.slice(offset, offset + towerLen);
+      const parsed = parseTower(towerData, 0);
+      if (parsed) endpoint = parsed;
+    }
+    const paddedTowerLen = towerLen + (4 - (towerLen % 4)) % 4;
+    offset += paddedTowerLen;
+
+    // interface UUID is the first floor's LHS UUID when floors are present
+    // (the object GUID above is the entry object, not necessarily the interface UUID)
+    // For now use the object GUID as interface identifier
+    const version = '?';
+
+    const serviceName = EPM_UUID_TO_SERVICE[uuidStr.toLowerCase()] || annotation || `Unknown (${uuidStr})`;
+
+    entries.push({
+      uuid: uuidStr,
+      version,
+      annotation,
+      endpoint,
+      serviceName,
+    });
+  }
+
+  return entries;
+}
+
+/**
+ * Handle DCE/RPC Endpoint Mapper enumeration (ept_lookup)
+ * Binds to the EPM interface on port 135 and enumerates registered endpoints.
+ */
+export async function handleDCERPCEPMEnum(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+    };
+
+    const { host, port = 135, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const { bindPDU, requestPDU } = buildEPMPDUs();
+
+        // Step 1: Bind to EPM interface
+        await writer.write(bindPDU);
+        const bindResponse = await readPDU(reader, 5000);
+
+        const bindPtype = bindResponse[2];
+        if (bindPtype === PTYPE_BIND_NAK) {
+          const reason = bindResponse[16] | (bindResponse[17] << 8);
+          throw new Error(`EPM bind rejected: ${NAK_REASONS[reason] || `reason ${reason}`}`);
+        }
+        if (bindPtype !== PTYPE_BIND_ACK) {
+          throw new Error(`Unexpected bind response type: ${bindPtype}`);
+        }
+
+        const bindAck = parseBindAck(bindResponse);
+        if (bindAck.results[0]?.result !== RESULT_ACCEPTANCE) {
+          throw new Error(`EPM bind not accepted: ${bindAck.results[0]?.resultName || 'unknown'}`);
+        }
+
+        // Step 2: Send ept_lookup request (opnum 2)
+        await writer.write(requestPDU);
+        const lookupResponse = await readPDU(reader, 5000);
+
+        const responsePtype = lookupResponse[2];
+        if (responsePtype === PTYPE_FAULT) {
+          throw new Error(`EPM ept_lookup fault: status=${lookupResponse[16]?.toString(16)}`);
+        }
+        if (responsePtype !== PTYPE_RESPONSE) {
+          throw new Error(`Unexpected ept_lookup response type: ${responsePtype}`);
+        }
+
+        const entries = parseEPMLookupResponse(lookupResponse);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        const rtt = Date.now() - startTime;
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          count: entries.length,
+          entries,
+          epmInfo: {
+            maxXmitFrag: bindAck.maxXmitFrag,
+            maxRecvFrag: bindAck.maxRecvFrag,
+            secondaryAddr: bindAck.secondaryAddr || undefined,
+          },
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: err instanceof Error ? err.message : 'EPM enumeration failed',
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /**
  * Handle DCERPC interface probe
  * Tests whether a specific RPC interface is available on the target

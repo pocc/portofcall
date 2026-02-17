@@ -328,3 +328,643 @@ export async function handleBitTorrentHandshake(request: Request): Promise<Respo
     });
   }
 }
+
+
+// ─── BitTorrent Peer Wire: Piece Exchange ────────────────────────────────────
+
+/**
+ * Perform a BitTorrent piece exchange with a remote peer.
+ *
+ * Peer wire message format (after handshake):
+ *   length(4 bytes, big-endian) | id(1 byte) | payload(variable)
+ *   Keep-alive: length=0, no id
+ *
+ * Message IDs:
+ *   0 = choke        1 = unchoke       2 = interested    3 = not_interested
+ *   4 = have         5 = bitfield      6 = request       7 = piece
+ *   8 = cancel       9 = port (DHT)
+ *
+ * REQUEST payload: piece_index(4) begin(4) length(4)
+ * PIECE payload:   index(4) begin(4) data(variable)
+ *
+ * Flow: handshake → optionally read BITFIELD → send INTERESTED →
+ *       wait for UNCHOKE → send REQUEST → receive PIECE data
+ *
+ * POST /api/bittorrent/piece
+ * Body: { host, port?, infoHash, pieceIndex?, pieceOffset?, pieceLength?, timeout? }
+ */
+export async function handleBitTorrentPiece(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host?: string;
+      port?: number;
+      infoHash?: string;
+      pieceIndex?: number;
+      pieceOffset?: number;
+      pieceLength?: number;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 6881,
+      pieceIndex = 0,
+      pieceOffset = 0,
+      pieceLength = 16384, // standard 16 KiB block
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cleanHash = body.infoHash?.replace(/[^0-9a-fA-F]/g, '') ?? '';
+    if (cleanHash.length !== 40) {
+      return new Response(JSON.stringify({
+        success: false, error: 'infoHash must be a 40-character hex string (20 bytes)',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const infoHashBytes = hexToBytes(cleanHash);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const deadline = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    /** Read exactly `n` bytes from reader with per-read timeout */
+    async function readExact(
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      n: number,
+      waitMs: number,
+    ): Promise<Uint8Array> {
+      const buf = new Uint8Array(n);
+      let off = 0;
+      while (off < n) {
+        const dl = new Promise<{ value: undefined; done: true }>((r) =>
+          setTimeout(() => r({ value: undefined, done: true as const }), waitMs),
+        );
+        const { value, done } = await Promise.race([reader.read(), dl]);
+        if (done || !value) throw new Error(`Stream ended after ${off}/${n} bytes`);
+        const copy = Math.min(value.length, n - off);
+        buf.set(value.slice(0, copy), off);
+        off += copy;
+        // If the chunk had more bytes, we discard the excess (shouldn't happen in practice)
+      }
+      return buf;
+    }
+
+    /** Read one peer-wire message: [length(4)] [id(1)] [payload] */
+    async function readPeerMessage(
+      reader: ReadableStreamDefaultReader<Uint8Array>,
+      waitMs: number,
+    ): Promise<{ id: number; payload: Uint8Array } | null> {
+      const lenBuf = await readExact(reader, 4, waitMs);
+      const length = new DataView(lenBuf.buffer).getUint32(0, false);
+      if (length === 0) return null; // keep-alive
+      const msgBuf = await readExact(reader, length, waitMs);
+      return { id: msgBuf[0], payload: msgBuf.slice(1) };
+    }
+
+    const work = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      let bitfieldReceived: boolean | undefined;
+      let unchokeReceived = false;
+      let pieceData: Uint8Array | undefined;
+      const peerMessages: string[] = [];
+
+      try {
+        // ── 1. Send handshake ─────────────────────────────────────────────
+        const handshake = new Uint8Array(68);
+        const enc = new TextEncoder();
+        handshake[0] = 19;
+        handshake.set(enc.encode('BitTorrent protocol'), 1);
+        handshake[25] = 0x10; // Extension Protocol
+        handshake[27] = 0x01; // DHT
+        handshake.set(infoHashBytes, 28);
+        const peerId = enc.encode('-PC0100-');
+        handshake.set(peerId, 48);
+        const rndPart = new Uint8Array(12);
+        crypto.getRandomValues(rndPart);
+        handshake.set(rndPart, 56);
+        await writer.write(handshake);
+
+        // ── 2. Read peer handshake ────────────────────────────────────────
+        let hsBuf = new Uint8Array(0);
+        while (hsBuf.length < 68) {
+          const dl = new Promise<{ value: undefined; done: true }>((r) =>
+            setTimeout(() => r({ value: undefined, done: true as const }), 5000),
+          );
+          const { value, done } = await Promise.race([reader.read(), dl]);
+          if (done || !value) break;
+          const merged = new Uint8Array(hsBuf.length + value.length);
+          merged.set(hsBuf);
+          merged.set(value, hsBuf.length);
+          hsBuf = merged;
+        }
+
+        if (hsBuf.length < 68 || hsBuf[0] !== 19) {
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return {
+            success: false,
+            error: 'Incomplete or invalid BitTorrent handshake from peer',
+          };
+        }
+
+        const dec = new TextDecoder();
+        const respPstr = dec.decode(hsBuf.slice(1, 20));
+        if (respPstr !== 'BitTorrent protocol') {
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return { success: false, error: `Not a BitTorrent peer: protocol "${respPstr}"` };
+        }
+
+        // ── 3. Read post-handshake messages (BITFIELD/HAVE/UNCHOKE) ──────
+        //    Peer may send BITFIELD before anything else.
+        let waitMs = 3000;
+        for (let i = 0; i < 8; i++) {
+          let msg: { id: number; payload: Uint8Array } | null;
+          try {
+            msg = await readPeerMessage(reader, waitMs);
+          } catch {
+            break; // timeout or stream end — proceed to INTERESTED
+          }
+          if (msg === null) continue; // keep-alive
+          const msgName = ['choke','unchoke','interested','not_interested','have','bitfield','request','piece','cancel','port'][msg.id] ?? `msg_${msg.id}`;
+          peerMessages.push(msgName);
+          if (msg.id === 5) { // BITFIELD
+            bitfieldReceived = true;
+            waitMs = 1000;
+          }
+          if (msg.id === 1) { // UNCHOKE (immediately)
+            unchokeReceived = true;
+            break;
+          }
+          if (msg.id === 0) break; // CHOKE — peer won't unchoke right away
+        }
+
+        // ── 4. Send INTERESTED ────────────────────────────────────────────
+        const interested = new Uint8Array([0, 0, 0, 1, 2]); // length=1, id=2
+        await writer.write(interested);
+
+        // ── 5. Wait for UNCHOKE ───────────────────────────────────────────
+        if (!unchokeReceived) {
+          for (let i = 0; i < 6; i++) {
+            let msg: { id: number; payload: Uint8Array } | null;
+            try {
+              msg = await readPeerMessage(reader, 3000);
+            } catch {
+              break;
+            }
+            if (msg === null) continue;
+            const msgName = ['choke','unchoke','interested','not_interested','have','bitfield','request','piece','cancel','port'][msg.id] ?? `msg_${msg.id}`;
+            if (!peerMessages.includes(msgName)) peerMessages.push(msgName);
+            if (msg.id === 1) { unchokeReceived = true; break; }
+            if (msg.id === 0) break; // choke
+          }
+        }
+
+        if (unchokeReceived) {
+          // ── 6. Send REQUEST ─────────────────────────────────────────────
+          // REQUEST: length=13, id=6, index(4), begin(4), length(4)
+          const req = new Uint8Array(4 + 13);
+          const rv = new DataView(req.buffer);
+          rv.setUint32(0, 13, false);
+          req[4] = 6;
+          rv.setUint32(5,  pieceIndex,  false);
+          rv.setUint32(9,  pieceOffset, false);
+          rv.setUint32(13, Math.min(pieceLength, 16384), false);
+          await writer.write(req);
+
+          // ── 7. Wait for PIECE ───────────────────────────────────────────
+          try {
+            const msg = await readPeerMessage(reader, 8000);
+            if (msg && msg.id === 7 && msg.payload.length >= 8) {
+              // PIECE payload: index(4) begin(4) data(variable)
+              const pv = new DataView(msg.payload.buffer, msg.payload.byteOffset);
+              const respIndex  = pv.getUint32(0, false);
+              const respBegin  = pv.getUint32(4, false);
+              const dataBytes  = msg.payload.slice(8);
+              pieceData = dataBytes;
+              peerMessages.push(`piece(index=${respIndex},begin=${respBegin},bytes=${dataBytes.length})`);
+            } else if (msg) {
+              const msgName = ['choke','unchoke','interested','not_interested','have','bitfield','request','piece','cancel','port'][msg.id] ?? `msg_${msg.id}`;
+              peerMessages.push(`unexpected:${msgName}`);
+            }
+          } catch { /* timeout reading piece — not fatal */ }
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          infoHash: cleanHash,
+          pieceIndex,
+          pieceOffset,
+          requestedLength: Math.min(pieceLength, 16384),
+          bitfieldReceived: bitfieldReceived ?? false,
+          unchokeReceived,
+          pieceDataReceived: pieceData !== undefined,
+          pieceDataBytes: pieceData?.length,
+          pieceDataHex: pieceData ? bytesToHex(pieceData.slice(0, 32)) + (pieceData.length > 32 ? '...' : '') : undefined,
+          peerMessages,
+          latencyMs: Date.now() - startTime,
+          note: unchokeReceived
+            ? (pieceData
+              ? 'Piece data received successfully.'
+              : 'Peer unchoked but did not send PIECE (may not have the piece).')
+            : 'Peer did not send UNCHOKE — peer may be choking, or does not have requested piece.',
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, deadline]);
+    return new Response(JSON.stringify(result), {
+      status: (result as { success: boolean }).success ? 200 : 502,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Connection timeout') {
+      return new Response(JSON.stringify({ success: false, error: 'Connection timeout' }), {
+        status: 504, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+
+// ─── BitTorrent HTTP Tracker (Scrape & Announce) ────────────────────────────
+
+interface BitTorrentTrackerRequest {
+  host: string;
+  port?: number;
+  infoHash: string;
+  peerId?: string;
+  timeout?: number;
+}
+
+/**
+ * Convert a 40-char hex string to a URL-percent-encoded byte string.
+ * Each byte is encoded as %XX regardless of printability.
+ */
+function hexToUrlEncoded(hex: string): string {
+  let encoded = '';
+  for (let i = 0; i < hex.length; i += 2) {
+    encoded += '%' + hex.substring(i, i + 2).toLowerCase();
+  }
+  return encoded;
+}
+
+/**
+ * Minimal bencode parser supporting scrape/announce response structures.
+ */
+type BencodeValue = number | Uint8Array | BencodeValue[] | Map<string, BencodeValue>;
+
+function parseBencode(data: Uint8Array, offset = 0): [BencodeValue, number] {
+  if (offset >= data.length) throw new Error('Unexpected end of bencode data');
+  const ch = data[offset];
+
+  if (ch === 0x69 /* 'i' */) {
+    let end = offset + 1;
+    while (end < data.length && data[end] !== 0x65 /* 'e' */) end++;
+    return [parseInt(new TextDecoder().decode(data.slice(offset + 1, end)), 10), end + 1];
+  }
+
+  if (ch >= 0x30 && ch <= 0x39 /* '0'-'9' */) {
+    let colonPos = offset;
+    while (colonPos < data.length && data[colonPos] !== 0x3a /* ':' */) colonPos++;
+    const length = parseInt(new TextDecoder().decode(data.slice(offset, colonPos)), 10);
+    const start = colonPos + 1;
+    return [data.slice(start, start + length), start + length];
+  }
+
+  if (ch === 0x6c /* 'l' */) {
+    const list: BencodeValue[] = [];
+    let pos = offset + 1;
+    while (pos < data.length && data[pos] !== 0x65 /* 'e' */) {
+      const [val, next] = parseBencode(data, pos);
+      list.push(val);
+      pos = next;
+    }
+    return [list, pos + 1];
+  }
+
+  if (ch === 0x64 /* 'd' */) {
+    const dict = new Map<string, BencodeValue>();
+    let pos = offset + 1;
+    while (pos < data.length && data[pos] !== 0x65 /* 'e' */) {
+      const [keyBytes, afterKey] = parseBencode(data, pos);
+      const key = new TextDecoder().decode(keyBytes as Uint8Array);
+      const [val, afterVal] = parseBencode(data, afterKey);
+      dict.set(key, val);
+      pos = afterVal;
+    }
+    return [dict, pos + 1];
+  }
+
+  throw new Error(`Unknown bencode type byte: 0x${ch.toString(16)} at offset ${offset}`);
+}
+
+function bencodeGetInt(dict: Map<string, BencodeValue>, key: string): number | undefined {
+  const val = dict.get(key);
+  return typeof val === 'number' ? val : undefined;
+}
+
+/**
+ * Handle BitTorrent HTTP Tracker Scrape — retrieve seeder/leecher/completed counts.
+ *
+ * POST /api/bittorrent/scrape
+ * Body: { host, port?, infoHash, timeout? }
+ */
+export async function handleBitTorrentScrape(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as BitTorrentTrackerRequest;
+    const { host, port = 6969, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cleanHash = body.infoHash?.replace(/[^0-9a-fA-F]/g, '') ?? '';
+    if (cleanHash.length !== 40) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'infoHash must be a 40-character hex string (20 bytes)',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const encodedHash = hexToUrlEncoded(cleanHash);
+    const url = `http://${host}:${port}/scrape?info_hash=${encodedHash}`;
+
+    const startTime = Date.now();
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+
+    if (!response.ok) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Tracker returned HTTP ${response.status}: ${response.statusText}`,
+        latencyMs: Date.now() - startTime,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const rawBytes = new Uint8Array(await response.arrayBuffer());
+    const latencyMs = Date.now() - startTime;
+
+    const [parsed] = parseBencode(rawBytes);
+    if (!(parsed instanceof Map)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Unexpected bencode response structure',
+        latencyMs,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const failureReason = parsed.get('failure reason');
+    if (failureReason instanceof Uint8Array) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: new TextDecoder().decode(failureReason),
+        latencyMs,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const files = parsed.get('files');
+    if (!(files instanceof Map)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'No "files" key in scrape response',
+        latencyMs,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    let torrentStats: Map<string, BencodeValue> | undefined;
+    for (const [, val] of files) {
+      if (val instanceof Map) {
+        torrentStats = val;
+        break;
+      }
+    }
+
+    if (!torrentStats) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'No torrent data in scrape response',
+        latencyMs,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const seeders = bencodeGetInt(torrentStats, 'complete') ?? 0;
+    const completed = bencodeGetInt(torrentStats, 'downloaded') ?? 0;
+    const leechers = bencodeGetInt(torrentStats, 'incomplete') ?? 0;
+
+    return new Response(JSON.stringify({ success: true, seeders, leechers, completed, latencyMs }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    const isTimeout = error instanceof Error &&
+      (error.message.includes('timeout') || (error as Error & { name: string }).name === 'TimeoutError');
+    return new Response(JSON.stringify({
+      success: false,
+      error: isTimeout ? 'Request timeout' : (error instanceof Error ? error.message : 'Unknown error'),
+    }), {
+      status: isTimeout ? 504 : 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle BitTorrent HTTP Tracker Announce — announce peer presence and receive peer list.
+ *
+ * POST /api/bittorrent/announce
+ * Body: { host, port?, infoHash, peerId?, timeout? }
+ */
+export async function handleBitTorrentAnnounce(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as BitTorrentTrackerRequest;
+    const { host, port = 6969, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cleanHash = body.infoHash?.replace(/[^0-9a-fA-F]/g, '') ?? '';
+    if (cleanHash.length !== 40) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'infoHash must be a 40-character hex string (20 bytes)',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const peerIdHex = body.peerId?.replace(/[^0-9a-fA-F]/g, '') ?? randomHex(20);
+    if (peerIdHex.length !== 40) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'peerId must be a 40-character hex string (20 bytes)',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const encodedHash = hexToUrlEncoded(cleanHash);
+    const encodedPeerId = hexToUrlEncoded(peerIdHex);
+
+    const params = new URLSearchParams({
+      uploaded: '0',
+      downloaded: '0',
+      left: '0',
+      event: 'started',
+      compact: '1',
+      numwant: '10',
+      port: '6881',
+    });
+
+    const url = `http://${host}:${port}/announce?info_hash=${encodedHash}&peer_id=${encodedPeerId}&${params.toString()}`;
+
+    const startTime = Date.now();
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeout) });
+
+    if (!response.ok) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Tracker returned HTTP ${response.status}: ${response.statusText}`,
+        latencyMs: Date.now() - startTime,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const rawBytes = new Uint8Array(await response.arrayBuffer());
+    const latencyMs = Date.now() - startTime;
+
+    const [parsed] = parseBencode(rawBytes);
+    if (!(parsed instanceof Map)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Unexpected bencode response structure',
+        latencyMs,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const failureReason = parsed.get('failure reason');
+    if (failureReason instanceof Uint8Array) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: new TextDecoder().decode(failureReason),
+        latencyMs,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const interval = bencodeGetInt(parsed, 'interval') ?? 0;
+    const seeders = bencodeGetInt(parsed, 'complete');
+    const leechers = bencodeGetInt(parsed, 'incomplete');
+
+    // Parse compact peer list: 6 bytes per peer (4 IP + 2 port, big-endian)
+    const peersRaw = parsed.get('peers');
+    const peers: string[] = [];
+
+    if (peersRaw instanceof Uint8Array) {
+      for (let i = 0; i + 6 <= peersRaw.length; i += 6) {
+        const ip = `${peersRaw[i]}.${peersRaw[i + 1]}.${peersRaw[i + 2]}.${peersRaw[i + 3]}`;
+        const p = (peersRaw[i + 4] << 8) | peersRaw[i + 5];
+        peers.push(`${ip}:${p}`);
+      }
+    } else if (Array.isArray(peersRaw)) {
+      // Non-compact dict format
+      for (const peer of peersRaw) {
+        if (peer instanceof Map) {
+          const ipBytes = peer.get('ip');
+          const portVal = peer.get('port');
+          if (ipBytes instanceof Uint8Array && typeof portVal === 'number') {
+            peers.push(`${new TextDecoder().decode(ipBytes)}:${portVal}`);
+          }
+        }
+      }
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      interval,
+      peers,
+      ...(seeders !== undefined && { seeders }),
+      ...(leechers !== undefined && { leechers }),
+      latencyMs,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    const isTimeout = error instanceof Error &&
+      (error.message.includes('timeout') || (error as Error & { name: string }).name === 'TimeoutError');
+    return new Response(JSON.stringify({
+      success: false,
+      error: isTimeout ? 'Request timeout' : (error instanceof Error ? error.message : 'Unknown error'),
+    }), {
+      status: isTimeout ? 504 : 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

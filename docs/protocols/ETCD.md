@@ -1,628 +1,460 @@
-# etcd Protocol Implementation Plan
+# etcd — Power User Reference
 
-## Overview
+**Port:** 2379 (client default) | **Protocol:** etcd v3 HTTP/JSON gateway over raw TCP | **Tests:** 26/26 ✅ Deployed
 
-**Protocol:** etcd gRPC API (HTTP/2)
-**Port:** 2379 (client), 2380 (peer)
-**Specification:** [etcd API Documentation](https://etcd.io/docs/v3.5/learning/api/)
-**Complexity:** High
-**Purpose:** Distributed key-value store and service discovery
+Port of Call implements two endpoints. Both speak directly to etcd's v3 HTTP/JSON gateway over a raw TCP socket — because Cloudflare Workers cannot `fetch()` arbitrary HTTP on non-standard ports, only HTTPS.
 
-etcd enables **distributed configuration management** - store and watch configuration data, implement service discovery, and coordinate distributed systems from the browser.
+---
 
-### Use Cases
-- Service discovery and registration
-- Distributed configuration management
-- Leader election
-- Distributed locking
-- Metadata storage for Kubernetes
-- Feature flags and A/B testing
+## Transport
 
-## Protocol Specification
+Raw TCP HTTP/1.1 (`cloudflare:sockets connect()`), not `fetch()`. A new connection is opened per request. Chunked transfer encoding is decoded internally. Response size is capped at **512 KB**.
 
-### gRPC API (v3)
+Auth is HTTP Basic: `Authorization: Basic base64(username:password)`. etcd's token-based auth is not supported.
 
-etcd v3 uses gRPC over HTTP/2, but also provides an HTTP/JSON gateway.
+---
 
-### HTTP/JSON Gateway Endpoints
+## Critical: base64 encoding
+
+The etcd v3 HTTP/JSON gateway requires all keys and values to be **standard base64-encoded** in request bodies. The implementation does NOT encode for you — you must encode before sending to the query endpoint.
 
 ```
-PUT    /v3/kv/put        - Store key-value
-POST   /v3/kv/range      - Get key-value
-POST   /v3/kv/deleterange - Delete key-value
-POST   /v3/watch         - Watch for changes
-POST   /v3/lease/grant   - Grant lease
-POST   /v3/lease/revoke  - Revoke lease
-POST   /v3/lease/keepalive - Keep lease alive
-POST   /v3/lock/lock     - Acquire lock
-POST   /v3/lock/unlock   - Release lock
+key "foo"        → "Zm9v"    (btoa("foo"))
+key "/config/"   → "L2NvbmZpZy8="
+value "bar"      → "YmFy"    (btoa("bar"))
 ```
 
-### Key Format
-
-Keys are arbitrary byte sequences (UTF-8 strings work well):
-```
-/services/api/node1
-/config/database/connection_string
-/locks/resource-123
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/etcd/client.ts
-
-export interface EtcdConfig {
-  host: string;
-  port: number;
-  username?: string;
-  password?: string;
-}
-
-export interface KeyValue {
-  key: string;
-  value: string;
-  createRevision: number;
-  modRevision: number;
-  version: number;
-  lease?: number;
-}
-
-export interface WatchEvent {
-  type: 'PUT' | 'DELETE';
-  kv: KeyValue;
-  prevKv?: KeyValue;
-}
-
-export class EtcdClient {
-  private baseUrl: string;
-  private headers: HeadersInit;
-
-  constructor(private config: EtcdConfig) {
-    this.baseUrl = `http://${config.host}:${config.port}`;
-    this.headers = {
-      'Content-Type': 'application/json',
-    };
-
-    if (config.username && config.password) {
-      const auth = btoa(`${config.username}:${config.password}`);
-      this.headers['Authorization'] = `Basic ${auth}`;
-    }
-  }
-
-  async put(key: string, value: string, options: {
-    lease?: number;
-    prevKv?: boolean;
-  } = {}): Promise<{ prevKv?: KeyValue }> {
-    const response = await fetch(`${this.baseUrl}/v3/kv/put`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({
-        key: this.encodeKey(key),
-        value: this.encodeValue(value),
-        lease: options.lease,
-        prev_kv: options.prevKv,
-      }),
-    });
-
-    const data = await response.json();
-
-    return {
-      prevKv: data.prev_kv ? this.decodeKeyValue(data.prev_kv) : undefined,
-    };
-  }
-
-  async get(key: string, options: {
-    prefix?: boolean;
-    limit?: number;
-    keysOnly?: boolean;
-  } = {}): Promise<KeyValue[]> {
-    const rangeEnd = options.prefix ? this.getRangeEnd(key) : undefined;
-
-    const response = await fetch(`${this.baseUrl}/v3/kv/range`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({
-        key: this.encodeKey(key),
-        range_end: rangeEnd ? this.encodeKey(rangeEnd) : undefined,
-        limit: options.limit,
-        keys_only: options.keysOnly,
-      }),
-    });
-
-    const data = await response.json();
-
-    if (!data.kvs) return [];
-
-    return data.kvs.map((kv: any) => this.decodeKeyValue(kv));
-  }
-
-  async delete(key: string, options: {
-    prefix?: boolean;
-    prevKv?: boolean;
-  } = {}): Promise<{ deleted: number; prevKvs?: KeyValue[] }> {
-    const rangeEnd = options.prefix ? this.getRangeEnd(key) : undefined;
-
-    const response = await fetch(`${this.baseUrl}/v3/kv/deleterange`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({
-        key: this.encodeKey(key),
-        range_end: rangeEnd ? this.encodeKey(rangeEnd) : undefined,
-        prev_kv: options.prevKv,
-      }),
-    });
-
-    const data = await response.json();
-
-    return {
-      deleted: parseInt(data.deleted || '0'),
-      prevKvs: data.prev_kvs ? data.prev_kvs.map(this.decodeKeyValue) : undefined,
-    };
-  }
-
-  async watch(
-    key: string,
-    options: {
-      prefix?: boolean;
-      startRevision?: number;
-      progressNotify?: boolean;
-    } = {}
-  ): Promise<AsyncGenerator<WatchEvent>> {
-    const rangeEnd = options.prefix ? this.getRangeEnd(key) : undefined;
-
-    const watchId = Math.random().toString(36);
-
-    const createRequest = {
-      create_request: {
-        key: this.encodeKey(key),
-        range_end: rangeEnd ? this.encodeKey(rangeEnd) : undefined,
-        start_revision: options.startRevision,
-        progress_notify: options.progressNotify,
-      },
-    };
-
-    // In a real implementation, this would use streaming
-    // For Workers, we'd use WebSocket or Server-Sent Events
-
-    return this.watchStream(watchId, createRequest);
-  }
-
-  private async *watchStream(
-    watchId: string,
-    createRequest: any
-  ): AsyncGenerator<WatchEvent> {
-    // Simplified watch implementation
-    // In production, use WebSocket for bi-directional streaming
-
-    const response = await fetch(`${this.baseUrl}/v3/watch`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify(createRequest),
-    });
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('No response body');
-
-    const decoder = new TextDecoder();
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n').filter(l => l.trim());
-
-      for (const line of lines) {
-        try {
-          const data = JSON.parse(line);
-
-          if (data.result?.events) {
-            for (const event of data.result.events) {
-              yield {
-                type: event.type === 'DELETE' ? 'DELETE' : 'PUT',
-                kv: this.decodeKeyValue(event.kv),
-                prevKv: event.prev_kv ? this.decodeKeyValue(event.prev_kv) : undefined,
-              };
-            }
-          }
-        } catch (e) {
-          // Ignore parse errors
-        }
-      }
-    }
-  }
-
-  async grantLease(ttl: number): Promise<number> {
-    const response = await fetch(`${this.baseUrl}/v3/lease/grant`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ TTL: ttl }),
-    });
-
-    const data = await response.json();
-    return parseInt(data.ID);
-  }
-
-  async revokeLease(leaseId: number): Promise<void> {
-    await fetch(`${this.baseUrl}/v3/lease/revoke`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ ID: leaseId }),
-    });
-  }
-
-  async keepAlive(leaseId: number): Promise<void> {
-    await fetch(`${this.baseUrl}/v3/lease/keepalive`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({ ID: leaseId }),
-    });
-  }
-
-  async lock(name: string, lease: number): Promise<string> {
-    const response = await fetch(`${this.baseUrl}/v3/lock/lock`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({
-        name: this.encodeKey(name),
-        lease,
-      }),
-    });
-
-    const data = await response.json();
-    return this.decodeValue(data.key);
-  }
-
-  async unlock(key: string): Promise<void> {
-    await fetch(`${this.baseUrl}/v3/lock/unlock`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({
-        key: this.encodeKey(key),
-      }),
-    });
-  }
-
-  async transaction(
-    compare: Array<{
-      key: string;
-      target: 'VERSION' | 'CREATE' | 'MOD' | 'VALUE';
-      result: 'EQUAL' | 'GREATER' | 'LESS' | 'NOT_EQUAL';
-      value?: any;
-    }>,
-    success: Array<{ requestPut?: any; requestDeleteRange?: any }>,
-    failure: Array<{ requestPut?: any; requestDeleteRange?: any }>
-  ): Promise<{ succeeded: boolean; responses: any[] }> {
-    const response = await fetch(`${this.baseUrl}/v3/kv/txn`, {
-      method: 'POST',
-      headers: this.headers,
-      body: JSON.stringify({
-        compare,
-        success,
-        failure,
-      }),
-    });
-
-    const data = await response.json();
-
-    return {
-      succeeded: data.succeeded,
-      responses: data.responses || [],
-    };
-  }
-
-  private encodeKey(key: string): string {
-    return btoa(key);
-  }
-
-  private encodeValue(value: string): string {
-    return btoa(value);
-  }
-
-  private decodeKey(encoded: string): string {
-    return atob(encoded);
-  }
-
-  private decodeValue(encoded: string): string {
-    return atob(encoded);
-  }
-
-  private decodeKeyValue(kv: any): KeyValue {
-    return {
-      key: this.decodeKey(kv.key),
-      value: this.decodeValue(kv.value),
-      createRevision: parseInt(kv.create_revision || '0'),
-      modRevision: parseInt(kv.mod_revision || '0'),
-      version: parseInt(kv.version || '0'),
-      lease: kv.lease ? parseInt(kv.lease) : undefined,
-    };
-  }
-
-  private getRangeEnd(key: string): string {
-    // For prefix queries, increment last byte
-    const bytes = new TextEncoder().encode(key);
-    const rangeEnd = new Uint8Array(bytes.length);
-    rangeEnd.set(bytes);
-    rangeEnd[rangeEnd.length - 1]++;
-    return new TextDecoder().decode(rangeEnd);
-  }
-}
-
-// Service Discovery Pattern
-
-export class ServiceRegistry {
-  private leaseId?: number;
-
-  constructor(private client: EtcdClient) {}
-
-  async register(
-    serviceName: string,
-    serviceId: string,
-    endpoint: string,
-    ttl: number = 60
-  ): Promise<void> {
-    // Grant lease
-    this.leaseId = await this.client.grantLease(ttl);
-
-    // Register service
-    const key = `/services/${serviceName}/${serviceId}`;
-    await this.client.put(key, endpoint, { lease: this.leaseId });
-
-    // Keep alive in background
-    this.startKeepAlive(ttl);
-  }
-
-  async deregister(serviceName: string, serviceId: string): Promise<void> {
-    if (this.leaseId) {
-      await this.client.revokeLease(this.leaseId);
-    }
-
-    const key = `/services/${serviceName}/${serviceId}`;
-    await this.client.delete(key);
-  }
-
-  async discover(serviceName: string): Promise<Array<{ id: string; endpoint: string }>> {
-    const key = `/services/${serviceName}/`;
-    const kvs = await this.client.get(key, { prefix: true });
-
-    return kvs.map(kv => ({
-      id: kv.key.split('/').pop() || '',
-      endpoint: kv.value,
-    }));
-  }
-
-  private startKeepAlive(ttl: number): void {
-    if (!this.leaseId) return;
-
-    const interval = (ttl * 1000) / 3; // Refresh at 1/3 of TTL
-
-    setInterval(async () => {
-      if (this.leaseId) {
-        await this.client.keepAlive(this.leaseId);
-      }
-    }, interval);
-  }
-}
-
-// Distributed Lock Pattern
-
-export class DistributedLock {
-  private lockKey?: string;
-  private leaseId?: number;
-
-  constructor(private client: EtcdClient, private name: string) {}
-
-  async acquire(ttl: number = 60): Promise<boolean> {
-    try {
-      this.leaseId = await this.client.grantLease(ttl);
-      this.lockKey = await this.client.lock(this.name, this.leaseId);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  async release(): Promise<void> {
-    if (this.lockKey) {
-      await this.client.unlock(this.lockKey);
-      this.lockKey = undefined;
-    }
-
-    if (this.leaseId) {
-      await this.client.revokeLease(this.leaseId);
-      this.leaseId = undefined;
-    }
-  }
+The response decoder adds `key_decoded` and `value_decoded` alongside the raw base64 `key` / `value` fields in any `kvs` array or `prev_kv` object.
+
+```json
+{
+  "kvs": [{
+    "key": "Zm9v",
+    "key_decoded": "foo",
+    "value": "YmFy",
+    "value_decoded": "bar",
+    "create_revision": "12",
+    "mod_revision": "14",
+    "version": "3",
+    "lease": "0"
+  }]
 }
 ```
 
-## Web UI Design
+`header` fields (`cluster_id`, `member_id`, `raft_term`, `revision`) are decoded from int64 strings to plain strings.
 
-```typescript
-// src/components/EtcdClient.tsx
+---
 
-export function EtcdClient() {
-  const [keys, setKeys] = useState<KeyValue[]>([]);
-  const [watchEvents, setWatchEvents] = useState<WatchEvent[]>([]);
-  const [newKey, setNewKey] = useState('');
-  const [newValue, setNewValue] = useState('');
+## API Endpoints
 
-  const loadKeys = async (prefix: string = '/') => {
-    const response = await fetch('/api/etcd/get', {
-      method: 'POST',
-      body: JSON.stringify({ key: prefix, prefix: true }),
-    });
+### `POST /api/etcd/health` — Cluster health probe
 
-    const data = await response.json();
-    setKeys(data);
-  };
+Calls three etcd paths in sequence and returns all three responses combined:
 
-  const putKey = async () => {
-    await fetch('/api/etcd/put', {
-      method: 'POST',
-      body: JSON.stringify({ key: newKey, value: newValue }),
-    });
+1. `GET /version` — etcd + cluster version
+2. `POST /v3/maintenance/status` with `{}` — server status, leader ID, raft index
+3. `GET /health` — `{"health":"true"}` style health check
 
-    loadKeys();
-  };
+**Request:**
 
-  const deleteKey = async (key: string) => {
-    await fetch('/api/etcd/delete', {
-      method: 'POST',
-      body: JSON.stringify({ key }),
-    });
-
-    loadKeys();
-  };
-
-  const startWatch = async (key: string) => {
-    const ws = new WebSocket(`/api/etcd/watch?key=${encodeURIComponent(key)}`);
-
-    ws.onmessage = (event) => {
-      const watchEvent = JSON.parse(event.data);
-      setWatchEvents(prev => [...prev, watchEvent]);
-    };
-  };
-
-  return (
-    <div className="etcd-client">
-      <h2>etcd Distributed Key-Value Store</h2>
-
-      <div className="key-input">
-        <input
-          type="text"
-          placeholder="Key (e.g., /config/app/name)"
-          value={newKey}
-          onChange={(e) => setNewKey(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Value"
-          value={newValue}
-          onChange={(e) => setNewValue(e.target.value)}
-        />
-        <button onClick={putKey}>Put</button>
-      </div>
-
-      <div className="keys-list">
-        <h3>Keys</h3>
-        <button onClick={() => loadKeys()}>Refresh</button>
-
-        <table>
-          <thead>
-            <tr>
-              <th>Key</th>
-              <th>Value</th>
-              <th>Version</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map(kv => (
-              <tr key={kv.key}>
-                <td>{kv.key}</td>
-                <td>{kv.value}</td>
-                <td>{kv.version}</td>
-                <td>
-                  <button onClick={() => deleteKey(kv.key)}>Delete</button>
-                  <button onClick={() => startWatch(kv.key)}>Watch</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="watch-events">
-        <h3>Watch Events</h3>
-        {watchEvents.map((event, i) => (
-          <div key={i} className={`event ${event.type}`}>
-            <strong>{event.type}</strong>: {event.kv.key} = {event.kv.value}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+```json
+{
+  "host": "etcd.example.com",
+  "port": 2379,
+  "username": "root",
+  "password": "secret",
+  "timeout": 15000
 }
 ```
 
-## Security
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | required | |
+| `port` | `2379` | |
+| `username` | — | Optional; both username and password must be set for auth |
+| `password` | — | |
+| `timeout` | `15000` | Shared wall-clock budget for all three requests |
 
-### Authentication
+**Success (200):**
 
-```typescript
-// Enable authentication on etcd server
-etcdctl user add root
-etcdctl auth enable
-
-// Use in client
-const client = new EtcdClient({
-  host: 'localhost',
-  port: 2379,
-  username: 'root',
-  password: 'password',
-});
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "parsed": {
+    "version": {
+      "etcdserver": "3.5.9",
+      "etcdcluster": "3.5.0"
+    },
+    "status": {
+      "header": { "cluster_id": "...", "member_id": "...", "revision": "42", "raft_term": "3" },
+      "version": "3.5.9",
+      "dbSize": "4096",
+      "leader": "8211f1d0f64f3269",
+      "raftIndex": "56",
+      "raftTerm": "3",
+      "raftAppliedIndex": "56",
+      "dbSizeInUse": "4096"
+    },
+    "health": { "health": "true", "reason": "" }
+  },
+  "latencyMs": 38
+}
 ```
 
-## Testing
+`status` and `health` are `null` if those sub-requests fail or time out (only `version` is required for `success: true`).
+
+**Error (500):** `{ "success": false, "error": "Connection timeout" }`
+
+---
+
+### `POST /api/etcd/query` — Arbitrary v3 API call
+
+Sends a POST request to any etcd v3 HTTP/JSON gateway path. This is the general-purpose endpoint for all KV, lease, lock, maintenance, auth, and cluster operations.
+
+**Request:**
+
+```json
+{
+  "host": "etcd.example.com",
+  "port": 2379,
+  "username": "root",
+  "password": "secret",
+  "path": "/v3/kv/range",
+  "body": "{\"key\":\"Zm9v\"}",
+  "timeout": 15000
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `host` | required |
+| `port` | default `2379` |
+| `path` | required; leading `/` added automatically if missing |
+| `body` | JSON string sent as request body; defaults to `"{}"` if omitted |
+| `username` / `password` | HTTP Basic Auth; both required for auth to apply |
+| `timeout` | default `15000` ms |
+
+**Important:** `body` is a **string**, not a JSON object — it's the pre-serialized JSON you want sent to etcd. Keys and values inside `body` must be base64-encoded.
+
+**Success (200):**
+
+```json
+{
+  "success": true,
+  "statusCode": 200,
+  "headers": { "content-type": "application/json", ... },
+  "body": "{\"kvs\":[...],\"count\":\"1\"}",
+  "parsed": {
+    "kvs": [{ "key": "Zm9v", "key_decoded": "foo", "value": "YmFy", "value_decoded": "bar", ... }],
+    "count": "1"
+  },
+  "latencyMs": 12
+}
+```
+
+`parsed` is null if the response body is not valid JSON. `body` always contains the raw response string.
+
+`success` is `true` for any 2xx–3xx HTTP status code from etcd. A 401 Unauthorized or 404 from etcd still returns HTTP 200 from the Port of Call endpoint — check `statusCode` in the response.
+
+---
+
+## v3 HTTP/JSON Gateway Reference
+
+All operations use the query endpoint. The `body` field must be valid JSON with base64-encoded keys/values.
+
+### KV operations
 
 ```bash
-# Docker etcd
-docker run -d \
-  -p 2379:2379 \
-  -p 2380:2380 \
-  --name etcd \
-  quay.io/coreos/etcd:latest \
-  /usr/local/bin/etcd \
-  --advertise-client-urls http://0.0.0.0:2379 \
-  --listen-client-urls http://0.0.0.0:2379
+# Get a single key
+path: /v3/kv/range
+body: '{"key":"Zm9v"}'
+# → kvs array, count
 
-# Test
-curl http://localhost:2379/v3/kv/put \
-  -X POST \
-  -d '{"key":"Zm9v","value":"YmFy"}' # base64(foo) = Zm9v, base64(bar) = YmFy
+# Get all keys with prefix /config/
+path: /v3/kv/range
+body: '{"key":"L2NvbmZpZy8=","range_end":"L2NvbmZpZzA="}'
+# range_end is prefix with last byte incremented — see Prefix Queries below
+
+# Keys only (no values) — faster for large prefix scans
+path: /v3/kv/range
+body: '{"key":"L2NvbmZpZy8=","range_end":"L2NvbmZpZzA=","keys_only":true}'
+
+# Limit results
+path: /v3/kv/range
+body: '{"key":"Yg==","range_end":"Yw==","limit":20}'
+
+# Get all keys in keyspace (empty range, use \x00 = "AA==" as range_end)
+path: /v3/kv/range
+body: '{"key":"AA==","range_end":"AA=="}'
 ```
+
+```bash
+# Put
+path: /v3/kv/put
+body: '{"key":"Zm9v","value":"YmFy"}'
+# → header only (no prevKv unless prev_kv: true)
+
+# Put with previous value returned
+body: '{"key":"Zm9v","value":"bmV3","prev_kv":true}'
+# → { header, prev_kv: { key, key_decoded, value, value_decoded, ... } }
+
+# Put with lease (key expires when lease expires)
+body: '{"key":"Zm9v","value":"YmFy","lease":"7587854612027467777"}'
+```
+
+```bash
+# Delete one key
+path: /v3/kv/deleterange
+body: '{"key":"Zm9v"}'
+# → { header, deleted: "1" }
+
+# Delete all keys with prefix
+path: /v3/kv/deleterange
+body: '{"key":"L2NvbmZpZy8=","range_end":"L2NvbmZpZzA="}'
+# → { header, deleted: "N" }
+
+# Delete with prev_kv
+body: '{"key":"Zm9v","prev_kv":true}'
+# → { header, deleted: "1", prev_kvs: [...] }
+```
+
+### Transactions (CAS)
+
+```bash
+path: /v3/kv/txn
+body: '{
+  "compare": [{
+    "target": "VALUE",
+    "key": "bG9jaw==",
+    "value": "dW5sb2NrZWQ="
+  }],
+  "success": [{"requestPut":{"key":"bG9jaw==","value":"bG9ja2Vk"}}],
+  "failure": []
+}'
+# → { header, succeeded: true/false, responses: [...] }
+```
+
+Target values: `"VERSION"`, `"CREATE"`, `"MOD"`, `"VALUE"`, `"LEASE"`
+Result values: `"EQUAL"`, `"GREATER"`, `"LESS"`, `"NOT_EQUAL"`
+
+The compare field that's tested depends on `target`:
+
+| `target` | Field in compare body | Common use |
+|----------|----------------------|------------|
+| `VERSION` | `"version": "N"` | Check per-key write count; `"0"` means key doesn't exist |
+| `CREATE` | `"create_revision": "N"` | Key was created at this global revision |
+| `MOD` | `"mod_revision": "N"` | Key last modified at this global revision (optimistic lock) |
+| `VALUE` | `"value": "<base64>"` | Atomic compare-and-swap on value |
+| `LEASE` | `"lease": "N"` | Key attached to this lease ID |
+
+**Common compare patterns:**
+
+```json
+// Key does not exist (version 0 = never written or was deleted)
+{"target":"VERSION","key":"...","result":"EQUAL","version":"0"}
+
+// Key exists
+{"target":"VERSION","key":"...","result":"GREATER","version":"0"}
+
+// Optimistic lock: succeed only if key hasn't changed since you read it
+{"target":"MOD","key":"...","result":"EQUAL","mod_revision":"<revision you read>"}
+
+// CAS on expected value
+{"target":"VALUE","key":"...","result":"EQUAL","value":"<base64 expected>"}
+```
+
+Multiple compare conditions are AND'd together. The `success` and `failure` branches support `request_put`, `request_delete_range`, and `request_range` operations. Responses are in `responses[n].response_put`, `responses[n].response_delete_range`, or `responses[n].response_range`.
+
+---
+
+## Revision Semantics
+
+Every KV object returned by range/get/txn carries three separate "version" concepts:
+
+| Field | Scope | Resets on delete? | Use case |
+|-------|-------|-------------------|----------|
+| `version` | Per-key write count | Yes (resets to `"1"` on re-create) | Check if a key has been modified at all; detect first write |
+| `create_revision` | Global cluster revision at first create | — | Track when a key was born; anchor for history queries |
+| `mod_revision` | Global cluster revision at last write | No | Optimistic locking; `range` with `min_mod_revision` / `max_mod_revision` filters |
+
+The global `revision` in response headers increases monotonically for every successful write across the entire cluster. Compare `mod_revision` against the current header `revision` to compute "how many cluster writes have happened since you last saw this key."
+
+### Leases
+
+```bash
+# Grant a lease with 60-second TTL
+path: /v3/lease/grant
+body: '{"TTL":60}'
+# → { header, ID: "7587854612027467777", TTL: "60" }
+
+# Revoke a lease (all keys attached to it are deleted)
+path: /v3/lease/revoke
+body: '{"ID":"7587854612027467777"}'
+
+# Keepalive (reset TTL; call before expiry)
+path: /v3/lease/keepalive
+body: '{"ID":"7587854612027467777"}'
+# → { result: { header, ID, TTL } }
+
+# Query remaining TTL
+path: /v3/lease/timetolive
+body: '{"ID":"7587854612027467777","keys":true}'
+# → { header, ID, TTL, grantedTTL, keys: [...] }
+
+# List all leases
+path: /v3/lease/leases
+body: '{}'
+# → { header, leases: [{ ID }, ...] }
+```
+
+### Maintenance
+
+```bash
+# Server status (leader, raft index, DB size)
+path: /v3/maintenance/status
+body: '{}'
+
+# Compact revision history up to revision N
+path: /v3/maintenance/compact
+body: '{"revision":"40"}'
+
+# Defragment (reclaim free space; use carefully — blocks etcd)
+path: /v3/maintenance/defragment
+body: '{}'
+
+# Alarm list
+path: /v3/maintenance/alarm
+body: '{"action":"GET"}'
+```
+
+### Cluster
+
+```bash
+# List cluster members
+path: /v3/cluster/member/list
+body: '{}'
+# → { header, members: [{ ID, name, peerURLs, clientURLs, isLearner }] }
+```
+
+### Auth
+
+```bash
+# List roles
+path: /v3/auth/role/list
+body: '{}'
+
+# List users
+path: /v3/auth/user/list
+body: '{}'
+
+# Get role permissions
+path: /v3/auth/role/get
+body: '{"role":"root"}'
+
+# Enable auth (requires root user)
+path: /v3/auth/enable
+body: '{}'
+```
+
+### Watch (not supported)
+
+`/v3/watch` is a long-running streaming endpoint that sends newline-delimited JSON events. The query endpoint opens and closes a single request/response cycle — the connection is closed after reading the full body. Watch events will not be delivered. Use `etcdctl watch` or a native etcd client for watch operations.
+
+---
+
+## Prefix Queries
+
+The v3 range API uses `range_end` to express prefix queries. The etcd convention is to increment the last byte of the prefix string (before base64 encoding):
+
+```js
+// JavaScript: compute range_end for a prefix
+function prefixRangeEnd(prefix) {
+  const bytes = new TextEncoder().encode(prefix);
+  const end = new Uint8Array(bytes);
+  end[end.length - 1]++;
+  return btoa(String.fromCharCode(...end));
+}
+
+prefixRangeEnd("/config/")   // → "L2NvbmZpZzA=" (incremented '/' to '0')
+prefixRangeEnd("/services/") // → "L3NlcnZpY2VzMA=="
+```
+
+To get all keys in the keyspace: use `key: "AA=="` (the null byte `\x00`) and `range_end: "AA=="` — etcd interprets the all-zeroes range end as unbounded.
+
+---
+
+## Practical curl Examples
+
+```bash
+BASE=https://portofcall.ross.gg/api
+
+# Health probe (no auth)
+curl -s $BASE/etcd/health \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"etcd.example.com","port":2379}'
+
+# Health probe (with auth)
+curl -s $BASE/etcd/health \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"etcd.example.com","username":"root","password":"secret"}'
+
+# Get a key (base64-encode the key yourself)
+curl -s $BASE/etcd/query \
+  -H 'Content-Type: application/json' \
+  -d "{\"host\":\"etcd.example.com\",\"path\":\"/v3/kv/range\",\"body\":\"{\\\"key\\\":\\\"$(echo -n /config/db/url | base64)\\\"}\"}" \
+  | jq '.parsed'
+
+# Put a key
+KEY=$(echo -n /config/db/url | base64)
+VAL=$(echo -n postgres://localhost/mydb | base64)
+curl -s $BASE/etcd/query \
+  -H 'Content-Type: application/json' \
+  -d "{\"host\":\"etcd.example.com\",\"path\":\"/v3/kv/put\",\"body\":\"{\\\"key\\\":\\\"$KEY\\\",\\\"value\\\":\\\"$VAL\\\"}\"}"
+
+# List cluster members
+curl -s $BASE/etcd/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"etcd.example.com","path":"/v3/cluster/member/list","body":"{}"}'
+
+# Get all keys with prefix /services/ (keys only)
+PREFIX=$(echo -n /services/ | base64)
+RANGE_END="L3NlcnZpY2VzMA=="   # /services/ with last byte incremented
+curl -s $BASE/etcd/query \
+  -H 'Content-Type: application/json' \
+  -d "{\"host\":\"etcd.example.com\",\"path\":\"/v3/kv/range\",\"body\":\"{\\\"key\\\":\\\"$PREFIX\\\",\\\"range_end\\\":\\\"$RANGE_END\\\",\\\"keys_only\\\":true}\"}" \
+  | jq '.parsed.kvs[].key_decoded'
+
+# Grant a 60s lease
+curl -s $BASE/etcd/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"etcd.example.com","path":"/v3/lease/grant","body":"{\"TTL\":60}"}' \
+  | jq '.parsed.ID'
+```
+
+---
+
+## Known Limitations
+
+**No Watch streaming.** `/v3/watch` delivers events via a long-lived streaming response — not compatible with the single-request/response model. POST to `/v3/watch` returns `{"result":{}}` with no events.
+
+**No gRPC.** Only the HTTP/JSON gateway (port 2379 by default). The gRPC endpoint on the same port requires HTTP/2 with binary protobuf — not supported.
+
+**No Cloudflare detection.** Unlike Redis, the etcd implementation does not check Cloudflare before connecting. Connecting to a CF-protected host will fail at the TCP or HTTP layer with a generic 500 error.
+
+**512 KB response cap.** Responses are truncated at 512 KB. Large keyspace dumps (`key: "AA=="`, `range_end: "AA=="`) or large values may return truncated JSON that cannot be parsed (the `parsed` field will be null; `body` contains the raw truncated string).
+
+**Base64 not validated.** Invalid base64 in a request body is sent verbatim to etcd, which returns a gRPC error like `{"error":"etcdserver: requested lease not found","code":5}`.
+
+**HTTP Basic Auth only.** Token-based auth (`/v3/auth/authenticate` for a token, then `Authorization: Bearer TOKEN`) is not supported. Basic Auth sends credentials on every request.
+
+**Revision integers as strings.** The v3 HTTP/JSON gateway returns int64 values as JSON strings (`"revision": "42"`, `"deleted": "3"`). This is correct per the etcd API; parse them explicitly.
+
+---
 
 ## Resources
 
-- **etcd Docs**: [Documentation](https://etcd.io/docs/)
-- **API Reference**: [gRPC API](https://etcd.io/docs/v3.5/learning/api/)
-- **Kubernetes**: [How Kubernetes uses etcd](https://kubernetes.io/docs/concepts/overview/components/)
-
-## Common Patterns
-
-### Service Discovery
-```typescript
-const registry = new ServiceRegistry(client);
-await registry.register('api', 'node1', 'http://10.0.0.1:8080', 60);
-const services = await registry.discover('api');
-```
-
-### Distributed Locking
-```typescript
-const lock = new DistributedLock(client, '/locks/resource-123');
-if (await lock.acquire()) {
-  try {
-    // Critical section
-  } finally {
-    await lock.release();
-  }
-}
-```
-
-### Configuration Management
-```typescript
-await client.put('/config/database/url', 'postgres://...');
-const configs = await client.get('/config/', { prefix: true });
-```
-
-## Notes
-
-- **Distributed** - Raft consensus for strong consistency
-- **Watch API** - Real-time notifications of changes
-- **Leases** - Automatic key expiration (TTL)
-- **Transactions** - Atomic compare-and-swap operations
-- **Used by Kubernetes** for cluster coordination
-- **gRPC-based** - efficient binary protocol
-- **HTTP/JSON gateway** - easier for web clients
+- [etcd v3 API reference](https://etcd.io/docs/v3.5/learning/api/)
+- [etcd v3 HTTP/JSON gateway](https://etcd.io/docs/v3.5/dev-guide/api_grpc_gateway/)
+- [etcdctl reference](https://etcd.io/docs/v3.5/op-guide/etcdctl/)
+- [Kubernetes etcd operations](https://kubernetes.io/docs/tasks/administer-cluster/configure-upgrade-etcd/)

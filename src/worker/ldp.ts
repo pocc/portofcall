@@ -59,6 +59,22 @@ const LDP_VERSION = 1;
 const MSG_NOTIFICATION = 0x0001;
 const MSG_INITIALIZATION = 0x0200;
 const MSG_KEEPALIVE = 0x0201;
+const MSG_ADDRESS = 0x0300;
+const MSG_LABEL_MAPPING = 0x0400;
+const MSG_LABEL_WITHDRAW = 0x0402;
+const MSG_LABEL_RELEASE = 0x0403;
+
+// TLV Types for Label Mapping
+const TLV_FEC = 0x0100;
+const TLV_GENERIC_LABEL = 0x0200;
+const TLV_ADDRESS_LIST = 0x0101;
+
+// FEC element types
+const FEC_WILDCARD = 0x01;
+const FEC_PREFIX = 0x02;
+
+// Address families
+const AF_IPV4 = 0x0001;
 
 // TLV Types
 const TLV_COMMON_SESSION = 0x0500;
@@ -69,12 +85,12 @@ const MSG_TYPE_NAMES: Record<number, string> = {
   0x0100: 'Hello',
   [MSG_INITIALIZATION]: 'Initialization',
   [MSG_KEEPALIVE]: 'KeepAlive',
-  0x0300: 'Address',
+  [MSG_ADDRESS]: 'Address',
   0x0301: 'Address Withdraw',
-  0x0400: 'Label Mapping',
+  [MSG_LABEL_MAPPING]: 'Label Mapping',
   0x0401: 'Label Request',
-  0x0402: 'Label Withdraw',
-  0x0403: 'Label Release',
+  [MSG_LABEL_WITHDRAW]: 'Label Withdraw',
+  [MSG_LABEL_RELEASE]: 'Label Release',
   0x0404: 'Label Abort Request',
 };
 
@@ -518,6 +534,311 @@ export async function handleLDPProbe(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Read multiple LDP PDUs from the stream, accumulating into a growing buffer.
+ * Returns all bytes read until EOF or the timeoutPromise rejects.
+ */
+async function readLDPBuffer(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutPromise: Promise<never>,
+  maxBytes: number = 65536,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  while (total < maxBytes) {
+    const result = await Promise.race([
+      reader.read(),
+      timeoutPromise,
+    ]).catch(() => ({ done: true as const, value: undefined }));
+
+    if (result.done || !result.value) break;
+    chunks.push(result.value);
+    total += result.value.length;
+  }
+
+  const combined = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { combined.set(c, off); off += c.length; }
+  return combined;
+}
+
+/**
+ * Parse all LDP PDUs from a byte buffer, extracting label mapping and address info.
+ */
+function parseLDPLabelData(data: Uint8Array): {
+  labels: Array<{ prefix: string; maskLen: number; label: number }>;
+  addresses: string[];
+  msgTypes: Array<{ type: number; typeName: string }>;
+} {
+  const labels: Array<{ prefix: string; maskLen: number; label: number }> = [];
+  const addresses: string[] = [];
+  const msgTypes: Array<{ type: number; typeName: string }> = [];
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let pduStart = 0;
+
+  while (pduStart + 10 <= data.length) {
+    const version = view.getUint16(pduStart, false);
+    if (version !== LDP_VERSION) {
+      pduStart++;
+      continue;
+    }
+
+    const pduContentLen = view.getUint16(pduStart + 2, false);
+    const pduEnd = pduStart + 4 + pduContentLen;
+    if (pduEnd > data.length) break;
+
+    let offset = pduStart + 10; // skip 10-byte PDU header
+
+    while (offset + 8 <= pduEnd) {
+      const msgTypeRaw = view.getUint16(offset, false);
+      const msgType = msgTypeRaw & 0x7fff;
+      const msgLength = view.getUint16(offset + 2, false);
+      const msgEnd = offset + 4 + msgLength;
+
+      if (msgEnd > pduEnd || msgEnd > data.length) break;
+
+      const typeName = MSG_TYPE_NAMES[msgType] || `Unknown(0x${msgType.toString(16)})`;
+      msgTypes.push({ type: msgType, typeName });
+
+      if (msgType === MSG_LABEL_MAPPING || msgType === MSG_LABEL_WITHDRAW || msgType === MSG_LABEL_RELEASE) {
+        // Parse TLVs: FEC TLV (0x0100) + Generic Label TLV (0x0200)
+        let tlvOffset = offset + 8; // skip type(2)+len(2)+msgId(4)
+        let currentPrefix = '';
+        let currentMaskLen = 0;
+        let currentLabel = -1;
+
+        while (tlvOffset + 4 <= msgEnd) {
+          const tlvTypeRaw = view.getUint16(tlvOffset, false);
+          const tlvType = tlvTypeRaw & 0x3fff;
+          const tlvLen = view.getUint16(tlvOffset + 2, false);
+          const tlvBody = tlvOffset + 4;
+          const tlvEnd = tlvBody + tlvLen;
+
+          if (tlvEnd > msgEnd || tlvEnd > data.length) break;
+
+          if (tlvType === (TLV_FEC & 0x3fff)) {
+            let fecOff = tlvBody;
+            while (fecOff < tlvEnd) {
+              const elemType = data[fecOff];
+              if (elemType === FEC_WILDCARD) {
+                fecOff += 1;
+              } else if (elemType === FEC_PREFIX) {
+                if (fecOff + 4 > tlvEnd) break;
+                const addrFamily = view.getUint16(fecOff + 1, false);
+                const prefixLen = data[fecOff + 3];
+                if (addrFamily === AF_IPV4) {
+                  const prefixBytes = Math.ceil(prefixLen / 8);
+                  if (fecOff + 4 + prefixBytes > tlvEnd) break;
+                  const octets = [0, 0, 0, 0];
+                  for (let i = 0; i < prefixBytes && i < 4; i++) {
+                    octets[i] = data[fecOff + 4 + i];
+                  }
+                  currentPrefix = octets.join('.');
+                  currentMaskLen = prefixLen;
+                  fecOff += 4 + prefixBytes;
+                } else {
+                  break;
+                }
+              } else {
+                break;
+              }
+            }
+          } else if (tlvType === (TLV_GENERIC_LABEL & 0x3fff)) {
+            // Generic Label: 4 bytes — label value occupies bits [31:12] (upper 20 bits)
+            if (tlvLen >= 4) {
+              currentLabel = (view.getUint32(tlvBody, false) & 0xfffff000) >>> 12;
+            }
+          }
+
+          tlvOffset = tlvEnd;
+        }
+
+        if (currentPrefix && currentLabel >= 0) {
+          labels.push({ prefix: currentPrefix, maskLen: currentMaskLen, label: currentLabel });
+        }
+      } else if (msgType === MSG_ADDRESS) {
+        // Parse Address List TLV (0x0101)
+        let tlvOffset = offset + 8;
+        while (tlvOffset + 4 <= msgEnd) {
+          const tlvTypeRaw = view.getUint16(tlvOffset, false);
+          const tlvType = tlvTypeRaw & 0x3fff;
+          const tlvLen = view.getUint16(tlvOffset + 2, false);
+          const tlvBody = tlvOffset + 4;
+          const tlvEnd = tlvBody + tlvLen;
+
+          if (tlvEnd > msgEnd || tlvEnd > data.length) break;
+
+          if (tlvType === (TLV_ADDRESS_LIST & 0x3fff) && tlvLen >= 2) {
+            const addrFamily = view.getUint16(tlvBody, false);
+            if (addrFamily === AF_IPV4) {
+              let addrOff = tlvBody + 2;
+              while (addrOff + 4 <= tlvEnd) {
+                addresses.push(formatIPv4(data, addrOff));
+                addrOff += 4;
+              }
+            }
+          }
+
+          tlvOffset = tlvEnd;
+        }
+      }
+
+      offset = msgEnd;
+    }
+
+    pduStart = pduEnd;
+  }
+
+  return { labels, addresses, msgTypes };
+}
+
+/**
+ * Handle LDP Label Map collection — performs the full Init+KeepAlive handshake,
+ * then listens for Label Mapping, Address, Label Withdraw, and Label Release messages.
+ */
+export async function handleLDPLabelMap(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+    };
+
+    const { host, port = 646, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Missing required parameter: host',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    await Promise.race([socket.opened, timeoutPromise]);
+    const connectTime = Date.now() - startTime;
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    // Step 1: Send Initialization
+    const initMsg = buildInitializationMessage();
+    await writer.write(initMsg);
+
+    // Step 2: Read Initialization response
+    const initResponse = await readLDPResponse(reader, timeoutPromise);
+    const initParsed = parseLDPResponse(initResponse);
+
+    if (!initParsed.isLDP) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Server did not respond with a valid LDP PDU',
+        rawBytesReceived: initResponse.length,
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const lsrId = initParsed.lsrId;
+    const labelSpace = initParsed.labelSpace;
+
+    // Step 3: Send KeepAlive to complete the handshake
+    const keepalive = buildKeepaliveMessage();
+    await writer.write(keepalive);
+
+    // Step 4: Collect label mapping / address messages for up to 2 seconds
+    const collectMs = Math.min(2000, Math.max(500, timeout - (Date.now() - startTime) - 500));
+    const collectDeadline = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('collect timeout')), collectMs)
+    );
+
+    const labelBuffer = await readLDPBuffer(reader, collectDeadline, 65536);
+    const rtt = Date.now() - startTime;
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    const { labels, addresses, msgTypes } = parseLDPLabelData(labelBuffer);
+
+    // Deduplicate message type names for the summary
+    const seenTypes = new Set<number>();
+    const uniqueMsgTypes: string[] = [];
+    for (const mt of msgTypes) {
+      if (!seenTypes.has(mt.type)) {
+        seenTypes.add(mt.type);
+        uniqueMsgTypes.push(mt.typeName);
+      }
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      rtt,
+      connectTime,
+      lsrId,
+      labelSpace,
+      labels,
+      addresses,
+      labelCount: labels.length,
+      addressCount: addresses.length,
+      messagesObserved: uniqueMsgTypes,
+      rawBytesReceived: initResponse.length + labelBuffer.length,
+      message: `LDP peer ${lsrId}:${labelSpace}. Collected ${labels.length} label mapping(s) and ${addresses.length} address(es) in ${rtt}ms.`,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    return new Response(JSON.stringify({
+      success: false,
+      error: msg,
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

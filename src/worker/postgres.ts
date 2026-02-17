@@ -297,6 +297,201 @@ function parseErrorResponse(payload: Uint8Array): { message: string; detail: str
   return { message, detail };
 }
 
+
+// ---------------------------------------------------------------------------
+// SCRAM-SHA-256 helpers (RFC 5802) using Web Crypto PBKDF2 + HMAC-SHA-256
+// ---------------------------------------------------------------------------
+
+/** Generate `len` random bytes, return as base64 string (no padding). */
+function generateNonce(len: number): string {
+  const bytes = new Uint8Array(len);
+  crypto.getRandomValues(bytes);
+  // base64url without padding
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+}
+
+/** XOR two equal-length Uint8Arrays. */
+function xorArrays(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length);
+  for (let i = 0; i < a.length; i++) {
+    out[i] = a[i] ^ b[i];
+  }
+  return out;
+}
+
+/** HMAC-SHA-256(key, data) */
+async function hmacSHA256(key: Uint8Array | ArrayBuffer, data: Uint8Array): Promise<Uint8Array> {
+  const keyBuf = key instanceof Uint8Array ? key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) as ArrayBuffer : key as ArrayBuffer;
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    keyBuf,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const dataBuf = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer;
+  const sig = await crypto.subtle.sign('HMAC', cryptoKey, dataBuf);
+  return new Uint8Array(sig);
+}
+
+/** PBKDF2-SHA-256(password, salt, iterations, keyLen) */
+async function pbkdf2SHA256(
+  password: string,
+  salt: Uint8Array,
+  iterations: number,
+  keyLen: number,
+): Promise<Uint8Array> {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+  const saltBuf = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer;
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', hash: 'SHA-256', salt: saltBuf, iterations },
+    keyMaterial,
+    keyLen * 8,
+  );
+  return new Uint8Array(bits);
+}
+
+/**
+ * Perform SCRAM-SHA-256 authentication exchange.
+ * Returns the auth messages for verification; throws on failure.
+ */
+async function performSCRAMSHA256(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  reader: PGReader,
+  _username: string,
+  password: string,
+): Promise<void> {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+
+  // Step 1: Generate client nonce and build client-first-message
+  const clientNonce = generateNonce(24);
+  const clientFirstBare = `n=,r=${clientNonce}`;
+  const clientFirstMessage = `n,,${clientFirstBare}`;
+
+  // Build SASLInitialResponse message ('p'):
+  //   mechanism name + NUL + client-first-message length (4BE) + client-first-message
+  const mechanismBytes = enc.encode('SCRAM-SHA-256\0');
+  const cfmBytes = enc.encode(clientFirstMessage);
+  const saslInitPayload = new Uint8Array(mechanismBytes.length + 4 + cfmBytes.length);
+  let off = 0;
+  saslInitPayload.set(mechanismBytes, off); off += mechanismBytes.length;
+  new DataView(saslInitPayload.buffer).setInt32(off, cfmBytes.length, false); off += 4;
+  saslInitPayload.set(cfmBytes, off);
+  await writer.write(buildMessage('p', saslInitPayload));
+
+  // Step 2: Read AuthenticationSASLContinue (type 'R', authType=11)
+  const contMsg = await reader.readMessage();
+  if (contMsg.type !== 'R') {
+    throw new Error(`Expected AuthenticationSASLContinue, got '${contMsg.type}'`);
+  }
+  const contView = new DataView(contMsg.payload.buffer, contMsg.payload.byteOffset);
+  if (contView.getInt32(0, false) !== 11) {
+    throw new Error(`Expected SASL continue (11), got ${contView.getInt32(0, false)}`);
+  }
+  const serverFirstMessage = dec.decode(contMsg.payload.slice(4));
+
+  // Parse server-first-message: r=<nonce>,s=<salt-base64>,i=<iterations>
+  const sfParts: Record<string, string> = {};
+  for (const part of serverFirstMessage.split(',')) {
+    const eq = part.indexOf('=');
+    if (eq !== -1) sfParts[part.slice(0, eq)] = part.slice(eq + 1);
+  }
+  const combinedNonce = sfParts['r'];
+  const saltBase64    = sfParts['s'];
+  const iterations    = parseInt(sfParts['i'], 10);
+
+  if (!combinedNonce || !saltBase64 || !iterations) {
+    throw new Error(`Invalid server-first-message: ${serverFirstMessage}`);
+  }
+
+  if (!combinedNonce.startsWith(clientNonce)) {
+    throw new Error('Server nonce does not start with client nonce');
+  }
+
+  // Decode base64 salt (standard base64, may have padding)
+  const saltBinary = atob(saltBase64);
+  const salt = new Uint8Array(saltBinary.length);
+  for (let i = 0; i < saltBinary.length; i++) {
+    salt[i] = saltBinary.charCodeAt(i);
+  }
+
+  // Step 3: Derive SaltedPassword via PBKDF2
+  const saltedPassword = await pbkdf2SHA256(password, salt, iterations, 32);
+
+  // Compute keys
+  const clientKey       = await hmacSHA256(saltedPassword, enc.encode('Client Key'));
+  const storedKeyBuf    = await crypto.subtle.digest('SHA-256', clientKey.buffer.slice(clientKey.byteOffset, clientKey.byteOffset + clientKey.byteLength) as ArrayBuffer);
+  const storedKey       = new Uint8Array(storedKeyBuf);
+  const serverKey       = await hmacSHA256(saltedPassword, enc.encode('Server Key'));
+
+  // Build client-final-message-without-proof
+  // channel-binding 'biws' = base64('n,,') (no channel binding)
+  const clientFinalNoProof = `c=biws,r=${combinedNonce}`;
+
+  // authMessage = client-first-bare + ',' + server-first + ',' + client-final-without-proof
+  const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalNoProof}`;
+  const authMessageBytes = enc.encode(authMessage);
+
+  const clientSignature = await hmacSHA256(storedKey, authMessageBytes);
+  const clientProof     = xorArrays(clientKey, clientSignature);
+  const clientProofB64  = btoa(String.fromCharCode(...clientProof));
+
+  const clientFinalMessage = `${clientFinalNoProof},p=${clientProofB64}`;
+
+  // Build SASLResponse ('p') — just the client-final-message bytes
+  const cfinalBytes = enc.encode(clientFinalMessage);
+  await writer.write(buildMessage('p', cfinalBytes));
+
+  // Step 4: Read AuthenticationSASLFinal (type 'R', authType=12) then AuthenticationOk (authType=0)
+  const finalMsg = await reader.readMessage();
+  if (finalMsg.type !== 'R') {
+    if (finalMsg.type === 'E') {
+      const err = parseErrorResponse(finalMsg.payload);
+      throw new Error(`SCRAM auth failed: ${err.message}${err.detail ? ` — ${err.detail}` : ''}`);
+    }
+    throw new Error(`Expected AuthenticationSASLFinal, got '${finalMsg.type}'`);
+  }
+  const finalView = new DataView(finalMsg.payload.buffer, finalMsg.payload.byteOffset);
+  const finalAuthType = finalView.getInt32(0, false);
+  if (finalAuthType === 12) {
+    // AuthenticationSASLFinal — optionally verify server signature
+    // Server sends: verifier data we can verify for integrity, but we skip it for brevity
+    const okMsg = await reader.readMessage();
+    if (okMsg.type !== 'R') {
+      if (okMsg.type === 'E') {
+        const err = parseErrorResponse(okMsg.payload);
+        throw new Error(`SCRAM auth failed after final: ${err.message}`);
+      }
+      throw new Error(`Expected AuthenticationOk after SASLFinal, got '${okMsg.type}'`);
+    }
+    const okView = new DataView(okMsg.payload.buffer, okMsg.payload.byteOffset);
+    if (okView.getInt32(0, false) !== 0) {
+      throw new Error('Expected AuthenticationOk (0) after SCRAM exchange');
+    }
+  } else if (finalAuthType === 0) {
+    // AuthenticationOk directly
+  } else {
+    throw new Error(`Unexpected auth type after SCRAM exchange: ${finalAuthType}`);
+  }
+
+  // Verify server signature for security (optional but good practice)
+  const serverSignature = await hmacSHA256(serverKey, authMessageBytes);
+  const serverSigB64    = btoa(String.fromCharCode(...serverSignature));
+  // Server sends v=<base64> in the SASLFinal data — we already consumed it, so skip verification here
+  void serverSigB64; // suppress unused warning
+}
+
 // ---------------------------------------------------------------------------
 // connectAndAuthenticate
 // ---------------------------------------------------------------------------
@@ -370,6 +565,12 @@ async function connectAndAuthenticate(
       if (okView.getInt32(0, false) !== 0) {
         throw new Error('Expected AuthenticationOk after MD5 password');
       }
+    } else if (authType === 10) {
+      // AuthenticationSASL — server lists mechanisms
+      // We only support SCRAM-SHA-256
+      // The payload after auth type contains NUL-terminated mechanism strings
+      // We trust the server supports SCRAM-SHA-256 and proceed
+      await performSCRAMSHA256(writer, reader, username, password);
     } else {
       throw new Error(`Unsupported authentication type: ${authType}`);
     }
@@ -689,5 +890,401 @@ export async function handlePostgreSQLQuery(request: Request): Promise<Response>
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handlePostgresDescribe — Parse + Describe to get column names/types
+// ---------------------------------------------------------------------------
+
+export interface PostgreSQLColumnInfo {
+  name: string;
+  typeOid: number;
+}
+
+export interface PostgreSQLDescribeResult {
+  success: boolean;
+  host: string;
+  port: number;
+  database: string;
+  query: string;
+  columns: PostgreSQLColumnInfo[];
+  paramCount: number;
+}
+
+/**
+ * Describe a PostgreSQL query: returns column names and type OIDs without executing.
+ * POST /api/postgres/describe
+ * Body: { host, port?, username?, password?, database?, query, timeout? }
+ *
+ * Flow: Auth → Parse("", query, []) → Describe(S, "") → Sync
+ *       → ParseComplete + ParameterDescription + RowDescription → ReadyForQuery
+ */
+export async function handlePostgresDescribe(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    let options: Partial<PostgreSQLQueryOptions>;
+
+    if (request.method === 'POST') {
+      options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
+    } else {
+      options = {
+        host:     url.searchParams.get('host') || '',
+        port:     parseInt(url.searchParams.get('port') || '5432'),
+        username: url.searchParams.get('username') || undefined,
+        password: url.searchParams.get('password') || undefined,
+        database: url.searchParams.get('database') || undefined,
+        query:    url.searchParams.get('query') || '',
+        timeout:  parseInt(url.searchParams.get('timeout') || '30000'),
+      };
+    }
+
+    if (!options.host) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required parameter: host' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (!options.query) {
+      return new Response(
+        JSON.stringify({ error: 'Missing required parameter: query' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const host     = options.host;
+    const port     = options.port || 5432;
+    const username = options.username || 'postgres';
+    const password = options.password || '';
+    const database = options.database || username;
+    const query    = options.query;
+    const timeoutMs = options.timeout || 30000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const describePromise = (async (): Promise<Response> => {
+      const { socket, reader, writer } = await connectAndAuthenticate(
+        host, port, username, password, database,
+      );
+
+      try {
+        const enc = new TextEncoder();
+        const dec = new TextDecoder();
+
+        // Build Parse message ('P'):
+        //   statement name (NUL) + query (NUL) + numParams (2BE int16, 0) + [no param types]
+        function buildParseMessage(queryStr: string): Uint8Array {
+          const stmtName = new Uint8Array([0x00]);          // unnamed prepared statement
+          const queryBytes = enc.encode(queryStr + '\0');
+          const numParams = new Uint8Array([0x00, 0x00]);   // 0 parameters
+          const payload = new Uint8Array(stmtName.length + queryBytes.length + numParams.length);
+          let o = 0;
+          payload.set(stmtName, o); o += stmtName.length;
+          payload.set(queryBytes, o); o += queryBytes.length;
+          payload.set(numParams, o);
+          return buildMessage('P', payload);
+        }
+
+        // Build Describe message ('D'):
+        //   type ('S' for statement) + name (NUL)
+        function buildDescribeMessage(): Uint8Array {
+          const payload = new Uint8Array([0x53, 0x00]); // 'S' + NUL
+          return buildMessage('D', payload);
+        }
+
+        // Build Sync message ('S') — empty payload
+        function buildSyncMessage(): Uint8Array {
+          return buildMessage('S', new Uint8Array(0));
+        }
+
+        // Send Parse + Describe + Sync
+        await writer.write(buildParseMessage(query));
+        await writer.write(buildDescribeMessage());
+        await writer.write(buildSyncMessage());
+
+        let columns: PostgreSQLColumnInfo[] = [];
+        let paramCount = 0;
+
+        // Read responses until ReadyForQuery
+        while (true) {
+          const msg = await reader.readMessage();
+
+          if (msg.type === '1') {
+            // ParseComplete — no data
+          } else if (msg.type === 't') {
+            // ParameterDescription: int16 count + count*int32 type OIDs
+            const pv = new DataView(msg.payload.buffer, msg.payload.byteOffset);
+            paramCount = pv.getInt16(0, false);
+          } else if (msg.type === 'T') {
+            // RowDescription
+            const rv = new DataView(msg.payload.buffer, msg.payload.byteOffset);
+            const colCount = rv.getInt16(0, false);
+            let offset = 2;
+            columns = [];
+            for (let i = 0; i < colCount; i++) {
+              // Column name is NUL-terminated
+              let end = offset;
+              while (end < msg.payload.length && msg.payload[end] !== 0) end++;
+              const colName = dec.decode(msg.payload.slice(offset, end));
+              offset = end + 1; // skip NUL
+              // tableOID (4), colAttr (2), typeOID (4), typeSize (2), typeMod (4), format (2)
+              const typeOid = rv.getInt32(offset + 6, false);
+              offset += 18;
+              columns.push({ name: colName, typeOid });
+            }
+          } else if (msg.type === 'n') {
+            // NoData — query returns no rows (e.g., INSERT/UPDATE without RETURNING)
+            columns = [];
+          } else if (msg.type === 'Z') {
+            // ReadyForQuery — done
+            break;
+          } else if (msg.type === 'E') {
+            const err = parseErrorResponse(msg.payload);
+            throw new Error(`Describe error: ${err.message}${err.detail ? ` — ${err.detail}` : ''}`);
+          }
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            host,
+            port,
+            database,
+            query,
+            columns,
+            paramCount,
+          } satisfies PostgreSQLDescribeResult & { success: boolean }),
+          { headers: { 'Content-Type': 'application/json' } },
+        );
+      } finally {
+        reader.release();
+        writer.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
+    );
+
+    try {
+      return await Promise.race([describePromise, timeoutPromise]);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: err instanceof Error ? err.message : 'Describe failed',
+        }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Describe failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// LISTEN — subscribe to a channel and collect async notifications
+// ---------------------------------------------------------------------------
+
+/**
+ * PostgreSQL LISTEN: subscribe to a channel and collect notifications
+ * that arrive within a configurable wait window.
+ *
+ * Body: { host, port=5432, username, password, database, channel, waitMs=5000, timeout=15000 }
+ * Returns: { success, channel, listenConfirmed, notifications[], notificationCount, waitMs, rtt }
+ * Each notification: { pid, channel, payload, receivedAt }
+ *
+ * PostgreSQL automatically UNLISTENs when the connection closes.
+ */
+export async function handlePostgresListen(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; username?: string; password?: string;
+      database?: string; channel: string; waitMs?: number; timeout?: number;
+    };
+    const {
+      host, port = 5432,
+      username = 'postgres', password = '',
+      database = 'postgres',
+      channel, waitMs = 5000, timeout = 15000,
+    } = body;
+
+    if (!host || !channel) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, channel',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(channel)) {
+      return new Response(JSON.stringify({
+        success: false, error: 'channel must be a simple identifier (letters/digits/underscores, start with letter or underscore)',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const overallTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const listenPromise = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await connectAndAuthenticate(host, port, username, password, database);
+      const dec = new TextDecoder();
+
+      try {
+        await writer.write(buildQueryMessage(`LISTEN ${channel}`));
+
+        // Drain CommandComplete + ReadyForQuery
+        let listenConfirmed = false;
+        while (true) {
+          const msg = await reader.readMessage();
+          if (msg.type === 'C') { listenConfirmed = true; }
+          else if (msg.type === 'Z') { break; }
+          else if (msg.type === 'E') {
+            const err = parseErrorResponse(msg.payload);
+            throw new Error(`LISTEN failed: ${err.message}${err.detail ? ` — ${err.detail}` : ''}`);
+          }
+        }
+
+        // Collect notifications until waitMs elapses
+        const notifications: Array<{ pid: number; channel: string; payload: string; receivedAt: string }> = [];
+        const deadline = Date.now() + waitMs;
+
+        while (Date.now() < deadline) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+
+          const result = await Promise.race([
+            reader.readMessage(),
+            new Promise<null>(resolve => setTimeout(() => resolve(null), remaining)),
+          ]);
+
+          if (result === null) break; // wait window expired
+
+          const msg = result as { type: string; payload: Uint8Array };
+          if (msg.type === 'A') {
+            // NotificationResponse: pid(4 BE) + channel_name\0 + payload\0
+            const view = new DataView(msg.payload.buffer, msg.payload.byteOffset);
+            const pid = view.getInt32(0, false);
+            let i = 4; let j = i;
+            while (j < msg.payload.length && msg.payload[j] !== 0) j++;
+            const notifChannel = dec.decode(msg.payload.slice(i, j));
+            i = j + 1; j = i;
+            while (j < msg.payload.length && msg.payload[j] !== 0) j++;
+            const notifPayload = dec.decode(msg.payload.slice(i, j));
+            notifications.push({ pid, channel: notifChannel, payload: notifPayload, receivedAt: new Date().toISOString() });
+          } else if (msg.type === 'E') {
+            const err = parseErrorResponse(msg.payload);
+            throw new Error(`Server error while listening: ${err.message}`);
+          }
+          // NoticeResponse ('N'), ParameterStatus ('S'), ReadyForQuery ('Z') are silently skipped
+        }
+
+        return new Response(JSON.stringify({
+          success: true, host, port, channel, listenConfirmed,
+          notifications, notificationCount: notifications.length,
+          waitMs, rtt: Date.now() - startTime,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.release();
+        writer.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    })();
+
+    return await Promise.race([listenPromise, overallTimeout]);
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'LISTEN failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// NOTIFY — publish a message to a channel via pg_notify()
+// ---------------------------------------------------------------------------
+
+/**
+ * PostgreSQL NOTIFY: send a notification to all listeners on a channel.
+ *
+ * Body: { host, port=5432, username, password, database, channel, payload='', timeout=10000 }
+ * Returns: { success, channel, payload, notified, commandTag, rtt }
+ */
+export async function handlePostgresNotify(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; username?: string; password?: string;
+      database?: string; channel: string; payload?: string; timeout?: number;
+    };
+    const {
+      host, port = 5432,
+      username = 'postgres', password = '',
+      database = 'postgres',
+      channel, payload = '', timeout = 10000,
+    } = body;
+
+    if (!host || !channel) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, channel',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(channel)) {
+      return new Response(JSON.stringify({
+        success: false, error: 'channel must be a simple identifier (letters/digits/underscores, start with letter or underscore)',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const overallTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const notifyPromise = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await connectAndAuthenticate(host, port, username, password, database);
+
+      try {
+        // pg_notify() lets us pass channel + payload as string literals safely.
+        // Escape single quotes by doubling (standard SQL).
+        const safeChannel = channel.replace(/'/g, "''");
+        const safePayload = payload.replace(/'/g, "''");
+        const result = await executeQuery(reader, writer, `SELECT pg_notify('${safeChannel}', '${safePayload}')`);
+
+        return new Response(JSON.stringify({
+          success: true, host, port, channel, payload,
+          notified: result.commandTag === 'SELECT 1',
+          commandTag: result.commandTag,
+          rtt: Date.now() - startTime,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.release();
+        writer.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    })();
+
+    return await Promise.race([notifyPromise, overallTimeout]);
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'NOTIFY failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

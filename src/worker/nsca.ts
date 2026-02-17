@@ -505,3 +505,364 @@ export async function handleNSCASend(request: Request): Promise<Response> {
     });
   }
 }
+
+interface NSCAEncryptedRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  password: string;
+  hostname: string;
+  service: string;
+  state: number;
+  message: string;
+  cipher?: number;
+}
+
+interface NSCAEncryptedResponse {
+  cipher: number;
+  cipherName: string;
+  encrypted: boolean;
+  submitted: boolean;
+  host?: string;
+  port?: number;
+  rtt?: number;
+  error?: string;
+}
+
+const CIPHER_NAMES: Record<number, string> = {
+  1: 'XOR',
+  8: '3DES',
+  14: 'AES-128',
+  16: 'AES-256',
+};
+
+/**
+ * MD5 digest — pure TypeScript (RFC 1321).
+ * Used for AES-128 key derivation because SubtleCrypto does not support MD5.
+ */
+function md5(input: Uint8Array): Uint8Array {
+  const T: number[] = [];
+  for (let i = 1; i <= 64; i++) {
+    T[i] = Math.floor(Math.abs(Math.sin(i)) * 0x100000000) >>> 0;
+  }
+
+  function rotl(x: number, n: number): number {
+    return ((x << n) | (x >>> (32 - n))) >>> 0;
+  }
+
+  const origLen = input.length;
+  const bitLen = origLen * 8;
+
+  const padded: number[] = [...input, 0x80];
+  while (padded.length % 64 !== 56) {
+    padded.push(0);
+  }
+  for (let i = 0; i < 8; i++) {
+    padded.push((bitLen / Math.pow(2, i * 8)) & 0xff);
+  }
+
+  let a0 = 0x67452301;
+  let b0 = 0xefcdab89;
+  let c0 = 0x98badcfe;
+  let d0 = 0x10325476;
+
+  for (let i = 0; i < padded.length; i += 64) {
+    const M: number[] = [];
+    for (let j = 0; j < 16; j++) {
+      M[j] = (padded[i + j * 4] |
+        (padded[i + j * 4 + 1] << 8) |
+        (padded[i + j * 4 + 2] << 16) |
+        (padded[i + j * 4 + 3] << 24)) >>> 0;
+    }
+
+    let A = a0, B = b0, C = c0, D = d0;
+
+    const s = [
+      7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+      5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+      4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+      6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+
+    for (let j = 0; j < 64; j++) {
+      let F: number, g: number;
+      if (j < 16) {
+        F = ((B & C) | (~B & D)) >>> 0;
+        g = j;
+      } else if (j < 32) {
+        F = ((D & B) | (~D & C)) >>> 0;
+        g = (5 * j + 1) % 16;
+      } else if (j < 48) {
+        F = (B ^ C ^ D) >>> 0;
+        g = (3 * j + 5) % 16;
+      } else {
+        F = (C ^ (B | ~D)) >>> 0;
+        g = (7 * j) % 16;
+      }
+      const temp = D;
+      D = C;
+      C = B;
+      B = (B + rotl((A + F + M[g] + T[j + 1]) >>> 0, s[j])) >>> 0;
+      A = temp;
+    }
+
+    a0 = (a0 + A) >>> 0;
+    b0 = (b0 + B) >>> 0;
+    c0 = (c0 + C) >>> 0;
+    d0 = (d0 + D) >>> 0;
+  }
+
+  const result = new Uint8Array(16);
+  const dv = new DataView(result.buffer);
+  dv.setUint32(0, a0, true);
+  dv.setUint32(4, b0, true);
+  dv.setUint32(8, c0, true);
+  dv.setUint32(12, d0, true);
+  return result;
+}
+
+/**
+ * AES-CBC encrypt using SubtleCrypto.
+ * key: raw key bytes (16 for AES-128, 32 for AES-256)
+ * iv:  16-byte IV
+ */
+async function aesCbcEncrypt(
+  key: Uint8Array,
+  iv: Uint8Array,
+  plaintext: Uint8Array,
+): Promise<Uint8Array> {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    key as Uint8Array<ArrayBuffer>,
+    { name: 'AES-CBC', length: key.length * 8 },
+    false,
+    ['encrypt'],
+  );
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-CBC', iv: iv as Uint8Array<ArrayBuffer> },
+    cryptoKey,
+    plaintext as Uint8Array<ArrayBuffer>,
+  );
+  return new Uint8Array(ciphertext);
+}
+
+/**
+ * Submit a passive check result to NSCA with stronger cipher support.
+ *
+ * Supported ciphers:
+ *   1  = XOR (same as handleNSCASend)
+ *   14 = AES-128/CBC — key: MD5(password)[0..15], IV: serverIV[0..15]
+ *   16 = AES-256/CBC — key: SHA-256(password),     IV: serverIV[0..15]
+ *
+ * 3DES (cipher 8) is rejected because SubtleCrypto does not support it in
+ * Cloudflare Workers.
+ *
+ * Returns: { cipher, cipherName, encrypted, submitted, host, port, rtt }
+ */
+export async function handleNSCAEncrypted(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as NSCAEncryptedRequest;
+    const {
+      host,
+      port = 5667,
+      timeout = 15000,
+      password,
+      hostname,
+      service,
+      state,
+      message,
+      cipher = 14,
+    } = body;
+
+    const cipherName = CIPHER_NAMES[cipher] ?? `cipher-${cipher}`;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: 'Host is required',
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!password) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: 'Password is required',
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!hostname || !service || message === undefined) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: 'hostname, service, and message are required',
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (state < 0 || state > 3) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: 'state must be 0 (OK), 1 (WARNING), 2 (CRITICAL), or 3 (UNKNOWN)',
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (cipher === 8) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: '3DES (cipher 8) is not supported by the Web Crypto API in Cloudflare Workers',
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (cipher !== 1 && cipher !== 14 && cipher !== 16) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: `Unsupported cipher ${cipher}. Supported: 1 (XOR), 14 (AES-128), 16 (AES-256)`,
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      // Read 132-byte init packet: 128-byte IV + 4-byte timestamp
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      while (totalBytes < NSCA_INIT_PACKET_SIZE) {
+        const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+        if (done || !value) break;
+        chunks.push(value);
+        totalBytes += value.length;
+      }
+
+      if (totalBytes < NSCA_INIT_PACKET_SIZE) {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          cipher,
+          cipherName,
+          encrypted: false,
+          submitted: false,
+          error: `Incomplete init packet: ${totalBytes}/${NSCA_INIT_PACKET_SIZE} bytes`,
+        } satisfies NSCAEncryptedResponse), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Assemble init packet
+      const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
+      let offset = 0;
+      for (const chunk of chunks) {
+        const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
+        initPacket.set(chunk.subarray(0, toCopy), offset);
+        offset += toCopy;
+      }
+
+      const serverIV = initPacket.subarray(0, NSCA_IV_SIZE);
+      const timestampView = new DataView(initPacket.buffer, NSCA_IV_SIZE, NSCA_TIMESTAMP_SIZE);
+      const timestamp = timestampView.getUint32(0);
+
+      // Build plaintext check packet
+      let packet = buildCheckPacket(hostname, service, state, message, timestamp);
+
+      const pwBytes = new TextEncoder().encode(password);
+
+      if (cipher === 1) {
+        // XOR: encrypt with server IV and password
+        packet = xorEncrypt(packet, serverIV, password);
+      } else if (cipher === 14) {
+        // AES-128/CBC: key = MD5(password)[0..15], IV = serverIV[0..15]
+        const keyBytes = md5(pwBytes);
+        const iv = serverIV.subarray(0, 16);
+        packet = await aesCbcEncrypt(keyBytes, iv, packet);
+      } else if (cipher === 16) {
+        // AES-256/CBC: key = SHA-256(password), IV = serverIV[0..15]
+        const hashBuf = await crypto.subtle.digest('SHA-256', pwBytes);
+        const keyBytes = new Uint8Array(hashBuf);
+        const iv = serverIV.subarray(0, 16);
+        packet = await aesCbcEncrypt(keyBytes, iv, packet);
+      }
+
+      await writer.write(packet);
+
+      const rtt = Date.now() - startTime;
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: true,
+        submitted: true,
+        host,
+        port,
+        rtt,
+      } satisfies NSCAEncryptedResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      cipher: 14,
+      cipherName: 'AES-128',
+      encrypted: false,
+      submitted: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies NSCAEncryptedResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

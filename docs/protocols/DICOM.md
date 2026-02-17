@@ -1,745 +1,515 @@
-# DICOM Protocol Implementation Plan
+# DICOM — Digital Imaging and Communications in Medicine
 
-## Overview
+**Port:** 104 (standard), 11112 (alternative/testing)
+**Transport:** TCP, binary (Upper Layer Protocol / ULP)
+**Standard:** NEMA PS3 / ISO 12052
+**Implementation:** `src/worker/dicom.ts`
+**Routes:** `/api/dicom/connect`, `/api/dicom/echo`, `/api/dicom/find`
 
-**Protocol:** DICOM (Digital Imaging and Communications in Medicine)
-**Port:** 104 (TCP)
-**Standard:** [NEMA PS3 / ISO 12052](https://www.dicomstandard.org/)
-**Complexity:** Very High
-**Purpose:** Medical imaging communication
+---
 
-DICOM provides **medical image exchange** - standardized protocol for storing, transmitting, and displaying medical images (CT, MRI, X-ray, ultrasound) with patient metadata.
+## Endpoints
 
-### Use Cases
-- Hospital PACS (Picture Archiving and Communication System)
-- Medical imaging workstations
-- CT/MRI/X-ray scanner integration
-- Radiology information systems (RIS)
-- Telemedicine and remote diagnostics
-- Medical image archiving
+### `POST /api/dicom/connect`
 
-## Protocol Specification
+Performs an A-ASSOCIATE handshake **only** — does not send any DIMSE command. Tests whether the DICOM server accepts an association for the Verification SOP Class. On success, sends A-RELEASE-RQ before closing.
 
-### DICOM Upper Layer Protocol
+**Request**
 
-DICOM uses a custom application layer protocol over TCP:
-
-```
-1. A-ASSOCIATE-RQ (Association Request)
-2. A-ASSOCIATE-AC (Association Accept)
-3. P-DATA-TF (Presentation Data Transfer)
-4. A-RELEASE-RQ (Release Request)
-5. A-RELEASE-RP (Release Response)
-6. A-ABORT (Abort)
-```
-
-### A-ASSOCIATE Request
-
-```
-Protocol Data Unit (PDU):
-  PDU-type: 01 (A-ASSOCIATE-RQ)
-  Reserved: 00
-  PDU-length: 4 bytes
-  Protocol-version: 0001
-  Reserved: 0000
-  Called-AE-title: 16 bytes (Application Entity)
-  Calling-AE-title: 16 bytes
-  Reserved: 32 bytes
-  Variable items:
-    - Application Context
-    - Presentation Contexts
-    - User Information
-```
-
-### P-DATA-TF (Data Transfer)
-
-```
-PDU-type: 04
-Reserved: 00
-PDU-length: 4 bytes
-Presentation-data-value items:
-  Presentation-context-ID: 1 byte
-  Message Control Header: 1 byte
-  DICOM Command or Data Set
-```
-
-### DICOM Message Structure
-
-```
-DICOM Message:
-  Command Set (Group 0000)
-    - Command Field (0000,0100)
-    - Affected SOP Class UID (0000,0002)
-    - Message ID (0000,0110)
-    - Priority (0000,0700)
-    - Command Data Set Type (0000,0800)
-
-  Data Set (if present)
-    - Patient Name (0010,0010)
-    - Patient ID (0010,0020)
-    - Study Date (0008,0020)
-    - Modality (0008,0060)
-    - Image data...
-```
-
-### DIMSE Services
-
-```
-C-STORE - Store image
-C-FIND - Query for studies/series/images
-C-MOVE - Retrieve images
-C-GET - Get images
-C-ECHO - Verify connectivity
-N-EVENT-REPORT - Event notification
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/dicom/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface DICOMConfig {
-  host: string;
-  port?: number;
-  callingAE: string; // Application Entity Title (max 16 chars)
-  calledAE: string;
-}
-
-// PDU Types
-export enum PDUType {
-  A_ASSOCIATE_RQ = 0x01,
-  A_ASSOCIATE_AC = 0x02,
-  A_ASSOCIATE_RJ = 0x03,
-  P_DATA_TF = 0x04,
-  A_RELEASE_RQ = 0x05,
-  A_RELEASE_RP = 0x06,
-  A_ABORT = 0x07,
-}
-
-// DIMSE Command Field
-export enum DIMSECommand {
-  C_STORE_RQ = 0x0001,
-  C_STORE_RSP = 0x8001,
-  C_FIND_RQ = 0x0020,
-  C_FIND_RSP = 0x8020,
-  C_GET_RQ = 0x0010,
-  C_GET_RSP = 0x8010,
-  C_MOVE_RQ = 0x0021,
-  C_MOVE_RSP = 0x8021,
-  C_ECHO_RQ = 0x0030,
-  C_ECHO_RSP = 0x8030,
-}
-
-// Transfer Syntax UIDs
-export const TransferSyntax = {
-  ImplicitVRLittleEndian: '1.2.840.10008.1.2',
-  ExplicitVRLittleEndian: '1.2.840.10008.1.2.1',
-  ExplicitVRBigEndian: '1.2.840.10008.1.2.2',
-  JPEGBaseline: '1.2.840.10008.1.2.4.50',
-  JPEG2000: '1.2.840.10008.1.2.4.90',
-};
-
-// SOP Class UIDs
-export const SOPClass = {
-  Verification: '1.2.840.10008.1.1',
-  CTImageStorage: '1.2.840.10008.5.1.4.1.1.2',
-  MRImageStorage: '1.2.840.10008.5.1.4.1.1.4',
-  StudyRootQueryRetrieve: '1.2.840.10008.5.1.4.1.2.2.1',
-};
-
-export interface DICOMDataElement {
-  tag: number;      // (gggg,eeee) as single number
-  vr: string;       // Value Representation
-  value: any;
-}
-
-export class DICOMClient {
-  private socket: any;
-  private associated: boolean = false;
-  private messageId: number = 1;
-
-  constructor(private config: DICOMConfig) {
-    if (!config.port) config.port = 104;
-  }
-
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
-
-    // Send A-ASSOCIATE-RQ
-    await this.sendAssociateRequest();
-
-    // Receive A-ASSOCIATE-AC
-    const response = await this.receivePDU();
-
-    if (response.type === PDUType.A_ASSOCIATE_AC) {
-      this.associated = true;
-      console.log('DICOM Association established');
-    } else if (response.type === PDUType.A_ASSOCIATE_RJ) {
-      throw new Error('Association rejected');
-    }
-  }
-
-  async echo(): Promise<boolean> {
-    if (!this.associated) {
-      throw new Error('Not associated');
-    }
-
-    // Send C-ECHO-RQ
-    const command = this.buildCommandSet(DIMSECommand.C_ECHO_RQ, {
-      affectedSOPClassUID: SOPClass.Verification,
-      messageID: this.messageId++,
-    });
-
-    await this.sendPData(command);
-
-    // Receive C-ECHO-RSP
-    const response = await this.receivePData();
-
-    return response.status === 0x0000; // Success
-  }
-
-  async find(queryLevel: 'STUDY' | 'SERIES' | 'IMAGE', criteria: any): Promise<any[]> {
-    const results: any[] = [];
-
-    // Build C-FIND-RQ command
-    const command = this.buildCommandSet(DIMSECommand.C_FIND_RQ, {
-      affectedSOPClassUID: SOPClass.StudyRootQueryRetrieve,
-      messageID: this.messageId++,
-      priority: 0, // MEDIUM
-    });
-
-    // Build query dataset
-    const dataset = this.buildQueryDataset(queryLevel, criteria);
-
-    await this.sendPData(command, dataset);
-
-    // Receive C-FIND-RSP (multiple)
-    while (true) {
-      const response = await this.receivePData();
-
-      if (response.dataset) {
-        results.push(this.parseDataset(response.dataset));
-      }
-
-      // Status: 0xFF00 = Pending, 0x0000 = Success
-      if (response.status === 0x0000) {
-        break;
-      }
-    }
-
-    return results;
-  }
-
-  async store(sopClassUID: string, sopInstanceUID: string, dataset: Uint8Array): Promise<boolean> {
-    // Send C-STORE-RQ
-    const command = this.buildCommandSet(DIMSECommand.C_STORE_RQ, {
-      affectedSOPClassUID: sopClassUID,
-      affectedSOPInstanceUID: sopInstanceUID,
-      messageID: this.messageId++,
-      priority: 0,
-    });
-
-    await this.sendPData(command, dataset);
-
-    // Receive C-STORE-RSP
-    const response = await this.receivePData();
-
-    return response.status === 0x0000;
-  }
-
-  private async sendAssociateRequest(): Promise<void> {
-    const buffer = new ArrayBuffer(1000); // Simplified
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // PDU Type
-    view.setUint8(offset++, PDUType.A_ASSOCIATE_RQ);
-
-    // Reserved
-    view.setUint8(offset++, 0x00);
-
-    // PDU Length (will update later)
-    const lengthOffset = offset;
-    offset += 4;
-
-    // Protocol Version
-    view.setUint16(offset, 0x0001, false);
-    offset += 2;
-
-    // Reserved
-    view.setUint16(offset, 0x0000, false);
-    offset += 2;
-
-    // Called AE Title (16 bytes, space-padded)
-    const calledAE = this.padAETitle(this.config.calledAE);
-    new Uint8Array(buffer).set(calledAE, offset);
-    offset += 16;
-
-    // Calling AE Title (16 bytes, space-padded)
-    const callingAE = this.padAETitle(this.config.callingAE);
-    new Uint8Array(buffer).set(callingAE, offset);
-    offset += 16;
-
-    // Reserved (32 bytes)
-    offset += 32;
-
-    // Application Context Item
-    offset = this.writeApplicationContext(buffer, offset);
-
-    // Presentation Context Items
-    offset = this.writePresentationContexts(buffer, offset);
-
-    // User Information Item
-    offset = this.writeUserInformation(buffer, offset);
-
-    // Update PDU Length
-    view.setUint32(lengthOffset, offset - 6, false);
-
-    await this.send(new Uint8Array(buffer.slice(0, offset)));
-  }
-
-  private padAETitle(ae: string): Uint8Array {
-    const padded = new Uint8Array(16);
-    padded.fill(0x20); // Space
-    const bytes = new TextEncoder().encode(ae.substring(0, 16));
-    padded.set(bytes, 0);
-    return padded;
-  }
-
-  private writeApplicationContext(buffer: ArrayBuffer, offset: number): number {
-    const view = new DataView(buffer);
-
-    // Item Type: Application Context
-    view.setUint8(offset++, 0x10);
-
-    // Reserved
-    view.setUint8(offset++, 0x00);
-
-    // Item Length
-    const uid = '1.2.840.10008.3.1.1.1'; // DICOM Application Context
-    view.setUint16(offset, uid.length, false);
-    offset += 2;
-
-    // Application Context Name
-    const uidBytes = new TextEncoder().encode(uid);
-    new Uint8Array(buffer).set(uidBytes, offset);
-    offset += uidBytes.length;
-
-    return offset;
-  }
-
-  private writePresentationContexts(buffer: ArrayBuffer, offset: number): number {
-    const view = new DataView(buffer);
-
-    // Presentation Context: Verification SOP Class
-    view.setUint8(offset++, 0x20); // Item Type
-    view.setUint8(offset++, 0x00); // Reserved
-
-    const pcStart = offset;
-    offset += 2; // Length placeholder
-
-    // Presentation Context ID
-    view.setUint8(offset++, 0x01);
-
-    // Reserved
-    view.setUint8(offset++, 0x00);
-    view.setUint8(offset++, 0x00);
-    view.setUint8(offset++, 0x00);
-
-    // Abstract Syntax Sub-Item
-    offset = this.writeAbstractSyntax(buffer, offset, SOPClass.Verification);
-
-    // Transfer Syntax Sub-Items
-    offset = this.writeTransferSyntax(buffer, offset, TransferSyntax.ImplicitVRLittleEndian);
-
-    // Update PC length
-    view.setUint16(pcStart, offset - pcStart - 2, false);
-
-    return offset;
-  }
-
-  private writeAbstractSyntax(buffer: ArrayBuffer, offset: number, uid: string): number {
-    const view = new DataView(buffer);
-
-    view.setUint8(offset++, 0x30); // Abstract Syntax
-    view.setUint8(offset++, 0x00); // Reserved
-
-    view.setUint16(offset, uid.length, false);
-    offset += 2;
-
-    const uidBytes = new TextEncoder().encode(uid);
-    new Uint8Array(buffer).set(uidBytes, offset);
-    offset += uidBytes.length;
-
-    return offset;
-  }
-
-  private writeTransferSyntax(buffer: ArrayBuffer, offset: number, uid: string): number {
-    const view = new DataView(buffer);
-
-    view.setUint8(offset++, 0x40); // Transfer Syntax
-    view.setUint8(offset++, 0x00); // Reserved
-
-    view.setUint16(offset, uid.length, false);
-    offset += 2;
-
-    const uidBytes = new TextEncoder().encode(uid);
-    new Uint8Array(buffer).set(uidBytes, offset);
-    offset += uidBytes.length;
-
-    return offset;
-  }
-
-  private writeUserInformation(buffer: ArrayBuffer, offset: number): number {
-    const view = new DataView(buffer);
-
-    view.setUint8(offset++, 0x50); // User Information
-    view.setUint8(offset++, 0x00); // Reserved
-
-    const uiStart = offset;
-    offset += 2; // Length placeholder
-
-    // Maximum Length Sub-Item
-    view.setUint8(offset++, 0x51);
-    view.setUint8(offset++, 0x00);
-    view.setUint16(offset, 4, false);
-    offset += 2;
-    view.setUint32(offset, 16384, false); // Max PDU size
-    offset += 4;
-
-    // Implementation Class UID
-    const implUID = '1.2.840.10008.3.1.2.1.1';
-    view.setUint8(offset++, 0x52);
-    view.setUint8(offset++, 0x00);
-    view.setUint16(offset, implUID.length, false);
-    offset += 2;
-    new Uint8Array(buffer).set(new TextEncoder().encode(implUID), offset);
-    offset += implUID.length;
-
-    // Update UI length
-    view.setUint16(uiStart, offset - uiStart - 2, false);
-
-    return offset;
-  }
-
-  private buildCommandSet(command: DIMSECommand, params: any): Uint8Array {
-    // Build DICOM Command Set (Group 0000)
-    const elements: DICOMDataElement[] = [
-      { tag: 0x00000002, vr: 'UI', value: params.affectedSOPClassUID },
-      { tag: 0x00000100, vr: 'US', value: command },
-      { tag: 0x00000110, vr: 'US', value: params.messageID },
-      { tag: 0x00000700, vr: 'US', value: params.priority || 0 },
-      { tag: 0x00000800, vr: 'US', value: 0x0101 }, // No dataset
-    ];
-
-    return this.encodeDataset(elements);
-  }
-
-  private buildQueryDataset(level: string, criteria: any): Uint8Array {
-    const elements: DICOMDataElement[] = [
-      { tag: 0x00080052, vr: 'CS', value: level }, // Query/Retrieve Level
-    ];
-
-    // Add query criteria
-    if (criteria.patientName) {
-      elements.push({ tag: 0x00100010, vr: 'PN', value: criteria.patientName });
-    }
-    if (criteria.patientID) {
-      elements.push({ tag: 0x00100020, vr: 'LO', value: criteria.patientID });
-    }
-    if (criteria.studyDate) {
-      elements.push({ tag: 0x00080020, vr: 'DA', value: criteria.studyDate });
-    }
-
-    return this.encodeDataset(elements);
-  }
-
-  private encodeDataset(elements: DICOMDataElement[]): Uint8Array {
-    // Simplified DICOM encoding (Implicit VR Little Endian)
-    const chunks: Uint8Array[] = [];
-
-    for (const element of elements) {
-      const buffer = new ArrayBuffer(8 + 100); // Simplified
-      const view = new DataView(buffer);
-      let offset = 0;
-
-      // Tag
-      view.setUint16(offset, element.tag >> 16, true); // Group
-      offset += 2;
-      view.setUint16(offset, element.tag & 0xFFFF, true); // Element
-      offset += 2;
-
-      // Value
-      const valueBytes = this.encodeValue(element.value, element.vr);
-
-      // Length
-      view.setUint32(offset, valueBytes.length, true);
-      offset += 4;
-
-      // Combine tag + length + value
-      const chunk = new Uint8Array(offset + valueBytes.length);
-      chunk.set(new Uint8Array(buffer.slice(0, offset)), 0);
-      chunk.set(valueBytes, offset);
-
-      chunks.push(chunk);
-    }
-
-    // Combine all chunks
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return result;
-  }
-
-  private encodeValue(value: any, vr: string): Uint8Array {
-    // Simplified value encoding
-    if (vr === 'US') {
-      // Unsigned Short
-      const buffer = new ArrayBuffer(2);
-      new DataView(buffer).setUint16(0, value, true);
-      return new Uint8Array(buffer);
-    } else {
-      // String types
-      return new TextEncoder().encode(String(value));
-    }
-  }
-
-  private parseDataset(data: Uint8Array): any {
-    // Simplified dataset parsing
-    const result: any = {};
-
-    // Parse DICOM elements
-    // ... complex parsing logic ...
-
-    return result;
-  }
-
-  private async sendPData(command: Uint8Array, dataset?: Uint8Array): Promise<void> {
-    const totalLength = command.length + (dataset ? dataset.length : 0);
-
-    const buffer = new ArrayBuffer(6 + totalLength + 100); // Simplified
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // PDU Type: P-DATA-TF
-    view.setUint8(offset++, PDUType.P_DATA_TF);
-
-    // Reserved
-    view.setUint8(offset++, 0x00);
-
-    // PDU Length
-    view.setUint32(offset, totalLength + 6, false);
-    offset += 4;
-
-    // Presentation-data-value Item Length
-    view.setUint32(offset, totalLength + 2, false);
-    offset += 4;
-
-    // Presentation Context ID
-    view.setUint8(offset++, 0x01);
-
-    // Message Control Header (Command, last fragment)
-    view.setUint8(offset++, 0x03);
-
-    // Command
-    new Uint8Array(buffer).set(command, offset);
-    offset += command.length;
-
-    // Dataset (if present)
-    if (dataset) {
-      new Uint8Array(buffer).set(dataset, offset);
-      offset += dataset.length;
-    }
-
-    await this.send(new Uint8Array(buffer.slice(0, offset)));
-  }
-
-  private async receivePData(): Promise<{ status: number; dataset?: Uint8Array }> {
-    const pdu = await this.receivePDU();
-
-    // Parse P-DATA-TF
-    // ... complex parsing ...
-
-    return { status: 0x0000 }; // Simplified
-  }
-
-  private async receivePDU(): Promise<{ type: PDUType; data: Uint8Array }> {
-    const reader = this.socket.readable.getReader();
-
-    // Read PDU header (6 bytes)
-    const headerBuf = new Uint8Array(6);
-    let offset = 0;
-
-    while (offset < 6) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = 6 - offset;
-      const toCopy = Math.min(remaining, value.length);
-      headerBuf.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    const view = new DataView(headerBuf.buffer);
-    const type = view.getUint8(0) as PDUType;
-    const length = view.getUint32(2, false);
-
-    // Read PDU data
-    const dataBuf = new Uint8Array(length);
-    offset = 0;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = length - offset;
-      const toCopy = Math.min(remaining, value.length);
-      dataBuf.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    reader.releaseLock();
-
-    return { type, data: dataBuf };
-  }
-
-  private async send(data: Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  async release(): Promise<void> {
-    // Send A-RELEASE-RQ
-    const buffer = new ArrayBuffer(6);
-    const view = new DataView(buffer);
-
-    view.setUint8(0, PDUType.A_RELEASE_RQ);
-    view.setUint8(1, 0x00);
-    view.setUint32(2, 4, false);
-
-    await this.send(new Uint8Array(buffer));
-
-    // Receive A-RELEASE-RP
-    await this.receivePDU();
-
-    this.associated = false;
-  }
-
-  async close(): Promise<void> {
-    if (this.associated) {
-      await this.release();
-    }
-
-    await this.socket.close();
-  }
+```json
+{
+  "host":       "192.168.1.10",    // required
+  "port":       104,               // default 104
+  "callingAE":  "PORTOFCALL",      // default "PORTOFCALL"; 1-16 printable ASCII
+  "calledAE":   "ANY-SCP",         // default "ANY-SCP"; 1-16 printable ASCII
+  "timeout":    10000              // ms, default 10000
 }
 ```
 
-## Web UI Design
+AE title validation: `^[\x20-\x7E]+$` — printable ASCII only, max 16 chars. Input is **auto-uppercased** before being written into the PDU (e.g., `portofcall` → `PORTOFCALL`).
 
-```typescript
-// src/components/DICOMClient.tsx
+**Wire exchange**
 
-export function DICOMClient() {
-  const [host, setHost] = useState('');
-  const [callingAE, setCallingAE] = useState('PORTOFCALL');
-  const [calledAE, setCalledAE] = useState('PACS');
-  const [connected, setConnected] = useState(false);
-  const [studies, setStudies] = useState<any[]>([]);
+```
+TCP connect
+→ A-ASSOCIATE-RQ (Verification SOP Class 1.2.840.10008.1.1; Implicit VR LE + Explicit VR LE)
+← A-ASSOCIATE-AC | A-ASSOCIATE-RJ | A-ABORT
+→ A-RELEASE-RQ     (only on A-ASSOCIATE-AC)
+← A-RELEASE-RP
+```
 
-  const connect = async () => {
-    const response = await fetch('/api/dicom/connect', {
-      method: 'POST',
-      body: JSON.stringify({ host, callingAE, calledAE }),
-    });
+**⚠ `success:true` on rejection** — Unlike `/echo`, both A-ASSOCIATE-AC and A-ASSOCIATE-RJ return HTTP 200 with `success:true`. Distinguish them via `associationAccepted`.
 
-    if (response.ok) {
-      setConnected(true);
+**Response — association accepted**
+
+```json
+{
+  "success":              true,
+  "host":                 "192.168.1.10",
+  "port":                 104,
+  "connectTime":          18,
+  "rtt":                  42,
+  "associationAccepted":  true,
+  "calledAE":             "PACS",
+  "callingAE":            "PORTOFCALL",
+  "protocolVersion":      1,
+  "maxPDULength":         65536,
+  "implementationClassUID":  "1.2.276.0.7230010.3.0.3.6.4",
+  "implementationVersion":   "OFFIS_DCMTK_364",
+  "verificationAccepted": true,
+  "acceptedContexts": [
+    {
+      "id":           1,
+      "accepted":     true,
+      "resultText":   "Acceptance",
+      "transferSyntax": "1.2.840.10008.1.2"
     }
-  };
-
-  const findStudies = async (patientName: string) => {
-    const response = await fetch('/api/dicom/find', {
-      method: 'POST',
-      body: JSON.stringify({
-        level: 'STUDY',
-        criteria: { patientName },
-      }),
-    });
-
-    const data = await response.json();
-    setStudies(data.results);
-  };
-
-  return (
-    <div className="dicom-client">
-      <h2>DICOM Client (Medical Imaging)</h2>
-
-      <div className="config">
-        <input placeholder="PACS Server" value={host} onChange={(e) => setHost(e.target.value)} />
-        <input placeholder="Calling AE" value={callingAE} onChange={(e) => setCallingAE(e.target.value)} />
-        <input placeholder="Called AE" value={calledAE} onChange={(e) => setCalledAE(e.target.value)} />
-        <button onClick={connect}>Connect</button>
-      </div>
-
-      {connected && (
-        <div className="studies">
-          <h3>Find Studies</h3>
-          <button onClick={() => findStudies('*')}>Query All</button>
-
-          <div className="results">
-            {studies.map((study, i) => (
-              <div key={i} className="study">
-                <strong>{study.patientName}</strong>
-                <div>{study.studyDate}</div>
-                <div>{study.modality}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="info">
-        <h3>About DICOM</h3>
-        <ul>
-          <li>Digital Imaging and Communications in Medicine</li>
-          <li>Medical imaging standard</li>
-          <li>TCP port 104</li>
-          <li>Used in hospitals worldwide</li>
-          <li>CT, MRI, X-ray, Ultrasound</li>
-          <li>PACS integration</li>
-        </ul>
-      </div>
-    </div>
-  );
+  ]
 }
 ```
 
-## Resources
+| Field | Notes |
+|-------|-------|
+| `connectTime` | ms from TCP connect to first write |
+| `rtt` | ms from TCP connect to response received |
+| `verificationAccepted` | `true` if at least one presentation context result === 0 |
+| `acceptedContexts[].resultText` | "Acceptance" / "User rejection" / "No reason (provider rejection)" / "Abstract syntax not supported" / "Transfer syntaxes not supported" |
+| `transferSyntax` | UID of the negotiated transfer syntax for that context |
 
-- **DICOM Standard**: [dicomstandard.org](https://www.dicomstandard.org/)
-- **dcm4che**: [Java DICOM toolkit](https://www.dcm4che.org/)
-- **pydicom**: [Python DICOM library](https://pydicom.github.io/)
+**Response — association rejected**
 
-## Notes
+```json
+{
+  "success":             true,
+  "host":                "192.168.1.10",
+  "port":                104,
+  "connectTime":         8,
+  "rtt":                 12,
+  "associationAccepted": false,
+  "rejectionResult":     "Permanent rejection",
+  "rejectionSource":     "DICOM UL service-user",
+  "rejectionReason":     "Called AE title not recognized"
+}
+```
 
-- **Very complex** - medical imaging standard
-- **TCP port 104** - standard DICOM port
-- **Application Entities** - Logical endpoints (AE titles)
-- **SOP Classes** - Service-Object Pair classes
-- **Transfer Syntaxes** - Encoding formats (JPEG, JPEG2000, etc.)
-- **DIMSE** - DICOM Message Service Element
-- **PACS** - Picture Archiving and Communication System
-- **Modalities** - CT, MRI, CR, DX, US, etc.
-- **HIPAA compliant** - Protected Health Information (PHI)
-- **Widely used** - Global healthcare standard
+**Response — A-ABORT received**
+
+```json
+{
+  "success":             true,
+  "associationAccepted": false,
+  "aborted":             true,
+  "abortSource":         "Service provider"
+}
+```
+
+---
+
+### `POST /api/dicom/echo`
+
+Full C-ECHO cycle: A-ASSOCIATE → C-ECHO-RQ → C-ECHO-RSP → A-RELEASE. Returns `success:false` + HTTP 502 if association is rejected (unlike `/connect` which returns `success:true`).
+
+**Request**
+
+```json
+{
+  "host":      "192.168.1.10",
+  "port":      104,
+  "callingAE": "PORTOFCALL",
+  "calledAE":  "ECHOSCP",
+  "timeout":   15000            // default 15000 (different from /connect's 10000)
+}
+```
+
+**Wire exchange**
+
+```
+→ A-ASSOCIATE-RQ (Verification SOP Class)
+← A-ASSOCIATE-AC
+→ P-DATA-TF (C-ECHO-RQ, messageId=1)
+← P-DATA-TF (C-ECHO-RSP)
+→ A-RELEASE-RQ
+← A-RELEASE-RP  (errors here silently ignored)
+```
+
+The C-ECHO-RQ always uses messageId=1. There is no way to change it.
+
+**C-ECHO DIMSE command set** (Implicit VR Little Endian):
+
+| Tag | Name | Value |
+|-----|------|-------|
+| (0000,0000) | CommandGroupLength | computed |
+| (0000,0002) | AffectedSOPClassUID | `1.2.840.10008.1.1` (Verification) |
+| (0000,0100) | CommandField | 0x0030 (C-ECHO-RQ) |
+| (0000,0110) | MessageID | 1 |
+| (0000,0800) | CommandDataSetType | 0x0101 (no dataset) |
+
+**Response**
+
+```json
+{
+  "success":              true,
+  "host":                 "192.168.1.10",
+  "port":                 104,
+  "callingAE":            "PORTOFCALL",
+  "calledAE":             "ECHOSCP",
+  "associateTime":        38,
+  "echoTime":             12,
+  "totalTime":            62,
+  "echoSuccess":          true,
+  "echoStatus":           0,
+  "echoStatusText":       "Success",
+  "implementationClassUID": "1.2.276.0.7230010.3.0.3.6.4",
+  "implementationVersion":  "OFFIS_DCMTK_364",
+  "maxPDULength":         65536,
+  "transferSyntax":       "1.2.840.10008.1.2"
+}
+```
+
+`echoSuccess` is `true` only when status `=== 0` (0x0000). Known status codes decoded by the implementation:
+
+| Status | Text |
+|--------|------|
+| 0x0000 | Success |
+| 0x0110 | Processing Failure |
+| 0x0112 | SOP Class Not Supported |
+| 0x0211 | Unrecognized Operation |
+| other  | "Unknown" |
+
+If the association is rejected, the response is `success:false` with HTTP 502:
+```json
+{
+  "success": false,
+  "error": "Association rejected: Called AE title not recognized (DICOM UL service-user)"
+}
+```
+
+---
+
+### `POST /api/dicom/find`
+
+Study Root C-FIND query. Fetches a list of studies matching `patientId` and/or `studyDate`.
+
+**Request**
+
+```json
+{
+  "host":        "192.168.1.10",
+  "port":        104,
+  "callingAE":   "PORTOFCALL",
+  "calledAE":    "QRSCP",
+  "queryLevel":  "STUDY",           // default "STUDY"; "SERIES"/"IMAGE" may work server-side
+  "patientId":   "12345",           // optional, empty string = wildcard
+  "studyDate":   "20240101",        // optional, empty string = all dates; range: "20230101-20240101"
+  "timeout":     20000              // default 20000 (different from /connect and /echo)
+}
+```
+
+**⚠ PatientName and StudyInstanceUID are always wildcard** — The C-FIND dataset hardcodes empty strings for `(0010,0010) PatientName` and `(0020,000D) StudyInstanceUID`. There is no way to search by patient name or retrieve a specific study UID via this endpoint.
+
+**⚠ Study Root only** — The association proposes Study Root Query/Retrieve C-FIND SOP Class (`1.2.840.10008.5.1.4.1.2.2.1`). Patient Root (`1.2.840.10008.5.1.4.1.2.1.1`) is not supported.
+
+**Wire exchange**
+
+```
+→ A-ASSOCIATE-RQ (Study Root C-FIND SOP Class 1.2.840.10008.5.1.4.1.2.2.1)
+← A-ASSOCIATE-AC
+→ P-DATA-TF (C-FIND-RQ with command set + dataset)
+← P-DATA-TF (C-FIND-RSP, status 0xFF00/0xFF01 = pending, repeat)
+← P-DATA-TF (C-FIND-RSP, status 0x0000 = success, stop)
+→ A-RELEASE-RQ
+← A-RELEASE-RP
+```
+
+**C-FIND-RQ dataset fields sent:**
+
+| Tag | Name | Value |
+|-----|------|-------|
+| (0008,0052) | QueryRetrieveLevel | `queryLevel` param |
+| (0008,0020) | StudyDate | `studyDate` param (or empty) |
+| (0010,0010) | PatientName | `""` (always wildcard) |
+| (0010,0020) | PatientID | `patientId` param (or empty) |
+| (0020,000D) | StudyInstanceUID | `""` (always wildcard) |
+
+C-FIND-RSP pending codes: `0xFF00` (normal pending) and `0xFF01` (pending, optional keys not supported) — both collected as study results.
+
+**⚠ Implicit VR LE decode only** — The dataset parser assumes Implicit VR Little Endian encoding. If the server negotiates Explicit VR, the parser will treat 2-byte VR codes as part of the value length and return garbage. Both transfer syntaxes are offered in the association; the accepted one determines the actual encoding.
+
+**Response**
+
+```json
+{
+  "success":    true,
+  "host":       "192.168.1.10",
+  "port":       104,
+  "callingAE":  "PORTOFCALL",
+  "calledAE":   "QRSCP",
+  "queryLevel": "STUDY",
+  "patientId":  "12345",
+  "rtt":        1241,
+  "studyCount": 2,
+  "studies": [
+    {
+      "0010,0010": "Smith^John",
+      "0010,0020": "12345",
+      "0008,0020": "20240101",
+      "0020,000d": "1.2.840.113619.2.55.3.604688119.2.20240101",
+      "0008,0052": "STUDY"
+    },
+    {
+      "0010,0010": "Smith^John",
+      "0010,0020": "12345",
+      "0008,0020": "20240115",
+      "0020,000d": "1.2.840.113619.2.55.3.604688119.2.20240115"
+    }
+  ],
+  "implementationClassUID": "1.2.276.0.7230010.3.0.3.6.4",
+  "implementationVersion":  "OFFIS_DCMTK_364"
+}
+```
+
+`studies` is an array of raw DICOM tag maps. Keys are lowercase hex tag strings like `"0010,0010"`. Values are UTF-8 strings decoded from the raw bytes; null-padded bytes are stripped. No friendly field name mapping is applied — callers must know the DICOM tag numbers. If the server returns Explicit VR, values will be garbled due to the Implicit VR parser assumption.
+
+If association is rejected, returns `success:false` + HTTP 502. If `studyDate` or `patientId` are empty and there are no studies, `studies` is `[]`.
+
+---
+
+## Wire Protocol Reference
+
+### PDU Header Format
+
+All DICOM PDUs share a 6-byte header:
+
+```
+Offset  Size  Field
+0       1     PDU Type
+1       1     Reserved (0x00)
+2       4     PDU Length (big-endian, excludes 6-byte header)
+```
+
+### PDU Types
+
+| Code | Name |
+|------|------|
+| 0x01 | A-ASSOCIATE-RQ (request) |
+| 0x02 | A-ASSOCIATE-AC (accept) |
+| 0x03 | A-ASSOCIATE-RJ (reject) |
+| 0x04 | P-DATA-TF (data transfer) |
+| 0x05 | A-RELEASE-RQ |
+| 0x06 | A-RELEASE-RP |
+| 0x07 | A-ABORT |
+
+### A-ASSOCIATE-RQ Fixed Fields (after 6-byte header)
+
+```
+Offset  Size  Field
+0       2     Protocol Version (0x0001)
+2       2     Reserved (0x0000)
+4       16    Called AE Title (space-padded)
+20      16    Calling AE Title (space-padded)
+36      32    Reserved (zeros)
+68+     var   Variable Items (Application Context, Presentation Contexts, User Info)
+```
+
+### Variable Item Types
+
+| Code | Name |
+|------|------|
+| 0x10 | Application Context (`1.2.840.10008.3.1.1.1`) |
+| 0x20 | Presentation Context (in RQ) |
+| 0x21 | Presentation Context (in AC) |
+| 0x30 | Abstract Syntax (sub-item) |
+| 0x40 | Transfer Syntax (sub-item) |
+| 0x50 | User Information |
+| 0x51 | Maximum Length (sub-item) |
+| 0x52 | Implementation Class UID (sub-item) |
+| 0x55 | Implementation Version Name (sub-item) |
+
+Implementation advertises:
+- Max PDU length: **16,384 bytes** (0x4000). Responses larger than this will not arrive.
+- Implementation Class UID: `1.2.826.0.1.3680043.8.498.1`
+- Implementation Version: `PORTOFCALL_001`
+
+### P-DATA-TF PDV Item
+
+```
+Offset  Size  Field
+0       4     PDV Item Length (big-endian, excludes these 4 bytes)
+4       1     Presentation Context ID (e.g., 0x01)
+5       1     Control Header
+               Bit 0: 1 = command, 0 = dataset
+               Bit 1: 1 = last fragment
+               0x01 = command, not last
+               0x03 = command, last fragment ← used for C-ECHO-RQ
+               0x02 = dataset, last fragment ← used for C-FIND dataset
+6+      var   DIMSE command set or dataset
+```
+
+### A-ASSOCIATE-RJ Rejection Codes
+
+**Result:**
+
+| Code | Meaning |
+|------|---------|
+| 1 | Permanent rejection |
+| 2 | Transient rejection |
+
+**Source:**
+
+| Code | Meaning |
+|------|---------|
+| 1 | DICOM UL service-user |
+| 2 | DICOM UL service-provider (ACSE) |
+| 3 | DICOM UL service-provider (Presentation) |
+
+**Reason (service-user, source=1):**
+
+| Code | Meaning |
+|------|---------|
+| 1 | No reason given |
+| 2 | Application context name not supported |
+| 3 | Calling AE title not recognized |
+| 7 | Called AE title not recognized |
+
+---
+
+## Known Limitations
+
+1. **Implicit VR LE parser only** — `/find` uses `parseDICOMDataset` which assumes Implicit VR LE. If the server negotiates Explicit VR LE (also proposed), the response datasets will be garbled. Workaround: some servers can be configured to prefer Implicit VR.
+
+2. **PatientName and StudyInstanceUID always wildcard** — No way to search by patient name or retrieve by study UID. Only `patientId` and `studyDate` are user-configurable in the C-FIND dataset.
+
+3. **Study Root C-FIND only** — `/find` only negotiates Study Root C-FIND SOP. Patient Root model is not available.
+
+4. **queryLevel is not fully parameterized** — You can change `queryLevel` to SERIES or IMAGE, but the dataset tags are fixed (study-level attributes only). SERIES-level C-FIND typically needs `(0020,000D)` StudyInstanceUID set, which is always empty here.
+
+5. **Max PDU size 16,384 bytes** — The User Information item advertises this as the maximum PDU the worker will accept. PACS systems with large C-FIND responses (many study attributes) may truncate or send an error. The implementation also rejects incoming PDUs larger than 1,048,576 bytes (`readPDU` check).
+
+6. **`success:true` on rejection in `/connect`** — `/connect` returns `success:true` for both A-ASSOCIATE-AC and A-ASSOCIATE-RJ. Use `associationAccepted` to distinguish.
+
+7. **Different default timeouts** — `/connect` default 10s, `/echo` default 15s, `/find` default 20s. All three use the field name `timeout` (milliseconds).
+
+8. **No C-MOVE, C-GET, C-STORE** — Only C-ECHO (connectivity ping) and C-FIND (study query) are implemented. No image retrieval.
+
+9. **No DICOM TLS (DICOMweb/TLS)** — Plaintext port 104 only.
+
+10. **A-ABORT handling limited** — `/echo` and `/find` don't handle A-ABORT specially; the worker enters the error path. Only `/connect` returns a structured `aborted:true` response.
+
+11. **C-ECHO messageId hardcoded** — Always sends messageId=1. Cannot be changed.
+
+12. **No sequence/nested dataset support** — `parseDICOMDataset` stops parsing when it encounters a length of `0xFFFFFFFF` (undefined-length sequence marker). Studies with sequence attributes (e.g., Referenced Study Sequence) will be truncated.
+
+13. **Studies returned as raw tag maps** — The `studies` array uses `"GGGG,EEEE"` lowercase hex keys. No VR-aware decoding: DA (date), TM (time), PN (person name), UI (UID) values are returned as raw trimmed strings.
+
+---
+
+## DICOM Tag Quick Reference
+
+Common tags returned in C-FIND study responses:
+
+| Tag | Name |
+|-----|------|
+| 0008,0020 | StudyDate |
+| 0008,0030 | StudyTime |
+| 0008,0050 | AccessionNumber |
+| 0008,0052 | QueryRetrieveLevel |
+| 0008,0060 | Modality |
+| 0008,0090 | ReferringPhysicianName |
+| 0008,1030 | StudyDescription |
+| 0010,0010 | PatientName |
+| 0010,0020 | PatientID |
+| 0010,0030 | PatientBirthDate |
+| 0010,0040 | PatientSex |
+| 0020,000d | StudyInstanceUID |
+| 0020,0010 | StudyID |
+| 0020,1206 | NumberOfStudyRelatedSeries |
+| 0020,1208 | NumberOfStudyRelatedInstances |
+
+---
+
+## Well-Known UIDs
+
+| UID | Name |
+|-----|------|
+| `1.2.840.10008.1.1` | Verification SOP Class |
+| `1.2.840.10008.1.2` | Implicit VR Little Endian (default) |
+| `1.2.840.10008.1.2.1` | Explicit VR Little Endian |
+| `1.2.840.10008.3.1.1.1` | DICOM Application Context |
+| `1.2.840.10008.5.1.4.1.2.2.1` | Study Root C-FIND SOP Class |
+
+---
+
+## curl Examples
+
+```bash
+# Test DICOM server reachability (association only, no DIMSE)
+curl -s -X POST https://portofcall.ross.gg/api/dicom/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":104,"calledAE":"PACS"}' | jq '{accepted:.associationAccepted,rtt:.rtt,impl:.implementationVersion}'
+
+# Check if called AE is recognized
+curl -s -X POST https://portofcall.ross.gg/api/dicom/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","calledAE":"WRONG_AE"}' | jq '{accepted:.associationAccepted,reason:.rejectionReason}'
+
+# DICOM ping (C-ECHO)
+curl -s -X POST https://portofcall.ross.gg/api/dicom/echo \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":104,"calledAE":"ECHOSCP"}' | jq '{echoSuccess:.echoSuccess,echoTime:.echoTime,status:.echoStatusText}'
+
+# Query all studies (no filter)
+curl -s -X POST https://portofcall.ross.gg/api/dicom/find \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":104,"calledAE":"QRSCP"}' | jq '.studyCount'
+
+# Query by patient ID
+curl -s -X POST https://portofcall.ross.gg/api/dicom/find \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","calledAE":"QRSCP","patientId":"12345"}' | jq '.studies[].["0010,0010"]'
+
+# Query by date range (YYYYMMDD-YYYYMMDD)
+curl -s -X POST https://portofcall.ross.gg/api/dicom/find \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","calledAE":"QRSCP","studyDate":"20240101-20241231"}' \
+  | jq '[.studies[] | {"date":".["0008,0020"]","patient":".["0010,0010"]"}]'
+
+# Extract study UIDs
+curl -s -X POST https://portofcall.ross.gg/api/dicom/find \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","calledAE":"QRSCP","patientId":"12345"}' \
+  | jq '[.studies[]["0020,000d"]]'
+```
+
+---
+
+## Local Testing
+
+```bash
+# DCMTK C-ECHO server (accepts any AE)
+storescp --fork --aetitle ECHOSCP 104
+
+# DCMTK C-FIND/C-MOVE SCP (simple worklist)
+wlmscpfs --aetitle QRSCP 104 /path/to/worklist/
+
+# Orthanc (full PACS, REST + DICOM)
+docker run -d -p 104:4242 -p 8042:8042 jodogne/orthanc
+# Orthanc default AE: ORTHANC
+
+# Test against Orthanc
+curl -s -X POST https://portofcall.ross.gg/api/dicom/echo \
+  -d '{"host":"YOUR_IP","port":104,"calledAE":"ORTHANC"}' | jq .echoSuccess
+
+# DCM4CHEE (enterprise PACS)
+docker run -d -p 104:11112 -p 8080:8080 dcm4che/dcm4chee-arc-psql
+```
+
+Dcm4che tools for validation:
+```bash
+# C-ECHO
+echoscu -aet PORTOFCALL -aec PACS 192.168.1.10 104
+
+# C-FIND studies
+findscu -aet PORTOFCALL -aec QRSCP -S -k 0008,0052=STUDY \
+        -k 0010,0020= -k 0010,0010= -k 0020,000d= \
+        192.168.1.10 104
+```

@@ -492,3 +492,216 @@ export async function handleADBDevices(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Handle ADB shell — transport to a specific device and run a shell command.
+ *
+ * Flow:
+ *   1. Connect to the ADB server (default port 5037)
+ *   2. Send host:transport:{serial} to select the device
+ *      (or host:transport-any if serial is empty)
+ *   3. Expect OKAY from the server
+ *   4. Send shell:{command}
+ *   5. Expect OKAY from the server
+ *   6. Read all output until the socket closes
+ *   7. Return stdout as a string
+ */
+export async function handleADBShell(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      serial?: string;
+      command: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = ADB_DEFAULT_PORT,
+      serial = '',
+      command,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!command) {
+      return new Response(JSON.stringify({ success: false, error: 'Command is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Buffer for bytes that arrive ahead of what we need.
+      let leftover = new Uint8Array(0);
+
+      /**
+       * Read until we have at least `needed` bytes, then return them.
+       * Any bytes beyond `needed` are stored in `leftover`.
+       */
+      async function readAtLeast(needed: number): Promise<Uint8Array> {
+        while (leftover.length < needed) {
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (done || !value) throw new Error('Connection closed unexpectedly');
+          const merged = new Uint8Array(leftover.length + value.length);
+          merged.set(leftover, 0);
+          merged.set(value, leftover.length);
+          leftover = merged;
+        }
+        const out = leftover.subarray(0, needed);
+        leftover = leftover.subarray(needed);
+        return out;
+      }
+
+      /**
+       * Send a command and verify the ADB server responds with OKAY.
+       * Throws on FAIL with the server-provided reason.
+       */
+      async function sendAndCheckOkay(cmd: string): Promise<void> {
+        await writer.write(encodeADBCommand(cmd));
+
+        const statusBytes = await readAtLeast(4);
+        const status = new TextDecoder().decode(statusBytes);
+
+        if (status === 'OKAY') {
+          return;
+        }
+
+        if (status === 'FAIL') {
+          // FAIL is followed by 4-hex-digit length + error message
+          const lenBytes = await readAtLeast(4);
+          const reasonLen = parseInt(new TextDecoder().decode(lenBytes), 16);
+          if (isNaN(reasonLen) || reasonLen <= 0) {
+            throw new Error('ADB FAIL: unknown error');
+          }
+          const reasonBytes = await readAtLeast(reasonLen);
+          const reason = new TextDecoder().decode(reasonBytes);
+          throw new Error(`ADB FAIL: ${reason}`);
+        }
+
+        throw new Error(`ADB unexpected status: ${status}`);
+      }
+
+      // Step 1: Select the device transport
+      const transportCmd = serial.trim() ? `host:transport:${serial.trim()}` : 'host:transport-any';
+      await sendAndCheckOkay(transportCmd);
+
+      // Step 2: Run the shell command
+      // After the OKAY for shell:, the server streams stdout until it closes.
+      await writer.write(encodeADBCommand(`shell:${command}`));
+      const shellStatusBytes = await readAtLeast(4);
+      const shellStatus = new TextDecoder().decode(shellStatusBytes);
+
+      if (shellStatus === 'FAIL') {
+        const lenBytes = await readAtLeast(4);
+        const reasonLen = parseInt(new TextDecoder().decode(lenBytes), 16);
+        const reasonBytes = reasonLen > 0 ? await readAtLeast(reasonLen) : new Uint8Array(0);
+        const reason = new TextDecoder().decode(reasonBytes);
+        throw new Error(`ADB shell FAIL: ${reason}`);
+      }
+
+      if (shellStatus !== 'OKAY') {
+        throw new Error(`ADB shell unexpected status: ${shellStatus}`);
+      }
+
+      // Step 3: Drain remaining output (leftover bytes + anything still incoming)
+      const outputChunks: Uint8Array[] = leftover.length > 0 ? [leftover] : [];
+      leftover = new Uint8Array(0);
+
+      while (true) {
+        try {
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (done || !value) break;
+          outputChunks.push(value);
+        } catch {
+          break;
+        }
+      }
+
+      const totalLen = outputChunks.reduce((s, c) => s + c.length, 0);
+      const outputBuf = new Uint8Array(totalLen);
+      let offset = 0;
+      for (const chunk of outputChunks) {
+        outputBuf.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      const rtt = Date.now() - startTime;
+      const stdout = new TextDecoder().decode(outputBuf);
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        serial: serial.trim() || '(any)',
+        command,
+        stdout,
+        rtt,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

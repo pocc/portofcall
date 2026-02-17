@@ -226,6 +226,117 @@ export async function handleRshExecute(request: Request): Promise<Response> {
 }
 
 /**
+ * Probe RSH port — test connectivity and read the server's initial response.
+ * POST /api/rsh/probe
+ * Body: { host, port?, localUser?, remoteUser?, timeout? }
+ * Returns whether the port is open and whether it responds to the RSH handshake.
+ */
+export async function handleRshProbe(request: Request): Promise<Response> {
+  try {
+    const body = request.method === 'POST'
+      ? await request.json() as Partial<RshRequest>
+      : {} as Partial<RshRequest>;
+
+    const host = body.host || new URL(request.url).searchParams.get('host') || '';
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const port = body.port || 514;
+    const localUser = body.localUser || 'probe';
+    const remoteUser = body.remoteUser || 'probe';
+    const timeoutMs = body.timeout || 8000;
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    const start = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
+    );
+
+    try {
+      const socket = connect(`${host}:${port}`);
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Send minimal RSH handshake: stderrPort=0, localUser, remoteUser, empty command
+      await writer.write(encoder.encode('\0'));
+      await writer.write(encoder.encode(`${localUser}\0`));
+      await writer.write(encoder.encode(`${remoteUser}\0`));
+      await writer.write(encoder.encode('\0')); // empty command
+
+      const latencyMs = Date.now() - start;
+
+      // Read the server's initial byte (0x00 = accepted, else error text)
+      let serverByte: number | null = null;
+      let serverText = '';
+      let privilegedPortRejection = false;
+
+      try {
+        const readTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('read_timeout')), 3000)
+        );
+        const result = await Promise.race([reader.read(), readTimeout]);
+        if (!result.done && result.value && result.value.length > 0) {
+          serverByte = result.value[0];
+          serverText = decoder.decode(result.value).replace(/\0/g, '').trim();
+          if (serverByte !== 0) {
+            const lower = serverText.toLowerCase();
+            privilegedPortRejection = lower.includes('permiss') || lower.includes('privileged')
+              || lower.includes('reserved') || lower.includes('superuser');
+          }
+        }
+      } catch {
+        // No response is expected from many servers before command
+      }
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      const accepted = serverByte === 0;
+      return new Response(JSON.stringify({
+        success: true,
+        host, port,
+        portOpen: true,
+        accepted,
+        serverByte,
+        serverText: serverText || undefined,
+        privilegedPortRejection,
+        latencyMs,
+        note: privilegedPortRejection
+          ? 'RSH server rejected the unprivileged source port (>1023). This is expected in Workers. The server is running RSH.'
+          : accepted
+            ? 'RSH server accepted the handshake (null command, guest user).'
+            : serverText
+              ? `RSH server rejected with: "${serverText}"`
+              : 'RSH port open. Server did not immediately respond to probe handshake.',
+        security: 'RSH relies on .rhosts trust with no encryption. Use SSH instead.',
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      const latencyMs = Date.now() - start;
+      return new Response(JSON.stringify({
+        success: false,
+        host, port,
+        portOpen: false,
+        latencyMs,
+        error: err instanceof Error ? err.message : 'Connection failed',
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Open a persistent WebSocket tunnel for RSH sessions
  * Performs the RSH handshake, then pipes command output to the WebSocket
  */
@@ -313,5 +424,192 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
       JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
+  }
+}
+
+/**
+ * RSH trusted-user probe: test multiple localUser→remoteUser combinations
+ * to discover which .rhosts trust relationships exist on the server.
+ *
+ * Each pair is tested concurrently via a fresh RSH connection. Pairs that
+ * are accepted by the server confirm a .rhosts trust entry; the command
+ * output (default "id") reveals what uid/gid the session runs as.
+ *
+ * This is the standard RSH security audit technique — discovering which
+ * host/user pairs are trusted without needing credentials.
+ *
+ * POST /api/rsh/trust-scan
+ * Body: {
+ *   host: string,
+ *   port?: number,                    // default 514
+ *   localUsers?: string[],            // defaults: root, bin, daemon, guest, nobody, anonymous
+ *   remoteUsers?: string[],           // defaults: same as localUsers
+ *   command?: string,                 // default "id"
+ *   maxPairs?: number,                // cap on combinations tested (default 25)
+ *   timeout?: number,                 // overall timeout ms (default 20000)
+ * }
+ * Returns: {
+ *   results: [{localUser, remoteUser, command, accepted, output, error, privilegedPortRejection, rttMs}],
+ *   summary: {total, accepted, rejected, privilegedPortRejections, trustedPairs}
+ * }
+ */
+export async function handleRshTrustScan(request: Request): Promise<Response> {
+  const start = Date.now();
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      localUsers?: string[];
+      remoteUsers?: string[];
+      command?: string;
+      maxPairs?: number;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 514,
+      localUsers  = ['root', 'bin', 'daemon', 'guest', 'nobody', 'anonymous'],
+      remoteUsers,
+      command = 'id',
+      maxPairs = 25,
+      timeout = 20000,
+    } = body;
+
+    const remoteList = remoteUsers ?? localUsers;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Build test pairs (all combinations, capped)
+    const pairs: { localUser: string; remoteUser: string }[] = [];
+    outer: for (const lu of localUsers) {
+      for (const ru of remoteList) {
+        pairs.push({ localUser: lu, remoteUser: ru });
+        if (pairs.length >= maxPairs) break outer;
+      }
+    }
+
+    const enc = new TextEncoder();
+    const dec = new TextDecoder();
+
+    /** Try a single localUser→remoteUser pair via a fresh RSH connection. */
+    const tryPair = async (localUser: string, remoteUser: string) => {
+      const t0 = Date.now();
+      try {
+        const socket = connect(`${host}:${port}`);
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('connect timeout')), 5000)),
+        ]);
+
+        const reader = socket.readable.getReader();
+        const writer = socket.writable.getWriter();
+
+        try {
+          await writer.write(enc.encode('\0'));
+          await writer.write(enc.encode(`${localUser}\0`));
+          await writer.write(enc.encode(`${remoteUser}\0`));
+          await writer.write(enc.encode(`${command}\0`));
+
+          const { value, done } = await Promise.race([
+            reader.read(),
+            new Promise<{ value: undefined; done: true }>(res =>
+              setTimeout(() => res({ value: undefined, done: true }), 4000)),
+          ]);
+
+          const rttMs = Date.now() - t0;
+
+          if (done || !value) {
+            return { localUser, remoteUser, command, accepted: false, error: 'No response', privilegedPortRejection: false, rttMs };
+          }
+
+          if (value[0] === 0) {
+            // \0 = accepted — collect remaining output
+            let output = dec.decode(value).slice(1);
+            const deadline = Date.now() + 1500;
+            for (let i = 0; i < 6; i++) {
+              const { value: v, done: d } = await Promise.race([
+                reader.read(),
+                new Promise<{ value: undefined; done: true }>(res =>
+                  setTimeout(() => res({ value: undefined, done: true }), Math.max(50, deadline - Date.now()))),
+              ]);
+              if (d || !v) break;
+              output += dec.decode(v);
+            }
+            return { localUser, remoteUser, command, accepted: true, output: output.trim() || undefined, privilegedPortRejection: false, rttMs };
+          } else {
+            const msg = dec.decode(value).trim();
+            const isPriv = /permission denied|privileged port|reserved port|not superuser/i.test(msg);
+            return { localUser, remoteUser, command, accepted: false, error: msg || undefined, privilegedPortRejection: isPriv, rttMs };
+          }
+        } finally {
+          try { reader.releaseLock(); } catch { /* ignore */ }
+          try { writer.releaseLock(); } catch { /* ignore */ }
+          try { socket.close(); } catch { /* ignore */ }
+        }
+      } catch (e) {
+        return {
+          localUser, remoteUser, command, accepted: false,
+          error: e instanceof Error ? e.message : 'Connection failed',
+          privilegedPortRejection: false,
+          rttMs: Date.now() - t0,
+        };
+      }
+    };
+
+    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Probe timeout')), timeout));
+    const results = await Promise.race([
+      Promise.all(pairs.map(p => tryPair(p.localUser, p.remoteUser))),
+      tp,
+    ]);
+
+    const accepted  = results.filter(r => r.accepted);
+    const privRej   = results.filter(r => r.privilegedPortRejection);
+    const trustedPairs = accepted.map(r => `${r.localUser}→${r.remoteUser}`);
+
+    let note: string;
+    if (accepted.length > 0) {
+      note = `SECURITY: ${accepted.length} trusted pair(s) confirmed. Server has .rhosts entries for this host.`;
+    } else if (privRej.length > 0) {
+      note = `RSH active. All ${privRej.length} connection(s) rejected due to unprivileged source port (Cloudflare Workers cannot bind ports < 1024) — server is running RSH but requires privileged source ports.`;
+    } else {
+      note = 'No trusted pairs found. Server may require specific .rhosts entries for this source IP, or RSH is not listening.';
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      command,
+      pairsTestedCount: pairs.length,
+      results,
+      summary: {
+        total: results.length,
+        accepted: accepted.length,
+        rejected: results.length - accepted.length,
+        privilegedPortRejections: privRej.length,
+        trustedPairs,
+      },
+      note,
+      latencyMs: Date.now() - start,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      latencyMs: Date.now() - start,
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

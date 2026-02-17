@@ -304,3 +304,265 @@ export async function handleLspConnect(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Write a single LSP Content-Length framed message to the writer.
+ */
+async function sendLSPMessage(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  obj: unknown,
+): Promise<void> {
+  await writer.write(encodeLspMessage(obj));
+}
+
+/**
+ * Read one complete Content-Length framed LSP message from the reader.
+ * Accumulates bytes until a full message is available, then returns the
+ * parsed JSON and releases any leftover bytes into a remainder string.
+ */
+async function readLSPMessage(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  bufferRef: { value: string },
+  timeoutMs: number,
+): Promise<unknown> {
+  const decoder = new TextDecoder();
+
+  const deadline = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('LSP read timeout')), timeoutMs)
+  );
+
+  while (true) {
+    const parsed = parseLspMessage(bufferRef.value);
+    if (parsed) {
+      bufferRef.value = parsed.remaining;
+      return parsed.message;
+    }
+
+    const { value, done } = await Promise.race([reader.read(), deadline]);
+    if (done) throw new Error('Connection closed while waiting for LSP message');
+    if (value) {
+      bufferRef.value += decoder.decode(value, { stream: true });
+    }
+  }
+}
+
+interface LspSessionRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  rootUri?: string;
+  textDocumentUri?: string;
+  textDocumentContent?: string;
+  language?: string;
+}
+
+/**
+ * Handle a full LSP session:
+ * initialize → initialized → (optional) didOpen → hover → completion → shutdown → exit
+ */
+export async function handleLSPSession(request: Request): Promise<Response> {
+  let host: string | undefined;
+  try {
+    const body = await request.json() as LspSessionRequest;
+    host = body.host;
+    const port = body.port ?? 2087;
+    const timeout = body.timeout ?? 20000;
+    const rootUri = body.rootUri ?? null;
+    const textDocumentUri = body.textDocumentUri ?? null;
+    const textDocumentContent = body.textDocumentContent ?? '';
+    const language = body.language ?? 'plaintext';
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfResult = await checkIfCloudflare(host);
+    if (cfResult.isCloudflare) {
+      return new Response(JSON.stringify({
+        success: false,
+        cloudflare: true,
+        error: 'Host is protected by Cloudflare — direct TCP connection is not possible',
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const start = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const connectTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+    await Promise.race([socket.opened, connectTimeout]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    // Shared accumulation buffer passed by reference between readLSPMessage calls
+    const buf: { value: string } = { value: '' };
+    const msgTimeout = Math.min(timeout, 10000);
+
+    // 1. Send initialize
+    const initializeRequest = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        processId: null,
+        clientInfo: { name: 'PortOfCall', version: '1.0.0' },
+        capabilities: {
+          textDocument: {
+            synchronization: {},
+            completion: {},
+            hover: {},
+            definition: {},
+            references: {},
+            formatting: {},
+          },
+          workspace: {
+            workspaceFolders: true,
+            configuration: true,
+          },
+        },
+        rootUri,
+        workspaceFolders: null,
+      },
+    };
+    await sendLSPMessage(writer, initializeRequest);
+
+    // Read responses until we find the one with id=1
+    let initResult: LspInitializeResult | null = null;
+    while (!initResult) {
+      const msg = await readLSPMessage(reader, buf, msgTimeout) as {
+        id?: number;
+        result?: LspInitializeResult;
+        error?: { message: string };
+        method?: string;
+      };
+      if (msg.id === 1) {
+        if (msg.error) throw new Error(`Initialize error: ${msg.error.message}`);
+        initResult = msg.result ?? null;
+      }
+      // Skip notifications (no id) that arrive before the response
+    }
+
+    // 2. Send initialized notification
+    await sendLSPMessage(writer, {
+      jsonrpc: '2.0',
+      method: 'initialized',
+      params: {},
+    });
+
+    // 3. Optional: textDocument/didOpen
+    if (textDocumentUri) {
+      await sendLSPMessage(writer, {
+        jsonrpc: '2.0',
+        method: 'textDocument/didOpen',
+        params: {
+          textDocument: {
+            uri: textDocumentUri,
+            languageId: language,
+            version: 1,
+            text: textDocumentContent,
+          },
+        },
+      });
+    }
+
+    // 4. textDocument/hover (id=2)
+    const hoverTarget = textDocumentUri ?? 'file:///untitled';
+    await sendLSPMessage(writer, {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'textDocument/hover',
+      params: {
+        textDocument: { uri: hoverTarget },
+        position: { line: 0, character: 0 },
+      },
+    });
+
+    // 5. textDocument/completion (id=3)
+    await sendLSPMessage(writer, {
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'textDocument/completion',
+      params: {
+        textDocument: { uri: hoverTarget },
+        position: { line: 0, character: 0 },
+      },
+    });
+
+    // Collect responses for id=2 and id=3
+    let hoverResult: unknown = null;
+    let completionResult: unknown = null;
+
+    while (!hoverResult || !completionResult) {
+      let msg: { id?: number; result?: unknown; error?: { message: string }; method?: string };
+      try {
+        msg = await readLSPMessage(reader, buf, msgTimeout) as typeof msg;
+      } catch {
+        // Timeout waiting for hover/completion — server may not support them
+        break;
+      }
+      if (msg.id === 2) hoverResult = msg.result ?? null;
+      if (msg.id === 3) completionResult = msg.result ?? null;
+    }
+
+    // Count completion items
+    let completionItems = 0;
+    if (completionResult && typeof completionResult === 'object') {
+      const cr = completionResult as { items?: unknown[]; isIncomplete?: boolean } | unknown[];
+      if (Array.isArray(cr)) {
+        completionItems = cr.length;
+      } else if ('items' in cr && Array.isArray(cr.items)) {
+        completionItems = cr.items.length;
+      }
+    }
+
+    // 6. shutdown (id=4)
+    await sendLSPMessage(writer, { jsonrpc: '2.0', id: 4, method: 'shutdown', params: null });
+
+    // Wait for shutdown response (id=4), tolerating a timeout
+    try {
+      let shutdownDone = false;
+      while (!shutdownDone) {
+        const msg = await readLSPMessage(reader, buf, 5000) as { id?: number };
+        if (msg.id === 4) shutdownDone = true;
+      }
+    } catch {
+      // Ignore timeout on shutdown
+    }
+
+    // 7. exit notification (no id, no response expected)
+    await sendLSPMessage(writer, { jsonrpc: '2.0', method: 'exit', params: null });
+
+    const rtt = Date.now() - start;
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    const capabilities = initResult?.capabilities ?? {};
+    const capabilityList = extractCapabilityList(capabilities);
+
+    return new Response(JSON.stringify({
+      success: true,
+      initialized: true,
+      serverInfo: initResult?.serverInfo ?? null,
+      capabilities,
+      capabilityList,
+      hoverResult,
+      completionItems,
+      rtt,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'LSP session failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

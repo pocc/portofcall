@@ -161,6 +161,177 @@ export async function handleJetDirectConnect(request: Request): Promise<Response
 }
 
 /**
+ * Handle raw print job submission to a JetDirect/AppSocket printer.
+ *
+ * Sends data directly to port 9100. Accepts plain text, PCL, or PostScript.
+ * For plain text, wraps in minimal PCL reset/job boundaries so the printer
+ * knows where the job starts and ends.
+ */
+export async function handleJetDirectPrint(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      data: string;
+      format?: 'text' | 'pcl' | 'postscript' | 'raw';
+      timeout?: number;
+    };
+
+    const { host, port = 9100, data, format = 'text', timeout = 30000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!data) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'data is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Build the print payload based on format
+    let printPayload: string;
+    if (format === 'text') {
+      // Wrap plain text in PCL/PJL job boundaries
+      // UEL (Universal Exit Language) + PJL header + PCL reset + text + PCL reset + UEL
+      printPayload =
+        PJL_UEL +
+        '@PJL\r\n' +
+        '@PJL JOB NAME="portofcall"\r\n' +
+        '@PJL ENTER LANGUAGE=PCL\r\n' +
+        '\x1BE' +          // PCL printer reset
+        data +
+        '\x0C' +           // form feed (eject page)
+        '\x1BE' +          // PCL printer reset
+        PJL_UEL +
+        '@PJL EOJ\r\n' +
+        PJL_UEL;
+    } else if (format === 'pcl') {
+      // Wrap raw PCL in PJL job boundaries
+      printPayload =
+        PJL_UEL +
+        '@PJL\r\n' +
+        '@PJL JOB NAME="portofcall"\r\n' +
+        '@PJL ENTER LANGUAGE=PCL\r\n' +
+        data +
+        PJL_UEL +
+        '@PJL EOJ\r\n' +
+        PJL_UEL;
+    } else if (format === 'postscript') {
+      // Wrap PostScript in PJL job boundaries
+      printPayload =
+        PJL_UEL +
+        '@PJL\r\n' +
+        '@PJL JOB NAME="portofcall"\r\n' +
+        '@PJL ENTER LANGUAGE=POSTSCRIPT\r\n' +
+        data +
+        '\r\n' + PJL_UEL +
+        '@PJL EOJ\r\n' +
+        PJL_UEL;
+    } else {
+      // raw — send as-is
+      printPayload = data;
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    await Promise.race([socket.opened, timeoutPromise]);
+    const connectTime = Date.now() - startTime;
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    await writer.write(new TextEncoder().encode(printPayload));
+
+    // Wait briefly for any response (some printers send back status)
+    let responseText = '';
+    const readTimeout = 2000;
+    const readTimeoutPromise = new Promise<{ value: undefined; done: true }>((resolve) => {
+      setTimeout(() => resolve({ value: undefined, done: true }), readTimeout);
+    });
+
+    try {
+      const decoder = new TextDecoder();
+      while (true) {
+        const result = await Promise.race([reader.read(), readTimeoutPromise]);
+        if (result.done || !result.value) break;
+        responseText += decoder.decode(result.value, { stream: true });
+        if (responseText.length > 4096) break;
+      }
+    } catch {
+      // Read timeout — expected for most printers
+    }
+
+    const rtt = Date.now() - startTime;
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      rtt,
+      connectTime,
+      bytesSent: new TextEncoder().encode(printPayload).length,
+      format,
+      printerResponse: responseText || undefined,
+      message: `Print job sent (${format} format, ${new TextEncoder().encode(data).length} bytes of data)`,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
  * Parse PJL INFO responses
  */
 function parsePJLResponse(text: string): {

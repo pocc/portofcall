@@ -965,3 +965,702 @@ export async function handleKafkaMetadata(request: Request): Promise<Response> {
     );
   }
 }
+
+// ---------------------------------------------------------------------------
+// Kafka FetchRequest (consumer side)
+// ---------------------------------------------------------------------------
+
+interface KafkaRecord {
+  offset: string;
+  timestampMs: string;
+  key: string | null;
+  value: string | null;
+}
+
+/**
+ * Decode a zigzag-encoded varint (used in Kafka RecordBatch records).
+ * All variable-length fields in Record use zigzag encoding (same as protobuf SINT32/SINT64).
+ */
+function decodeVarint(data: Uint8Array, pos: number): { value: number; bytesRead: number } {
+  let raw = 0;
+  let shift = 0;
+  let bytesRead = 0;
+  while (pos + bytesRead < data.length) {
+    const b = data[pos + bytesRead];
+    bytesRead++;
+    raw |= (b & 0x7F) << shift;
+    shift += 7;
+    if ((b & 0x80) === 0) break;
+  }
+  // Zigzag decode: (raw >>> 1) XOR -(raw & 1)
+  const value = (raw >>> 1) ^ -(raw & 1);
+  return { value, bytesRead };
+}
+
+/**
+ * Parse all RecordBatch entries from a raw record-set byte slice.
+ * Handles magic=2 (RecordBatch, Kafka 0.11+). Stops after maxRecords records.
+ */
+function parseRecordBatches(data: Uint8Array, maxRecords: number): KafkaRecord[] {
+  const records: KafkaRecord[] = [];
+  const dec = new TextDecoder('utf-8', { fatal: false });
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let pos = 0;
+
+  while (pos + 12 < data.length && records.length < maxRecords) {
+    if (pos + 12 > data.length) break;
+    const baseOffset = dv.getBigInt64(pos); pos += 8;
+    const batchLength = dv.getInt32(pos); pos += 4;
+    if (batchLength <= 0 || pos + batchLength > data.length) break;
+    const batchEnd = pos + batchLength;
+
+    if (pos + 9 > batchEnd) { pos = batchEnd; continue; }
+    pos += 4; // partitionLeaderEpoch
+    const magic = dv.getInt8(pos); pos += 1;
+    pos += 4; // crc (skip validation)
+
+    if (magic !== 2) { pos = batchEnd; continue; }
+
+    if (pos + 30 > batchEnd) { pos = batchEnd; continue; }
+    pos += 2; // attributes
+    pos += 4; // lastOffsetDelta
+    const baseTimestamp = dv.getBigInt64(pos); pos += 8;
+    pos += 8; // maxTimestamp
+    pos += 8; // producerId
+    pos += 2; // producerEpoch
+    pos += 4; // baseSequence
+    const recordCount = dv.getInt32(pos); pos += 4;
+
+    for (let i = 0; i < recordCount && records.length < maxRecords; i++) {
+      if (pos >= batchEnd) break;
+      const lenDec = decodeVarint(data, pos); pos += lenDec.bytesRead;
+      const recordEnd = Math.min(pos + lenDec.value, batchEnd);
+      if (lenDec.value <= 0 || pos >= recordEnd) break;
+
+      pos += 1; // record attributes (INT8)
+      const tsDelta = decodeVarint(data, pos); pos += tsDelta.bytesRead;
+      const offDelta = decodeVarint(data, pos); pos += offDelta.bytesRead;
+
+      // key
+      const keyLen = decodeVarint(data, pos); pos += keyLen.bytesRead;
+      let key: string | null = null;
+      if (keyLen.value >= 0 && pos + keyLen.value <= recordEnd) {
+        key = dec.decode(data.slice(pos, pos + keyLen.value));
+        pos += keyLen.value;
+      }
+
+      // value
+      const valLen = decodeVarint(data, pos); pos += valLen.bytesRead;
+      let value: string | null = null;
+      if (valLen.value >= 0 && pos + valLen.value <= recordEnd) {
+        value = dec.decode(data.slice(pos, pos + valLen.value));
+        pos += valLen.value;
+      }
+
+      // headers (skip)
+      const hCount = decodeVarint(data, pos); pos += hCount.bytesRead;
+      for (let h = 0; h < hCount.value && pos < recordEnd; h++) {
+        const hkLen = decodeVarint(data, pos); pos += hkLen.bytesRead;
+        if (hkLen.value > 0) pos += hkLen.value;
+        const hvLen = decodeVarint(data, pos); pos += hvLen.bytesRead;
+        if (hvLen.value > 0) pos += hvLen.value;
+      }
+
+      records.push({
+        offset: (baseOffset + BigInt(offDelta.value)).toString(),
+        timestampMs: (baseTimestamp + BigInt(tsDelta.value)).toString(),
+        key,
+        value,
+      });
+
+      pos = recordEnd;
+    }
+
+    pos = batchEnd;
+  }
+
+  return records;
+}
+
+/**
+ * Build FetchRequest v4 (API key=1, version=4).
+ * v4 adds isolation_level; supported by Kafka 0.11+.
+ */
+function buildFetchRequest(
+  correlationId: number,
+  clientId: string,
+  topic: string,
+  partition: number,
+  fetchOffset: bigint,
+  maxBytes: number,
+  maxWaitMs: number,
+): Uint8Array {
+  const encoder = new TextEncoder();
+  const topicBytes = encoder.encode(topic);
+
+  // replica_id(4) + max_wait_ms(4) + min_bytes(4) + max_bytes(4) + isolation_level(1)
+  // + topics_len(4) + topic_name(2+N) + partitions_len(4) + partition(4) + fetch_offset(8) + part_max_bytes(4)
+  const payloadSize = 4 + 4 + 4 + 4 + 1 + 4 + (2 + topicBytes.length) + 4 + 4 + 8 + 4;
+  const payload = new Uint8Array(payloadSize);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+
+  view.setInt32(off, -1); off += 4;               // replica_id = -1 (consumer)
+  view.setInt32(off, maxWaitMs); off += 4;         // max_wait_ms
+  view.setInt32(off, 1); off += 4;                 // min_bytes = 1
+  view.setInt32(off, maxBytes); off += 4;          // max_bytes
+  view.setInt8(off, 0); off += 1;                  // isolation_level = 0 (READ_UNCOMMITTED)
+  view.setInt32(off, 1); off += 4;                 // topics array len = 1
+  view.setInt16(off, topicBytes.length); off += 2;
+  payload.set(topicBytes, off); off += topicBytes.length;
+  view.setInt32(off, 1); off += 4;                 // partitions array len = 1
+  view.setInt32(off, partition); off += 4;         // partition
+  view.setBigInt64(off, fetchOffset); off += 8;    // fetch_offset
+  view.setInt32(off, maxBytes); off += 4;          // partition_max_bytes
+
+  return buildKafkaRequest(1, 4, correlationId, clientId, payload);
+}
+
+/**
+ * Parse FetchResponse v4.
+ */
+function parseFetchResponse(view: DataView): {
+  correlationId: number;
+  throttleTimeMs: number;
+  topicName: string;
+  partition: number;
+  errorCode: number;
+  highWatermark: bigint;
+  lastStableOffset: bigint;
+  records: KafkaRecord[];
+} {
+  const dec = new TextDecoder();
+  let off = 0;
+
+  const correlationId = view.getInt32(off); off += 4;
+  const throttleTimeMs = view.getInt32(off); off += 4;
+  const topicCount = view.getInt32(off); off += 4;
+
+  // We only inspect the first topic / first partition
+  let topicName = '';
+  let partition = 0;
+  let errorCode = 0;
+  let highWatermark = BigInt(0);
+  let lastStableOffset = BigInt(0);
+  let records: KafkaRecord[] = [];
+
+  for (let t = 0; t < topicCount && off + 2 < view.byteLength; t++) {
+    const nameLen = view.getInt16(off); off += 2;
+    const name = dec.decode(new Uint8Array(view.buffer, view.byteOffset + off, nameLen));
+    off += nameLen;
+    if (t === 0) topicName = name;
+
+    const partCount = view.getInt32(off); off += 4;
+    for (let p = 0; p < partCount && off + 4 < view.byteLength; p++) {
+      const partId = view.getInt32(off); off += 4;
+      const ec = view.getInt16(off); off += 2;
+      const hw = view.getBigInt64(off); off += 8;
+      const lso = view.getBigInt64(off); off += 8;
+
+      // aborted_transactions array (v4+): INT32 count, each: producerId(8) + firstOffset(8)
+      const abortedCount = view.getInt32(off); off += 4;
+      if (abortedCount > 0) off += abortedCount * 16;
+
+      // record_set: INT32 size prefix
+      const rsSize = view.getInt32(off); off += 4;
+      let partRecords: KafkaRecord[] = [];
+      if (rsSize > 0 && off + rsSize <= view.byteLength) {
+        const slice = new Uint8Array(view.buffer, view.byteOffset + off, rsSize);
+        partRecords = parseRecordBatches(slice, 100);
+        off += rsSize;
+      } else if (rsSize > 0) {
+        off += rsSize;
+      }
+
+      if (t === 0 && p === 0) {
+        partition = partId;
+        errorCode = ec;
+        highWatermark = hw;
+        lastStableOffset = lso;
+        records = partRecords;
+      }
+    }
+  }
+
+  return { correlationId, throttleTimeMs, topicName, partition, errorCode, highWatermark, lastStableOffset, records };
+}
+
+/**
+ * Handle Kafka Fetch (consume) request.
+ * Reads messages from a topic partition starting at a given offset.
+ *
+ * Body: { host, port=9092, topic, partition=0, offset=0, maxWaitMs=1000, maxBytes=1048576, timeout=15000, clientId='portofcall' }
+ * Returns: { success, topic, partition, offset, highWatermark, lastStableOffset, records[], recordCount, throttleTimeMs, rtt }
+ */
+export async function handleKafkaFetch(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = (await request.json()) as {
+      host: string; port?: number; topic: string; partition?: number;
+      offset?: number; maxWaitMs?: number; maxBytes?: number;
+      timeout?: number; clientId?: string;
+    };
+
+    const {
+      host, port = 9092, topic, partition = 0,
+      offset = 0, maxWaitMs = 1000, maxBytes = 1048576,
+      timeout = 15000, clientId = 'portofcall',
+    } = body;
+
+    if (!host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!topic) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Topic is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      try {
+        const writer = socket.writable.getWriter();
+        const reader = socket.readable.getReader();
+
+        const fetchReq = buildFetchRequest(1, clientId, topic, partition, BigInt(offset), maxBytes, maxWaitMs);
+        await writer.write(fetchReq);
+
+        const responseView = await readKafkaResponse(reader, timeout);
+        const parsed = parseFetchResponse(responseView);
+        const rtt = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        const errorMessage = parsed.errorCode !== 0
+          ? (ERROR_CODES[parsed.errorCode] || `Error code ${parsed.errorCode}`)
+          : undefined;
+
+        return {
+          success: parsed.errorCode === 0,
+          host, port, topic,
+          partition: parsed.partition,
+          offset,
+          errorCode: parsed.errorCode,
+          errorMessage,
+          highWatermark: parsed.highWatermark.toString(),
+          lastStableOffset: parsed.lastStableOffset.toString(),
+          records: parsed.records,
+          recordCount: parsed.records.length,
+          throttleTimeMs: parsed.throttleTimeMs,
+          rtt,
+        };
+      } catch (err) {
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Fetch failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+// ─── Consumer Group APIs ─────────────────────────────────────────────────────
+
+/** Read a Kafka STRING (INT16 length-prefixed, UTF-8) from a DataView at offset. */
+function readKafkaString(view: DataView, offset: number): { value: string; newOffset: number } {
+  const len = view.getInt16(offset);
+  offset += 2;
+  if (len < 0) return { value: '', newOffset: offset }; // null string
+  const bytes = new Uint8Array(view.buffer, view.byteOffset + offset, len);
+  return { value: new TextDecoder().decode(bytes), newOffset: offset + len };
+}
+
+/** Read a Kafka BYTES (INT32 length-prefixed) from a DataView at offset. */
+function readKafkaBytes(view: DataView, offset: number): { length: number; newOffset: number } {
+  const len = view.getInt32(offset);
+  offset += 4;
+  if (len < 0) return { length: 0, newOffset: offset };
+  return { length: len, newOffset: offset + len };
+}
+
+/**
+ * Build a ListGroups v0 request (API key 16).
+ * No payload — just the standard request header.
+ */
+function buildListGroupsRequest(correlationId: number, clientId: string): Uint8Array {
+  return buildKafkaRequest(16, 0, correlationId, clientId);
+}
+
+/**
+ * Parse ListGroups v0 response.
+ * Format: correlationId(4) | error_code(2) | groups[]: group_id(STRING) + protocol_type(STRING)
+ */
+function parseListGroupsResponse(view: DataView): {
+  correlationId: number;
+  errorCode: number;
+  errorName: string;
+  groups: Array<{ groupId: string; protocolType: string }>;
+} {
+  let offset = 0;
+  const correlationId = view.getInt32(offset); offset += 4;
+  const errorCode = view.getInt16(offset);     offset += 2;
+  const groupCount = view.getInt32(offset);    offset += 4;
+
+  const groups: Array<{ groupId: string; protocolType: string }> = [];
+  for (let i = 0; i < groupCount && offset < view.byteLength; i++) {
+    const gid = readKafkaString(view, offset); offset = gid.newOffset;
+    const pt  = readKafkaString(view, offset); offset = pt.newOffset;
+    groups.push({ groupId: gid.value, protocolType: pt.value });
+  }
+
+  return { correlationId, errorCode, errorName: ERROR_CODES[errorCode] ?? 'NONE', groups };
+}
+
+/**
+ * Build a DescribeGroups v0 request (API key 15).
+ * Payload: INT32 count + STRING[] groupIds
+ */
+function buildDescribeGroupsRequest(correlationId: number, clientId: string, groupIds: string[]): Uint8Array {
+  const enc = new TextEncoder();
+  const encoded = groupIds.map(g => enc.encode(g));
+  let payloadSize = 4; // array count
+  for (const b of encoded) payloadSize += 2 + b.length;
+
+  const payload = new Uint8Array(payloadSize);
+  const dv = new DataView(payload.buffer);
+  let off = 0;
+  dv.setInt32(off, groupIds.length); off += 4;
+  for (let i = 0; i < encoded.length; i++) {
+    dv.setInt16(off, encoded[i].length); off += 2;
+    payload.set(encoded[i], off);       off += encoded[i].length;
+  }
+  return buildKafkaRequest(15, 0, correlationId, clientId, payload);
+}
+
+/**
+ * Parse DescribeGroups v0 response.
+ * For each group: error_code(2) + group_id(STRING) + state(STRING) + protocol_type(STRING)
+ *   + protocol(STRING) + members[]: member_id(STRING) + client_id(STRING) + client_host(STRING)
+ *     + member_metadata(BYTES) + member_assignment(BYTES)
+ */
+function parseDescribeGroupsResponse(view: DataView): {
+  correlationId: number;
+  groups: Array<{
+    errorCode: number;
+    groupId: string;
+    state: string;
+    protocolType: string;
+    protocol: string;
+    memberCount: number;
+    members: Array<{ memberId: string; clientId: string; clientHost: string }>;
+  }>;
+} {
+  let off = 0;
+  const correlationId = view.getInt32(off); off += 4;
+  const groupCount    = view.getInt32(off); off += 4;
+
+  const groups = [];
+  for (let g = 0; g < groupCount && off < view.byteLength; g++) {
+    const errorCode  = view.getInt16(off); off += 2;
+    const gid        = readKafkaString(view, off); off = gid.newOffset;
+    const state      = readKafkaString(view, off); off = state.newOffset;
+    const protoType  = readKafkaString(view, off); off = protoType.newOffset;
+    const proto      = readKafkaString(view, off); off = proto.newOffset;
+    const memberCount = view.getInt32(off); off += 4;
+
+    const members = [];
+    for (let m = 0; m < memberCount && off < view.byteLength; m++) {
+      const mid  = readKafkaString(view, off); off = mid.newOffset;
+      const cid  = readKafkaString(view, off); off = cid.newOffset;
+      const host = readKafkaString(view, off); off = host.newOffset;
+      // Skip member_metadata BYTES
+      const meta = readKafkaBytes(view, off); off = meta.newOffset;
+      // Skip member_assignment BYTES
+      const asgn = readKafkaBytes(view, off); off = asgn.newOffset;
+      members.push({ memberId: mid.value, clientId: cid.value, clientHost: host.value });
+    }
+
+    groups.push({ errorCode, groupId: gid.value, state: state.value,
+      protocolType: protoType.value, protocol: proto.value, memberCount, members });
+  }
+
+  return { correlationId, groups };
+}
+
+/**
+ * List all consumer groups on a Kafka broker.
+ * Uses ListGroups v0 (API key 16) — returns group ID and protocol type for each group.
+ * The foundation for consumer lag monitoring: get the group list, then DescribeGroups.
+ *
+ * POST /api/kafka/groups
+ * Body: { host, port=9092, timeout=15000, clientId="portofcall" }
+ */
+export async function handleKafkaListGroups(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as KafkaRequest;
+    const { host, port = 9092, timeout = 15000, clientId = 'portofcall' } = body;
+    if (!host) return Response.json({ success: false, error: 'host is required' }, { status: 400 });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return Response.json({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }, { status: 403 });
+    }
+
+    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      try {
+        await writer.write(buildListGroupsRequest(1, clientId));
+        const view = await readKafkaResponse(reader, timeout);
+        const parsed = parseListGroupsResponse(view);
+        writer.releaseLock(); reader.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+        return { success: true, host, port, latencyMs: Date.now() - startTime, ...parsed };
+      } catch (err) {
+        writer.releaseLock(); reader.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, tp]);
+    return Response.json(result);
+  } catch (err) {
+    return Response.json({ success: false, error: err instanceof Error ? err.message : 'ListGroups failed' }, { status: 500 });
+  }
+}
+
+/**
+ * Build a ListOffsets v1 request (API key 2).
+ * v1 returns a single (timestamp, offset) pair per partition (unlike v0 which had an array).
+ * timestamp: -1 = latest (end of log), -2 = earliest (start of log).
+ */
+function buildListOffsetsRequest(
+  correlationId: number,
+  clientId: string,
+  topic: string,
+  partition: number,
+  timestamp: bigint
+): Uint8Array {
+  const enc = new TextEncoder();
+  const topicBytes = enc.encode(topic);
+  // replica_id(4) + isolation_level(1) + topics_len(4) + topic(2+N) + partitions_len(4) + partition(4) + timestamp(8)
+  const payloadSize = 4 + 1 + 4 + (2 + topicBytes.length) + 4 + 4 + 8;
+  const payload = new Uint8Array(payloadSize);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setInt32(off, -1); off += 4;               // replica_id = -1 (consumer)
+  view.setInt8(off, 0); off += 1;                  // isolation_level = 0 (READ_UNCOMMITTED)
+  view.setInt32(off, 1); off += 4;                 // topics array len = 1
+  view.setInt16(off, topicBytes.length); off += 2;
+  payload.set(topicBytes, off); off += topicBytes.length;
+  view.setInt32(off, 1); off += 4;                 // partitions array len = 1
+  view.setInt32(off, partition); off += 4;         // partition index
+  view.setBigInt64(off, timestamp); off += 8;      // timestamp sentinel
+  return buildKafkaRequest(2, 1, correlationId, clientId, payload);
+}
+
+/**
+ * Parse ListOffsets v1 response.
+ * Format: correlationId(4) + throttle(4) + topics[]: topic(STRING) + partitions[]: partition(4) + error(2) + timestamp(8) + offset(8)
+ */
+function parseListOffsetsResponse(view: DataView): {
+  correlationId: number;
+  throttleTimeMs: number;
+  topicName: string;
+  partition: number;
+  errorCode: number;
+  timestamp: string;
+  offset: string;
+} {
+  const dec = new TextDecoder();
+  let off = 0;
+  const correlationId = view.getInt32(off); off += 4;
+  const throttleTimeMs = view.getInt32(off); off += 4;
+  const topicCount = view.getInt32(off); off += 4;
+
+  let topicName = '';
+  let partition = 0;
+  let errorCode = 0;
+  let timestamp = BigInt(0);
+  let offset = BigInt(0);
+
+  if (topicCount > 0 && off + 2 <= view.byteLength) {
+    const nameLen = view.getInt16(off); off += 2;
+    topicName = dec.decode(new Uint8Array(view.buffer, view.byteOffset + off, nameLen)); off += nameLen;
+    const partCount = view.getInt32(off); off += 4;
+    if (partCount > 0 && off + 4 <= view.byteLength) {
+      partition = view.getInt32(off); off += 4;
+      errorCode = view.getInt16(off); off += 2;
+      if (off + 8 <= view.byteLength) { timestamp = view.getBigInt64(off); off += 8; }
+      if (off + 8 <= view.byteLength) { offset = view.getBigInt64(off); off += 8; }
+    }
+  }
+
+  return { correlationId, throttleTimeMs, topicName, partition, errorCode,
+    timestamp: timestamp.toString(), offset: offset.toString() };
+}
+
+/**
+ * List partition offsets — earliest, latest, or at a specific timestamp.
+ * This is the prerequisite for meaningful Fetch calls: without knowing the current
+ * end offset you cannot compute consumer lag or start a targeted read.
+ *
+ * POST /api/kafka/offsets
+ * Body: { host, port=9092, topic, partition=0, timestamp=-1, timeout=15000, clientId="portofcall" }
+ *   timestamp: -1 = latest (high watermark), -2 = earliest (log start offset)
+ *              Unix ms timestamp = first offset at/after that time
+ * Returns: { success, topic, partition, offset, timestamp, errorCode }
+ */
+export async function handleKafkaListOffsets(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; topic: string; partition?: number;
+      timestamp?: number; timeout?: number; clientId?: string;
+    };
+    const { host, port = 9092, topic, partition = 0,
+      timestamp = -1, timeout = 15000, clientId = 'portofcall' } = body;
+
+    if (!host) return Response.json({ success: false, error: 'host is required' }, { status: 400 });
+    if (!topic) return Response.json({ success: false, error: 'topic is required' }, { status: 400 });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return Response.json({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }, { status: 403 });
+    }
+
+    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      try {
+        await writer.write(buildListOffsetsRequest(1, clientId, topic, partition, BigInt(timestamp)));
+        const view = await readKafkaResponse(reader, timeout);
+        const parsed = parseListOffsetsResponse(view);
+        writer.releaseLock(); reader.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+
+        const errorMessage = parsed.errorCode !== 0
+          ? (ERROR_CODES[parsed.errorCode] || `Error code ${parsed.errorCode}`)
+          : undefined;
+
+        return {
+          success: parsed.errorCode === 0,
+          host, port,
+          topic: parsed.topicName,
+          partition: parsed.partition,
+          errorCode: parsed.errorCode,
+          errorMessage,
+          timestamp: parsed.timestamp,
+          offset: parsed.offset,
+          latencyMs: Date.now() - startTime,
+        };
+      } catch (err) {
+        writer.releaseLock(); reader.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, tp]);
+    return Response.json(result);
+  } catch (err) {
+    return Response.json({ success: false, error: err instanceof Error ? err.message : 'ListOffsets failed' }, { status: 500 });
+  }
+}
+
+/**
+ * Describe one or more consumer groups on a Kafka broker.
+ * Uses DescribeGroups v0 (API key 15) — returns group state, protocol, and member list.
+ * Useful for understanding which consumers are active and which partitions they own.
+ *
+ * POST /api/kafka/group-describe
+ * Body: { host, port=9092, timeout=15000, clientId="portofcall", groupIds: string[] }
+ */
+export async function handleKafkaDescribeGroups(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as KafkaRequest & { groupIds?: string[] };
+    const { host, port = 9092, timeout = 15000, clientId = 'portofcall', groupIds = [] } = body;
+    if (!host) return Response.json({ success: false, error: 'host is required' }, { status: 400 });
+    if (groupIds.length === 0) return Response.json({ success: false, error: 'groupIds array is required' }, { status: 400 });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return Response.json({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }, { status: 403 });
+    }
+
+    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      try {
+        await writer.write(buildDescribeGroupsRequest(1, clientId, groupIds));
+        const view = await readKafkaResponse(reader, timeout);
+        const parsed = parseDescribeGroupsResponse(view);
+        writer.releaseLock(); reader.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+        return { success: true, host, port, latencyMs: Date.now() - startTime, ...parsed };
+      } catch (err) {
+        writer.releaseLock(); reader.releaseLock();
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, tp]);
+    return Response.json(result);
+  } catch (err) {
+    return Response.json({ success: false, error: err instanceof Error ? err.message : 'DescribeGroups failed' }, { status: 500 });
+  }
+}

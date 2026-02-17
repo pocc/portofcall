@@ -150,6 +150,64 @@ function flatArrayToObject(arr: unknown[]): Record<string, string> {
   return obj;
 }
 
+// ─── Additional Request/Response Types ───────────────────────────────────
+
+interface SentinelGetRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  masterName: string;
+}
+
+interface ReplicaInfo {
+  ip: string;
+  port: string;
+  flags: string;
+  lag: string;
+  linkStatus: string;
+}
+
+interface SentinelInfo {
+  ip: string;
+  port: string;
+  flags: string;
+}
+
+interface SentinelGetResponse {
+  success: boolean;
+  host: string;
+  port: number;
+  masterName: string;
+  replicas?: ReplicaInfo[];
+  sentinels?: SentinelInfo[];
+  rtt?: number;
+  error?: string;
+}
+
+interface SentinelGetMasterAddrRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  masterName: string;
+}
+
+interface MasterAddr {
+  ip: string;
+  port: string;
+}
+
+interface SentinelGetMasterAddrResponse {
+  success: boolean;
+  host: string;
+  port: number;
+  masterName: string;
+  masterAddr?: MasterAddr;
+  quorumOk?: boolean;
+  quorumMessage?: string;
+  rtt?: number;
+  error?: string;
+}
+
 // ─── Request/Response Types ──────────────────────────────────────────────
 
 interface SentinelProbeRequest {
@@ -515,5 +573,526 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+/**
+ * Query a Sentinel for replicas and other sentinels for a given master.
+ *
+ * Sends:
+ *   SENTINEL replicas {masterName}  — list of replicas
+ *   SENTINEL sentinels {masterName} — list of other sentinels in the quorum
+ *
+ * Returns structured replica/sentinel info including replication lag and
+ * link status so callers can assess cluster health without a separate
+ * SENTINEL masters probe.
+ */
+export async function handleSentinelGet(request: Request): Promise<Response> {
+  const body = await request.json() as SentinelGetRequest;
+  const { host, port: rawPort, timeout: rawTimeout, masterName } = body;
+
+  if (!host || !host.trim()) {
+    return new Response(JSON.stringify({
+      success: false,
+      host: host || '',
+      port: rawPort || DEFAULT_PORT,
+      masterName: masterName || '',
+      error: 'Host is required',
+    } satisfies SentinelGetResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (!masterName || !masterName.trim()) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port: rawPort || DEFAULT_PORT,
+      masterName: masterName || '',
+      error: 'masterName is required',
+    } satisfies SentinelGetResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port: rawPort || DEFAULT_PORT,
+      masterName,
+      error: 'Invalid host format',
+    } satisfies SentinelGetResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const port = rawPort || DEFAULT_PORT;
+  const timeout = Math.min(rawTimeout || 10000, 30000);
+
+  if (port < 1 || port > 65535) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      masterName,
+      error: 'Port must be between 1 and 65535',
+    } satisfies SentinelGetResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    await socket.opened;
+
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      // SENTINEL replicas {masterName}
+      await writer.write(encodeRESPArray(['SENTINEL', 'replicas', masterName]));
+      const replicasRaw = await readRESPFull(reader, timeout);
+      const replicasParsed = parseRESP(replicasRaw);
+
+      const replicas: ReplicaInfo[] = [];
+      if (Array.isArray(replicasParsed)) {
+        for (const entry of replicasParsed) {
+          if (Array.isArray(entry)) {
+            const obj = flatArrayToObject(entry);
+            replicas.push({
+              ip: obj['ip'] || obj['addr'] || '',
+              port: obj['port'] || '',
+              flags: obj['flags'] || '',
+              lag: obj['slave-repl-offset'] || obj['lag'] || '0',
+              linkStatus: obj['master-link-status'] || '',
+            });
+          }
+        }
+      }
+
+      // SENTINEL sentinels {masterName}
+      await writer.write(encodeRESPArray(['SENTINEL', 'sentinels', masterName]));
+      const sentinelsRaw = await readRESPFull(reader, timeout);
+      const sentinelsParsed = parseRESP(sentinelsRaw);
+
+      const sentinels: SentinelInfo[] = [];
+      if (Array.isArray(sentinelsParsed)) {
+        for (const entry of sentinelsParsed) {
+          if (Array.isArray(entry)) {
+            const obj = flatArrayToObject(entry);
+            sentinels.push({
+              ip: obj['ip'] || '',
+              port: obj['port'] || '',
+              flags: obj['flags'] || '',
+            });
+          }
+        }
+      }
+
+      const rtt = Date.now() - startTime;
+
+      try { await socket.close(); } catch {}
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        masterName,
+        replicas,
+        sentinels,
+        rtt,
+      } satisfies SentinelGetResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      try { await socket.close(); } catch {}
+      throw err;
+    }
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      masterName,
+      error: err instanceof Error ? err.message : 'Sentinel get failed',
+    } satisfies SentinelGetResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Resolve the current master address for a Sentinel-monitored group and
+ * verify quorum health.
+ *
+ * Sends:
+ *   SENTINEL get-master-addr-by-name {masterName}  — returns [ip, port]
+ *   SENTINEL ckquorum {masterName}                 — returns OK or error
+ *
+ * Useful for service-discovery clients that need to know which Redis
+ * instance is currently the master and whether a failover would succeed.
+ */
+export async function handleSentinelGetMasterAddr(request: Request): Promise<Response> {
+  const body = await request.json() as SentinelGetMasterAddrRequest;
+  const { host, port: rawPort, timeout: rawTimeout, masterName } = body;
+
+  if (!host || !host.trim()) {
+    return new Response(JSON.stringify({
+      success: false,
+      host: host || '',
+      port: rawPort || DEFAULT_PORT,
+      masterName: masterName || '',
+      error: 'Host is required',
+    } satisfies SentinelGetMasterAddrResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (!masterName || !masterName.trim()) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port: rawPort || DEFAULT_PORT,
+      masterName: masterName || '',
+      error: 'masterName is required',
+    } satisfies SentinelGetMasterAddrResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port: rawPort || DEFAULT_PORT,
+      masterName,
+      error: 'Invalid host format',
+    } satisfies SentinelGetMasterAddrResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const port = rawPort || DEFAULT_PORT;
+  const timeout = Math.min(rawTimeout || 10000, 30000);
+
+  if (port < 1 || port > 65535) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      masterName,
+      error: 'Port must be between 1 and 65535',
+    } satisfies SentinelGetMasterAddrResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    await socket.opened;
+
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      // SENTINEL get-master-addr-by-name {masterName}
+      await writer.write(encodeRESPArray(['SENTINEL', 'get-master-addr-by-name', masterName]));
+      const addrRaw = await readRESPFull(reader, timeout);
+      const addrParsed = parseRESP(addrRaw);
+
+      let masterAddr: MasterAddr | undefined;
+      if (Array.isArray(addrParsed) && addrParsed.length >= 2) {
+        masterAddr = {
+          ip: String(addrParsed[0]),
+          port: String(addrParsed[1]),
+        };
+      }
+
+      // SENTINEL ckquorum {masterName}
+      await writer.write(encodeRESPArray(['SENTINEL', 'ckquorum', masterName]));
+      const ckquorumRaw = await readRESPFull(reader, timeout);
+      const ckquorumParsed = parseRESP(ckquorumRaw);
+
+      // ckquorum returns "+OK N usable Sentinels..." on success or an error
+      let quorumOk = false;
+      let quorumMessage = '';
+      if (typeof ckquorumParsed === 'string') {
+        quorumOk = true;
+        quorumMessage = ckquorumParsed;
+      } else if (
+        ckquorumParsed !== null &&
+        typeof ckquorumParsed === 'object' &&
+        'error' in (ckquorumParsed as Record<string, unknown>)
+      ) {
+        quorumOk = false;
+        quorumMessage = (ckquorumParsed as Record<string, string>).error;
+      }
+
+      const rtt = Date.now() - startTime;
+
+      try { await socket.close(); } catch {}
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        masterName,
+        masterAddr,
+        quorumOk,
+        quorumMessage,
+        rtt,
+      } satisfies SentinelGetMasterAddrResponse), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      try { await socket.close(); } catch {}
+      throw err;
+    }
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      masterName,
+      error: err instanceof Error ? err.message : 'Sentinel get-master-addr failed',
+    } satisfies SentinelGetMasterAddrResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// ─── Sentinel Write Commands ─────────────────────────────────────────────────
+
+interface SentinelWriteRequest {
+  host: string;
+  port?: number;
+  password?: string;
+  timeout?: number;
+  masterName: string;
+  /** For sentinel-set: key and value to configure on the master */
+  key?: string;
+  value?: string;
+}
+
+interface SentinelWriteResponse {
+  success: boolean;
+  host: string;
+  port: number;
+  command: string;
+  masterName: string;
+  result?: unknown;
+  rtt?: number;
+  error?: string;
+}
+
+async function sentinelWriteCommand(
+  host: string,
+  port: number,
+  password: string | undefined,
+  timeout: number,
+  args: string[],
+): Promise<{ result: unknown; rtt: number }> {
+  const startTime = Date.now();
+  const socket = connect(`${host}:${port}`);
+  await socket.opened;
+
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
+
+  try {
+    if (password) {
+      await writer.write(encodeRESPArray(['AUTH', password]));
+      const authResp = await readRESPFull(reader, timeout);
+      if (!authResp.startsWith('+OK')) {
+        throw new Error('Authentication failed');
+      }
+    }
+
+    await writer.write(encodeRESPArray(args));
+    const resp = await readRESPFull(reader, timeout);
+    const result = parseRESP(resp);
+    const rtt = Date.now() - startTime;
+
+    try { await socket.close(); } catch {}
+
+    return { result, rtt };
+  } catch (err) {
+    try { await socket.close(); } catch {}
+    throw err;
+  }
+}
+
+/**
+ * Initiate a Sentinel failover for the given master.
+ *
+ * Sends: SENTINEL failover <masterName>
+ * This forces a failover even if the master is reachable. Requires that
+ * the Sentinel is configured to monitor the named master.
+ *
+ * POST /api/sentinel/failover
+ */
+export async function handleSentinelFailover(request: Request): Promise<Response> {
+  const body = await request.json() as SentinelWriteRequest;
+  const { host, port: rawPort, password, timeout: rawTimeout, masterName } = body;
+
+  if (!host?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!masterName?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'masterName is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const port = rawPort || DEFAULT_PORT;
+  const timeout = Math.min(rawTimeout || 15000, 30000);
+
+  try {
+    const { result, rtt } = await sentinelWriteCommand(host, port, password, timeout, [
+      'SENTINEL', 'failover', masterName,
+    ]);
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port,
+      command: `SENTINEL failover ${masterName}`,
+      masterName,
+      result,
+      rtt,
+    } satisfies SentinelWriteResponse), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false,
+      host, port,
+      command: `SENTINEL failover ${masterName}`,
+      masterName,
+      error: err instanceof Error ? err.message : 'Sentinel failover failed',
+    } satisfies SentinelWriteResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Reset all Sentinels monitoring the named master.
+ *
+ * Sends: SENTINEL reset <pattern>
+ * Resets the state of all masters matching pattern (glob). Each Sentinel
+ * re-discovers replicas and other sentinels from scratch.
+ *
+ * POST /api/sentinel/reset
+ */
+export async function handleSentinelReset(request: Request): Promise<Response> {
+  const body = await request.json() as SentinelWriteRequest;
+  const { host, port: rawPort, password, timeout: rawTimeout, masterName } = body;
+
+  if (!host?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!masterName?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'masterName (pattern) is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const port = rawPort || DEFAULT_PORT;
+  const timeout = Math.min(rawTimeout || 10000, 30000);
+
+  try {
+    const { result, rtt } = await sentinelWriteCommand(host, port, password, timeout, [
+      'SENTINEL', 'reset', masterName,
+    ]);
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port,
+      command: `SENTINEL reset ${masterName}`,
+      masterName,
+      result,
+      rtt,
+    } satisfies SentinelWriteResponse), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false,
+      host, port,
+      command: `SENTINEL reset ${masterName}`,
+      masterName,
+      error: err instanceof Error ? err.message : 'Sentinel reset failed',
+    } satisfies SentinelWriteResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Set a configuration parameter on a Sentinel-monitored master.
+ *
+ * Sends: SENTINEL set <masterName> <key> <value>
+ * Commonly used to adjust quorum, down-after-milliseconds, failover-timeout, etc.
+ *
+ * POST /api/sentinel/set
+ */
+export async function handleSentinelSet(request: Request): Promise<Response> {
+  const body = await request.json() as SentinelWriteRequest;
+  const { host, port: rawPort, password, timeout: rawTimeout, masterName, key, value } = body;
+
+  if (!host?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!masterName?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'masterName is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!key?.trim()) {
+    return new Response(JSON.stringify({ success: false, error: 'key is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (value === undefined || value === null) {
+    return new Response(JSON.stringify({ success: false, error: 'value is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const port = rawPort || DEFAULT_PORT;
+  const timeout = Math.min(rawTimeout || 10000, 30000);
+
+  try {
+    const { result, rtt } = await sentinelWriteCommand(host, port, password, timeout, [
+      'SENTINEL', 'set', masterName, key, value,
+    ]);
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port,
+      command: `SENTINEL set ${masterName} ${key} ${value}`,
+      masterName,
+      result,
+      rtt,
+    } satisfies SentinelWriteResponse), { headers: { 'Content-Type': 'application/json' } });
+  } catch (err) {
+    return new Response(JSON.stringify({
+      success: false,
+      host, port,
+      command: `SENTINEL set ${masterName} ${key} ${value}`,
+      masterName,
+      error: err instanceof Error ? err.message : 'Sentinel set failed',
+    } satisfies SentinelWriteResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

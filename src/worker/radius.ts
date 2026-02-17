@@ -809,3 +809,156 @@ export async function handleRadiusAuth(request: Request): Promise<Response> {
     );
   }
 }
+
+// ─── RADIUS Accounting ────────────────────────────────────────────────────────
+
+const ATTR_ACCT_STATUS_TYPE     = 40;  // Acct-Status-Type
+const ATTR_ACCT_INPUT_OCTETS    = 42;  // Acct-Input-Octets
+const ATTR_ACCT_OUTPUT_OCTETS   = 43;  // Acct-Output-Octets
+const ATTR_ACCT_SESSION_ID      = 44;  // Acct-Session-Id
+const ATTR_ACCT_SESSION_TIME    = 46;  // Acct-Session-Time
+const ATTR_ACCT_TERMINATE_CAUSE = 49;  // Acct-Terminate-Cause
+
+/**
+ * POST /api/radius/accounting
+ *
+ * Send a RADIUS Accounting-Request packet (RFC 2866) to an accounting server.
+ *
+ * Supports Start, Stop, and Interim-Update Acct-Status-Type values with
+ * configurable session statistics.  The Accounting Authenticator is computed per
+ * RFC 2866 §3:
+ *   MD5(Code + ID + Length + 16*0x00 + RequestAttributes + SharedSecret)
+ *
+ * Request body:
+ *   { host, port=1813, secret, username='test', sessionId?,
+ *     statusType='Start' | 'Stop' | 'Interim-Update',
+ *     nasIdentifier='portofcall', sessionTime?, inputOctets?, outputOctets?,
+ *     terminateCause?, timeout=10000 }
+ *
+ * Response:
+ *   { success, responseCode, responseCodeName, sessionId, statusType,
+ *     attributes, connectTimeMs, totalTimeMs }
+ */
+export async function handleRadiusAccounting(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; secret: string; timeout?: number;
+      username?: string; sessionId?: string; nasIdentifier?: string;
+      statusType?: string; sessionTime?: number;
+      inputOctets?: number; outputOctets?: number; terminateCause?: number;
+    };
+
+    const { host, port = 1813, secret, timeout = 10000 } = body;
+    const username      = body.username      ?? 'test';
+    const nasIdentifier = body.nasIdentifier ?? 'portofcall';
+    const statusTypeName = body.statusType   ?? 'Start';
+    const sessionId = body.sessionId
+      ?? `sess-${Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0')}`;
+    const statusTypeCode = statusTypeName === 'Stop'           ? 2
+                         : statusTypeName === 'Interim-Update' ? 3
+                         : 1; // Start
+
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+    if (!secret) return new Response(JSON.stringify({ success: false, error: 'Secret is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, isCloudflare: true,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+
+    const work = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const connectTime = Date.now() - startTime;
+
+      try {
+        const writer    = socket.writable.getWriter();
+        const reader    = socket.readable.getReader();
+        const identifier  = Math.floor(Math.random() * 256);
+        const secretBytes = new TextEncoder().encode(secret);
+
+        const attributes: Uint8Array[] = [
+          buildStringAttribute(ATTR_USER_NAME,       username),
+          buildStringAttribute(ATTR_NAS_IDENTIFIER,  nasIdentifier),
+          buildIntAttribute(ATTR_ACCT_STATUS_TYPE,   statusTypeCode),
+          buildStringAttribute(ATTR_ACCT_SESSION_ID, sessionId),
+          buildIntAttribute(ATTR_NAS_PORT_TYPE,      NAS_PORT_TYPE_VIRTUAL),
+          buildIntAttribute(ATTR_SERVICE_TYPE,       SERVICE_TYPE_LOGIN),
+        ];
+
+        if (body.sessionTime  !== undefined) attributes.push(buildIntAttribute(ATTR_ACCT_SESSION_TIME,    body.sessionTime));
+        if (body.inputOctets  !== undefined) attributes.push(buildIntAttribute(ATTR_ACCT_INPUT_OCTETS,    body.inputOctets));
+        if (body.outputOctets !== undefined) attributes.push(buildIntAttribute(ATTR_ACCT_OUTPUT_OCTETS,   body.outputOctets));
+        if (statusTypeCode === 2 && body.terminateCause !== undefined) {
+          attributes.push(buildIntAttribute(ATTR_ACCT_TERMINATE_CAUSE, body.terminateCause));
+        }
+
+        // Build packet with zero authenticator (RFC 2866 §3)
+        const packet = buildPacket(RADIUS_ACCOUNTING_REQUEST, identifier, new Uint8Array(16), attributes);
+
+        // RequestAuthenticator = MD5(packet-with-zeros + secret)
+        const md5Input = new Uint8Array(packet.length + secretBytes.length);
+        md5Input.set(packet);
+        md5Input.set(secretBytes, packet.length);
+        packet.set(md5(md5Input), 4); // overwrite bytes 4–19
+
+        await writer.write(packet);
+
+        const { data: hdr, leftover } = await readExactBytes(reader, 20);
+        const respLen = new DataView(hdr.buffer, hdr.byteOffset).getUint16(2, false);
+
+        let full: Uint8Array;
+        if (respLen > 20) {
+          const { data: tail } = await readExactBytes(reader, respLen - 20, leftover);
+          full = new Uint8Array(respLen);
+          full.set(hdr); full.set(tail, 20);
+        } else {
+          full = hdr;
+        }
+
+        const resp = parsePacket(full);
+        const totalTime = Date.now() - startTime;
+
+        writer.releaseLock(); reader.releaseLock(); await socket.close();
+
+        return {
+          success: resp.code === RADIUS_ACCOUNTING_RESPONSE,
+          host, port, username, sessionId, statusType: statusTypeName,
+          responseCode:     resp.code,
+          responseCodeName: resp.codeName,
+          attributes: resp.attributes.map(a => ({
+            type: a.type, typeName: a.typeName, length: a.length,
+            stringValue: a.stringValue ?? null, intValue: a.intValue ?? null,
+          })),
+          connectTimeMs: connectTime,
+          totalTimeMs:   totalTime,
+        };
+      } catch (err) {
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([
+      work,
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout)),
+    ]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Accounting failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

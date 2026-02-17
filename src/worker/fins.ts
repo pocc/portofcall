@@ -41,6 +41,20 @@ const MRC_CONTROLLER_DATA_READ = 0x05;   // Read controller data
 const SRC_CONTROLLER_MODEL = 0x01;       // Sub: read controller model
 const SRC_CONTROLLER_STATUS = 0x02;      // Sub: read controller status
 
+// Memory Area Read/Write commands
+const MRC_MEMORY_AREA_READ = 0x01;       // Main: Memory Area Read
+const SRC_MEMORY_AREA_READ = 0x01;       // Sub: Memory Area Read
+const SRC_MEMORY_AREA_WRITE = 0x02;      // Sub: Memory Area Write
+
+// Memory area codes (from FINS command reference)
+const MEMORY_AREAS: Record<string, number> = {
+  DM:  0x82,  // Data Memory (word access)
+  CIO: 0xB0,  // Core I/O (word access)
+  W:   0xB1,  // Work Area (word access)
+  H:   0xB2,  // Holding Area (word access)
+  AR:  0xB3,  // Auxiliary Relay Area (word access)
+};
+
 // FINS ICF flags
 const ICF_COMMAND = 0x80;  // Command (not response)
 const ICF_NEEDS_RESPONSE = 0x00; // Response required
@@ -434,6 +448,527 @@ export async function handleFINSConnect(request: Request): Promise<Response> {
         socket.close();
 
         return result;
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        throw error;
+      }
+    })();
+
+    const globalTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const result = await Promise.race([connectionPromise, globalTimeout]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Build a FINS Memory Area Read command frame (MRC=0x01, SRC=0x01)
+ *
+ * Command data layout (after 12-byte FINS header):
+ *   Memory Area Code (1) | Begin Address (2 BE) | Bit Position (1) | Item Count (2 BE)
+ */
+function buildMemoryAreaReadCommand(
+  destNode: number,
+  srcNode: number,
+  memoryAreaCode: number,
+  address: number,
+  bitPosition: number,
+  itemCount: number,
+): Uint8Array {
+  // FINS header (10 bytes) + MRC/SRC (2 bytes) + command data (6 bytes) = 18 bytes
+  const finsCmd = new Uint8Array(18);
+
+  // FINS command header
+  finsCmd[0] = ICF_COMMAND | ICF_NEEDS_RESPONSE;
+  finsCmd[1] = 0x00; // RSV
+  finsCmd[2] = 0x02; // GCT
+  finsCmd[3] = 0x00; // DNA (local network)
+  finsCmd[4] = destNode & 0xFF; // DA1
+  finsCmd[5] = 0x00; // DA2 (CPU unit)
+  finsCmd[6] = 0x00; // SNA
+  finsCmd[7] = srcNode & 0xFF; // SA1
+  finsCmd[8] = 0x00; // SA2
+  finsCmd[9] = 0x02; // SID
+  finsCmd[10] = MRC_MEMORY_AREA_READ; // MRC = 0x01
+  finsCmd[11] = SRC_MEMORY_AREA_READ; // SRC = 0x01
+
+  // Memory area code
+  finsCmd[12] = memoryAreaCode & 0xFF;
+  // Begin address (2 bytes, big-endian)
+  finsCmd[13] = (address >> 8) & 0xFF;
+  finsCmd[14] = address & 0xFF;
+  // Bit/element position (0x00 for word access)
+  finsCmd[15] = bitPosition & 0xFF;
+  // Item count (2 bytes, big-endian)
+  finsCmd[16] = (itemCount >> 8) & 0xFF;
+  finsCmd[17] = itemCount & 0xFF;
+
+  return buildFINSTCPFrame(CMD_FINS_FRAME, 0, finsCmd);
+}
+
+/**
+ * Parse a FINS Memory Area Read response payload.
+ *
+ * After the 10-byte FINS header + MRC/SRC + 2 end-code bytes (offset 14),
+ * the remaining data is word values (2 bytes each, big-endian).
+ */
+function parseMemoryAreaReadResponse(payload: Uint8Array): {
+  endCode: string;
+  data: number[];
+  hex: string[];
+} {
+  // payload starts at FINS header byte 0
+  if (payload.length < 14) {
+    return { endCode: 'PAYLOAD_TOO_SHORT', data: [], hex: [] };
+  }
+
+  const endCode1 = payload[12];
+  const endCode2 = payload[13];
+  const endCodeStr = `${endCode1.toString(16).padStart(2, '0')}${endCode2.toString(16).padStart(2, '0')}`.toUpperCase();
+
+  if (endCode1 !== 0x00 || endCode2 !== 0x00) {
+    return { endCode: endCodeStr, data: [], hex: [] };
+  }
+
+  // Words start at offset 14
+  const wordData = payload.slice(14);
+  const data: number[] = [];
+  const hex: string[] = [];
+
+  for (let i = 0; i + 1 < wordData.length; i += 2) {
+    const word = (wordData[i] << 8) | wordData[i + 1];
+    data.push(word);
+    hex.push(`0x${word.toString(16).padStart(4, '0').toUpperCase()}`);
+  }
+
+  return { endCode: endCodeStr, data, hex };
+}
+
+/**
+ * Build a FINS Memory Area Write command frame (MRC=0x01, SRC=0x02)
+ *
+ * Command data layout (after 12-byte FINS header):
+ *   Memory Area Code (1) | Begin Address (2 BE) | Bit Position (1) | Item Count (2 BE) | Data (itemCount * 2 bytes)
+ */
+function buildMemoryAreaWriteCommand(
+  destNode: number,
+  srcNode: number,
+  memoryAreaCode: number,
+  address: number,
+  bitPosition: number,
+  words: number[],
+): Uint8Array {
+  const itemCount = words.length;
+  // FINS header (10) + MRC/SRC (2) + area(1) + addr(2) + bit(1) + count(2) + data(itemCount*2)
+  const finsCmd = new Uint8Array(18 + itemCount * 2);
+
+  finsCmd[0] = ICF_COMMAND | ICF_NEEDS_RESPONSE;
+  finsCmd[1] = 0x00; // RSV
+  finsCmd[2] = 0x02; // GCT
+  finsCmd[3] = 0x00; // DNA
+  finsCmd[4] = destNode & 0xFF; // DA1
+  finsCmd[5] = 0x00; // DA2
+  finsCmd[6] = 0x00; // SNA
+  finsCmd[7] = srcNode & 0xFF; // SA1
+  finsCmd[8] = 0x00; // SA2
+  finsCmd[9] = 0x03; // SID
+  finsCmd[10] = MRC_MEMORY_AREA_READ;  // MRC = 0x01
+  finsCmd[11] = SRC_MEMORY_AREA_WRITE; // SRC = 0x02
+
+  finsCmd[12] = memoryAreaCode & 0xFF;
+  finsCmd[13] = (address >> 8) & 0xFF;
+  finsCmd[14] = address & 0xFF;
+  finsCmd[15] = bitPosition & 0xFF;
+  finsCmd[16] = (itemCount >> 8) & 0xFF;
+  finsCmd[17] = itemCount & 0xFF;
+
+  for (let i = 0; i < itemCount; i++) {
+    finsCmd[18 + i * 2] = (words[i] >> 8) & 0xFF;
+    finsCmd[18 + i * 2 + 1] = words[i] & 0xFF;
+  }
+
+  return buildFINSTCPFrame(CMD_FINS_FRAME, 0, finsCmd);
+}
+
+/**
+ * Parse a FINS Memory Area Write response payload.
+ * Success: end code 0000. Failure: non-zero end code.
+ */
+function parseMemoryAreaWriteResponse(payload: Uint8Array): { endCode: string; success: boolean } {
+  if (payload.length < 14) return { endCode: 'PAYLOAD_TOO_SHORT', success: false };
+  const endCode1 = payload[12];
+  const endCode2 = payload[13];
+  const endCodeStr = `${endCode1.toString(16).padStart(2, '0')}${endCode2.toString(16).padStart(2, '0')}`.toUpperCase();
+  return { endCode: endCodeStr, success: endCode1 === 0x00 && endCode2 === 0x00 };
+}
+
+/**
+ * Write to a memory area on an Omron FINS PLC
+ * POST /api/fins/memory-write
+ *
+ * Body: { host, port?, timeout?, memoryArea, address, bitPosition?, words }
+ *   memoryArea — one of: DM, CIO, W, H, AR
+ *   address    — starting word address (0–65535)
+ *   bitPosition — 0x00 for word access
+ *   words      — array of 16-bit word values to write (1–500 words)
+ */
+export async function handleFINSMemoryWrite(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      memoryArea: string;
+      address: number;
+      bitPosition?: number;
+      words: number[];
+    };
+
+    const {
+      host,
+      port = 9600,
+      timeout = 10000,
+      memoryArea,
+      address,
+      bitPosition = 0x00,
+      words,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!memoryArea || !(memoryArea.toUpperCase() in MEMORY_AREAS)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `memoryArea must be one of: ${Object.keys(MEMORY_AREAS).join(', ')}`,
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof address !== 'number' || address < 0 || address > 65535) {
+      return new Response(JSON.stringify({
+        success: false, error: 'address must be a number between 0 and 65535',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (!Array.isArray(words) || words.length < 1 || words.length > 500) {
+      return new Response(JSON.stringify({
+        success: false, error: 'words must be an array of 1–500 16-bit values',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    for (const w of words) {
+      if (typeof w !== 'number' || w < 0 || w > 0xFFFF) {
+        return new Response(JSON.stringify({
+          success: false, error: 'Each word value must be a number between 0 and 65535',
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const memoryAreaCode = MEMORY_AREAS[memoryArea.toUpperCase()];
+    const startTime = Date.now();
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      );
+
+      try {
+        // Step 1: Node address handshake
+        const nodeReq = buildNodeAddressRequest(0);
+        await writer.write(nodeReq);
+
+        const nodeResp = await readFINSFrame(reader, timeoutPromise);
+        if (!nodeResp) throw new Error('No response to node address request');
+
+        const nodeFrame = parseFINSTCPFrame(nodeResp);
+        if (!nodeFrame) throw new Error('Invalid FINS/TCP frame in node address response');
+        if (nodeFrame.errorCode !== 0) {
+          throw new Error(`FINS/TCP error: 0x${nodeFrame.errorCode.toString(16).padStart(8, '0')}`);
+        }
+
+        const nodeAddrs = parseNodeAddressResponse(nodeFrame.payload);
+        if (!nodeAddrs) throw new Error('Failed to parse node address response');
+
+        // Step 2: Send Memory Area Write command
+        const memWriteCmd = buildMemoryAreaWriteCommand(
+          nodeAddrs.serverNode,
+          nodeAddrs.clientNode,
+          memoryAreaCode,
+          address,
+          bitPosition,
+          words,
+        );
+        await writer.write(memWriteCmd);
+
+        const memWriteResp = await readFINSFrame(reader, timeoutPromise);
+        if (!memWriteResp) throw new Error('No response to Memory Area Write command');
+
+        const memFrame = parseFINSTCPFrame(memWriteResp);
+        if (!memFrame) throw new Error('Invalid FINS/TCP frame in memory write response');
+        if (memFrame.errorCode !== 0) {
+          throw new Error(`FINS/TCP transport error: 0x${memFrame.errorCode.toString(16).padStart(8, '0')}`);
+        }
+
+        const { endCode, success } = parseMemoryAreaWriteResponse(memFrame.payload);
+        const rtt = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        return {
+          success,
+          host,
+          port,
+          memoryArea: memoryArea.toUpperCase(),
+          memoryAreaCode: `0x${memoryAreaCode.toString(16).padStart(2, '0').toUpperCase()}`,
+          address,
+          bitPosition,
+          wordCount: words.length,
+          words: words.map(w => `0x${w.toString(16).padStart(4, '0').toUpperCase()}`),
+          endCode,
+          rtt,
+          ...(success ? {} : { error: `FINS end code error: ${endCode}` }),
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        throw error;
+      }
+    })();
+
+    const globalTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const result = await Promise.race([connectionPromise, globalTimeout]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Read a memory area from an Omron FINS PLC
+ * POST /api/fins/memory-read
+ *
+ * Performs the FINS/TCP handshake then issues a Memory Area Read (0101) command.
+ * Returns the word values at the requested address range.
+ */
+export async function handleFINSMemoryRead(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      memoryArea: string;
+      address: number;
+      bitPosition?: number;
+      itemCount?: number;
+    };
+
+    const {
+      host,
+      port = 9600,
+      timeout = 10000,
+      memoryArea,
+      address,
+      bitPosition = 0x00,
+      itemCount = 1,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!memoryArea || !(memoryArea.toUpperCase() in MEMORY_AREAS)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `memoryArea must be one of: ${Object.keys(MEMORY_AREAS).join(', ')}`,
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof address !== 'number' || address < 0 || address > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'address must be a number between 0 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (itemCount < 1 || itemCount > 500) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'itemCount must be between 1 and 500',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const memoryAreaCode = MEMORY_AREAS[memoryArea.toUpperCase()];
+    const startTime = Date.now();
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      );
+
+      try {
+        // Step 1: Node address handshake
+        const nodeReq = buildNodeAddressRequest(0);
+        await writer.write(nodeReq);
+
+        const nodeResp = await readFINSFrame(reader, timeoutPromise);
+        if (!nodeResp) throw new Error('No response to node address request');
+
+        const nodeFrame = parseFINSTCPFrame(nodeResp);
+        if (!nodeFrame) throw new Error('Invalid FINS/TCP frame in node address response');
+        if (nodeFrame.errorCode !== 0) {
+          throw new Error(`FINS/TCP error: 0x${nodeFrame.errorCode.toString(16).padStart(8, '0')}`);
+        }
+
+        const nodeAddrs = parseNodeAddressResponse(nodeFrame.payload);
+        if (!nodeAddrs) throw new Error('Failed to parse node address response');
+
+        // Step 2: Send Memory Area Read command
+        const memReadCmd = buildMemoryAreaReadCommand(
+          nodeAddrs.serverNode,
+          nodeAddrs.clientNode,
+          memoryAreaCode,
+          address,
+          bitPosition,
+          itemCount,
+        );
+        await writer.write(memReadCmd);
+
+        const memReadResp = await readFINSFrame(reader, timeoutPromise);
+        if (!memReadResp) throw new Error('No response to Memory Area Read command');
+
+        const memFrame = parseFINSTCPFrame(memReadResp);
+        if (!memFrame) throw new Error('Invalid FINS/TCP frame in memory read response');
+        if (memFrame.errorCode !== 0) {
+          throw new Error(`FINS/TCP transport error: 0x${memFrame.errorCode.toString(16).padStart(8, '0')}`);
+        }
+
+        const { endCode, data, hex } = parseMemoryAreaReadResponse(memFrame.payload);
+
+        const rtt = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        if (endCode !== '0000') {
+          return {
+            success: false,
+            host,
+            port,
+            memoryArea: memoryArea.toUpperCase(),
+            address,
+            itemCount,
+            rtt,
+            endCode,
+            error: `FINS end code error: ${endCode}`,
+          };
+        }
+
+        return {
+          success: true,
+          host,
+          port,
+          memoryArea: memoryArea.toUpperCase(),
+          memoryAreaCode: `0x${memoryAreaCode.toString(16).padStart(2, '0').toUpperCase()}`,
+          address,
+          bitPosition,
+          itemCount,
+          data,
+          hex,
+          rtt,
+        };
       } catch (error) {
         writer.releaseLock();
         reader.releaseLock();

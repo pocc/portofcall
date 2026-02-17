@@ -1,699 +1,437 @@
-# BGP Protocol Implementation Plan
+# BGP — Border Gateway Protocol
 
-## Overview
-
-**Protocol:** BGP (Border Gateway Protocol)
 **Port:** 179 (TCP)
-**RFC:** [RFC 4271](https://tools.ietf.org/html/rfc4271)
-**Complexity:** Very High
-**Purpose:** Internet routing protocol
+**RFC:** 4271 (BGP-4), 6793 (4-Octet AS), 4760 (Multiprotocol Extensions), 2385 (TCP MD5)
+**Implementation:** `src/worker/bgp.ts`
+**Routes:** `POST /api/bgp/connect`, `POST /api/bgp/announce`, `POST /api/bgp/route-table`
 
-BGP provides **path-vector routing** - the protocol that makes the Internet work, exchanging routing information between autonomous systems (AS), with policy-based routing and path selection.
+---
 
-### Use Cases
-- Internet backbone routing
-- ISP peering
-- Multi-homed networks
-- Route filtering and policy
-- Traffic engineering
-- Network monitoring and analysis
+## Endpoints
 
-## Protocol Specification
+### `POST /api/bgp/connect`
 
-### Connection Establishment
+Sends a BGP OPEN (without capability optional parameters), then reads the peer's response and optionally confirms the session with a KEEPALIVE exchange.
 
-```
-1. TCP connection to port 179
-2. OPEN message exchange
-3. KEEPALIVE message exchange
-4. UPDATE messages (route advertisements)
-5. Periodic KEEPALIVE
-6. NOTIFICATION (on error)
-```
+**Request**
 
-### Message Types
-
-```
-1 - OPEN
-2 - UPDATE
-3 - NOTIFICATION
-4 - KEEPALIVE
-```
-
-### Message Format
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-+                          Marker (16 bytes)                    +
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|          Length               |      Type     |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-### OPEN Message
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|    Version    |     My AS     |           Hold Time           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         BGP Identifier                        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-| Opt Parm Len  |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|             Optional Parameters (variable)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-### UPDATE Message
-
-```
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|   Unfeasible Routes Length (2 octets)                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|   Withdrawn Routes (variable)                                 |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|   Total Path Attribute Length (2 octets)                      |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|   Path Attributes (variable)                                  |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|   Network Layer Reachability Information (variable)           |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-### Path Attributes
-
-```
-1 - ORIGIN
-2 - AS_PATH
-3 - NEXT_HOP
-4 - MULTI_EXIT_DISC
-5 - LOCAL_PREF
-6 - ATOMIC_AGGREGATE
-7 - AGGREGATOR
-8 - COMMUNITY
-9 - ORIGINATOR_ID
-10 - CLUSTER_LIST
-14 - MP_REACH_NLRI (Multiprotocol)
-15 - MP_UNREACH_NLRI (Multiprotocol)
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/bgp/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface BGPConfig {
-  host: string;
-  port?: number;
-  localAS: number;
-  remoteAS: number;
-  routerId: string; // IP address format
-  holdTime?: number;
+```json
+{
+  "host":     "192.0.2.1",     // required
+  "port":     179,              // default 179
+  "localAS":  65000,           // default 65000; must be 1–65535
+  "routerId": "10.0.0.1",      // default "10.0.0.1"; dotted-decimal IPv4
+  "holdTime": 90,              // default 90 seconds
+  "timeout":  10000            // ms, default 10000
 }
+```
 
-// Message Types
-export enum MessageType {
-  OPEN = 1,
-  UPDATE = 2,
-  NOTIFICATION = 3,
-  KEEPALIVE = 4,
+**`localAS` validation:** rejected if > 65535. Use `/api/bgp/announce` or `/api/bgp/route-table` for 4-byte ASNs.
+
+**Response — peer sent OPEN**
+
+```json
+{
+  "success":            true,
+  "host":               "192.0.2.1",
+  "port":               179,
+  "rtt":                142,
+  "connectTime":        38,
+  "peerOpen": {
+    "version":          4,
+    "peerAS":           65001,
+    "holdTime":         90,
+    "routerId":         "192.0.2.1",
+    "capabilities":     ["Multiprotocol Extensions", "Route Refresh", "4-Octet AS Number"]
+  },
+  "sessionEstablished": true
 }
-
-// BGP States
-export enum BGPState {
-  Idle = 0,
-  Connect = 1,
-  Active = 2,
-  OpenSent = 3,
-  OpenConfirm = 4,
-  Established = 5,
-}
-
-// Path Attribute Types
-export enum PathAttributeType {
-  ORIGIN = 1,
-  AS_PATH = 2,
-  NEXT_HOP = 3,
-  MULTI_EXIT_DISC = 4,
-  LOCAL_PREF = 5,
-  ATOMIC_AGGREGATE = 6,
-  AGGREGATOR = 7,
-  COMMUNITY = 8,
-}
-
-export interface BGPRoute {
-  prefix: string;
-  prefixLength: number;
-  asPath: number[];
-  nextHop: string;
-  origin?: number;
-  localPref?: number;
-  med?: number;
-  communities?: number[];
-}
-
-export class BGPClient {
-  private socket: any;
-  private state: BGPState = BGPState.Idle;
-  private routes: BGPRoute[] = [];
-  private keepaliveTimer?: any;
-
-  constructor(private config: BGPConfig) {
-    if (!config.port) config.port = 179;
-    if (!config.holdTime) config.holdTime = 180;
-  }
-
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
-
-    this.state = BGPState.Connect;
-
-    // Send OPEN message
-    await this.sendOpen();
-    this.state = BGPState.OpenSent;
-
-    // Start message loop
-    this.messageLoop();
-  }
-
-  private async sendOpen(): Promise<void> {
-    const buffer = new ArrayBuffer(29); // Minimum OPEN size
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Marker (16 bytes of 0xFF)
-    for (let i = 0; i < 16; i++) {
-      view.setUint8(offset++, 0xFF);
-    }
-
-    // Length
-    view.setUint16(offset, 29, false);
-    offset += 2;
-
-    // Type (OPEN)
-    view.setUint8(offset++, MessageType.OPEN);
-
-    // Version
-    view.setUint8(offset++, 4); // BGP-4
-
-    // My Autonomous System
-    view.setUint16(offset, this.config.localAS, false);
-    offset += 2;
-
-    // Hold Time
-    view.setUint16(offset, this.config.holdTime!, false);
-    offset += 2;
-
-    // BGP Identifier (Router ID as IP)
-    const routerIdParts = this.config.routerId.split('.').map(Number);
-    for (const part of routerIdParts) {
-      view.setUint8(offset++, part);
-    }
-
-    // Optional Parameters Length
-    view.setUint8(offset++, 0);
-
-    await this.send(new Uint8Array(buffer));
-  }
-
-  private async sendKeepalive(): Promise<void> {
-    const buffer = new ArrayBuffer(19);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Marker
-    for (let i = 0; i < 16; i++) {
-      view.setUint8(offset++, 0xFF);
-    }
-
-    // Length
-    view.setUint16(offset, 19, false);
-    offset += 2;
-
-    // Type (KEEPALIVE)
-    view.setUint8(offset++, MessageType.KEEPALIVE);
-
-    await this.send(new Uint8Array(buffer));
-  }
-
-  private async messageLoop(): Promise<void> {
-    while (true) {
-      try {
-        const message = await this.receiveMessage();
-        await this.handleMessage(message);
-      } catch (error) {
-        console.error('BGP error:', error);
-        break;
-      }
-    }
-  }
-
-  private async handleMessage(message: Uint8Array): Promise<void> {
-    const type = message[18] as MessageType;
-
-    switch (type) {
-      case MessageType.OPEN:
-        await this.handleOpen(message);
-        break;
-
-      case MessageType.UPDATE:
-        await this.handleUpdate(message);
-        break;
-
-      case MessageType.KEEPALIVE:
-        await this.handleKeepalive();
-        break;
-
-      case MessageType.NOTIFICATION:
-        await this.handleNotification(message);
-        break;
-    }
-  }
-
-  private async handleOpen(message: Uint8Array): Promise<void> {
-    const view = new DataView(message.buffer);
-
-    const version = view.getUint8(19);
-    const remoteAS = view.getUint16(20, false);
-    const holdTime = view.getUint16(22, false);
-
-    // Extract Router ID
-    const routerId = `${view.getUint8(24)}.${view.getUint8(25)}.${view.getUint8(26)}.${view.getUint8(27)}`;
-
-    console.log(`BGP OPEN from AS${remoteAS}, Router ID: ${routerId}`);
-
-    if (this.state === BGPState.OpenSent) {
-      // Send KEEPALIVE to confirm
-      await this.sendKeepalive();
-      this.state = BGPState.OpenConfirm;
-    } else if (this.state === BGPState.OpenConfirm) {
-      this.state = BGPState.Established;
-      this.startKeepaliveTimer();
-      console.log('BGP session established');
-    }
-  }
-
-  private async handleUpdate(message: Uint8Array): Promise<void> {
-    const view = new DataView(message.buffer);
-    let offset = 19; // Skip header
-
-    // Withdrawn Routes Length
-    const withdrawnLength = view.getUint16(offset, false);
-    offset += 2;
-
-    // Skip withdrawn routes
-    offset += withdrawnLength;
-
-    // Total Path Attribute Length
-    const pathAttrLength = view.getUint16(offset, false);
-    offset += 2;
-
-    // Parse Path Attributes
-    const attributes = this.parsePathAttributes(message.slice(offset, offset + pathAttrLength));
-    offset += pathAttrLength;
-
-    // Parse NLRI (Network Layer Reachability Information)
-    const nlri = this.parseNLRI(message.slice(offset));
-
-    // Add routes
-    for (const prefix of nlri) {
-      this.routes.push({
-        prefix: prefix.prefix,
-        prefixLength: prefix.length,
-        asPath: attributes.asPath || [],
-        nextHop: attributes.nextHop || '',
-        origin: attributes.origin,
-        localPref: attributes.localPref,
-        med: attributes.med,
-        communities: attributes.communities,
-      });
-    }
-
-    console.log(`Received ${nlri.length} route(s)`);
-  }
-
-  private parsePathAttributes(data: Uint8Array): {
-    origin?: number;
-    asPath?: number[];
-    nextHop?: string;
-    med?: number;
-    localPref?: number;
-    communities?: number[];
-  } {
-    const attributes: any = {};
-    const view = new DataView(data.buffer);
-    let offset = 0;
-
-    while (offset < data.length) {
-      const flags = view.getUint8(offset++);
-      const typeCode = view.getUint8(offset++) as PathAttributeType;
-
-      let length: number;
-      if (flags & 0x10) { // Extended Length
-        length = view.getUint16(offset, false);
-        offset += 2;
-      } else {
-        length = view.getUint8(offset++);
-      }
-
-      const value = data.slice(offset, offset + length);
-      offset += length;
-
-      switch (typeCode) {
-        case PathAttributeType.ORIGIN:
-          attributes.origin = value[0];
-          break;
-
-        case PathAttributeType.AS_PATH:
-          attributes.asPath = this.parseASPath(value);
-          break;
-
-        case PathAttributeType.NEXT_HOP:
-          attributes.nextHop = `${value[0]}.${value[1]}.${value[2]}.${value[3]}`;
-          break;
-
-        case PathAttributeType.MULTI_EXIT_DISC:
-          attributes.med = new DataView(value.buffer).getUint32(0, false);
-          break;
-
-        case PathAttributeType.LOCAL_PREF:
-          attributes.localPref = new DataView(value.buffer).getUint32(0, false);
-          break;
-
-        case PathAttributeType.COMMUNITY:
-          attributes.communities = this.parseCommunities(value);
-          break;
-      }
-    }
-
-    return attributes;
-  }
-
-  private parseASPath(data: Uint8Array): number[] {
-    const asPath: number[] = [];
-    const view = new DataView(data.buffer);
-    let offset = 0;
-
-    while (offset < data.length) {
-      const segmentType = view.getUint8(offset++);
-      const segmentLength = view.getUint8(offset++);
-
-      for (let i = 0; i < segmentLength; i++) {
-        const asn = view.getUint16(offset, false);
-        offset += 2;
-        asPath.push(asn);
-      }
-    }
-
-    return asPath;
-  }
-
-  private parseCommunities(data: Uint8Array): number[] {
-    const communities: number[] = [];
-    const view = new DataView(data.buffer);
-
-    for (let i = 0; i < data.length; i += 4) {
-      const community = view.getUint32(i, false);
-      communities.push(community);
-    }
-
-    return communities;
-  }
-
-  private parseNLRI(data: Uint8Array): Array<{ prefix: string; length: number }> {
-    const nlri: Array<{ prefix: string; length: number }> = [];
-    let offset = 0;
-
-    while (offset < data.length) {
-      const prefixLength = data[offset++];
-      const byteLength = Math.ceil(prefixLength / 8);
-
-      const prefixBytes = new Uint8Array(4);
-      prefixBytes.set(data.slice(offset, offset + byteLength), 0);
-      offset += byteLength;
-
-      const prefix = `${prefixBytes[0]}.${prefixBytes[1]}.${prefixBytes[2]}.${prefixBytes[3]}`;
-
-      nlri.push({ prefix, length: prefixLength });
-    }
-
-    return nlri;
-  }
-
-  private async handleKeepalive(): Promise<void> {
-    if (this.state === BGPState.OpenConfirm) {
-      this.state = BGPState.Established;
-      this.startKeepaliveTimer();
-      console.log('BGP session established');
-    }
-
-    // Reset keepalive timer
-    this.resetKeepaliveTimer();
-  }
-
-  private async handleNotification(message: Uint8Array): Promise<void> {
-    const view = new DataView(message.buffer);
-    const errorCode = view.getUint8(19);
-    const errorSubcode = view.getUint8(20);
-
-    console.error(`BGP NOTIFICATION: Error ${errorCode}.${errorSubcode}`);
-
-    this.state = BGPState.Idle;
-  }
-
-  private startKeepaliveTimer(): void {
-    const interval = (this.config.holdTime! / 3) * 1000;
-
-    this.keepaliveTimer = setInterval(async () => {
-      if (this.state === BGPState.Established) {
-        await this.sendKeepalive();
-      }
-    }, interval);
-  }
-
-  private resetKeepaliveTimer(): void {
-    if (this.keepaliveTimer) {
-      clearInterval(this.keepaliveTimer);
-      this.startKeepaliveTimer();
-    }
-  }
-
-  getRoutes(): BGPRoute[] {
-    return this.routes;
-  }
-
-  getState(): BGPState {
-    return this.state;
-  }
-
-  private async receiveMessage(): Promise<Uint8Array> {
-    const reader = this.socket.readable.getReader();
-
-    // Read marker + length (18 bytes)
-    const headerBuf = new Uint8Array(18);
-    let offset = 0;
-
-    while (offset < 18) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = 18 - offset;
-      const toCopy = Math.min(remaining, value.length);
-      headerBuf.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    // Parse length
-    const view = new DataView(headerBuf.buffer);
-    const length = view.getUint16(16, false);
-
-    // Read rest of message
-    const messageBuf = new Uint8Array(length);
-    messageBuf.set(headerBuf, 0);
-    offset = 18;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = length - offset;
-      const toCopy = Math.min(remaining, value.length);
-      messageBuf.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    reader.releaseLock();
-    return messageBuf;
-  }
-
-  private async send(data: Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  async close(): Promise<void> {
-    if (this.keepaliveTimer) {
-      clearInterval(this.keepaliveTimer);
-    }
-
-    await this.socket.close();
-    this.state = BGPState.Idle;
+```
+
+`sessionEstablished` is `true` only if the peer sent a KEEPALIVE after we replied with our KEEPALIVE. The KEEPALIVE read uses a hardcoded 3 s timeout — a slow peer gets `sessionEstablished: false` even if the session is actually valid.
+
+**Response — peer sent NOTIFICATION**
+
+```json
+{
+  "success":            true,
+  "host":               "192.0.2.1",
+  "port":               179,
+  "rtt":                55,
+  "connectTime":        12,
+  "peerOpen":           null,
+  "sessionEstablished": false,
+  "notification": {
+    "errorCode":    2,
+    "errorSubcode": 2,
+    "errorName":    "OPEN Message Error",
+    "errorDetail":  "Bad Peer AS"
   }
 }
 ```
 
-## Web UI Design
+**`success: true` even for NOTIFICATION:** The connect endpoint returns `success: true` whenever TCP connects — regardless of whether a NOTIFICATION was received. Check `peerOpen !== null` to confirm the session was accepted, and check `notification` to understand why it was rejected.
 
-```typescript
-// src/components/BGPClient.tsx
+**Response — TCP connected but no BGP message**
 
-export function BGPClient() {
-  const [host, setHost] = useState('');
-  const [localAS, setLocalAS] = useState(65000);
-  const [remoteAS, setRemoteAS] = useState(65001);
-  const [routerId, setRouterId] = useState('192.168.1.1');
-  const [state, setState] = useState('Idle');
-  const [routes, setRoutes] = useState<any[]>([]);
-
-  const connect = async () => {
-    const ws = new WebSocket('/api/bgp/connect');
-
-    ws.onopen = () => {
-      ws.send(JSON.stringify({
-        host,
-        localAS,
-        remoteAS,
-        routerId,
-      }));
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === 'state') {
-        setState(data.state);
-      } else if (data.type === 'routes') {
-        setRoutes(data.routes);
-      }
-    };
-  };
-
-  return (
-    <div className="bgp-client">
-      <h2>BGP Client</h2>
-
-      <div className="config">
-        <input placeholder="BGP Peer Host" value={host} onChange={(e) => setHost(e.target.value)} />
-        <input type="number" placeholder="Local AS" value={localAS} onChange={(e) => setLocalAS(Number(e.target.value))} />
-        <input type="number" placeholder="Remote AS" value={remoteAS} onChange={(e) => setRemoteAS(Number(e.target.value))} />
-        <input placeholder="Router ID" value={routerId} onChange={(e) => setRouterId(e.target.value)} />
-        <button onClick={connect}>Connect</button>
-      </div>
-
-      <div className="status">
-        <h3>BGP State: <span className={state === 'Established' ? 'established' : ''}>{state}</span></h3>
-      </div>
-
-      <div className="routes">
-        <h3>Received Routes ({routes.length})</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Prefix</th>
-              <th>AS Path</th>
-              <th>Next Hop</th>
-            </tr>
-          </thead>
-          <tbody>
-            {routes.map((route, i) => (
-              <tr key={i}>
-                <td>{route.prefix}/{route.prefixLength}</td>
-                <td>{route.asPath.join(' ')}</td>
-                <td>{route.nextHop}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="info">
-        <h3>About BGP</h3>
-        <ul>
-          <li>Border Gateway Protocol (RFC 4271)</li>
-          <li>Makes the Internet work</li>
-          <li>Path-vector routing protocol</li>
-          <li>Policy-based routing</li>
-          <li>Autonomous System (AS) path</li>
-          <li>TCP port 179</li>
-        </ul>
-      </div>
-    </div>
-  );
+```json
+{
+  "success": true,
+  "peerOpen": null,
+  "sessionEstablished": false,
+  "notification": null
 }
 ```
 
-## Security
+This can happen if the peer's BGP process is not running (port open by firewall) or if the first read times out.
 
-### MD5 Authentication
+**OPEN sent:** Without capability parameters — bare OPEN with version=4, My AS (2 bytes), Hold Time, Router ID, OptParamLen=0. Many modern peers advertise capabilities in their OPEN but do not require them in ours.
 
-```typescript
-// BGP supports MD5 authentication
-// Configured on both peers
+**Single read:** The handler calls `reader.read()` once. If the peer's OPEN spans two TCP segments (uncommon but possible on high-latency paths), the response is truncated and `parseBGPMessage` returns null.
+
+---
+
+### `POST /api/bgp/announce`
+
+Sends a minimal BGP OPEN and returns the peer's raw response — focused on peer identification (AS number, router ID, capabilities) rather than session establishment.
+
+**Request**
+
+```json
+{
+  "host":     "192.0.2.1",   // required
+  "port":     179,            // default 179
+  "localAS":  64512,         // default 64512; 1–4294967295 accepted
+  "holdTime": 180,           // default 180 seconds
+  "timeout":  10000          // ms, default 10000
+}
 ```
 
-### Route Filtering
+Note: `routerId` is not accepted — hardcoded to `10.0.0.1`.
 
-```typescript
-// Apply prefix filters, AS path filters, community filters
+**4-byte AS behaviour:** accepts full 32-bit ASNs in validation (`1–4294967295`), but only the low 16 bits are placed in the My AS field of the OPEN. No capability 65 (4-Octet AS) is advertised. A peer configured for AS 131072 would receive `AS 0` (131072 & 0xFFFF = 0), which is invalid — use `/api/bgp/route-table` for 4-byte AS peering.
+
+**Response — OPEN received**
+
+```json
+{
+  "success":      true,
+  "type":         "OPEN",
+  "peerAS":       65001,
+  "holdTime":     90,
+  "bgpId":        "192.0.2.1",
+  "capabilities": ["Route Refresh", "4-Octet AS Number", "ADD-PATH"],
+  "raw":          "ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff 00 2d 01 ...",
+  "latencyMs":    87
+}
 ```
 
-## Testing
+Note: field is `bgpId` here (vs `routerId` in `/connect` — inconsistency).
+
+**Response — NOTIFICATION received**
+
+```json
+{
+  "success":     false,
+  "type":        "NOTIFICATION",
+  "errorCode":   2,
+  "errorSubCode": 2,
+  "errorName":   "OPEN Message Error",
+  "errorDetail": "Bad Peer AS",
+  "raw":         "ff ff ... 00 15 03 02 02",
+  "latencyMs":   43
+}
+```
+
+Note: field is `errorSubCode` (capital C) here vs `errorSubcode` (lowercase c) in `/connect` — inconsistency.
+
+**Response — no BGP message**
+
+```json
+{
+  "success":   false,
+  "type":      "NONE",
+  "raw":       "ff ff ... (sent OPEN hex)",
+  "latencyMs": 10001,
+  "error":     "No response received from peer within timeout"
+}
+```
+
+When `type: "NONE"`, `raw` contains the hex of what we *sent* (the OPEN), not what we received.
+
+**Single read:** Same limitation as `/connect` — one `reader.read()` call, no buffering. Split responses produce `type: "NONE"`.
+
+---
+
+### `POST /api/bgp/route-table`
+
+Establishes a full BGP session with capabilities, then collects UPDATE messages for a configurable window to build a route snapshot.
+
+**Request**
+
+```json
+{
+  "host":       "192.0.2.1",   // required
+  "port":       179,            // default 179
+  "localAS":    65000,         // default 65000
+  "routerId":   "10.0.0.1",   // default "10.0.0.1"
+  "holdTime":   90,            // default 90; seconds
+  "collectMs":  5000,          // ms to collect routes after session open; max 30000
+  "maxRoutes":  1000,          // stop collecting at this many routes; max 10000
+  "timeout":    30000          // overall timeout ms; default 30000
+}
+```
+
+**`collectMs` and `maxRoutes` caps:** values above 30000 ms / 10000 routes are silently capped. A full Internet routing table (≈1 million prefixes) requires much longer; plan for multiple calls or route server access.
+
+**Session flow:**
+
+```
+→ OPEN (with caps: Multiprotocol IPv4/Unicast, Route Refresh, 4-Octet AS)
+← OPEN (peer)
+→ KEEPALIVE
+← KEEPALIVE  (session Established)
+← UPDATE … UPDATE … KEEPALIVE … UPDATE …  (collectMs window)
+  (during window: each peer KEEPALIVE is echoed)
+← socket.close()
+```
+
+**Fixed 10 s window for session open:** the time between sending our OPEN and receiving the peer's OPEN is capped at 10 s regardless of `timeout`. If the peer is slow to respond, the session fails with `"No BGP OPEN received from peer"`.
+
+**4-byte AS support in OPEN:** for `localAS > 65535`, places AS_TRANS (23456) in the My AS field and the full 32-bit ASN in capability 65.
+
+**Response (success)**
+
+```json
+{
+  "success":    true,
+  "latencyMs":  8423,
+  "peerOpen": {
+    "peerAS":       65001,
+    "holdTime":     90,
+    "routerId":     "192.0.2.1",
+    "capabilities": ["Multiprotocol Extensions", "Route Refresh", "4-Octet AS Number"]
+  },
+  "session": {
+    "keepaliveCount":    3,
+    "updateCount":       212,
+    "collectDurationMs": 5000
+  },
+  "routes": [
+    {
+      "prefix":    "10.0.0.0/8",
+      "withdrawn": false,
+      "origin":    "IGP",
+      "asPath":    "65001 65100",
+      "asList":    [65001, 65100],
+      "nextHop":   "192.0.2.1",
+      "med":       0,
+      "localPref": 100
+    }
+  ],
+  "withdrawnRoutes": [
+    { "prefix": "10.1.0.0/24", "withdrawn": true }
+  ],
+  "routeCount":    847,
+  "withdrawnCount": 12
+}
+```
+
+**Response (failure — peer sent NOTIFICATION)**
+
+```json
+{
+  "success":   false,
+  "latencyMs": 34,
+  "error":     "Peer sent NOTIFICATION: OPEN Message Error — Bad Peer AS"
+}
+```
+
+---
+
+## BGP Message Reference
+
+| Type | Code | Direction | Notes |
+|------|------|-----------|-------|
+| OPEN | 1 | → ← | Connection setup; version, AS, hold time, router ID, optional params |
+| UPDATE | 2 | ← | Route advertisements and withdrawals |
+| NOTIFICATION | 3 | ← | Error — peer closes session |
+| KEEPALIVE | 4 | → ← | Heartbeat; must be exchanged within hold time |
+
+### OPEN Optional Parameters
+
+Capability optional parameter (type 2) decoded by `parseCapabilities()`:
+
+| Cap code | Name |
+|----------|------|
+| 1 | Multiprotocol Extensions |
+| 2 | Route Refresh |
+| 64 | Graceful Restart |
+| 65 | 4-Octet AS Number |
+| 69 | ADD-PATH |
+| 70 | Enhanced Route Refresh |
+| 71 | Long-Lived Graceful Restart |
+| 73 | FQDN Capability |
+| 128 | Route Refresh (old Cisco) |
+
+Other codes appear as `Capability(<code>)`.
+
+### NOTIFICATION Error Codes
+
+| Code | Name | Common subcodes |
+|------|------|----------------|
+| 1 | Message Header Error | 1=Connection Not Synchronized, 2=Bad Message Length, 3=Bad Message Type |
+| 2 | OPEN Message Error | 1=Unsupported Version, 2=Bad Peer AS, 3=Bad BGP Identifier, 4=Unsupported Optional Parameter, 6=Unacceptable Hold Time, 7=Unsupported Capability |
+| 3 | UPDATE Message Error | 1=Malformed Attribute List, 2=Unrecognized Well-known Attribute, 3=Missing Well-known Attribute, … |
+| 4 | Hold Timer Expired | — |
+| 5 | Finite State Machine Error | — |
+| 6 | Cease | 1=Maximum Prefixes Reached, 2=Administrative Shutdown, 6=Other Config Change, 8=Hard Reset |
+
+---
+
+## Path Attribute Reference
+
+Decoded by `parseUpdateMessage()` from UPDATE messages:
+
+| Code | Name | Decoded field | Format |
+|------|------|---------------|--------|
+| 1 | ORIGIN | `origin` | `"IGP"`, `"EGP"`, or `"INCOMPLETE"` |
+| 2 | AS_PATH | `asPath`, `asList` | String of ASNs; sets `{...}` for AS_SET segments |
+| 3 | NEXT_HOP | `nextHop` | Dotted-decimal IPv4 |
+| 4 | MULTI_EXIT_DISC | `med` | uint32 |
+| 5 | LOCAL_PREF | `localPref` | uint32 |
+| 6 | ATOMIC_AGGREGATE | — | Sets `attributes.atomicAggregate: true` |
+| 7 | AGGREGATOR | — | `attributes.aggregator: {as, ip}` |
+| 8 | COMMUNITY | — | **Not decoded** — missing from switch |
+
+Attributes not in this table (MP_REACH_NLRI, MP_UNREACH_NLRI, AS4_PATH, LARGE_COMMUNITY, etc.) are silently skipped.
+
+---
+
+## Known Limitations
+
+### 1. AS_PATH parsed as 2-byte ASNs
+
+The UPDATE parser reads AS_PATH segments assuming 2-byte per-AS entries (`avView.getUint16(sp, false); sp += 2`). When `/route-table` advertises capability 65 (4-Octet AS) and the peer responds in kind, AS_PATH entries are 4-byte. The parser misreads them as pairs of 2-byte ASNs, producing garbled AS paths.
+
+Workaround: set `localAS` to a 2-byte ASN value and don't rely on the peer sending 4-byte AS_PATH encoding. Use `raw` hex inspection for authoritative AS path data (not exposed in `/route-table`).
+
+### 2. COMMUNITY attribute not decoded
+
+Path attribute type 8 (COMMUNITY, RFC 1997) is absent from the `parseUpdateMessage` switch. Community values are dropped silently. Routes with no-export or no-advertise communities are not identifiable from the JSON output.
+
+### 3. No TCP MD5 authentication
+
+BGP peering between ISPs and route servers typically requires TCP MD5 signatures (RFC 2385), implemented via the `TCP_MD5SIG` socket option. This is an OS-level feature unavailable in Cloudflare Workers. Any peer requiring MD5 will drop the TCP SYN silently (it arrives without the MD5 signature).
+
+### 4. `success: true` for NOTIFICATION and empty responses in `/connect`
+
+`/connect` returns `success: true` as long as TCP connected. A NOTIFICATION (peer rejected the session) and a completely empty response both return `success: true`. Use `peerOpen !== null` to test for a positive OPEN and `notification` to inspect rejections.
+
+### 5. `/announce` truncates 4-byte ASNs
+
+The My AS field in OPEN is 2 bytes. For `localAS > 65535`, only `localAS & 0xFFFF` is placed in the field, producing an invalid or incorrect AS number. No 4-octet AS capability is advertised. Use `/route-table` for actual 4-byte AS peering.
+
+### 6. Single `reader.read()` in `/connect` and `/announce`
+
+Both handlers call `reader.read()` exactly once. A BGP OPEN that arrives in two TCP segments (rare, but possible over high-latency or MTU-limited paths) causes the first chunk to fail the marker check and the endpoint returns no parsed OPEN. `/route-table` handles split packets correctly.
+
+### 7. Hard-coded 10 s OPEN deadline in `/route-table`
+
+The window to receive the peer's OPEN is fixed at 10 s from the source, independent of the `timeout` parameter. Slow BGP speakers (common on heavily loaded route servers) may exceed this, causing `"No BGP OPEN received from peer"` even with `timeout: 30000`.
+
+### 8. No UPDATE sending / no prefix announcement
+
+There is no endpoint to advertise prefixes to a peer. All three handlers are receive-only. BGP route injection (for testing or anycast) is not supported.
+
+### 9. `collectMs` and `maxRoutes` silently capped
+
+Values above 30 s / 10000 routes are capped without an error. A full Internet table from a public route server requires 3–5+ minutes of collection and millions of routes.
+
+### 10. Field naming inconsistency
+
+| Field | `/connect` | `/announce` |
+|-------|-----------|-------------|
+| Peer router ID | `peerOpen.routerId` | `bgpId` |
+| NOTIFICATION subcode | `errorSubcode` | `errorSubCode` |
+
+---
+
+## curl Examples
 
 ```bash
-# Test with BIRD or GoBGP
+# Quick connectivity check
+curl -s -X POST https://portofcall.ross.gg/api/bgp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"route-server.example.net","localAS":65000}' | jq .
 
-# BIRD configuration
-protocol bgp peer1 {
-  local as 65000;
-  neighbor 192.168.1.2 as 65001;
-  ipv4 {
-    import all;
-    export all;
-  };
-}
+# Peer identification (capabilities, router ID)
+curl -s -X POST https://portofcall.ross.gg/api/bgp/announce \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.0.2.1","localAS":64512}' | jq '{type,peerAS,bgpId,capabilities}'
 
-# GoBGP
-gobgpd -f gobgpd.conf
+# Collect up to 500 routes for 3 seconds
+curl -s -X POST https://portofcall.ross.gg/api/bgp/route-table \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"route-server.example.net","localAS":65000,"routerId":"10.0.0.1","collectMs":3000,"maxRoutes":500}' \
+  | jq '{routeCount,withdrawnCount,routes:.routes[:5]}'
 
-# View routes
-gobgp global rib
+# Inspect peer capabilities and session open only (collectMs=0)
+curl -s -X POST https://portofcall.ross.gg/api/bgp/route-table \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"route-server.example.net","localAS":65000,"collectMs":0}' \
+  | jq '{peerOpen,session}'
 ```
 
-## Resources
+---
 
-- **RFC 4271**: [BGP-4](https://tools.ietf.org/html/rfc4271)
-- **BIRD**: [BIRD Internet Routing Daemon](https://bird.network.cz/)
-- **GoBGP**: [Go BGP implementation](https://osrg.github.io/gobgp/)
+## Local Testing
 
-## Notes
+**GoBGP (recommended — simple config file)**
 
-- **Very complex** - production implementation requires careful design
-- **TCP-based** - reliable transport
-- **Path-vector** - uses AS path for loop prevention
-- **Policy-based** - route filtering, preference
-- **Scalability** - handles 800k+ routes
-- **Slow convergence** - designed for stability over speed
-- **Security** - Route hijacking, prefix filtering critical
-- **Used by ISPs** - Internet backbone routing
-- **AS numbers** - 16-bit (1-65535) or 32-bit
-- **BGP communities** - route tagging for policy
+```bash
+# Install: go install github.com/osrg/gobgp/v3/cmd/gobgpd@latest
+# gobgpd.conf:
+[global.config]
+  as = 65001
+  router-id = "192.0.2.1"
+[[neighbors]]
+  [neighbors.config]
+    neighbor-address = "127.0.0.1"
+    peer-as = 65000
+
+gobgpd -f gobgpd.conf
+
+# Test against it:
+curl -s -X POST https://portofcall.ross.gg/api/bgp/announce \
+  -d '{"host":"YOUR_PUBLIC_IP","localAS":65000}' | jq .
+```
+
+**BIRD**
+
+```
+protocol bgp portofcall {
+  local as 65001;
+  neighbor 0.0.0.0 as 65000;    # accept from any peer
+  ipv4 { import all; export all; };
+}
+```
+
+**Public route servers (read-only, no MD5)**
+
+Many IXPs operate BGP route servers with open peering. Check PeeringDB for route server IPs in your region. Most require your router ID to resolve to your network's IP space and may reject OPEN with "Bad BGP Identifier" if it doesn't.
+
+---
+
+## BGP State Machine (Simplified)
+
+```
+Idle → Connect: TCP SYN sent
+Connect → OpenSent: TCP established, OPEN sent
+OpenSent → OpenConfirm: peer OPEN received, KEEPALIVE sent
+OpenConfirm → Established: peer KEEPALIVE received
+Established: UPDATE/KEEPALIVE exchange
+Any state → Idle: NOTIFICATION received or error
+```
+
+The implementation does not maintain explicit state — each endpoint is a single request/response exchange. `/connect` and `/announce` reach at most OpenConfirm; `/route-table` reaches Established and stays there for `collectMs`.

@@ -460,3 +460,202 @@ export async function handleVarnishCommand(request: Request): Promise<Response> 
     });
   }
 }
+
+
+// === Write Command Handlers ===
+
+interface VarnishWriteRequest {
+  host: string;
+  port?: number;
+  secret: string;
+  timeout?: number;
+}
+
+interface VarnishBanRequest extends VarnishWriteRequest {
+  expr: string;
+}
+
+interface VarnishParamRequest extends VarnishWriteRequest {
+  name: string;
+  value: string;
+}
+
+interface VarnishWriteResponse {
+  success: boolean;
+  host?: string;
+  port?: number;
+  command?: string;
+  statusCode?: number;
+  body?: string;
+  authenticated?: boolean;
+  rtt?: number;
+  error?: string;
+}
+
+/**
+ * Shared helper: authenticate to Varnish CLI and run a single write command.
+ * Follows the same connect/auth flow as handleVarnishCommand.
+ */
+async function runVarnishWrite(
+  host: string,
+  port: number,
+  secret: string,
+  command: string,
+  timeout: number,
+): Promise<{ statusCode: number; body: string; rtt: number }> {
+  const socket = connect(`${host}:${port}`);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+  await Promise.race([socket.opened, timeoutPromise]);
+  const startTime = Date.now();
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+  try {
+    const bannerText = await readVcliResponse(reader, timeout);
+    const bannerParsed = parseVcliResponse(bannerText);
+    if (!bannerParsed) throw new Error('Failed to parse server banner');
+    if (bannerParsed.status === 107) {
+      const challenge = bannerParsed.body.trim();
+      const authHash = await computeAuthResponse(challenge, secret);
+      await writer.write(new TextEncoder().encode(`auth ${authHash}\n`));
+      const authText = await readVcliResponse(reader, timeout);
+      const authParsed = parseVcliResponse(authText);
+      if (!authParsed || authParsed.status !== 200) {
+        throw new Error(`Authentication failed (status ${authParsed?.status})`);
+      }
+    } else if (bannerParsed.status !== 200) {
+      throw new Error(`Unexpected banner status: ${bannerParsed.status}`);
+    }
+    await writer.write(new TextEncoder().encode(`${command}\n`));
+    const cmdText = await readVcliResponse(reader, timeout);
+    const rtt = Date.now() - startTime;
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+    const cmdParsed = parseVcliResponse(cmdText);
+    if (!cmdParsed) throw new Error('Failed to parse command response');
+    return { statusCode: cmdParsed.status, body: cmdParsed.body, rtt };
+  } catch (err) {
+    try { writer.releaseLock(); } catch { /* ignore */ }
+    try { reader.releaseLock(); } catch { /* ignore */ }
+    socket.close();
+    throw err;
+  }
+}
+
+/**
+ * Handle Varnish ban -- authenticate then run ban {expr}.
+ * POST body: { host, port?, secret, expr, timeout? }
+ */
+export async function handleVarnishBan(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as VarnishBanRequest;
+    const { host, port = 6082, secret, timeout = 15000 } = body;
+    const expr = body.expr;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!secret) {
+      return new Response(JSON.stringify({ success: false, error: 'Secret is required' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!expr) {
+      return new Response(JSON.stringify({ success: false, error: 'Ban expression is required' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (/[\r\n]/.test(expr)) {
+      return new Response(JSON.stringify({ success: false, error: 'Ban expression must not contain newlines' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cmd = `ban ${expr}`;
+    const { statusCode, body: respBody, rtt } = await runVarnishWrite(host, port, secret, cmd, timeout);
+    return new Response(JSON.stringify({
+      success: statusCode === 200,
+      host, port, command: cmd, statusCode, body: respBody, authenticated: true, rtt,
+      error: statusCode !== 200 ? `Varnish returned status ${statusCode}: ${respBody.trim()}` : undefined,
+    } satisfies VarnishWriteResponse), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies VarnishWriteResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Varnish param.set -- authenticate then run param.set {name} {value}.
+ * POST body: { host, port?, secret, name, value, timeout? }
+ */
+export async function handleVarnishParam(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as VarnishParamRequest;
+    const { host, port = 6082, secret, timeout = 15000 } = body;
+    const name = body.name;
+    const value = body.value;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!secret) {
+      return new Response(JSON.stringify({ success: false, error: 'Secret is required' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!name || value === undefined || value === null || value === '') {
+      return new Response(JSON.stringify({ success: false, error: 'name and value are required' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (/[\s\r\n]/.test(name)) {
+      return new Response(JSON.stringify({ success: false, error: 'Parameter name must not contain whitespace or newlines' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (/[\r\n]/.test(value)) {
+      return new Response(JSON.stringify({ success: false, error: 'Parameter value must not contain newlines' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } satisfies VarnishWriteResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cmd = `param.set ${name} ${value}`;
+    const { statusCode, body: respBody, rtt } = await runVarnishWrite(host, port, secret, cmd, timeout);
+    return new Response(JSON.stringify({
+      success: statusCode === 200,
+      host, port, command: cmd, statusCode, body: respBody, authenticated: true, rtt,
+      error: statusCode !== 200 ? `Varnish returned status ${statusCode}: ${respBody.trim()}` : undefined,
+    } satisfies VarnishWriteResponse), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies VarnishWriteResponse), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

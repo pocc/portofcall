@@ -413,3 +413,199 @@ export async function handleZabbixAgent(request: Request): Promise<Response> {
     });
   }
 }
+
+// ─── Discovery types ──────────────────────────────────────────────────────
+
+interface ZabbixDiscoveryRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  agentHost?: string;
+}
+
+interface ActiveCheckItem {
+  key: string;
+  delay: string;
+}
+
+interface ZabbixDiscoveryResponse {
+  success: boolean;
+  host?: string;
+  port?: number;
+  agentHost?: string;
+  activeChecks?: ActiveCheckItem[];
+  senderResponse?: string;
+  rtt?: number;
+  error?: string;
+}
+
+/**
+ * Probe a Zabbix Server for active check configuration and then submit
+ * a sample sender data batch, simulating an agent registration.
+ *
+ * Two requests are sent on separate connections (matching real Zabbix
+ * agent behaviour):
+ *
+ *  1. Active checks request (port 10051):
+ *       {"request":"active checks","host":"{agentHost}","ip":"{agentHost}"}
+ *     The server responds with the list of items it expects the agent to
+ *     collect (key + check interval).
+ *
+ *  2. Sender data request (port 10051):
+ *       {"request":"sender data","data":[{"host":...,"key":"system.hostname",
+ *        "value":"{agentHost}","clock":{now}}]}
+ *     The server responds with a processed/failed/total summary.
+ *
+ * Both use the ZBXD framing (magic + 8-byte LE length + JSON payload).
+ */
+export async function handleZabbixDiscovery(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as ZabbixDiscoveryRequest;
+    const { host, port = 10051, timeout = 10000 } = body;
+    const agentHost = body.agentHost || 'portofcall-probe';
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      } satisfies Partial<ZabbixDiscoveryResponse>), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      } satisfies Partial<ZabbixDiscoveryResponse>), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+
+    // ── Step 1: Active checks request ─────────────────────────────────────
+    const activeChecksPayload = JSON.stringify({
+      request: 'active checks',
+      host: agentHost,
+      ip: agentHost,
+    });
+
+    const socket1 = connect(`${host}:${port}`);
+    const timeoutPromise1 = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    let activeChecks: ActiveCheckItem[] = [];
+
+    try {
+      await Promise.race([socket1.opened, timeoutPromise1]);
+
+      const writer1 = socket1.writable.getWriter();
+      const reader1 = socket1.readable.getReader();
+
+      await writer1.write(encodeZabbixMessage(activeChecksPayload));
+      const activeResp = await readZabbixResponse(reader1, timeout);
+      const activeDecoded = decodeZabbixMessage(activeResp);
+
+      writer1.releaseLock();
+      reader1.releaseLock();
+      socket1.close();
+
+      try {
+        const parsed = JSON.parse(activeDecoded.payload) as Record<string, unknown>;
+        const data = parsed['data'];
+        if (Array.isArray(data)) {
+          for (const item of data) {
+            if (item && typeof item === 'object') {
+              const entry = item as Record<string, unknown>;
+              activeChecks.push({
+                key: String(entry['key'] ?? entry['itemid'] ?? ''),
+                delay: String(entry['delay'] ?? ''),
+              });
+            }
+          }
+        }
+      } catch {
+        // Non-JSON or unexpected response — continue to sender step
+      }
+    } catch (err) {
+      try { socket1.close(); } catch {}
+      // Non-fatal — still attempt sender step
+      activeChecks = [];
+    }
+
+    // ── Step 2: Sender data request ────────────────────────────────────────
+    const clock = Math.floor(Date.now() / 1000);
+    const senderPayload = JSON.stringify({
+      request: 'sender data',
+      data: [
+        {
+          host: agentHost,
+          key: 'system.hostname',
+          value: agentHost,
+          clock,
+        },
+      ],
+    });
+
+    const socket2 = connect(`${host}:${port}`);
+    const timeoutPromise2 = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    let senderResponse = '';
+
+    try {
+      await Promise.race([socket2.opened, timeoutPromise2]);
+
+      const writer2 = socket2.writable.getWriter();
+      const reader2 = socket2.readable.getReader();
+
+      await writer2.write(encodeZabbixMessage(senderPayload));
+      const senderResp = await readZabbixResponse(reader2, timeout);
+      const senderDecoded = decodeZabbixMessage(senderResp);
+
+      writer2.releaseLock();
+      reader2.releaseLock();
+      socket2.close();
+
+      try {
+        const parsed = JSON.parse(senderDecoded.payload) as Record<string, unknown>;
+        // "info" field carries "processed: N; failed: N; total: N"
+        senderResponse = String(parsed['info'] ?? parsed['response'] ?? senderDecoded.payload);
+      } catch {
+        senderResponse = senderDecoded.payload;
+      }
+    } catch (err) {
+      try { socket2.close(); } catch {}
+      senderResponse = err instanceof Error ? `sender error: ${err.message}` : 'sender error';
+    }
+
+    const rtt = Date.now() - startTime;
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      agentHost,
+      activeChecks,
+      senderResponse,
+      rtt,
+    } satisfies ZabbixDiscoveryResponse), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies Partial<ZabbixDiscoveryResponse>), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

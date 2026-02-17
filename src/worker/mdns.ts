@@ -498,6 +498,233 @@ export async function handleMDNSQuery(request: Request): Promise<Response> {
 }
 
 /**
+ * Build a DNS/mDNS response packet (QR=1, AA=1) with PTR+SRV+TXT records.
+ * Used by handleMDNSAnnounce to simulate a service announcement.
+ */
+function buildMDNSAnnouncement(
+  serviceType: string,   // e.g. "_http._tcp.local"
+  instanceName: string,  // e.g. "MyService._http._tcp.local"
+  hostname: string,      // e.g. "mydevice.local"
+  port: number,
+  txtRecords: string[],  // e.g. ["path=/", "version=1"]
+  ttl: number = 120,
+): Uint8Array {
+  // We build all sections in memory using DataView helpers.
+  const enc = new TextEncoder();
+
+  // --- Helper: encode DNS name as length-prefixed labels ---
+  function encodeName(name: string): Uint8Array {
+    const labels = name.split('.').filter(l => l.length > 0);
+    const parts: Uint8Array[] = [];
+    for (const lbl of labels) {
+      const b = enc.encode(lbl);
+      const chunk = new Uint8Array(1 + b.length);
+      chunk[0] = b.length;
+      chunk.set(b, 1);
+      parts.push(chunk);
+    }
+    parts.push(new Uint8Array([0])); // root
+    let total = 0;
+    for (const p of parts) total += p.length;
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const p of parts) { out.set(p, off); off += p.length; }
+    return out;
+  }
+
+  // --- Helper: build a resource record ---
+  function buildRR(name: string, rtype: number, rttl: number, rdata: Uint8Array): Uint8Array {
+    const nameBytes = encodeName(name);
+    // NAME + TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2) + RDATA
+    const rec = new Uint8Array(nameBytes.length + 10 + rdata.length);
+    const view = new DataView(rec.buffer);
+    rec.set(nameBytes, 0);
+    let o = nameBytes.length;
+    view.setUint16(o, rtype);    o += 2;
+    view.setUint16(o, 0x8001);   o += 2; // IN class + flush bit
+    view.setUint32(o, rttl);     o += 4;
+    view.setUint16(o, rdata.length); o += 2;
+    rec.set(rdata, o);
+    return rec;
+  }
+
+  // PTR record: serviceType → instanceName
+  const ptrRdata = encodeName(instanceName);
+  const ptrRR = buildRR(serviceType, 12 /* PTR */, ttl, ptrRdata);
+
+  // SRV record: instanceName → priority(0) + weight(0) + port + hostname
+  const hostnameBytes = encodeName(hostname);
+  const srvRdata = new Uint8Array(6 + hostnameBytes.length);
+  const srvView = new DataView(srvRdata.buffer);
+  srvView.setUint16(0, 0);    // priority
+  srvView.setUint16(2, 0);    // weight
+  srvView.setUint16(4, port); // port
+  srvRdata.set(hostnameBytes, 6);
+  const srvRR = buildRR(instanceName, 33 /* SRV */, ttl, srvRdata);
+
+  // TXT record: key=value pairs
+  const txtParts: Uint8Array[] = [];
+  for (const kv of (txtRecords.length > 0 ? txtRecords : ['path=/'])) {
+    const b = enc.encode(kv);
+    const chunk = new Uint8Array(1 + b.length);
+    chunk[0] = b.length;
+    chunk.set(b, 1);
+    txtParts.push(chunk);
+  }
+  let txtLen = 0;
+  for (const p of txtParts) txtLen += p.length;
+  const txtRdata = new Uint8Array(txtLen);
+  let toff = 0;
+  for (const p of txtParts) { txtRdata.set(p, toff); toff += p.length; }
+  const txtRR = buildRR(instanceName, 16 /* TXT */, ttl, txtRdata);
+
+  // DNS header: QR=1, AA=1, ANCOUNT=3
+  const header = new Uint8Array(12);
+  const hview = new DataView(header.buffer);
+  hview.setUint16(0, 0x0000); // Transaction ID (0 for mDNS)
+  hview.setUint16(2, 0x8400); // Flags: QR=1, Opcode=0, AA=1
+  hview.setUint16(4, 0);      // QDCOUNT
+  hview.setUint16(6, 3);      // ANCOUNT
+  hview.setUint16(8, 0);      // NSCOUNT
+  hview.setUint16(10, 0);     // ARCOUNT
+
+  // Concatenate all sections
+  const totalLen = header.length + ptrRR.length + srvRR.length + txtRR.length;
+  const packet = new Uint8Array(totalLen);
+  let pos = 0;
+  packet.set(header, pos); pos += header.length;
+  packet.set(ptrRR, pos);  pos += ptrRR.length;
+  packet.set(srvRR, pos);  pos += srvRR.length;
+  packet.set(txtRR, pos);
+  return packet;
+}
+
+/**
+ * Send an mDNS service announcement to a host.
+ *
+ * Builds a DNS response packet with PTR + SRV + TXT records for the given
+ * service type/instance/hostname and sends it to the target host. This
+ * simulates a Zeroconf/Bonjour service announcement over TCP.
+ *
+ * POST /api/mdns/announce
+ * Body: { host, port?, serviceType?, instanceName?, hostname?, servicePort?, txtRecords?, ttl?, timeout? }
+ */
+export async function handleMDNSAnnounce(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      serviceType?: string;
+      instanceName?: string;
+      hostname?: string;
+      servicePort?: number;
+      txtRecords?: string[];
+      ttl?: number;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 5353,
+      serviceType = '_http._tcp.local',
+      instanceName,
+      hostname,
+      servicePort = 80,
+      txtRecords = ['path=/'],
+      ttl = 120,
+      timeout = 8000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Default instanceName: "portofcall.<serviceType>"
+    const resolvedInstance = instanceName || `portofcall.${serviceType}`;
+    const resolvedHostname = hostname || `${host}.local`;
+
+    const packet = buildMDNSAnnouncement(
+      serviceType, resolvedInstance, resolvedHostname, servicePort, txtRecords, ttl,
+    );
+
+    const toHex = (arr: Uint8Array) =>
+      Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+    const start = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    let portOpen = false;
+    let latencyMs = 0;
+    let serverResponse: string | undefined;
+
+    try {
+      const socket = connect(`${host}:${port}`);
+      await Promise.race([socket.opened, timeoutPromise]);
+      portOpen = true;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(packet);
+      latencyMs = Date.now() - start;
+
+      // Attempt to read any response (e.g., if the peer acknowledges)
+      try {
+        const readTimeout = new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('read_timeout')), 2000)
+        );
+        const result = await Promise.race([reader.read(), readTimeout]);
+        if (!result.done && result.value && result.value.length >= 2) {
+          serverResponse = `Received ${result.value.length} bytes: ${toHex(result.value.slice(0, 12))}...`;
+        }
+      } catch {
+        // No response — typical for mDNS (multicast protocol, TCP is uncommon)
+      }
+
+      try { reader.releaseLock(); } catch { /* ok */ }
+      try { writer.releaseLock(); } catch { /* ok */ }
+      socket.close();
+    } catch (err) {
+      latencyMs = Date.now() - start;
+      return new Response(JSON.stringify({
+        success: false, host, port, portOpen: false, latencyMs,
+        error: err instanceof Error ? err.message : 'Connection failed',
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    return new Response(JSON.stringify({
+      success: portOpen,
+      host, port,
+      portOpen,
+      announcement: {
+        serviceType: resolvedInstance,
+        srvTarget: resolvedHostname,
+        srvPort: servicePort,
+        txtRecords,
+        ttl,
+        records: ['PTR', 'SRV', 'TXT'],
+      },
+      packetBytes: packet.length,
+      packetHex: toHex(packet.slice(0, 32)) + (packet.length > 32 ? '...' : ''),
+      serverResponse,
+      latencyMs,
+      note: 'mDNS announcement sent as DNS response packet (QR=1, AA=1) with PTR+SRV+TXT records. ' +
+            'Standard mDNS uses UDP multicast; this sends via TCP to the target host.',
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Discover all mDNS services on the local network.
  * Queries _services._dns-sd._udp.local to enumerate service types.
  */

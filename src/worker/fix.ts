@@ -361,6 +361,395 @@ export async function handleFIXProbe(request: Request): Promise<Response> {
   }
 }
 
+// FIX tag constants for order-related messages
+const FIX_TAG_CLORDID  = 11;
+const FIX_TAG_HANDLINST = 21;
+const FIX_TAG_SYMBOL   = 55;
+const FIX_TAG_SIDE     = 54;
+const FIX_TAG_ORDERQTY = 38;
+const FIX_TAG_ORDTYPE  = 40;
+const FIX_TAG_PRICE    = 44;
+const FIX_TAG_TRANSACT_TIME = 60;
+const FIX_TAG_EXECID   = 17;
+const FIX_TAG_ORDSTATUS = 39;
+const FIX_TAG_EXECTYPE = 150;
+const FIX_TAG_TEXT     = 58;
+
+/**
+ * Generate a random ClOrdID
+ */
+function randomClOrdID(): string {
+  return `POC-${Date.now()}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
+}
+
+/**
+ * Human-readable OrdStatus values
+ */
+function ordStatusName(status: string): string {
+  const names: Record<string, string> = {
+    '0': 'New',
+    '1': 'Partially Filled',
+    '2': 'Filled',
+    '3': 'Done for Day',
+    '4': 'Canceled',
+    '5': 'Replaced',
+    '6': 'Pending Cancel',
+    '7': 'Stopped',
+    '8': 'Rejected',
+    '9': 'Suspended',
+    A:   'Pending New',
+    B:   'Calculated',
+    C:   'Expired',
+    D:   'Accepted for Bidding',
+    E:   'Pending Replace',
+  };
+  return names[status] || `Unknown(${status})`;
+}
+
+/**
+ * Human-readable ExecType values
+ */
+function execTypeName(type: string): string {
+  const names: Record<string, string> = {
+    '0': 'New',
+    '1': 'Partial Fill',
+    '2': 'Fill',
+    '3': 'Done for Day',
+    '4': 'Canceled',
+    '5': 'Replaced',
+    '6': 'Pending Cancel',
+    '7': 'Stopped',
+    '8': 'Rejected',
+    '9': 'Suspended',
+    A:   'Pending New',
+    B:   'Calculated',
+    C:   'Expired',
+    D:   'Restated',
+    E:   'Pending Replace',
+    F:   'Trade',
+    G:   'Trade Correct',
+    H:   'Trade Cancel',
+    I:   'Order Status',
+  };
+  return names[type] || `Unknown(${type})`;
+}
+
+/**
+ * Read multiple FIX messages from the stream until a specific MsgType appears
+ * or the timeout is reached. Returns all messages received.
+ */
+async function readFIXUntilMsgType(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  targetMsgType: string,
+  timeoutMs: number
+): Promise<string[]> {
+  const messages: string[] = [];
+  const deadline = Date.now() + timeoutMs;
+  let buffer = '';
+
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+
+    const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) => {
+      setTimeout(() => resolve({ done: true, value: undefined }), Math.min(remaining, 2000));
+    });
+
+    const result = await Promise.race([reader.read(), timeoutPromise]);
+    if (result.done || !result.value) break;
+
+    buffer += new TextDecoder().decode(result.value);
+
+    // Extract complete FIX messages (each ends with 10=xxx<SOH>)
+    const msgRegex = /8=FIX[^\x01]*(?:\x01[^\x01=]+=[^\x01]*)*\x0110=\d{3}\x01/g;
+    let match: RegExpExecArray | null;
+    while ((match = msgRegex.exec(buffer)) !== null) {
+      const msg = match[0];
+      messages.push(msg);
+      const parsed = parseFIXMessage(msg);
+      if (parsed.get(35) === targetMsgType) {
+        return messages;
+      }
+    }
+
+    // Remove fully-parsed messages from buffer
+    const lastComplete = buffer.lastIndexOf('\x0110=');
+    const lastSOH = buffer.indexOf('\x01', lastComplete + 1);
+    if (lastComplete >= 0 && lastSOH >= 0) {
+      buffer = buffer.slice(lastSOH + 1);
+    }
+  }
+
+  return messages;
+}
+
+/**
+ * Send a NewOrderSingle (35=D) to a FIX engine.
+ * Performs: Logon -> parse logon ack -> send NewOrderSingle -> read ExecutionReport -> Logout.
+ */
+export async function handleFIXOrder(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      timeout?: number;
+      senderCompID?: string;
+      targetCompID?: string;
+      senderSubId?: string;
+      fixVersion?: string;
+      symbol?: string;
+      side?: string;
+      qty?: number | string;
+      price?: number | string;
+      ordType?: string;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!body.symbol) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'symbol is required (e.g. AAPL, EUR/USD)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!body.side) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'side is required: "1" (Buy) or "2" (Sell)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!body.qty) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'qty is required (order quantity)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = body.host;
+    const port = body.port || 9878;
+    const timeout = body.timeout || 15000;
+    const senderCompID = body.senderCompID || 'PORTOFCALL';
+    const targetCompID = body.targetCompID || 'TARGET';
+    const senderSubId = body.senderSubId;
+    const fixVersion = body.fixVersion || 'FIX.4.4';
+    const symbol = body.symbol;
+    const side = String(body.side); // '1'=Buy, '2'=Sell
+    const qty = String(body.qty);
+    const price = body.price !== undefined ? String(body.price) : null;
+    const ordType = body.ordType || (price ? '2' : '1'); // '1'=Market, '2'=Limit
+
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // ---- Step 1: Logon (35=A) ----
+      const logonFields: [number, string][] = [
+        [8, fixVersion],
+        [35, 'A'],
+        [49, senderCompID],
+        [56, targetCompID],
+        [34, '1'],
+        [52, fixTimestamp()],
+        [98, '0'],    // EncryptMethod: None
+        [108, '30'], // HeartBtInt: 30 seconds
+        [141, 'Y'],  // ResetSeqNumFlag
+      ];
+      if (senderSubId) {
+        logonFields.splice(4, 0, [50, senderSubId]); // SenderSubID after TargetCompID
+      }
+
+      const logonMsg = buildFIXMessage(logonFields);
+      await writer.write(new TextEncoder().encode(logonMsg));
+
+      // Read until we get a Logon ack (35=A), Reject, or Logout
+      const logonRawMsgs = await readFIXUntilMsgType(reader, 'A', Math.min(timeout - (Date.now() - startTime), 5000));
+      const logonRaw = logonRawMsgs.join('');
+      const logonParsed = parseFIXMessage(logonRaw);
+      const logonMsgType = logonParsed.get(35);
+
+      const logonAck = logonMsgType === 'A';
+
+      if (!logonAck) {
+        // Send Logout before returning error
+        try {
+          const logoutMsg = buildFIXMessage([
+            [8, fixVersion], [35, '5'], [49, senderCompID], [56, targetCompID], [34, '2'], [52, fixTimestamp()],
+          ]);
+          await writer.write(new TextEncoder().encode(logoutMsg));
+        } catch { /* ignore logout errors */ }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `Logon not acknowledged. Server responded with MsgType=${logonMsgType || 'none'}: ${logonParsed.get(58) || 'no message'}`,
+            logonAck: false,
+            rawLogon: logonRaw.replace(/\x01/g, '|'),
+          }),
+          { headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // ---- Step 2: NewOrderSingle (35=D) ----
+      const clOrdID = randomClOrdID();
+      const orderFields: [number, string][] = [
+        [8, fixVersion],
+        [35, 'D'],
+        [49, senderCompID],
+        [56, targetCompID],
+        [34, '2'],
+        [52, fixTimestamp()],
+        [FIX_TAG_CLORDID, clOrdID],            // 11 = ClOrdID
+        [FIX_TAG_HANDLINST, '1'],               // 21 = HandlInst: Automated, no intervention
+        [FIX_TAG_SYMBOL, symbol],               // 55 = Symbol
+        [FIX_TAG_SIDE, side],                   // 54 = Side
+        [FIX_TAG_TRANSACT_TIME, fixTimestamp()], // 60 = TransactTime
+        [FIX_TAG_ORDERQTY, qty],                // 38 = OrderQty
+        [FIX_TAG_ORDTYPE, ordType],             // 40 = OrdType
+      ];
+
+      if (price && ordType === '2') {
+        orderFields.push([FIX_TAG_PRICE, price]); // 44 = Price (Limit orders only)
+      }
+
+      if (senderSubId) {
+        orderFields.splice(4, 0, [50, senderSubId]);
+      }
+
+      const orderMsg = buildFIXMessage(orderFields);
+      await writer.write(new TextEncoder().encode(orderMsg));
+
+      // ---- Step 3: Read ExecutionReport (35=8) ----
+      const execRawMsgs = await readFIXUntilMsgType(reader, '8', Math.min(timeout - (Date.now() - startTime), 5000));
+      const execRaw = execRawMsgs.join('');
+      const execParsed = parseFIXMessage(execRaw);
+
+      const execMsgType = execParsed.get(35);
+      const execId = execParsed.get(FIX_TAG_EXECID);
+      const ordStatus = execParsed.get(FIX_TAG_ORDSTATUS);
+      const execType = execParsed.get(FIX_TAG_EXECTYPE);
+      const rejectText = execParsed.get(FIX_TAG_TEXT);
+      const rtt = Date.now() - startTime;
+
+      // ---- Step 4: Logout (35=5) ----
+      const logoutMsg = buildFIXMessage([
+        [8, fixVersion],
+        [35, '5'],
+        [49, senderCompID],
+        [56, targetCompID],
+        [34, '3'],
+        [52, fixTimestamp()],
+      ]);
+      try {
+        await writer.write(new TextEncoder().encode(logoutMsg));
+      } catch { /* ignore logout write errors */ }
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Build human-readable field dump for the exec report
+      const execFieldDump: string[] = [];
+      for (const [tag, val] of execParsed.entries()) {
+        const name = tagName(tag);
+        let displayVal = val;
+        if (tag === 35) displayVal = `${val} (${msgTypeName(val)})`;
+        if (tag === FIX_TAG_ORDSTATUS) displayVal = `${val} (${ordStatusName(val)})`;
+        if (tag === FIX_TAG_EXECTYPE) displayVal = `${val} (${execTypeName(val)})`;
+        execFieldDump.push(`  ${name} (${tag}): ${displayVal}`);
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          rtt,
+          fixVersion,
+          protocol: 'FIX',
+          logonAck,
+          clOrdID,
+          symbol,
+          side: side === '1' ? 'Buy' : side === '2' ? 'Sell' : side,
+          qty,
+          price: price || null,
+          ordType: ordType === '1' ? 'Market' : ordType === '2' ? 'Limit' : ordType,
+          execReportReceived: execMsgType === '8',
+          execId: execId || null,
+          ordStatus: ordStatus ? ordStatusName(ordStatus) : null,
+          ordStatusRaw: ordStatus || null,
+          execType: execType ? execTypeName(execType) : null,
+          execTypeRaw: execType || null,
+          text: rejectText || null,
+          execFields: execFieldDump.length > 0 ? execFieldDump : null,
+          rawExecReport: execRaw ? execRaw.replace(/\x01/g, '|') : null,
+          message: execMsgType === '8'
+            ? `ExecutionReport received: OrdStatus=${ordStatus ? ordStatusName(ordStatus) : 'unknown'} in ${rtt}ms`
+            : execMsgType === '3'
+            ? `Order rejected: ${rejectText || 'unknown reason'} in ${rtt}ms`
+            : execRaw
+            ? `Response received (${msgTypeName(execMsgType || '?')}) in ${rtt}ms`
+            : `Order sent but no ExecutionReport received in ${rtt}ms`,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'FIX order failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
 /**
  * Send a FIX Heartbeat/TestRequest to check engine liveness
  */

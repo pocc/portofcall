@@ -132,11 +132,49 @@ These remain blocked regardless of Worker vs. Container:
 - **SSDP, LLMNR**: Link-local multicast — requires being on the same LAN segment. Unreachable from any cloud provider.
 - **ICMP / RAW IP**: Require `CAP_NET_RAW` kernel capability, which is not granted to unprivileged containers by default.
 
+## Protocols Stuck at ★★★★☆
+
+These protocols have solid, useful implementations but are blocked from reaching ★★★★★ by a specific Workers runtime constraint or missing open specification. They are not impossible — they work — but can't go all the way.
+
+### RDP (3389) — Mid-stream TLS upgrade
+
+**Current**: X.224 Connection Request/Confirm → detects security support (Standard/TLS/NLA/RDSTLS).
+**Missing**: Credential exchange (NLA / CredSSP).
+**Why stuck**: RDP starts as a cleartext TCP connection, then the server issues a `Server Security Data` PDU requesting a TLS upgrade. Workers' `connect()` requires `secureTransport` to be set at connection time — there is no API to upgrade a plain TCP `Socket` to TLS mid-stream. Starting with `secureTransport: 'on'` doesn't work either, because the RDP server expects a cleartext X.224 handshake before any TLS negotiation begins.
+
+### RSH (514) — Privileged source port
+
+**Current**: Full command execution with stdout/stderr separation and exit-code detection.
+**Missing**: Accepted by most real rshd daemons.
+**Why stuck**: BSD `rshd` requires the client to connect from a **source port < 1024** (a "trusted" port) as a minimal authentication mechanism (RFC 1282). Cloudflare Workers have no API to choose the outbound source port — the runtime assigns an ephemeral port (typically 32768–60999). Real rshd servers will reject the connection with "Rcmd: socket: Permission denied" unless the source port is privileged. The implementation is correct; the runtime simply can't satisfy the server-side precondition.
+
+### mDNS (5353) — UDP multicast
+
+**Current**: Full DNS packet encoding (A/AAAA/PTR/SRV/TXT records) with compression pointer parsing.
+**Missing**: Real server responses.
+**Why stuck**: mDNS is a UDP multicast protocol (224.0.0.251 / FF02::FB). It has no TCP mode. The implementation sends correctly-formed mDNS queries over TCP to port 5353 as a best-effort probe, but no production mDNS responder listens on TCP — they exclusively use UDP multicast. Additionally, mDNS is link-local; even if TCP worked, Cloudflare's edge is not on the same LAN segment as the target device.
+
+### RIP (520) — UDP-only routing protocol
+
+**Current**: RIPv1/v2 request and response packet parsing + route update generation.
+**Missing**: Real router interaction.
+**Why stuck**: RIP uses UDP exclusively (RFC 2453 §3). Routers listen on UDP port 520 for RIP messages; no production router implements TCP/520. The implementation correctly encodes RIP packets but cannot elicit a response from a real router over TCP.
+
+### TFTP (69) — UDP only
+
+**Current**: Full RRQ/WRQ/DATA/ACK/ERROR packet encoding with block sequencing.
+**Missing**: Real server transfers.
+**Why stuck**: TFTP is defined over UDP only (RFC 1350). There is no TCP mode. Like RIP and mDNS, the implementation is protocol-correct but the transport mismatch means no real TFTP server will respond.
+
+---
+
 ## Summary
 
 - **UDP Protocols**: 12 (impossible - no UDP support: NTP, SNMP, DNS, TFTP, BACnet/IP, DHCP, RTP/RTCP, SIP, SSDP, LLMNR, Mosh, StatsD)
 - **Raw Socket Protocols**: 2 (impossible - no raw socket access: ICMP, RAW IP)
 - **TLS ALPN limitation**: 2 (h2 over TLS, gRPC over TLS - ALPN not exposed by sockets API)
 - **Impractical (h2c)**: 2 (h2c, gRPC over h2c - TCP bytes sendable but HTTP/2 framing requires full implementation)
+- **Stuck at ★★★★☆**: 5 (RDP, RSH, mDNS, RIP, TFTP — each blocked by a specific runtime constraint detailed above)
 
 **Total Impossible/Impractical**: 18 protocols
+**Total implementation-ceiling limited**: 5 protocols

@@ -750,3 +750,193 @@ export async function handleMongoDBInsert(request: Request): Promise<Response> {
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+/**
+ * Handle MongoDB update (updateOne / updateMany).
+ *
+ * Body: { host, port=27017, database, collection, filter, update, multi=false, upsert=false, timeout=10000 }
+ * - filter: query filter (e.g. { "status": "active" })
+ * - update: update operators (e.g. { "$set": { "status": "inactive" } })
+ * - multi=false → updateOne; multi=true → updateMany
+ * Returns: { success, matched, modified, upsertedId }
+ */
+export async function handleMongoDBUpdate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number;
+      database: string; collection: string;
+      filter: Record<string, unknown>;
+      update: Record<string, unknown>;
+      multi?: boolean;
+      upsert?: boolean;
+      timeout?: number;
+    };
+    const { host, port = 27017, database, collection, timeout = 10000 } = body;
+    const multi = body.multi === true;
+    const upsert = body.upsert === true;
+
+    if (!host || !database || !collection || !body.filter || !body.update) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, database, collection, filter, update',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Timeout')), timeout)
+    );
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        await writer.write(buildOpMsg({ hello: 1, $db: database }, 1));
+        const helloRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const helloResp = parseResponse(helloRaw);
+        if (!helloResp.ok) throw new Error('MongoDB hello failed');
+
+        const updateCmd: Record<string, unknown> = {
+          update: collection,
+          updates: [{ q: body.filter, u: body.update, multi, upsert }],
+          $db: database,
+        };
+
+        await writer.write(buildOpMsgFull(updateCmd, 2));
+        const updateRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const rtt = Date.now() - startTime;
+        const updateResp = parseResponse(updateRaw);
+
+        if (!updateResp.ok) {
+          return new Response(JSON.stringify({
+            success: false, host, port, database, collection,
+            error: updateResp.errmsg || 'Update failed',
+            code: updateResp.code,
+            writeErrors: updateResp.writeErrors,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        return new Response(JSON.stringify({
+          success: true, host, port, rtt, database, collection,
+          matched: updateResp.n ?? 0,
+          modified: updateResp.nModified ?? 0,
+          upsertedId: updateResp.upserted
+            ? (updateResp.upserted as Array<{ _id: unknown }>)[0]?._id ?? null
+            : null,
+          message: `${String(updateResp.nModified ?? 0)} document(s) modified`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'MongoDB update failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle MongoDB delete (deleteOne / deleteMany).
+ *
+ * Body: { host, port=27017, database, collection, filter, many=false, timeout=10000 }
+ * - filter: query filter (e.g. { "status": "inactive" })
+ * - many=false → deleteOne (limit=1); many=true → deleteMany (limit=0)
+ * Returns: { success, deleted }
+ */
+export async function handleMongoDBDelete(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number;
+      database: string; collection: string;
+      filter: Record<string, unknown>;
+      many?: boolean;
+      timeout?: number;
+    };
+    const { host, port = 27017, database, collection, timeout = 10000 } = body;
+    const limit = body.many === true ? 0 : 1; // 0 = deleteMany, 1 = deleteOne
+
+    if (!host || !database || !collection || !body.filter) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, database, collection, filter',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Timeout')), timeout)
+    );
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        await writer.write(buildOpMsg({ hello: 1, $db: database }, 1));
+        const helloRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const helloResp = parseResponse(helloRaw);
+        if (!helloResp.ok) throw new Error('MongoDB hello failed');
+
+        const deleteCmd: Record<string, unknown> = {
+          delete: collection,
+          deletes: [{ q: body.filter, limit }],
+          $db: database,
+        };
+
+        await writer.write(buildOpMsgFull(deleteCmd, 2));
+        const deleteRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const rtt = Date.now() - startTime;
+        const deleteResp = parseResponse(deleteRaw);
+
+        if (!deleteResp.ok) {
+          return new Response(JSON.stringify({
+            success: false, host, port, database, collection,
+            error: deleteResp.errmsg || 'Delete failed',
+            code: deleteResp.code,
+            writeErrors: deleteResp.writeErrors,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        return new Response(JSON.stringify({
+          success: true, host, port, rtt, database, collection,
+          deleted: deleteResp.n ?? 0,
+          message: `${String(deleteResp.n ?? 0)} document(s) deleted`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'MongoDB delete failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

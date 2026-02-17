@@ -299,6 +299,190 @@ export async function handleRabbitMQHealth(request: Request): Promise<Response> 
 }
 
 /**
+ * Send a raw HTTP POST request over a TCP socket and parse the response.
+ */
+async function sendHttpPost(
+  host: string,
+  port: number,
+  path: string,
+  username: string,
+  password: string,
+  body: string,
+  timeout = 15000,
+): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  const socket = connect(`${host}:${port}`);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  await Promise.race([socket.opened, timeoutPromise]);
+
+  const writer = socket.writable.getWriter();
+
+  const auth = base64Encode(`${username}:${password}`);
+  const bodyBytes = encoder.encode(body);
+  let requestStr = `POST ${path} HTTP/1.1\r\n`;
+  requestStr += `Host: ${host}:${port}\r\n`;
+  requestStr += `Authorization: Basic ${auth}\r\n`;
+  requestStr += `Content-Type: application/json\r\n`;
+  requestStr += `Content-Length: ${bodyBytes.length}\r\n`;
+  requestStr += `Accept: application/json\r\n`;
+  requestStr += `Connection: close\r\n`;
+  requestStr += `User-Agent: PortOfCall/1.0\r\n`;
+  requestStr += `\r\n`;
+
+  const requestBuf = new Uint8Array(requestStr.length + bodyBytes.length);
+  const requestHeader = encoder.encode(requestStr);
+  requestBuf.set(requestHeader, 0);
+  requestBuf.set(bodyBytes, requestHeader.length);
+
+  await writer.write(requestBuf);
+  writer.releaseLock();
+
+  const reader = socket.readable.getReader();
+  let response = '';
+  const maxSize = 65536;
+
+  while (response.length < maxSize) {
+    const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
+    if (readResult.done) break;
+    if (readResult.value) {
+      response += decoder.decode(readResult.value, { stream: true });
+    }
+  }
+
+  reader.releaseLock();
+  socket.close();
+
+  const headerEnd = response.indexOf('\r\n\r\n');
+  if (headerEnd === -1) throw new Error('Invalid HTTP response: no header terminator found');
+
+  const headerSection = response.substring(0, headerEnd);
+  let bodySection = response.substring(headerEnd + 4);
+
+  const statusLine = headerSection.split('\r\n')[0];
+  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+
+  const headers: Record<string, string> = {};
+  for (const line of headerSection.split('\r\n').slice(1)) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0) {
+      headers[line.substring(0, colonIdx).trim().toLowerCase()] = line.substring(colonIdx + 1).trim();
+    }
+  }
+
+  if (headers['transfer-encoding']?.includes('chunked')) {
+    bodySection = decodeChunked(bodySection);
+  }
+
+  return { statusCode, headers, body: bodySection };
+}
+
+/**
+ * Handle RabbitMQ message publish via management API
+ * POST /api/rabbitmq/publish
+ *
+ * Publishes a message to an exchange via the Management API endpoint:
+ * POST /api/exchanges/{vhost}/{exchange}/publish
+ *
+ * Body: { host, port?, username?, password?, vhost?, exchange, routing_key, payload, timeout? }
+ */
+export async function handleRabbitMQPublish(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      exchange?: string;
+      routing_key?: string;
+      payload?: string;
+      payload_encoding?: string;
+      properties?: Record<string, unknown>;
+      timeout?: number;
+    };
+
+    if (!body.host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = body.host;
+    const port = body.port || 15672;
+    const username = body.username || 'guest';
+    const password = body.password || 'guest';
+    const vhost = body.vhost ?? '/';
+    const exchange = body.exchange ?? 'amq.default';
+    const routingKey = body.routing_key ?? '';
+    const payload = body.payload ?? '';
+    const payloadEncoding = body.payload_encoding ?? 'string';
+    const properties = body.properties ?? {};
+    const timeout = body.timeout || 15000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // URL-encode the vhost and exchange name
+    const vhostEncoded = encodeURIComponent(vhost);
+    const exchangeEncoded = encodeURIComponent(exchange);
+    const apiPath = `/api/exchanges/${vhostEncoded}/${exchangeEncoded}/publish`;
+
+    const publishBody = JSON.stringify({
+      properties,
+      routing_key: routingKey,
+      payload,
+      payload_encoding: payloadEncoding,
+    });
+
+    const startTime = Date.now();
+    const result = await sendHttpPost(host, port, apiPath, username, password, publishBody, timeout);
+    const rtt = Date.now() - startTime;
+
+    let parsed: { routed?: boolean } | null = null;
+    try { parsed = JSON.parse(result.body); } catch { /* ignore */ }
+
+    const routed = parsed?.routed ?? false;
+
+    return new Response(JSON.stringify({
+      success: result.statusCode >= 200 && result.statusCode < 300,
+      host,
+      port,
+      vhost,
+      exchange,
+      routing_key: routingKey,
+      payload,
+      routed,
+      rtt,
+      statusCode: result.statusCode,
+      message: routed ? 'Message published and routed' : (result.statusCode >= 400 ? result.body : 'Message published (no consumers)'),
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'RabbitMQ publish failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Handle RabbitMQ API query
  * POST /api/rabbitmq/query
  *

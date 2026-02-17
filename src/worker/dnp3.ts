@@ -51,6 +51,8 @@ const SFC_NOT_SUPPORTED = 0x0F;
 
 /** Application function codes */
 const AFC_READ = 0x01;
+const AFC_SELECT = 0x03;
+const AFC_OPERATE = 0x04;
 
 /** DNP3 object group/variation constants */
 const GROUP_CLASS_0 = 60;   // Class 0 data
@@ -647,6 +649,298 @@ export async function handleDNP3Read(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'DNP3 read failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Build a DNP3 CROB (Control Relay Output Block) application layer payload
+ * for SELECT or OPERATE (Function Code 0x03 or 0x04)
+ *
+ * Group 12 Var 1 = CROB (Binary Output Control)
+ * Group 41 Var 2 = Analog Output (16-bit int)
+ *
+ * CROB structure (11 bytes per object):
+ *   Control Code (1) | Count (1) | OnTime ms (4 LE) | OffTime ms (4 LE) | Status (1)
+ */
+function buildSelectOperateRequest(
+  destination: number,
+  source: number,
+  functionCode: number, // 0x03 = SELECT, 0x04 = OPERATE
+  appSeq: number,
+  objectGroup: number,
+  objectVariation: number,
+  objectIndex: number,
+  controlCode: number,
+): Uint8Array {
+  // Transport header: FIR=1, FIN=1
+  const transportHeader = 0xC0;
+
+  // Application Control: FIR=1, FIN=1, SEQ=appSeq
+  const appControl = 0xC0 | (appSeq & 0x0F);
+
+  let objectData: number[];
+
+  if (objectGroup === 12 && objectVariation === 1) {
+    // Group 12 Var 1 — CROB
+    // Qualifier 0x17 = 1-byte count, 1-byte index
+    // Control code | Count=1 | OnTime=100ms | OffTime=100ms | Status=0
+    objectData = [
+      objectGroup,    // Group 12
+      objectVariation, // Var 1
+      0x17,           // Qualifier: 1-byte count, 1-byte index
+      0x01,           // Count = 1
+      objectIndex & 0xFF, // Index
+      controlCode & 0xFF, // Control Code (e.g. 0x03 = LATCH_ON, 0x04 = LATCH_OFF)
+      0x01,           // Count field in CROB = 1
+      // OnTime (4 bytes LE) = 100ms
+      0x64, 0x00, 0x00, 0x00,
+      // OffTime (4 bytes LE) = 100ms
+      0x64, 0x00, 0x00, 0x00,
+      0x00,           // Status (0 = success, filled in by outstation in response)
+    ];
+  } else if (objectGroup === 41 && objectVariation === 2) {
+    // Group 41 Var 2 — Analog Output (16-bit integer)
+    // controlCode is treated as the int16 value to output
+    const val = controlCode & 0xFFFF;
+    objectData = [
+      objectGroup,    // Group 41
+      objectVariation, // Var 2
+      0x17,           // Qualifier: 1-byte count, 1-byte index
+      0x01,           // Count = 1
+      objectIndex & 0xFF, // Index
+      val & 0xFF,     // Value low byte
+      (val >> 8) & 0xFF, // Value high byte
+      0x00,           // Status
+    ];
+  } else {
+    // Generic: send raw controlCode as a single byte with minimal object
+    objectData = [
+      objectGroup,
+      objectVariation,
+      0x17,
+      0x01,
+      objectIndex & 0xFF,
+      controlCode & 0xFF,
+      0x00,
+    ];
+  }
+
+  const userData = new Uint8Array([
+    transportHeader,
+    appControl,
+    functionCode,
+    ...objectData,
+  ]);
+
+  const ctrl = DL_DIR | DL_PRM | PFC_UNCONFIRMED_USER_DATA;
+  return buildDataLinkFrame(ctrl, destination, source, userData);
+}
+
+/**
+ * Handle DNP3 SELECT/OPERATE sequence for binary/analog output control
+ * POST /api/dnp3/select-operate
+ *
+ * Performs the two-step SBO (Select-Before-Operate) sequence:
+ *   1. SELECT  (function code 0x03) — arm the point
+ *   2. OPERATE (function code 0x04) — execute the control
+ *
+ * Supports:
+ *   Group 12 Var 1 — CROB (Control Relay Output Block)
+ *   Group 41 Var 2 — Analog Output (16-bit integer value)
+ */
+export async function handleDNP3SelectOperate(request: Request): Promise<Response> {
+  try {
+    const {
+      host,
+      port = 20000,
+      timeout = 15000,
+      destination = 1,
+      source = 3,
+      objectGroup = 12,
+      objectVariation = 1,
+      objectIndex = 0,
+      controlCode = 0x03, // LATCH_ON for CROB; value for analog
+    } = await request.json<{
+      host: string;
+      port?: number;
+      timeout?: number;
+      destination?: number;
+      source?: number;
+      objectGroup?: number;
+      objectVariation?: number;
+      objectIndex?: number;
+      controlCode?: number;
+    }>();
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate supported object groups
+    const supported = (objectGroup === 12 && objectVariation === 1) ||
+                      (objectGroup === 41 && objectVariation === 2);
+    if (!supported) {
+      return new Response(JSON.stringify({
+        error: 'Only Group 12 Var 1 (CROB) and Group 41 Var 2 (Analog Output) are supported',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // --- Step 1: SELECT ---
+        const selectFrame = buildSelectOperateRequest(
+          destination, source, AFC_SELECT, 0,
+          objectGroup, objectVariation, objectIndex, controlCode,
+        );
+        await writer.write(selectFrame);
+
+        const selectResponseBytes = await readDNP3Response(reader, 5000);
+
+        let selected = false;
+        let selectFunctionName = '';
+        let selectIIN = '';
+        let selectIINFlags: string[] = [];
+
+        if (selectResponseBytes.length >= 10) {
+          const selectDL = parseDataLinkResponse(selectResponseBytes);
+          if (selectDL?.userData && selectDL.userData.length >= 5) {
+            const selectApp = parseApplicationResponse(selectDL.userData);
+            if (selectApp) {
+              // Function code 0x81 = RESPONSE; should echo back the objects
+              selectFunctionName = selectApp.functionName;
+              selectIIN = `0x${selectApp.iin.toString(16).padStart(4, '0')}`;
+              selectIINFlags = selectApp.iinFlags;
+              // SELECT is confirmed if function code is RESPONSE (0x81) with no error IIN bits
+              const errorIIN = selectApp.iin & 0x0700; // Parameter Error, Object Unknown, No FC support
+              selected = selectApp.functionCode === 0x81 && errorIIN === 0;
+            }
+          }
+        }
+
+        if (!selected) {
+          await socket.close();
+          return {
+            success: false,
+            selected: false,
+            operated: false,
+            host,
+            port,
+            dnpAddress: { destination, source },
+            objectGroup,
+            objectVariation,
+            objectIndex,
+            controlCode,
+            selectResponse: {
+              functionName: selectFunctionName,
+              iin: selectIIN,
+              iinFlags: selectIINFlags,
+            },
+            rtt: Date.now() - startTime,
+            error: 'SELECT was not confirmed by the outstation',
+          };
+        }
+
+        // --- Step 2: OPERATE ---
+        const operateFrame = buildSelectOperateRequest(
+          destination, source, AFC_OPERATE, 1,
+          objectGroup, objectVariation, objectIndex, controlCode,
+        );
+        await writer.write(operateFrame);
+
+        const operateResponseBytes = await readDNP3Response(reader, 5000);
+
+        let operated = false;
+        let operateFunctionName = '';
+        let operateIIN = '';
+        let operateIINFlags: string[] = [];
+
+        if (operateResponseBytes.length >= 10) {
+          const operateDL = parseDataLinkResponse(operateResponseBytes);
+          if (operateDL?.userData && operateDL.userData.length >= 5) {
+            const operateApp = parseApplicationResponse(operateDL.userData);
+            if (operateApp) {
+              operateFunctionName = operateApp.functionName;
+              operateIIN = `0x${operateApp.iin.toString(16).padStart(4, '0')}`;
+              operateIINFlags = operateApp.iinFlags;
+              const errorIIN = operateApp.iin & 0x0700;
+              operated = operateApp.functionCode === 0x81 && errorIIN === 0;
+            }
+          }
+        }
+
+        await socket.close();
+
+        return {
+          success: selected && operated,
+          selected,
+          operated,
+          host,
+          port,
+          dnpAddress: { destination, source },
+          objectGroup,
+          objectVariation,
+          objectIndex,
+          controlCode,
+          selectResponse: {
+            functionName: selectFunctionName,
+            iin: selectIIN,
+            iinFlags: selectIINFlags,
+          },
+          operateResponse: {
+            functionName: operateFunctionName,
+            iin: operateIIN,
+            iinFlags: operateIINFlags,
+          },
+          rtt: Date.now() - startTime,
+        };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'DNP3 SELECT/OPERATE failed',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

@@ -1,493 +1,306 @@
-# SMTP Protocol Implementation Plan
+# SMTP — Power User Reference
 
-## Overview
+**Ports:** 25 (relay), 587 (submission), 465 (SMTPS) | **Protocol:** SMTP RFC 5321 | **Tests:** 14/14 ✅ Deployed
 
-**Protocol:** SMTP (Simple Mail Transfer Protocol)
-**Port:** 25 (plain), 587 (submission), 465 (SMTPS)
-**RFC:** [RFC 5321](https://tools.ietf.org/html/rfc5321)
-**Complexity:** Medium
-**Purpose:** Send email
+Port of Call provides two SMTP endpoints: a connectivity probe and an email sender. Both open a plain TCP connection from the Cloudflare Worker to the target host. **TLS is not supported** — see [TLS / STARTTLS Limitations](#tls--starttls-limitations) below before connecting to port 587 or 465.
 
-SMTP enables **sending email** directly from the browser. Perfect for automated notifications, testing email templates, and web-based email clients.
+---
 
-### Use Cases
-- Web-based email client (sending)
-- Test email templates and formatting
-- Send automated notifications
-- Email deliverability testing
-- Educational - learn email protocols
-- Transactional email debugging
+## API Endpoints
 
-## Protocol Specification
+### `GET/POST /api/smtp/connect` — Connectivity probe
 
-### SMTP Command Flow
+Connects, reads the `220` greeting, sends `EHLO portofcall`, reads the capability list, sends `QUIT`, and closes.
 
-```
-Client: EHLO client.example.com
-Server: 250-server.example.com
-        250-SIZE 35882577
-        250-AUTH PLAIN LOGIN
-        250 STARTTLS
+**POST body / GET query params:**
 
-Client: STARTTLS
-Server: 220 Ready to start TLS
+| Field     | Type   | Default | Notes |
+|-----------|--------|---------|-------|
+| `host`    | string | —       | Required |
+| `port`    | number | `25`    | |
+| `timeout` | number | `30000` | Total timeout in ms |
 
-[TLS handshake]
+Note: `username`, `password`, and `useTLS` fields are accepted in the body but **not used** by the connect probe.
 
-Client: AUTH LOGIN
-Server: 334 VXNlcm5hbWU6
-Client: dGVzdHVzZXI=
-Server: 334 UGFzc3dvcmQ6
-Client: cGFzc3dvcmQ=
-Server: 235 Authentication successful
-
-Client: MAIL FROM:<sender@example.com>
-Server: 250 OK
-
-Client: RCPT TO:<recipient@example.com>
-Server: 250 OK
-
-Client: DATA
-Server: 354 Start mail input
-
-Client: From: sender@example.com
-        To: recipient@example.com
-        Subject: Test Email
-
-        This is the message body.
-        .
-Server: 250 OK: queued
-
-Client: QUIT
-Server: 221 Bye
-```
-
-### SMTP Commands
-
-| Command | Description | Example |
-|---------|-------------|---------|
-| EHLO | Extended hello | `EHLO client.com` |
-| AUTH | Authentication | `AUTH LOGIN` |
-| MAIL FROM | Sender address | `MAIL FROM:<user@example.com>` |
-| RCPT TO | Recipient | `RCPT TO:<dest@example.com>` |
-| DATA | Message content | `DATA` |
-| QUIT | Close connection | `QUIT` |
-
-### Response Codes
-
-| Code | Meaning |
-|------|---------|
-| 220 | Service ready |
-| 235 | Authentication successful |
-| 250 | Requested action okay |
-| 334 | Authentication challenge |
-| 354 | Start mail input |
-| 421 | Service not available |
-| 535 | Authentication failed |
-
-## Worker Implementation
-
-### SMTP Client
-
-```typescript
-// src/worker/protocols/smtp/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface SMTPConfig {
-  host: string;
-  port: number;
-  username?: string;
-  password?: string;
-  secure?: boolean; // Use SMTPS (port 465)
-  requireTLS?: boolean; // Upgrade with STARTTLS
-}
-
-export interface EmailMessage {
-  from: string;
-  to: string | string[];
-  cc?: string | string[];
-  bcc?: string | string[];
-  subject: string;
-  text?: string;
-  html?: string;
-  attachments?: Array<{
-    filename: string;
-    content: string;
-    encoding?: string;
-  }>;
-}
-
-export class SMTPClient {
-  private socket: Socket;
-  private decoder = new TextDecoder();
-  private encoder = new TextEncoder();
-
-  constructor(private config: SMTPConfig) {}
-
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
-
-    // Read greeting
-    await this.readResponse();
-
-    // Send EHLO
-    await this.send(`EHLO portofcall.app`);
-    const ehloResponse = await this.readResponse();
-
-    // Check if STARTTLS is available
-    if (this.config.requireTLS && ehloResponse.includes('STARTTLS')) {
-      await this.send('STARTTLS');
-      await this.readResponse();
-      // TODO: Upgrade to TLS
-    }
-
-    // Authenticate if credentials provided
-    if (this.config.username && this.config.password) {
-      await this.authenticate();
-    }
-  }
-
-  private async authenticate(): Promise<void> {
-    // Use AUTH LOGIN
-    await this.send('AUTH LOGIN');
-    await this.readResponse();
-
-    // Send username (base64)
-    const username = btoa(this.config.username!);
-    await this.send(username);
-    await this.readResponse();
-
-    // Send password (base64)
-    const password = btoa(this.config.password!);
-    await this.send(password);
-    await this.readResponse();
-  }
-
-  async sendEmail(email: EmailMessage): Promise<void> {
-    // MAIL FROM
-    await this.send(`MAIL FROM:<${email.from}>`);
-    await this.readResponse();
-
-    // RCPT TO (recipients)
-    const recipients = Array.isArray(email.to) ? email.to : [email.to];
-    for (const recipient of recipients) {
-      await this.send(`RCPT TO:<${recipient}>`);
-      await this.readResponse();
-    }
-
-    // CC
-    if (email.cc) {
-      const ccList = Array.isArray(email.cc) ? email.cc : [email.cc];
-      for (const cc of ccList) {
-        await this.send(`RCPT TO:<${cc}>`);
-        await this.readResponse();
-      }
-    }
-
-    // BCC
-    if (email.bcc) {
-      const bccList = Array.isArray(email.bcc) ? email.bcc : [email.bcc];
-      for (const bcc of bccList) {
-        await this.send(`RCPT TO:<${bcc}>`);
-        await this.readResponse();
-      }
-    }
-
-    // DATA
-    await this.send('DATA');
-    await this.readResponse();
-
-    // Build message
-    const message = this.buildMessage(email);
-    await this.send(message);
-    await this.send('.'); // End of message
-    await this.readResponse();
-  }
-
-  private buildMessage(email: EmailMessage): string {
-    const lines: string[] = [];
-
-    // Headers
-    lines.push(`From: ${email.from}`);
-    lines.push(`To: ${Array.isArray(email.to) ? email.to.join(', ') : email.to}`);
-
-    if (email.cc) {
-      lines.push(`Cc: ${Array.isArray(email.cc) ? email.cc.join(', ') : email.cc}`);
-    }
-
-    lines.push(`Subject: ${email.subject}`);
-    lines.push(`Date: ${new Date().toUTCString()}`);
-    lines.push('MIME-Version: 1.0');
-
-    if (email.html) {
-      // Multipart message
-      const boundary = `----=_Part_${Date.now()}`;
-      lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
-      lines.push('');
-
-      // Text part
-      if (email.text) {
-        lines.push(`--${boundary}`);
-        lines.push('Content-Type: text/plain; charset=utf-8');
-        lines.push('');
-        lines.push(email.text);
-        lines.push('');
-      }
-
-      // HTML part
-      lines.push(`--${boundary}`);
-      lines.push('Content-Type: text/html; charset=utf-8');
-      lines.push('');
-      lines.push(email.html);
-      lines.push('');
-      lines.push(`--${boundary}--`);
-    } else {
-      // Plain text only
-      lines.push('Content-Type: text/plain; charset=utf-8');
-      lines.push('');
-      lines.push(email.text || '');
-    }
-
-    return lines.join('\r\n');
-  }
-
-  private async send(data: string): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(this.encoder.encode(data + '\r\n'));
-    writer.releaseLock();
-  }
-
-  private async readResponse(): Promise<string> {
-    const reader = this.socket.readable.getReader();
-    let buffer = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += this.decoder.decode(value, { stream: true });
-
-      // SMTP responses are line-based
-      // Multi-line responses: 250-line1\r\n250-line2\r\n250 last
-      if (buffer.includes('\r\n')) {
-        const lines = buffer.split('\r\n');
-        const lastLine = lines[lines.length - 2];
-
-        // Check if last line doesn't have a dash after code
-        if (lastLine && /^\d{3} /.test(lastLine)) {
-          reader.releaseLock();
-          return buffer;
-        }
-      }
-    }
-
-    reader.releaseLock();
-    return buffer;
-  }
-
-  async quit(): Promise<void> {
-    await this.send('QUIT');
-    await this.readResponse();
-    await this.socket.close();
-  }
+**Success (200):**
+```json
+{
+  "success": true,
+  "message": "SMTP server reachable",
+  "host": "mail.example.com",
+  "port": 25,
+  "greeting": "220 mail.example.com ESMTP Postfix",
+  "capabilities": "250-mail.example.com\r\n250-PIPELINING\r\n250-SIZE 10240000\r\n250-STARTTLS\r\n250-AUTH PLAIN LOGIN\r\n250 ENHANCEDSTATUSCODES",
+  "note": "This is a connectivity test. Use the send feature to send emails."
 }
 ```
 
-## Web UI Design
+The `capabilities` field is the raw multi-line EHLO response (all `250-…` continuation lines plus the final `250` line), joined with `\r\n`. Parse it yourself to extract extensions.
 
-### Email Composer
+**Error (500):**
+```json
+{ "success": false, "error": "EHLO failed: 503 Bad sequence of commands" }
+```
 
-```typescript
-// src/components/SMTPEmailComposer.tsx
+**Cloudflare-protected host (403):**
+```json
+{ "success": false, "error": "...", "isCloudflare": true }
+```
 
-export function SMTPEmailComposer() {
-  const [config, setConfig] = useState<SMTPConfig>({
-    host: 'smtp.gmail.com',
-    port: 587,
-    username: '',
-    password: '',
-    requireTLS: true,
-  });
+**curl example:**
+```bash
+# Probe an MTA
+curl -s https://portofcall.ross.gg/api/smtp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"mail.example.com","port":25}' \
+  | jq '{greeting,capabilities}'
 
-  const [email, setEmail] = useState<EmailMessage>({
-    from: '',
-    to: '',
-    subject: '',
-    text: '',
-  });
+# GET form
+curl -s 'https://portofcall.ross.gg/api/smtp/connect?host=mail.example.com&port=25'
+```
 
-  const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<string>('');
+---
 
-  const sendEmail = async () => {
-    setSending(true);
-    setResult('');
+### `POST /api/smtp/send` — Send email
 
-    try {
-      const response = await fetch('/api/smtp/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config, email }),
-      });
+Connects, runs the full SMTP transaction, and closes. GET is rejected with HTTP 405.
 
-      const data = await response.json();
+**POST body:**
 
-      if (data.success) {
-        setResult('✓ Email sent successfully!');
-      } else {
-        setResult(`✗ Failed: ${data.error}`);
-      }
-    } catch (error) {
-      setResult(`✗ Error: ${error.message}`);
-    } finally {
-      setSending(false);
-    }
-  };
+| Field      | Type   | Required | Default | Notes |
+|------------|--------|----------|---------|-------|
+| `host`     | string | ✅       | —       | |
+| `port`     | number | —        | `25`    | |
+| `username` | string | —        | —       | Triggers `AUTH LOGIN` |
+| `password` | string | —        | —       | Required if `username` set |
+| `from`     | string | ✅       | —       | Used in `MAIL FROM:<...>` and `From:` header |
+| `to`       | string | ✅       | —       | Single address; used in `RCPT TO:<...>` and `To:` header |
+| `subject`  | string | ✅       | —       | `Subject:` header |
+| `body`     | string | ✅       | —       | Plain text only |
+| `timeout`  | number | —        | `30000` | Total timeout in ms |
 
-  return (
-    <div className="smtp-composer">
-      <h2>Send Email via SMTP</h2>
-
-      <div className="smtp-config">
-        <h3>SMTP Server</h3>
-        <input
-          type="text"
-          placeholder="SMTP Host"
-          value={config.host}
-          onChange={(e) => setConfig({ ...config, host: e.target.value })}
-        />
-        <input
-          type="number"
-          placeholder="Port"
-          value={config.port}
-          onChange={(e) => setConfig({ ...config, port: Number(e.target.value) })}
-        />
-        <input
-          type="text"
-          placeholder="Username"
-          value={config.username}
-          onChange={(e) => setConfig({ ...config, username: e.target.value })}
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={config.password}
-          onChange={(e) => setConfig({ ...config, password: e.target.value })}
-        />
-      </div>
-
-      <div className="email-form">
-        <h3>Email Message</h3>
-        <input
-          type="email"
-          placeholder="From"
-          value={email.from}
-          onChange={(e) => setEmail({ ...email, from: e.target.value })}
-        />
-        <input
-          type="email"
-          placeholder="To"
-          value={email.to as string}
-          onChange={(e) => setEmail({ ...email, to: e.target.value })}
-        />
-        <input
-          type="text"
-          placeholder="Subject"
-          value={email.subject}
-          onChange={(e) => setEmail({ ...email, subject: e.target.value })}
-        />
-        <textarea
-          placeholder="Message"
-          value={email.text}
-          onChange={(e) => setEmail({ ...email, text: e.target.value })}
-          rows={10}
-        />
-      </div>
-
-      <button onClick={sendEmail} disabled={sending}>
-        {sending ? 'Sending...' : 'Send Email'}
-      </button>
-
-      {result && (
-        <div className={`result ${result.startsWith('✓') ? 'success' : 'error'}`}>
-          {result}
-        </div>
-      )}
-
-      <EmailTemplates onSelect={(template) => setEmail({ ...email, ...template })} />
-    </div>
-  );
+**Success (200):**
+```json
+{
+  "success": true,
+  "message": "Email sent successfully",
+  "host": "mail.example.com",
+  "port": 25,
+  "from": "sender@example.com",
+  "to": "recipient@example.com"
 }
 ```
 
-## Security
-
-### Credential Storage
-
-```typescript
-// NEVER store credentials
-// Use environment variables or prompt each time
-const SMTP_CONFIG = {
-  host: env.SMTP_HOST,
-  port: env.SMTP_PORT,
-  username: env.SMTP_USERNAME,
-  password: env.SMTP_PASSWORD,
-};
+**Validation error (400):**
+```json
+{ "error": "Missing required parameters: host, from, to, subject, body" }
 ```
 
-### SPF/DKIM Validation
+All five fields must be present; if any is missing the check fires with this combined message.
 
-```typescript
-// Warn if From address doesn't match authenticated domain
-function validateSender(from: string, domain: string): boolean {
-  return from.endsWith(`@${domain}`);
-}
+**curl example:**
+```bash
+curl -s https://portofcall.ross.gg/api/smtp/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "mail.example.com",
+    "port": 587,
+    "username": "user@example.com",
+    "password": "secret",
+    "from": "user@example.com",
+    "to": "recipient@example.com",
+    "subject": "Test from Port of Call",
+    "body": "Hello from the wire."
+  }'
 ```
 
-## Testing
+---
 
-### Test with Mailtrap
+## Wire Exchange
 
-```typescript
-// Mailtrap - catches all emails for testing
-const config = {
-  host: 'smtp.mailtrap.io',
-  port: 2525,
-  username: 'your_username',
-  password: 'your_password',
-};
+### Connect probe
+
+```
+→ (TCP connect)
+← 220 mail.example.com ESMTP Postfix\r\n
+→ EHLO portofcall\r\n
+← 250-mail.example.com\r\n
+   250-PIPELINING\r\n
+   250-SIZE 10240000\r\n
+   250-STARTTLS\r\n
+   250 AUTH PLAIN LOGIN\r\n
+→ QUIT\r\n
+← 221 Bye\r\n
 ```
 
-### Docker Test Server
+### Send — unauthenticated
+
+```
+→ (TCP connect)
+← 220 mail.example.com ESMTP Postfix\r\n
+→ EHLO portofcall\r\n
+← 250 …\r\n
+→ MAIL FROM:<sender@example.com>\r\n
+← 250 Ok\r\n
+→ RCPT TO:<recipient@example.com>\r\n
+← 250 Ok\r\n
+→ DATA\r\n
+← 354 End data with <CR><LF>.<CR><LF>\r\n
+→ From: sender@example.com\r\n
+   To: recipient@example.com\r\n
+   Subject: Test\r\n
+   \r\n
+   Hello from the wire.\r\n
+   .\r\n
+← 250 Ok: queued as ABC123\r\n
+→ QUIT\r\n
+← 221 Bye\r\n
+```
+
+### Send — AUTH LOGIN
+
+```
+→ EHLO portofcall\r\n
+← 250 …\r\n
+→ AUTH LOGIN\r\n
+← 334 VXNlcm5hbWU6\r\n          (base64 "Username:")
+→ dXNlckBleGFtcGxlLmNvbQ==\r\n  (base64 of username)
+← 334 UGFzc3dvcmQ6\r\n           (base64 "Password:")
+→ c2VjcmV0\r\n                   (base64 of password)
+← 235 2.7.0 Authentication successful\r\n
+→ MAIL FROM:<sender@example.com>\r\n
+…
+```
+
+---
+
+## Response Parsing
+
+`readSMTPResponse` accumulates chunks until the buffer matches `/\d{3}\s.*\r\n$/` — a final response line (3 digits + space, not dash). This correctly handles multi-line EHLO responses.
+
+`parseSMTPResponse` splits on `\n` and extracts the code from the **last line**. The full raw text (all continuation lines) is in `message`.
+
+---
+
+## Known Limitations
+
+### TLS / STARTTLS Limitations
+
+**This is the most important limitation for real-world use.**
+
+The worker uses `connect()` (plain TCP) only. There is no TLS socket and no STARTTLS negotiation.
+
+| Port | Protocol | What happens |
+|------|----------|--------------|
+| 25   | SMTP relay | Plain TCP. Works for open relays, MTA-to-MTA testing. Most cloud-provider egress on port 25 is blocked; results depend on the Worker's origin IP. |
+| 587  | Submission + STARTTLS | Server advertises `STARTTLS` in EHLO response; the worker does not negotiate it. Credentials are sent in cleartext after `AUTH LOGIN`. Most servers (Gmail, Outlook, Sendgrid) will reject the connection or the auth. |
+| 465  | SMTPS (implicit TLS) | Server expects TLS from byte 0. Plain TCP connection will receive no `220` greeting; instead the socket will produce garbage or the server will drop it. Connect probe will throw `Invalid SMTP greeting`. |
+
+For testing against servers that require TLS, use a local tool (swaks, openssl s_client) or a TLS-terminating proxy.
+
+**`useTLS` field:** accepted in the request body but completely ignored by both endpoints. It has no effect.
+
+### AUTH LOGIN only
+
+Only `AUTH LOGIN` (RFC 4616 variant with base64-encoded username and password exchange) is implemented. The following are **not supported**:
+
+- `AUTH PLAIN` — single base64-encoded `\0user\0pass` string
+- `AUTH CRAM-MD5` — challenge-response
+- `AUTH XOAUTH2` — OAuth 2.0 bearer tokens (required by Gmail/Google Workspace)
+- `AUTH GSSAPI`, `AUTH NTLM`, `AUTH DIGEST-MD5`
+
+If the server's EHLO response lists `AUTH PLAIN` but not `AUTH LOGIN`, the worker will still send `AUTH LOGIN` and the server will respond with an error.
+
+`btoa()` is used for base64 encoding — this will silently corrupt usernames or passwords containing non-Latin1 characters (code points > 255).
+
+### Single recipient
+
+`to` accepts exactly one address string. There is no multi-recipient support, no CC, and no BCC. To send to multiple recipients, call `/api/smtp/send` once per address.
+
+### Minimal message headers
+
+The DATA section contains only `From:`, `To:`, and `Subject:` headers:
+
+```
+From: sender@example.com
+To: recipient@example.com
+Subject: Test subject
+
+Message body here.
+```
+
+Missing headers that spam filters and MUAs rely on:
+- `Date:` — RFC 5321 requires this; some servers add it automatically, others reject the message
+- `Message-ID:` — deduplication and threading
+- `MIME-Version:` and `Content-Type:` — messages are plain text only; HTML and attachments are not supported
+- `Reply-To:`, `Cc:`, `Bcc:`, `X-Mailer:`
+
+### No dot-stuffing (RFC 5321 §4.5.2)
+
+RFC 5321 requires that any line in the DATA body beginning with `.` be doubled to `..` to prevent premature termination. This implementation does **not** perform dot-stuffing. If `body` contains a line that starts with `.` (e.g., a PEM certificate, a diff, or a markdown item starting with `...`), that line will terminate the DATA section early, likely causing a `500` or mangled message.
+
+### EHLO hostname is always `portofcall`
+
+The greeting sent is always `EHLO portofcall` regardless of the Worker's actual hostname. Some strict MTAs validate that the EHLO argument resolves to the connecting IP; they may reject with `550 5.7.1 client not authorized` or similar.
+
+### No pipelining
+
+Each command is sent and its response is awaited before the next command is issued, despite many servers advertising `PIPELINING` in EHLO. Not a correctness issue, but adds RTT overhead.
+
+### No RSET on partial failure
+
+If `AUTH LOGIN` receives an unexpected code at the username step, the error propagates immediately without sending `RSET`. The connection is closed but the server-side state may be left in an inconsistent auth sequence.
+
+---
+
+## Local Testing (MailHog)
+
+The test file includes a MailHog config (disabled by default). MailHog is the easiest way to exercise auth and the full send flow locally:
 
 ```bash
-# MailHog - SMTP testing
 docker run -d -p 1025:1025 -p 8025:8025 mailhog/mailhog
-# SMTP: localhost:1025
-# Web UI: http://localhost:8025
 ```
+
+Then:
+```bash
+curl -s https://portofcall.ross.gg/api/smtp/send \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"YOUR_LOCAL_IP","port":1025,"from":"a@b.com","to":"c@d.com","subject":"hi","body":"test"}'
+```
+
+MailHog accepts any sender and recipient, does not require auth, and displays received messages at `http://localhost:8025`. It's the only realistic way to test the send flow without an open relay.
+
+Alternatively, use **smtp4dev** (`docker run -p 2525:25 rnwood/smtp4dev`) or **Mailtrap** (cloud sandbox, provides SMTP credentials that work from external IPs).
+
+---
+
+## SMTP Response Codes Reference
+
+| Code | Meaning | When seen |
+|------|---------|-----------|
+| `220` | Service ready | Server greeting |
+| `221` | Service closing | QUIT response |
+| `235` | Authentication successful | After correct password in AUTH LOGIN |
+| `250` | Requested action OK | EHLO (per-capability line), MAIL FROM, RCPT TO, DATA terminator |
+| `334` | Server challenge | During AUTH LOGIN (each credential prompt) |
+| `354` | Start mail input | After DATA command |
+| `421` | Service unavailable | Server overloaded or shutting down |
+| `450` | Mailbox unavailable (temporary) | Greylisting; retry later |
+| `451` | Aborted; server error | Transient failure |
+| `500` | Unrecognised command | Sent unknown verb |
+| `501` | Syntax error in parameters | Bad argument to command |
+| `503` | Bad sequence of commands | E.g., MAIL FROM before EHLO |
+| `530` | Authentication required | Must authenticate before sending |
+| `535` | Authentication failed | Wrong credentials |
+| `550` | Mailbox unavailable (permanent) | Non-existent recipient, policy rejection |
+| `554` | Transaction failed | General permanent failure |
+
+---
 
 ## Resources
 
-- **RFC 5321**: [SMTP Protocol](https://tools.ietf.org/html/rfc5321)
-- **RFC 5322**: [Internet Message Format](https://tools.ietf.org/html/rfc5322)
-- **Nodemailer**: [Node.js email library](https://nodemailer.com/)
-
-## Next Steps
-
-1. Implement SMTP client
-2. Add HTML email support
-3. Build email template system
-4. Support attachments (base64 encoding)
-5. Add email validation
-6. Implement DKIM signing
-7. Create email testing tools
-
-## Notes
-
-- Port 587 (submission) is preferred over port 25
-- Always use TLS when available (STARTTLS)
-- Gmail requires "App Passwords" for SMTP access
-- Consider rate limiting to prevent abuse
+- [RFC 5321 — SMTP](https://www.rfc-editor.org/rfc/rfc5321)
+- [RFC 4954 — SMTP Auth Extension](https://www.rfc-editor.org/rfc/rfc4954)
+- [RFC 3207 — STARTTLS](https://www.rfc-editor.org/rfc/rfc3207)
+- [AUTH LOGIN spec](https://www.ietf.org/archive/id/draft-murchison-sasl-login-00.txt)
+- [MailHog](https://github.com/mailhog/MailHog) — local SMTP test server

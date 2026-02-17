@@ -789,3 +789,447 @@ export async function handleDICOMEcho(request: Request): Promise<Response> {
     });
   }
 }
+
+// Study Root Query/Retrieve Information Model - FIND SOP Class
+const STUDY_ROOT_FIND_SOP_CLASS = '1.2.840.10008.5.1.4.1.2.2.1';
+
+/**
+ * Build an A-ASSOCIATE-RQ for Study Root C-FIND.
+ */
+function buildAssociateRequestFind(callingAE: string, calledAE: string): Uint8Array {
+  const parts: Uint8Array[] = [];
+
+  // Application Context item
+  parts.push(writeUIDItem(0x10, DICOM_APP_CONTEXT));
+
+  // Presentation Context for Study Root Find (ID=1)
+  const abstractSyntax = writeUIDItem(0x30, STUDY_ROOT_FIND_SOP_CLASS);
+  const transferSyntax1 = writeUIDItem(0x40, IMPLICIT_VR_LE);
+  const transferSyntax2 = writeUIDItem(0x40, EXPLICIT_VR_LE);
+  const pcContentLength = 4 + abstractSyntax.length + transferSyntax1.length + transferSyntax2.length;
+  const pcItem = new Uint8Array(4 + pcContentLength);
+  pcItem[0] = 0x20; pcItem[1] = 0x00;
+  new DataView(pcItem.buffer).setUint16(2, pcContentLength, false);
+  pcItem[4] = 0x01; // Presentation Context ID
+  pcItem[5] = 0x00; pcItem[6] = 0x00; pcItem[7] = 0x00;
+  let pcOffset = 8;
+  pcItem.set(abstractSyntax, pcOffset); pcOffset += abstractSyntax.length;
+  pcItem.set(transferSyntax1, pcOffset); pcOffset += transferSyntax1.length;
+  pcItem.set(transferSyntax2, pcOffset);
+  parts.push(pcItem);
+
+  // User Information
+  const maxPDU = new Uint8Array(8);
+  maxPDU[0] = 0x51; maxPDU[1] = 0x00;
+  new DataView(maxPDU.buffer).setUint16(2, 4, false);
+  new DataView(maxPDU.buffer).setUint32(4, 16384, false);
+  const implClassUID = writeUIDItem(0x52, IMPLEMENTATION_CLASS_UID);
+  const implVersionBytes = new TextEncoder().encode(IMPLEMENTATION_VERSION);
+  const paddedImplLen = implVersionBytes.length % 2 === 0 ? implVersionBytes.length : implVersionBytes.length + 1;
+  const implVersion = new Uint8Array(4 + paddedImplLen);
+  implVersion[0] = 0x55; implVersion[1] = 0x00;
+  new DataView(implVersion.buffer).setUint16(2, paddedImplLen, false);
+  implVersion.set(implVersionBytes, 4);
+  const uiContentLength = maxPDU.length + implClassUID.length + implVersion.length;
+  const uiItem = new Uint8Array(4 + uiContentLength);
+  uiItem[0] = 0x50; uiItem[1] = 0x00;
+  new DataView(uiItem.buffer).setUint16(2, uiContentLength, false);
+  let uiOffset = 4;
+  uiItem.set(maxPDU, uiOffset); uiOffset += maxPDU.length;
+  uiItem.set(implClassUID, uiOffset); uiOffset += implClassUID.length;
+  uiItem.set(implVersion, uiOffset);
+  parts.push(uiItem);
+
+  const variableLength = parts.reduce((sum, p) => sum + p.length, 0);
+  const pduDataLength = 68 + variableLength;
+  const pdu = new Uint8Array(6 + pduDataLength);
+  const view = new DataView(pdu.buffer);
+  pdu[0] = PDU_A_ASSOCIATE_RQ;
+  pdu[1] = 0x00;
+  view.setUint32(2, pduDataLength, false);
+  view.setUint16(6, 0x0001, false);
+  pdu.set(padAETitle(calledAE), 10);
+  pdu.set(padAETitle(callingAE), 26);
+  let offset = 74;
+  for (const part of parts) {
+    pdu.set(part, offset);
+    offset += part.length;
+  }
+  return pdu;
+}
+
+/**
+ * Encode a DICOM string attribute in Implicit VR Little Endian.
+ * (group, element, value)
+ */
+function dicomStringElement(group: number, element: number, value: string): Uint8Array {
+  const enc = new TextEncoder().encode(value);
+  // Pad to even length
+  const paddedLen = enc.length % 2 === 0 ? enc.length : enc.length + 1;
+  const buf = new Uint8Array(8 + paddedLen);
+  const view = new DataView(buf.buffer);
+  view.setUint16(0, group, true);
+  view.setUint16(2, element, true);
+  view.setUint32(4, paddedLen, true);
+  buf.set(enc, 8);
+  return buf;
+}
+
+/**
+ * Build a C-FIND-RQ dataset wrapped in P-DATA-TF.
+ *
+ * DIMSE header fields:
+ *   (0000,0000) CommandGroupLength
+ *   (0000,0002) AffectedSOPClassUID = StudyRootFindSOP
+ *   (0000,0100) CommandField = 0x0020 (C-FIND-RQ)
+ *   (0000,0110) MessageID
+ *   (0000,0700) Priority = 0x0000 (MEDIUM)
+ *   (0000,0800) CommandDataSetType = 0x0102 (dataset present)
+ *
+ * Dataset (search keys):
+ *   (0008,0052) QueryRetrieveLevel
+ *   (0008,0020) StudyDate
+ *   (0010,0010) PatientName
+ *   (0010,0020) PatientID
+ *   (0020,000D) StudyInstanceUID
+ */
+function buildCFindRequest(
+  messageId: number,
+  queryLevel: string,
+  patientId: string,
+  studyDate: string,
+): Uint8Array {
+  // --- Build the DIMSE command set (Implicit VR LE, group 0000) ---
+  const sopUIDBytes = new TextEncoder().encode(STUDY_ROOT_FIND_SOP_CLASS);
+  const paddedSOPLen = sopUIDBytes.length % 2 === 0 ? sopUIDBytes.length : sopUIDBytes.length + 1;
+
+  // AffectedSOPClassUID (0000,0002)
+  const elemSOP = new Uint8Array(8 + paddedSOPLen);
+  {
+    const v = new DataView(elemSOP.buffer);
+    v.setUint16(0, 0x0000, true); v.setUint16(2, 0x0002, true); v.setUint32(4, paddedSOPLen, true);
+    elemSOP.set(sopUIDBytes, 8);
+  }
+
+  // CommandField (0000,0100) = 0x0020 C-FIND-RQ
+  const elemCmd = new Uint8Array(10);
+  { const v = new DataView(elemCmd.buffer); v.setUint16(0,0,true); v.setUint16(2,0x0100,true); v.setUint32(4,2,true); v.setUint16(8,0x0020,true); }
+
+  // MessageID (0000,0110)
+  const elemMsgId = new Uint8Array(10);
+  { const v = new DataView(elemMsgId.buffer); v.setUint16(0,0,true); v.setUint16(2,0x0110,true); v.setUint32(4,2,true); v.setUint16(8,messageId,true); }
+
+  // Priority (0000,0700) = 0x0000 MEDIUM
+  const elemPri = new Uint8Array(10);
+  { const v = new DataView(elemPri.buffer); v.setUint16(0,0,true); v.setUint16(2,0x0700,true); v.setUint32(4,2,true); v.setUint16(8,0x0000,true); }
+
+  // CommandDataSetType (0000,0800) = 0x0102 (dataset present)
+  const elemDST = new Uint8Array(10);
+  { const v = new DataView(elemDST.buffer); v.setUint16(0,0,true); v.setUint16(2,0x0800,true); v.setUint32(4,2,true); v.setUint16(8,0x0102,true); }
+
+  // CommandGroupLength (0000,0000) — value = total length of remaining command elements
+  const remainingLen = elemSOP.length + elemCmd.length + elemMsgId.length + elemPri.length + elemDST.length;
+  const elemGL = new Uint8Array(12);
+  { const v = new DataView(elemGL.buffer); v.setUint16(0,0,true); v.setUint16(2,0,true); v.setUint32(4,4,true); v.setUint32(8,remainingLen,true); }
+
+  const commandSet = new Uint8Array(elemGL.length + remainingLen);
+  let cmdOff = 0;
+  commandSet.set(elemGL, cmdOff); cmdOff += elemGL.length;
+  commandSet.set(elemSOP, cmdOff); cmdOff += elemSOP.length;
+  commandSet.set(elemCmd, cmdOff); cmdOff += elemCmd.length;
+  commandSet.set(elemMsgId, cmdOff); cmdOff += elemMsgId.length;
+  commandSet.set(elemPri, cmdOff); cmdOff += elemPri.length;
+  commandSet.set(elemDST, cmdOff);
+
+  // --- Build the dataset ---
+  const levelElem = dicomStringElement(0x0008, 0x0052, queryLevel);
+  const dateElem  = dicomStringElement(0x0008, 0x0020, studyDate);
+  const nameElem  = dicomStringElement(0x0010, 0x0010, '');
+  const pidElem   = dicomStringElement(0x0010, 0x0020, patientId);
+  const suidElem  = dicomStringElement(0x0020, 0x000D, '');
+
+  const datasetLength = levelElem.length + dateElem.length + nameElem.length + pidElem.length + suidElem.length;
+  const dataset = new Uint8Array(datasetLength);
+  let dsOff = 0;
+  dataset.set(levelElem, dsOff); dsOff += levelElem.length;
+  dataset.set(dateElem,  dsOff); dsOff += dateElem.length;
+  dataset.set(nameElem,  dsOff); dsOff += nameElem.length;
+  dataset.set(pidElem,   dsOff); dsOff += pidElem.length;
+  dataset.set(suidElem,  dsOff);
+
+  // --- Build the two PDVs: command (context 1, flags 0x03) + dataset (context 1, flags 0x02) ---
+  function makePDV(contextId: number, flags: number, data: Uint8Array): Uint8Array {
+    const pdvLen = 2 + data.length;
+    const item = new Uint8Array(4 + pdvLen);
+    new DataView(item.buffer).setUint32(0, pdvLen, false);
+    item[4] = contextId;
+    item[5] = flags;
+    item.set(data, 6);
+    return item;
+  }
+
+  const cmdPDV     = makePDV(0x01, 0x03, commandSet); // command + last fragment
+  const datasetPDV = makePDV(0x01, 0x02, dataset);    // dataset + last fragment
+
+  // Wrap both PDVs in a single P-DATA-TF PDU
+  const totalPDVLen = cmdPDV.length + datasetPDV.length;
+  const pdu = new Uint8Array(6 + totalPDVLen);
+  pdu[0] = PDU_P_DATA_TF;
+  pdu[1] = 0x00;
+  new DataView(pdu.buffer).setUint32(2, totalPDVLen, false);
+  pdu.set(cmdPDV, 6);
+  pdu.set(datasetPDV, 6 + cmdPDV.length);
+
+  return pdu;
+}
+
+/**
+ * Parse DICOM Implicit VR LE elements from a byte buffer.
+ * Returns a map of "GGGG,EEEE" tag keys to string values.
+ */
+function parseDICOMDataset(data: Uint8Array): Record<string, string> {
+  const decoder = new TextDecoder();
+  const result: Record<string, string> = {};
+  let offset = 0;
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+  while (offset + 8 <= data.length) {
+    const group   = view.getUint16(offset, true);
+    const element = view.getUint16(offset + 2, true);
+    const length  = view.getUint32(offset + 4, true);
+    offset += 8;
+
+    if (length === 0xFFFFFFFF) break; // sequence / undefined length — stop
+    if (offset + length > data.length) break;
+
+    const tag = `${group.toString(16).padStart(4,'0')},${element.toString(16).padStart(4,'0')}`;
+    const valueBytes = data.subarray(offset, offset + length);
+    result[tag] = decoder.decode(valueBytes).replace(/\0/g, '').trim();
+    offset += length;
+  }
+
+  return result;
+}
+
+/**
+ * Parse a C-FIND-RSP from a P-DATA-TF PDU.
+ * Returns { status, dataset } where status is 0=pending, 0xFF00=pending with dataset,
+ * 0x0000=success, or an error code.
+ */
+function parseCFindResponse(data: Uint8Array): { status: number; dataset: Record<string, string> } {
+  // Data format: PDV item = length(4BE) + context-id(1) + control(1) + payload
+  // There may be two PDV items: command + dataset
+  let status = -1;
+  let dataset: Record<string, string> = {};
+  let offset = 0;
+
+  while (offset + 6 <= data.length) {
+    const pdvLen = new DataView(data.buffer, data.byteOffset + offset).getUint32(0, false);
+    const control = data[offset + 5];
+    const payload = data.subarray(offset + 6, offset + 4 + pdvLen);
+    offset += 4 + pdvLen;
+
+    const isCommand = (control & 0x01) !== 0;
+
+    if (isCommand) {
+      // Parse command set — look for Status (0000,0900)
+      let cmdOff = 0;
+      const cmdView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      while (cmdOff + 8 <= payload.length) {
+        const g = cmdView.getUint16(cmdOff, true);
+        const e = cmdView.getUint16(cmdOff + 2, true);
+        const l = cmdView.getUint32(cmdOff + 4, true);
+        cmdOff += 8;
+        if (g === 0x0000 && e === 0x0900 && l === 2) {
+          status = cmdView.getUint16(cmdOff, true);
+        }
+        cmdOff += l;
+      }
+    } else {
+      // Dataset
+      dataset = parseDICOMDataset(payload);
+    }
+  }
+
+  return { status, dataset };
+}
+
+interface DICOMFindRequest {
+  host: string;
+  port?: number;
+  callingAE?: string;
+  calledAE?: string;
+  queryLevel?: string;
+  patientId?: string;
+  studyDate?: string;
+  timeout?: number;
+}
+
+/**
+ * Handle DICOM C-FIND-RQ for Study Root Query.
+ *
+ * POST /api/dicom/find
+ * Body: { host, port?, callingAE?, calledAE?, queryLevel?, patientId?, studyDate?, timeout? }
+ *
+ * Returns: { success, studies: [{ patientId, patientName, studyDate, studyInstanceUID, ... }] }
+ */
+export async function handleDICOMFind(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as DICOMFindRequest;
+    const {
+      host,
+      port = 104,
+      callingAE = 'PORTOFCALL',
+      calledAE = 'ANY-SCP',
+      queryLevel = 'STUDY',
+      patientId = '',
+      studyDate = '',
+      timeout = 20000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (callingAE && (callingAE.length > 16 || !/^[\x20-\x7E]+$/.test(callingAE))) {
+      return new Response(JSON.stringify({ success: false, error: 'Calling AE title must be 1-16 printable ASCII characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (calledAE && (calledAE.length > 16 || !/^[\x20-\x7E]+$/.test(calledAE))) {
+      return new Response(JSON.stringify({ success: false, error: 'Called AE title must be 1-16 printable ASCII characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      // Step 1: A-ASSOCIATE with Study Root Find SOP
+      await writer.write(buildAssociateRequestFind(callingAE, calledAE));
+      const assocResponse = await readPDU(reader, timeoutPromise);
+
+      if (assocResponse.type === PDU_A_ASSOCIATE_RJ) {
+        const rejection = parseAssociateReject(assocResponse.data);
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Association rejected: ${rejection.reason} (${rejection.source})`,
+        }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (assocResponse.type !== PDU_A_ASSOCIATE_AC) {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Association failed with PDU type: 0x${assocResponse.type.toString(16)}`,
+        }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const assocInfo = parseAssociateAccept(assocResponse.data);
+      const findContext = assocInfo.acceptedContexts.find(ctx => ctx.result === 0);
+      if (!findContext) {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Study Root Find SOP Class not accepted by server',
+        }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Step 2: C-FIND-RQ
+      await writer.write(buildCFindRequest(1, queryLevel, patientId, studyDate));
+
+      // Step 3: Read C-FIND-RSP messages until status 0x0000 (Success)
+      const studies: Array<Record<string, string>> = [];
+
+      while (true) {
+        const pdu = await readPDU(reader, timeoutPromise);
+        if (pdu.type === PDU_A_ABORT || pdu.type === PDU_A_ASSOCIATE_RJ) {
+          break;
+        }
+        if (pdu.type !== PDU_P_DATA_TF) continue;
+
+        const rsp = parseCFindResponse(pdu.data);
+
+        // Pending responses (0xFF00 or 0xFF01) have datasets
+        if (rsp.status === 0xFF00 || rsp.status === 0xFF01) {
+          studies.push(rsp.dataset);
+          continue;
+        }
+
+        // Success (0x0000) means no more results
+        if (rsp.status === 0x0000) {
+          break;
+        }
+
+        // Any other non-pending status is an error
+        if (rsp.status !== -1) {
+          break;
+        }
+      }
+
+      // Step 4: Release
+      try {
+        await writer.write(buildReleaseRequest());
+        await readPDU(reader, timeoutPromise);
+      } catch { /* ignore */ }
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      const rtt = Date.now() - startTime;
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        callingAE,
+        calledAE: assocInfo.calledAE,
+        queryLevel,
+        patientId: patientId || undefined,
+        studyDate: studyDate || undefined,
+        rtt,
+        studyCount: studies.length,
+        studies,
+        implementationClassUID: assocInfo.implementationClassUID,
+        implementationVersion: assocInfo.implementationVersion,
+      }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

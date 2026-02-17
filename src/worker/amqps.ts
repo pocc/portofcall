@@ -24,7 +24,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
-import { doAMQPPublish, type AMQPPublishParams, type AMQPPublishResult } from './amqp';
+import { doAMQPPublish, doAMQPConsume, type AMQPPublishParams, type AMQPPublishResult, type AMQPConsumeResult } from './amqp';
 
 const decoder = new TextDecoder();
 
@@ -340,6 +340,89 @@ export async function handleAMQPSPublish(request: Request): Promise<Response> {
       JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : 'Publish failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
+ * AMQPS Consume Handler
+ * POST /api/amqps/consume
+ *
+ * Identical to handleAMQPConsume but over TLS (secureTransport='on').
+ * Performs a full AMQP 0-9-1 handshake over TLS, declares the queue,
+ * starts consuming, collects messages for up to timeoutMs ms, then closes.
+ *
+ * Request body: { host, port, username, password, vhost, queue, maxMessages?, timeoutMs? }
+ */
+export async function handleAMQPSConsume(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      queue: string;
+      maxMessages?: number;
+      timeoutMs?: number;
+    }>();
+
+    const {
+      host,
+      port        = 5671,
+      username    = 'guest',
+      password    = 'guest',
+      vhost       = '/',
+      queue,
+      maxMessages = 10,
+      timeoutMs   = 3000,
+    } = body;
+
+    if (!host || typeof host !== 'string' || host.trim() === '') {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!queue) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Queue is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const { checkIfCloudflare, getCloudflareErrorMessage } = await import('./cloudflare-detector');
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const result: AMQPConsumeResult = await doAMQPConsume(
+      host, port, username, password, vhost, queue, maxMessages, timeoutMs, 'on',
+    );
+
+    return new Response(JSON.stringify({ ...result, secure: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Consume failed',
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );

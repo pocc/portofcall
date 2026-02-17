@@ -865,3 +865,149 @@ export async function handleSybaseQuery(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Execute a Sybase stored procedure via TDS 5.0 EXECUTE statement.
+ *
+ * Sybase ASE executes stored procs via the TDS language packet with the
+ * EXECUTE statement — `EXEC[UTE] procname param1, param2, ...`.
+ * String params are single-quoted and escaped; numeric params are unquoted.
+ *
+ * Body: { host, port?, username, password, database?, procname, params?, timeout? }
+ */
+export async function handleSybaseProc(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; timeout?: number;
+      username: string; password: string;
+      database?: string; procname: string;
+      params?: Array<string | number | null>;
+    };
+    const {
+      host, port = 5000, timeout = 20000,
+      username, password, database = 'master', procname,
+    } = body;
+    const params = body.params ?? [];
+
+    if (!host || !username || !password) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, and password are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!procname) {
+      return new Response(JSON.stringify({ success: false, error: 'procname is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Format parameters for EXECUTE statement
+    const formattedParams = params.map(p => {
+      if (p === null || p === undefined) return 'NULL';
+      if (typeof p === 'number') return String(p);
+      // Escape single quotes
+      return `'${String(p).replace(/'/g, "''")}'`;
+    });
+    const execSql = formattedParams.length > 0
+      ? `EXECUTE ${procname} ${formattedParams.join(', ')}`
+      : `EXECUTE ${procname}`;
+
+    const start = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Login
+      await writer.write(buildTDS50Login(username, password, database, host));
+
+      let allPayload = new Uint8Array(0);
+      let loginAck = false;
+      let serverName: string | undefined;
+
+      for (let i = 0; i < 5; i++) {
+        const chunk = await readAtLeast(reader, 8, 8000);
+        const parsed = parseTDSPacket(chunk);
+        if (!parsed) break;
+
+        const merged = new Uint8Array(allPayload.length + parsed.payload.length);
+        merged.set(allPayload, 0);
+        merged.set(parsed.payload, allPayload.length);
+        allPayload = merged;
+
+        const tokenInfo = parseTDSTokenStream(allPayload);
+        if (tokenInfo.loginAck) { loginAck = true; serverName = tokenInfo.serverName; }
+        if (tokenInfo.doneStatus !== undefined) break;
+        if (parsed.status & 0x01) break;
+      }
+
+      if (!loginAck) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({ success: false, host, port, error: 'Login failed' }), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Execute stored procedure via EXECUTE statement
+      await writer.write(buildTDSQuery(execSql));
+
+      let resultPayload = new Uint8Array(0);
+      let errorMessages: string[] = [];
+      let columnNames: string[] = [];
+      let rowCount = 0;
+
+      for (let i = 0; i < 10; i++) {
+        let chunk: Uint8Array;
+        try { chunk = await readAtLeast(reader, 8, 8000); } catch { break; }
+        const parsed = parseTDSPacket(chunk);
+        if (!parsed) break;
+
+        const merged = new Uint8Array(resultPayload.length + parsed.payload.length);
+        merged.set(resultPayload, 0);
+        merged.set(parsed.payload, resultPayload.length);
+        resultPayload = merged;
+
+        const tokenInfo = parseTDSTokenStream(resultPayload);
+        errorMessages = tokenInfo.errorMessages;
+        columnNames = tokenInfo.columnNames;
+        rowCount = tokenInfo.rows.length;
+
+        if (tokenInfo.doneStatus !== undefined) break;
+        if (parsed.status & 0x01) break;
+      }
+
+      const rtt = Date.now() - start;
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+
+      const rawHex = Array.from(resultPayload.slice(0, 256))
+        .map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+      return new Response(JSON.stringify({
+        success: errorMessages.length === 0,
+        host, port, rtt, loginAck,
+        serverName: serverName || null,
+        procname, params,
+        execSql,
+        columnNames, rowCount,
+        errors: errorMessages,
+        rawPayloadHex: rawHex,
+        message: errorMessages.length === 0
+          ? `Proc executed. Columns: ${columnNames.join(', ') || '(none)'}, rows: ${rowCount}`
+          : `Proc error: ${errorMessages.join('; ')}`,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

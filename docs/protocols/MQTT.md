@@ -1,783 +1,404 @@
-# MQTT Protocol Implementation Plan
+# MQTT — Power User Reference
 
-## Overview
+**Port:** 1883 (plaintext) | **Protocol:** MQTT 3.1.1 | **Tests:** 13/13 ✅ Deployed
 
-**Protocol:** MQTT (Message Queuing Telemetry Transport)
-**Port:** 1883 (unencrypted), 8883 (TLS)
-**Specification:** [MQTT 3.1.1](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html), [MQTT 5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html)
-**Complexity:** Medium
-**Purpose:** Lightweight pub/sub messaging for IoT
+Port of Call provides three MQTT endpoints: an HTTP connection probe, a one-shot publish call, and a persistent bidirectional WebSocket session. All three open a direct TCP connection from the Cloudflare Worker to your broker. TLS (port 8883) is not supported.
 
-MQTT is the **de facto standard** for IoT messaging. A browser-based MQTT client enables real-time monitoring dashboards, device control panels, and message debugging.
+---
 
-### Use Cases
-- IoT device monitoring dashboards
-- Smart home control panels
-- Industrial sensor visualization
-- MQTT broker debugging
-- Pub/sub message inspection
-- Real-time data streaming
+## API Endpoints
 
-## Protocol Specification
+### `GET|POST /api/mqtt/connect` — Connection probe
 
-### MQTT Basics
+Sends CONNECT, reads CONNACK, sends DISCONNECT, and closes.
 
-MQTT is a **publish/subscribe** protocol:
+**POST body / GET query params:**
 
-```
-┌─────────┐         ┌─────────┐         ┌─────────┐
-│Publisher│────────>│ Broker  │────────>│Subscriber│
-│         │  PUB    │         │  SUB    │         │
-└─────────┘         └─────────┘         └─────────┘
-```
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `1883` | |
+| `clientId` | string | `portofcall-{7 random chars}` | Auto-generated if omitted |
+| `username` | string | — | Sets Username flag in CONNECT |
+| `password` | string | — | Sets Password flag in CONNECT |
+| `timeout` | number (ms) | `10000` | CONNACK timeout + total |
 
-### Message Types
-
-| Type | Value | Direction | Description |
-|------|-------|-----------|-------------|
-| CONNECT | 1 | C→S | Client connects |
-| CONNACK | 2 | S→C | Connection acknowledgment |
-| PUBLISH | 3 | C↔S | Publish message |
-| PUBACK | 4 | C↔S | Publish acknowledgment (QoS 1) |
-| SUBSCRIBE | 8 | C→S | Subscribe to topics |
-| SUBACK | 9 | S→C | Subscribe acknowledgment |
-| UNSUBSCRIBE | 10 | C→S | Unsubscribe from topics |
-| UNSUBACK | 11 | S→C | Unsubscribe acknowledgment |
-| PINGREQ | 12 | C→S | Ping request (keepalive) |
-| PINGRESP | 13 | S→C | Ping response |
-| DISCONNECT | 14 | C→S | Disconnect |
-
-### Packet Format
-
-```
-┌────────────────────────────────┐
-│  Fixed Header (2-5 bytes)       │
-│  - Message Type (4 bits)        │
-│  - Flags (4 bits)               │
-│  - Remaining Length (1-4 bytes) │
-├────────────────────────────────┤
-│  Variable Header                │
-│  - Packet-specific fields       │
-├────────────────────────────────┤
-│  Payload                        │
-│  - Message content              │
-└────────────────────────────────┘
+**Success (200):**
+```json
+{
+  "success": true,
+  "message": "MQTT connection successful",
+  "host": "broker.example.com",
+  "port": 1883,
+  "clientId": "portofcall-a3x8f2q",
+  "sessionPresent": false
+}
 ```
 
-### Quality of Service (QoS)
+`sessionPresent` is bit 0 of the CONNACK variable header — `true` if the broker retained state from a previous session with this clientId.
 
-| Level | Name | Description |
-|-------|------|-------------|
-| 0 | At most once | Fire and forget |
-| 1 | At least once | Acknowledged delivery |
-| 2 | Exactly once | Two-phase commit |
+**Error (500):** `{ "success": false, "error": "CONNACK refused: Bad username or password" }`
 
-### Topic Format
+**Cloudflare-protected host (403):** `{ "success": false, "error": "...", "isCloudflare": true }`
 
-Topics use `/` as separator:
+**CONNACK return codes surfaced in the error message:**
 
+| Code | Message |
+|---|---|
+| 1 | `Unacceptable protocol version` |
+| 2 | `Identifier rejected` |
+| 3 | `Server unavailable` |
+| 4 | `Bad username or password` |
+| 5 | `Not authorized` |
+
+---
+
+### `POST /api/mqtt/publish` — One-shot publish
+
+Sends CONNECT → PUBLISH → (PUBACK if QoS 1) → DISCONNECT.
+
+```json
+{
+  "host": "broker.example.com",
+  "port": 1883,
+  "clientId": "my-client",
+  "username": "user",
+  "password": "pass",
+  "topic": "sensors/temperature",
+  "payload": "23.5",
+  "qos": 1,
+  "retain": false,
+  "timeout": 10000
+}
 ```
-home/livingroom/temperature
-sensors/outdoor/humidity
-devices/light-01/status
+
+Required fields: `host`, `topic`, `payload`.
+
+**QoS capped at 1.** Sending `qos: 2` silently downgrades to QoS 1. QoS 2 (PUBREC/PUBREL/PUBCOMP) is not implemented.
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "message": "Published to \"sensors/temperature\"",
+  "topic": "sensors/temperature",
+  "payload": "23.5",
+  "qos": 1,
+  "retain": false,
+  "messageId": 1
+}
 ```
 
-Wildcards:
-- `+` = single level wildcard (`sensors/+/temperature`)
-- `#` = multi-level wildcard (`home/#`)
+`messageId` is always `1` for QoS 1 publishes (fixed, not a counter — each `/publish` call opens a new connection).
 
-## Worker Implementation
+---
 
-### MQTT Client Library
+### `GET /api/mqtt/session` — Interactive WebSocket session
 
-Use existing TypeScript MQTT library:
+Upgrades to WebSocket, maintains a persistent TCP connection to the broker, and proxies bidirectional MQTT traffic.
+
+**Connection URL:**
+```
+wss://portofcall.ross.gg/api/mqtt/session?host=broker.example.com&port=1883&clientId=myid&username=u&password=p&willTopic=status/myid&willPayload=offline&cleanSession=true
+```
+
+All connection parameters are query strings.
+
+| Query Param | Default | Notes |
+|---|---|---|
+| `host` | required | |
+| `port` | `1883` | |
+| `clientId` | `portofcall-{7 random chars}` | Broker sees this in logs |
+| `username` / `password` | — | |
+| `willTopic` / `willPayload` | — | LWT; QoS 0, retain=false (not configurable in session) |
+| `cleanSession` | `true` | Set `cleanSession=false` for persistent session resumption |
+
+**Note:** `username`, `password` appear in the WebSocket upgrade URL and in Cloudflare access logs. Use a read-only or short-lived credential.
+
+---
+
+#### Worker → browser messages
+
+```jsonc
+// After CONNACK:
+{ "type": "connected", "host": "broker.example.com", "port": 1883, "clientId": "myid", "sessionPresent": false }
+
+// After SUBACK arrives:
+{ "type": "subscribed", "messageId": 1, "grantedQoS": [1, 0] }
+// grantedQoS: one entry per subscribed topic; 0x80 = subscription refused
+
+// After UNSUBACK arrives:
+{ "type": "unsubscribed", "messageId": 2 }
+
+// Incoming PUBLISH from broker:
+{ "type": "message", "topic": "sensors/temp", "payload": "23.5", "qos": 0, "retain": false, "dup": false }
+
+// Confirmation that a browser-initiated PUBLISH was sent:
+{ "type": "published", "topic": "sensors/temp", "qos": 0, "messageId": null }
+// messageId is present (integer) for QoS 1; absent/null for QoS 0
+
+// PUBACK received for a QoS 1 publish:
+{ "type": "puback", "messageId": 3 }
+
+// PINGRESP received:
+{ "type": "pong" }
+
+// Fatal error (session closes after this):
+{ "type": "error", "message": "CONNACK timeout" }
+```
+
+#### Browser → worker messages
+
+```jsonc
+// Publish to a topic:
+{ "type": "publish", "topic": "cmd/device1", "payload": "reboot", "qos": 0, "retain": false }
+// qos: 0 or 1 (2 is silently downgraded to 1)
+
+// Subscribe (topics can be object array or string array):
+{ "type": "subscribe", "topics": [{ "topic": "sensors/#", "qos": 1 }, { "topic": "status/+", "qos": 0 }] }
+// String form also accepted: { "topics": ["sensors/#", "status/+"] } — QoS defaults to 0
+
+// Unsubscribe:
+{ "type": "unsubscribe", "topics": ["sensors/#"] }
+
+// Send PINGREQ (useful to test broker keepalive without publishing):
+{ "type": "ping" }
+
+// Graceful close — sends DISCONNECT and closes the WebSocket:
+{ "type": "disconnect" }
+```
+
+**Message ID counter:** starts at 1, increments per QoS 1 publish/subscribe/unsubscribe, wraps at 0xFFFF (skips 0).
+
+---
+
+## QoS Handling
+
+| QoS | Publish (outgoing) | Incoming messages |
+|---|---|---|
+| 0 | Fire and forget — no ACK | Delivered to browser; no PUBACK sent |
+| 1 | Waits for PUBACK from broker | Worker sends PUBACK to broker automatically; browser receives `message` event |
+| 2 | **Not supported** — silently downgraded to QoS 1 | PUBREC/PUBREL/PUBCOMP packets received but not acted on |
+
+---
+
+## LWT (Last Will and Testament)
+
+LWT is configurable only in the session endpoint (via `willTopic` / `willPayload` query params). The HTTP connect probe does not support LWT. Will QoS is always 0 and will retain is always false in the session endpoint — these are not exposed as params.
+
+LWT payload is encoded as a UTF-8 string. Binary LWT payloads are not supported.
+
+---
+
+## Retained Messages
+
+- `/api/mqtt/publish`: Set `"retain": true` to publish a retained message.
+- `/api/mqtt/session`: Set `"retain": true` in the `publish` message.
+- Subscribing to a topic with a retained message: the broker sends the retained message immediately on SUBACK. The session delivers it as a normal `message` event with `retain: true`.
+
+---
+
+## Wire Format Quick Reference
+
+All MQTT 3.1.1 packets: `[fixed header byte] [remaining length, variable-length] [variable header] [payload]`.
+
+Remaining length uses a 7-bit continuation encoding (MSB = more bytes follow):
+```
+0–127:         1 byte
+128–16383:     2 bytes
+16384–2097151: 3 bytes
+```
+
+CONNECT flags byte (bit positions):
+```
+7: Username present
+6: Password present
+5: Will retain
+4-3: Will QoS (00, 01, 10)
+2: Will present
+1: Clean session
+0: Reserved (must be 0)
+```
+
+PUBLISH fixed header flags (lower nibble):
+```
+3: DUP
+2-1: QoS (00, 01, 10)
+0: RETAIN
+```
+
+---
+
+## Persistent Sessions (`cleanSession=false`)
+
+When `cleanSession=false` and you supply a stable `clientId`, the broker stores your subscriptions and queues QoS 1/2 messages while you're disconnected. On reconnect with the same clientId, `sessionPresent: true` in the `connected` event means your prior subscriptions are active and queued messages will be delivered immediately.
+
+Broker-side limits vary: many brokers cap the queue at a few hundred messages. Subscriptions are not resumed by Port of Call automatically — if `sessionPresent` is `false` after reconnect, re-send your `subscribe` messages.
+
+---
+
+## Known Limitations
+
+**No TLS:** plain TCP only. Port 8883 (MQTT over TLS) is not supported. Credentials sent via MQTT over plaintext are exposed in transit.
+
+**No MQTT 5.0:** protocol level 4 (MQTT 3.1.1) only. MQTT 5.0 features (message expiry, user properties, reason codes, shared subscriptions) are not available.
+
+**No QoS 2:** QoS 2 (PUBREC → PUBREL → PUBCOMP two-phase commit) is silently downgraded to QoS 1. PUBREC/PUBREL/PUBCOMP packets from the broker are received but not processed.
+
+**Binary payloads:** `TextDecoder` is used throughout. Binary MQTT payloads (e.g., compressed sensor data, protobuf, raw bytes with values > 127) are corrupted on decode. Encode binary data as base64 before publishing.
+
+**CONNACK single read:** `mqttConnect` calls `reader.read()` exactly once to read the CONNACK. On high-latency connections where CONNACK doesn't arrive in the first TCP segment, the parse returns null and the caller throws "Expected CONNACK". In practice, CONNACK is small (~4 bytes) and arrives in the first segment.
+
+**Will QoS/Retain not configurable in session:** The WebSocket session only accepts `willTopic` and `willPayload`. Will QoS is 0 and will retain is false, with no way to override them.
+
+**Credentials in WebSocket URL:** `username` and `password` appear as query parameters, visible in Cloudflare access logs and browser history. Use a dedicated, scoped credential (e.g., a broker ACL user with publish-only access to a single topic prefix).
+
+**`published` event is pre-PUBACK:** For QoS 1 in the session, the `published` event fires immediately after the PUBLISH packet is written to the socket — not after the PUBACK arrives. Watch for the separate `puback` event to confirm broker delivery.
+
+---
+
+## curl Examples
 
 ```bash
-npm install mqtt
+# Probe (no auth)
+curl -s -X POST https://portofcall.ross.gg/api/mqtt/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"broker.example.com","port":1883,"timeout":5000}' | jq .
+
+# Probe with credentials
+curl -s -X POST https://portofcall.ross.gg/api/mqtt/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"broker.example.com","username":"user","password":"pass"}' | jq .sessionPresent
+
+# QoS 0 publish (fire and forget)
+curl -s -X POST https://portofcall.ross.gg/api/mqtt/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"broker.example.com","topic":"test/hello","payload":"world","qos":0}' | jq .
+
+# QoS 1 publish with retain
+curl -s -X POST https://portofcall.ross.gg/api/mqtt/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"broker.example.com","topic":"status/device1","payload":"online","qos":1,"retain":true}' | jq .
+
+# Publish to public test broker (test.mosquitto.org)
+curl -s -X POST https://portofcall.ross.gg/api/mqtt/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"test.mosquitto.org","topic":"portofcall/test","payload":"hello","qos":0}' | jq .
 ```
 
-```typescript
-// src/worker/protocols/mqtt/client.ts
-
-import mqtt from 'mqtt';
-import { connect as tcpConnect } from 'cloudflare:sockets';
-
-export interface MQTTConfig {
-  host: string;
-  port: number;
-  clientId?: string;
-  username?: string;
-  password?: string;
-  keepalive?: number;
-  clean?: boolean;
-}
-
-export interface MQTTMessage {
-  topic: string;
-  payload: string | Buffer;
-  qos: 0 | 1 | 2;
-  retain: boolean;
-  timestamp: number;
-}
-
-export class MQTTClient {
-  private client: mqtt.MqttClient;
-  private messages: MQTTMessage[] = [];
-
-  constructor(private config: MQTTConfig) {}
-
-  async connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      // Create TCP socket
-      const socket = tcpConnect(`${this.config.host}:${this.config.port}`);
-
-      this.client = mqtt.connect({
-        stream: socket as any, // Use our TCP socket
-        clientId: this.config.clientId || `portofcall-${Math.random().toString(36).substr(2, 9)}`,
-        username: this.config.username,
-        password: this.config.password,
-        keepalive: this.config.keepalive || 60,
-        clean: this.config.clean !== false,
-      });
-
-      this.client.on('connect', () => resolve());
-      this.client.on('error', reject);
-
-      // Collect messages
-      this.client.on('message', (topic, payload, packet) => {
-        this.messages.push({
-          topic,
-          payload: payload.toString(),
-          qos: packet.qos,
-          retain: packet.retain,
-          timestamp: Date.now(),
-        });
-      });
-    });
-  }
-
-  async subscribe(topic: string, qos: 0 | 1 | 2 = 0): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.client.subscribe(topic, { qos }, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  async unsubscribe(topic: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.client.unsubscribe(topic, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  async publish(
-    topic: string,
-    message: string,
-    options?: { qos?: 0 | 1 | 2; retain?: boolean }
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.client.publish(topic, message, options || {}, (err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
-  }
-
-  getMessages(): MQTTMessage[] {
-    return this.messages;
-  }
-
-  clearMessages(): void {
-    this.messages = [];
-  }
-
-  async disconnect(): Promise<void> {
-    return new Promise((resolve) => {
-      this.client.end(false, {}, () => resolve());
-    });
-  }
-}
-```
-
-### WebSocket MQTT Tunnel
-
-```typescript
-// src/worker/protocols/mqtt/tunnel.ts
-
-export async function mqttTunnel(
-  request: Request,
-  config: MQTTConfig
-): Promise<Response> {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  server.accept();
-
-  (async () => {
-    try {
-      const mqtt = new MQTTClient(config);
-      await mqtt.connect();
-
-      server.send(JSON.stringify({ type: 'connected' }));
-
-      // Handle commands from browser
-      server.addEventListener('message', async (event) => {
-        try {
-          const msg = JSON.parse(event.data);
-
-          switch (msg.type) {
-            case 'subscribe':
-              await mqtt.subscribe(msg.topic, msg.qos);
-              server.send(JSON.stringify({
-                type: 'subscribed',
-                topic: msg.topic,
-              }));
-              break;
-
-            case 'unsubscribe':
-              await mqtt.unsubscribe(msg.topic);
-              server.send(JSON.stringify({
-                type: 'unsubscribed',
-                topic: msg.topic,
-              }));
-              break;
-
-            case 'publish':
-              await mqtt.publish(msg.topic, msg.message, {
-                qos: msg.qos,
-                retain: msg.retain,
-              });
-              server.send(JSON.stringify({
-                type: 'published',
-                topic: msg.topic,
-              }));
-              break;
-
-            case 'getMessages':
-              const messages = mqtt.getMessages();
-              server.send(JSON.stringify({
-                type: 'messages',
-                messages,
-              }));
-              mqtt.clearMessages();
-              break;
-          }
-        } catch (error) {
-          server.send(JSON.stringify({
-            type: 'error',
-            error: error instanceof Error ? error.message : 'Unknown error',
-          }));
-        }
-      });
-
-      // Poll for messages every 500ms
-      const interval = setInterval(() => {
-        const messages = mqtt.getMessages();
-        if (messages.length > 0) {
-          server.send(JSON.stringify({
-            type: 'messages',
-            messages,
-          }));
-          mqtt.clearMessages();
-        }
-      }, 500);
-
-      server.addEventListener('close', () => {
-        clearInterval(interval);
-        mqtt.disconnect();
-      });
-
-    } catch (error) {
-      server.send(JSON.stringify({
-        type: 'error',
-        error: error instanceof Error ? error.message : 'Connection failed',
-      }));
-      server.close();
-    }
-  })();
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
-}
-```
-
-### API Endpoints
-
-```typescript
-// Add to src/worker/index.ts
-
-// MQTT WebSocket connection
-if (url.pathname === '/api/mqtt/connect') {
-  const config = await request.json();
-  return mqttTunnel(request, config);
-}
-
-// Quick publish (no persistent connection)
-if (url.pathname === '/api/mqtt/publish' && request.method === 'POST') {
-  const { host, port, username, password, topic, message } = await request.json();
-
-  const mqtt = new MQTTClient({ host, port, username, password });
-  await mqtt.connect();
-  await mqtt.publish(topic, message);
-  await mqtt.disconnect();
-
-  return Response.json({ success: true });
-}
-```
-
-## Web UI Design
-
-### MQTT Dashboard Component
-
-```typescript
-// src/components/MQTTDashboard.tsx
-
-import { useState, useEffect, useRef } from 'react';
-
-interface MQTTMessage {
-  topic: string;
-  payload: string;
-  qos: number;
-  retain: boolean;
-  timestamp: number;
-}
-
-export function MQTTDashboard() {
-  const [host, setHost] = useState('test.mosquitto.org');
-  const [port, setPort] = useState(1883);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [connected, setConnected] = useState(false);
-
-  const [subscriptions, setSubscriptions] = useState<string[]>([]);
-  const [messages, setMessages] = useState<MQTTMessage[]>([]);
-
-  const [subTopic, setSubTopic] = useState('');
-  const [pubTopic, setPubTopic] = useState('');
-  const [pubMessage, setPubMessage] = useState('');
-
-  const ws = useRef<WebSocket | null>(null);
-
-  const connect = () => {
-    ws.current = new WebSocket('/api/mqtt/connect');
-
-    ws.current.onopen = () => {
-      ws.current?.send(JSON.stringify({
-        host,
-        port,
-        username,
-        password,
-      }));
-    };
-
-    ws.current.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-
-      switch (msg.type) {
-        case 'connected':
-          setConnected(true);
-          break;
-
-        case 'subscribed':
-          setSubscriptions(prev => [...prev, msg.topic]);
-          break;
-
-        case 'unsubscribed':
-          setSubscriptions(prev => prev.filter(t => t !== msg.topic));
-          break;
-
-        case 'messages':
-          setMessages(prev => [...prev, ...msg.messages].slice(-100)); // Keep last 100
-          break;
-
-        case 'error':
-          console.error('MQTT error:', msg.error);
-          break;
-      }
-    };
-
-    ws.current.onclose = () => {
-      setConnected(false);
-    };
-  };
-
-  const disconnect = () => {
-    ws.current?.close();
-  };
-
-  const subscribe = (topic: string) => {
-    ws.current?.send(JSON.stringify({
-      type: 'subscribe',
-      topic,
-      qos: 0,
-    }));
-    setSubTopic('');
-  };
-
-  const unsubscribe = (topic: string) => {
-    ws.current?.send(JSON.stringify({
-      type: 'unsubscribe',
-      topic,
-    }));
-  };
-
-  const publish = () => {
-    ws.current?.send(JSON.stringify({
-      type: 'publish',
-      topic: pubTopic,
-      message: pubMessage,
-      qos: 0,
-      retain: false,
-    }));
-    setPubMessage('');
-  };
-
-  return (
-    <div className="mqtt-dashboard">
-      <div className="connection-panel">
-        <h2>MQTT Dashboard</h2>
-
-        {!connected ? (
-          <div className="connection-form">
-            <input
-              type="text"
-              placeholder="Broker Host"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-            />
-            <input
-              type="number"
-              placeholder="Port"
-              value={port}
-              onChange={(e) => setPort(Number(e.target.value))}
-            />
-            <input
-              type="text"
-              placeholder="Username (optional)"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-            />
-            <input
-              type="password"
-              placeholder="Password (optional)"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <button onClick={connect}>Connect</button>
-          </div>
-        ) : (
-          <div className="connected-status">
-            <span className="status-indicator connected">●</span>
-            Connected to {host}:{port}
-            <button onClick={disconnect}>Disconnect</button>
-          </div>
-        )}
-      </div>
-
-      {connected && (
-        <div className="mqtt-controls">
-          <div className="subscribe-panel">
-            <h3>Subscriptions</h3>
-            <div className="subscribe-form">
-              <input
-                type="text"
-                placeholder="Topic (e.g., sensors/+/temperature)"
-                value={subTopic}
-                onChange={(e) => setSubTopic(e.target.value)}
-                onKeyPress={(e) => {
-                  if (e.key === 'Enter' && subTopic) {
-                    subscribe(subTopic);
-                  }
-                }}
-              />
-              <button onClick={() => subscribe(subTopic)} disabled={!subTopic}>
-                Subscribe
-              </button>
-            </div>
-
-            <div className="subscription-list">
-              {subscriptions.map(topic => (
-                <div key={topic} className="subscription-item">
-                  <span>{topic}</span>
-                  <button onClick={() => unsubscribe(topic)}>×</button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="publish-panel">
-            <h3>Publish</h3>
-            <input
-              type="text"
-              placeholder="Topic"
-              value={pubTopic}
-              onChange={(e) => setPubTopic(e.target.value)}
-            />
-            <textarea
-              placeholder="Message"
-              value={pubMessage}
-              onChange={(e) => setPubMessage(e.target.value)}
-            />
-            <button onClick={publish} disabled={!pubTopic || !pubMessage}>
-              Publish
-            </button>
-          </div>
-
-          <div className="messages-panel">
-            <h3>Messages ({messages.length})</h3>
-            <div className="message-list">
-              {messages.slice().reverse().map((msg, i) => (
-                <div key={i} className="message-item">
-                  <div className="message-header">
-                    <span className="topic">{msg.topic}</span>
-                    <span className="timestamp">
-                      {new Date(msg.timestamp).toLocaleTimeString()}
-                    </span>
-                    <span className={`qos qos-${msg.qos}`}>QoS {msg.qos}</span>
-                    {msg.retain && <span className="retain">RETAIN</span>}
-                  </div>
-                  <div className="message-payload">
-                    {msg.payload}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-### Topic Explorer Component
-
-```typescript
-// src/components/MQTTTopicExplorer.tsx
-
-export function MQTTTopicExplorer() {
-  const [topics, setTopics] = useState<Map<string, number>>(new Map());
-
-  const buildTopicTree = (topics: Map<string, number>) => {
-    // Build hierarchical tree from flat topics
-    const tree: any = {};
-
-    for (const [topic, count] of topics.entries()) {
-      const parts = topic.split('/');
-      let node = tree;
-
-      for (let i = 0; i < parts.length; i++) {
-        const part = parts[i];
-        if (!node[part]) {
-          node[part] = i === parts.length - 1 ? { __count: count } : {};
-        }
-        node = node[part];
-      }
-    }
-
-    return tree;
-  };
-
-  const renderTree = (node: any, path: string = '') => {
-    return Object.entries(node).map(([key, value]) => {
-      if (key === '__count') return null;
-
-      const currentPath = path ? `${path}/${key}` : key;
-      const count = (value as any).__count;
-
-      return (
-        <div key={currentPath} className="topic-node">
-          <div className="topic-name">
-            {key} {count && <span className="count">({count})</span>}
-          </div>
-          {typeof value === 'object' && Object.keys(value).length > 1 && (
-            <div className="topic-children">
-              {renderTree(value, currentPath)}
-            </div>
-          )}
-        </div>
-      );
-    });
-  };
-
-  return (
-    <div className="topic-explorer">
-      <h3>Topic Hierarchy</h3>
-      <div className="topic-tree">
-        {renderTree(buildTopicTree(topics))}
-      </div>
-    </div>
-  );
-}
-```
-
-## Data Flow
-
-```
-┌─────────┐         ┌──────────┐         ┌──────────────┐
-│ Browser │         │  Worker  │         │ MQTT Broker  │
-└────┬────┘         └────┬─────┘         └──────┬───────┘
-     │                   │                       │
-     │ WS: Connect + creds                       │
-     ├──────────────────>│                       │
-     │                   │ MQTT CONNECT          │
-     │                   ├──────────────────────>│
-     │                   │ CONNACK               │
-     │ {type:"connected"}│<──────────────────────┤
-     │<──────────────────┤                       │
-     │                   │                       │
-     │ {type:"subscribe", topic:"sensors/#"}     │
-     ├──────────────────>│                       │
-     │                   │ MQTT SUBSCRIBE        │
-     │                   ├──────────────────────>│
-     │                   │ SUBACK                │
-     │{type:"subscribed"}│<──────────────────────┤
-     │<──────────────────┤                       │
-     │                   │                       │
-     │                   │ MQTT PUBLISH (from device)
-     │                   │<──────────────────────┤
-     │{type:"messages", messages:[...]}          │
-     │<──────────────────┤                       │
-     │                   │                       │
-     │ {type:"publish", topic:"cmd/light", msg:"on"}
-     ├──────────────────>│                       │
-     │                   │ MQTT PUBLISH          │
-     │                   ├──────────────────────>│
-     │                   │ PUBACK (if QoS>0)     │
-     │                   │<──────────────────────┤
-     │{type:"published"} │                       │
-     │<──────────────────┤                       │
-     │                   │                       │
-```
-
-## Security
-
-### Broker Authentication
-
-```typescript
-// Always use credentials for production brokers
-if (!username || !password) {
-  console.warn('Connecting without authentication');
-}
-```
-
-### TLS/SSL
-
-```typescript
-// Use port 8883 for encrypted connections
-const secure = port === 8883;
-
-// Note: TLS may require special handling in Workers
-```
-
-### Topic Validation
-
-```typescript
-function validateTopic(topic: string): boolean {
-  // No wildcards in publish topics
-  if (topic.includes('#') || topic.includes('+')) {
-    return false;
-  }
-
-  // Reasonable length
-  if (topic.length > 256) {
-    return false;
-  }
-
-  return true;
-}
-```
-
-## Testing
-
-### Public MQTT Brokers
-
-Test brokers (no auth required):
-
-```
-test.mosquitto.org:1883
-broker.hivemq.com:1883
-mqtt.eclipseprojects.io:1883
-```
-
-### Local Broker
-
-```bash
-# Mosquitto MQTT broker
-docker run -d -p 1883:1883 -p 9001:9001 eclipse-mosquitto
-```
-
-### Unit Tests
-
-```typescript
-// tests/mqtt.test.ts
-
-describe('MQTT Client', () => {
-  it('should connect to broker', async () => {
-    const mqtt = new MQTTClient({
-      host: 'test.mosquitto.org',
-      port: 1883,
-    });
-
-    await mqtt.connect();
-    await mqtt.disconnect();
-  });
-
-  it('should publish and subscribe', async () => {
-    const mqtt = new MQTTClient({
-      host: 'test.mosquitto.org',
-      port: 1883,
-    });
-
-    await mqtt.connect();
-    await mqtt.subscribe('test/portofcall');
-
-    await new Promise(resolve => setTimeout(resolve, 100));
-
-    await mqtt.publish('test/portofcall', 'Hello MQTT');
-
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    const messages = mqtt.getMessages();
-    expect(messages.length).toBeGreaterThan(0);
-    expect(messages[0].payload).toBe('Hello MQTT');
-
-    await mqtt.disconnect();
-  });
+---
+
+## WebSocket Session — JavaScript
+
+```js
+const params = new URLSearchParams({
+  host: 'broker.example.com',
+  port: '1883',
+  clientId: 'my-dashboard',
+  username: 'viewer',
+  password: 'readonly',
+  willTopic: 'status/my-dashboard',
+  willPayload: 'offline',
+  cleanSession: 'true',
 });
+
+const ws = new WebSocket(`wss://portofcall.ross.gg/api/mqtt/session?${params}`);
+
+ws.onmessage = ({ data }) => {
+  const msg = JSON.parse(data);
+
+  switch (msg.type) {
+    case 'connected':
+      console.log(`Connected to ${msg.host}:${msg.port} as ${msg.clientId}`);
+      console.log('Session resumed:', msg.sessionPresent);
+      // Subscribe after connect
+      ws.send(JSON.stringify({
+        type: 'subscribe',
+        topics: [
+          { topic: 'sensors/#', qos: 1 },
+          { topic: 'status/+', qos: 0 },
+        ],
+      }));
+      break;
+
+    case 'subscribed':
+      // msg.grantedQoS[i] === 0x80 means subscription i was refused
+      console.log('Subscribed, granted QoS:', msg.grantedQoS);
+      break;
+
+    case 'message':
+      console.log(`[${msg.topic}] ${msg.payload} (QoS ${msg.qos}${msg.retain ? ', retained' : ''}${msg.dup ? ', dup' : ''})`);
+      break;
+
+    case 'published':
+      console.log(`Published to ${msg.topic} (QoS ${msg.qos}, msgId ${msg.messageId})`);
+      break;
+
+    case 'puback':
+      console.log('PUBACK received for messageId', msg.messageId);
+      break;
+
+    case 'pong':
+      console.log('Broker alive (PINGRESP received)');
+      break;
+
+    case 'error':
+      console.error('Error:', msg.message);
+      ws.close();
+      break;
+  }
+};
+
+// Publish a message
+ws.send(JSON.stringify({ type: 'publish', topic: 'cmd/device1', payload: 'reboot', qos: 1 }));
+
+// Keepalive ping
+setInterval(() => ws.send(JSON.stringify({ type: 'ping' })), 30000);
+
+// Graceful close
+ws.send(JSON.stringify({ type: 'disconnect' }));
 ```
+
+---
+
+## Public Test Brokers
+
+| Broker | Host | Port | Auth | Notes |
+|---|---|---|---|---|
+| Mosquitto public | `test.mosquitto.org` | `1883` | No | Shared, no privacy |
+| HiveMQ public | `broker.hivemq.com` | `1883` | No | Shared, no privacy |
+| EMQX public | `broker.emqx.io` | `1883` | No | Shared, no privacy |
+
+**Warning:** all public brokers are shared. Do not publish sensitive data. Topics are visible to anyone subscribed with `#`.
+
+---
+
+## MQTT 3.1.1 Packet Type Reference
+
+| Type | Decimal | Hex | Direction |
+|---|---|---|---|
+| CONNECT | 1 | `0x10` | C→S |
+| CONNACK | 2 | `0x20` | S→C |
+| PUBLISH | 3 | `0x30` | C↔S |
+| PUBACK | 4 | `0x40` | C↔S (QoS 1) |
+| PUBREC | 5 | `0x50` | C↔S (QoS 2, not handled) |
+| PUBREL | 6 | `0x62` | C↔S (QoS 2, not handled) |
+| PUBCOMP | 7 | `0x70` | C↔S (QoS 2, not handled) |
+| SUBSCRIBE | 8 | `0x82` | C→S |
+| SUBACK | 9 | `0x90` | S→C |
+| UNSUBSCRIBE | 10 | `0xa2` | C→S |
+| UNSUBACK | 11 | `0xb0` | S→C |
+| PINGREQ | 12 | `0xc0` | C→S |
+| PINGRESP | 13 | `0xd0` | S→C |
+| DISCONNECT | 14 | `0xe0` | C→S |
+
+SUBSCRIBE, UNSUBSCRIBE, and PUBREL have reserved flag bits set (0b0010) in the fixed header. The implementation encodes `0x82`, `0xa2` accordingly.
+
+---
 
 ## Resources
 
-- **MQTT.org**: [Official MQTT Site](https://mqtt.org/)
-- **MQTT 3.1.1 Spec**: [OASIS Standard](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html)
-- **MQTT.js**: [JavaScript client library](https://github.com/mqttjs/MQTT.js)
-- **HiveMQ**: [MQTT Guide](https://www.hivemq.com/mqtt-essentials/)
-- **Mosquitto**: [Open source broker](https://mosquitto.org/)
-
-## Next Steps
-
-1. Integrate MQTT.js library
-2. Implement WebSocket tunnel
-3. Build dashboard UI with subscribe/publish
-4. Add topic explorer with hierarchy visualization
-5. Create message filtering and search
-6. Add QoS 1/2 support
-7. Build IoT device simulator for testing
-8. Add retained message viewer
-9. Implement message charting (time-series visualization)
-
-## Notes
-
-- MQTT is perfect for **real-time dashboards**
-- Low bandwidth usage makes it ideal for IoT
-- Pub/sub model scales well
-- Consider adding MQTT over WebSocket (native protocol) as alternative
-- Wildcard subscriptions enable powerful monitoring
-- QoS levels trade reliability for performance
+- [MQTT 3.1.1 Spec](http://docs.oasis-open.org/mqtt/mqtt/v3.1.1/mqtt-v3.1.1.html)
+- [MQTT 5.0 Spec](https://docs.oasis-open.org/mqtt/mqtt/v5.0/mqtt-v5.0.html) (not implemented)
+- [MQTT Topic Wildcards](https://www.hivemq.com/blog/mqtt-essentials-part-5-mqtt-topics-best-practices/)
+- [test.mosquitto.org](https://test.mosquitto.org/)

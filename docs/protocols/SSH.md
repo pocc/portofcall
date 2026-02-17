@@ -1,701 +1,404 @@
-# SSH Protocol Implementation Plan
+# SSH — Power User Reference
 
-## Overview
+**Port:** 22 | **Protocol:** SSH-2 (RFC 4253/4252/4254) | **Tests:** 14/14 ✅ Deployed
 
-**Protocol:** SSH (Secure Shell)
-**Port:** 22
-**RFC:** [RFC 4253](https://tools.ietf.org/html/rfc4253) (SSH Transport Layer)
-**Complexity:** High
-**Purpose:** Remote terminal access, secure command execution
+Port of Call provides six SSH endpoints across two source files. `ssh.ts` handles HTTP probes and a raw TCP tunnel. `ssh2-impl.ts` is a self-contained SSH-2 client — full key exchange, encryption, and authentication in a Cloudflare Worker.
 
-SSH is the **flagship feature** of Port of Call - a full terminal in the browser without plugins or installations.
+---
 
-### Use Cases
-- Emergency server access from any device
-- DevOps/SysAdmin tasks from tablets/Chromebooks
-- Teaching SSH and Unix commands
-- Secure remote administration
-- Jump box/bastion host in browser
-
-## Protocol Specification
-
-### SSH Protocol Layers
+## Architecture Overview
 
 ```
-┌──────────────────────────────┐
-│  Application Layer (SSH)      │ ← Commands, SFTP, port forwarding
-├──────────────────────────────┤
-│  Connection Layer             │ ← Channels, requests
-├──────────────────────────────┤
-│  Authentication Layer         │ ← Password, public key
-├──────────────────────────────┤
-│  Transport Layer              │ ← Encryption, key exchange
-├──────────────────────────────┤
-│  TCP (Port 22)                │
-└──────────────────────────────┘
+/api/ssh/connect   HTTP → banner probe (ssh.ts)
+                   WS   → raw TCP tunnel, no SSH (ssh.ts)
+
+/api/ssh/kexinit   HTTP → banner + KEXINIT exchange (ssh.ts)
+/api/ssh/auth      HTTP → kexinit + USERAUTH_REQUEST none → supported methods (ssh.ts)
+
+/api/ssh/terminal  WS   → full SSH-2: curve25519-sha256 / aes128-ctr / hmac-sha2-256 (ssh2-impl.ts)
+/api/ssh/execute   HTTP → 501 (stub; use /terminal WebSocket)
+/api/ssh/disconnect HTTP → advisory message (stub)
 ```
 
-### Connection Flow
+The two WebSocket modes are **completely different**: `/connect` is a raw byte pipe (SSH protocol runs in the browser); `/terminal` speaks SSH-2 natively in the Worker.
 
-1. **TCP Handshake**: Connect to port 22
-2. **Protocol Version Exchange**: Both sides send `SSH-2.0-...\r\n`
-3. **Key Exchange**: Algorithm negotiation + Diffie-Hellman
-4. **Authentication**: Password, public key, or keyboard-interactive
-5. **Channel Open**: Request PTY (pseudo-terminal)
-6. **Shell Request**: Start interactive shell
-7. **Data Exchange**: Encrypted I/O over channel
-8. **Close**: Clean shutdown of channel and connection
+---
 
-### Binary Packet Format
+## API Endpoints
+
+### `GET|POST /api/ssh/connect` — Banner probe (HTTP) / Raw TCP tunnel (WebSocket)
+
+#### HTTP mode
+
+Connects, reads the SSH banner line, closes.
+
+**POST body / GET query params:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `22` | |
+| `username` | string | — | Echoed in response only; not used |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "message": "SSH server reachable",
+  "host": "example.com",
+  "port": 22,
+  "banner": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",
+  "connectionOptions": {
+    "username": "admin",
+    "authMethod": "password",
+    "hasPrivateKey": false,
+    "hasPassword": false
+  },
+  "note": "This is a connectivity test only. For full SSH authentication (password/privateKey), use WebSocket upgrade."
+}
+```
+
+`banner` is the raw SSH version string (single line, CRLF stripped, single `reader.read()` call — may be truncated if the banner line doesn't arrive in the first TCP segment).
+
+#### WebSocket mode
+
+When the request carries `Upgrade: websocket`, the endpoint opens a TCP socket to the target host and pipes raw bytes in both directions. **No SSH protocol processing happens in the Worker** — the browser-side client must speak SSH itself.
+
+On connect, the Worker sends one JSON message before switching to raw passthrough:
+
+```json
+{ "type": "ssh-options", "options": { "host": "...", "port": 22, "username": "...", "authMethod": "password", ... } }
+```
+
+This is a hint to the browser SSH client; the Worker does not enforce or consume it. All subsequent messages are raw `ArrayBuffer` or `string` bytes piped directly between the WebSocket and the TCP socket.
+
+**Connection URL:**
+```
+wss://portofcall.ross.gg/api/ssh/connect?host=example.com&port=22&username=admin&password=secret&privateKey=...&passphrase=...
+```
+
+⚠️ All credentials appear as query parameters and are visible in Cloudflare access logs.
+
+---
+
+### `POST /api/ssh/kexinit` — Key exchange algorithm probe
+
+Connects, exchanges version banners, sends `SSH_MSG_KEXINIT` (20), parses the server's KEXINIT, and closes without completing the key exchange.
+
+**POST body:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `22` | |
+| `timeout` | number | `10000` | Capped at 30000 ms |
+
+**Client version string sent:** `SSH-2.0-CloudflareWorker_1.0`
+
+**Client KEXINIT advertises:**
+- kex: `curve25519-sha256`, `diffie-hellman-group14-sha256`, `diffie-hellman-group14-sha1`
+- hostkey: `ssh-rsa`, `rsa-sha2-256`, `rsa-sha2-512`, `ssh-ed25519`, `ecdsa-sha2-nistp256`
+- cipher (both directions): `aes128-ctr`, `aes256-ctr`, `aes128-gcm@openssh.com`, `aes256-gcm@openssh.com`
+- mac: `hmac-sha2-256`, `hmac-sha1`
+- compression: `none`, `zlib@openssh.com`
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "serverBanner": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",
+  "kexAlgorithms": ["curve25519-sha256", "diffie-hellman-group14-sha256", "..."],
+  "hostKeyAlgorithms": ["rsa-sha2-512", "rsa-sha2-256", "ssh-ed25519", "ecdsa-sha2-nistp256-cert-v01@openssh.com", "..."],
+  "ciphers": ["chacha20-poly1305@openssh.com", "aes128-ctr", "aes256-ctr", "aes128-gcm@openssh.com", "..."],
+  "macs": ["umac-64-etm@openssh.com", "umac-128-etm@openssh.com", "hmac-sha2-256-etm@openssh.com", "..."],
+  "compressions": ["none", "zlib@openssh.com"],
+  "latencyMs": 87
+}
+```
+
+`ciphers` is the union of client-to-server and server-to-client cipher lists (deduplicated). `macs` is the client-to-server list only (server-to-client is discarded).
+
+**Error (200 with `success: false`):**
+```json
+{
+  "success": false,
+  "serverBanner": "",
+  "kexAlgorithms": [],
+  "hostKeyAlgorithms": [],
+  "ciphers": [],
+  "macs": [],
+  "compressions": [],
+  "latencyMs": 234,
+  "error": "SSH packet length out of range: 1263553536"
+}
+```
+
+Packet length out-of-range occurs when connecting to a port serving a non-SSH protocol (the first 4 bytes of the response are interpreted as a 32-bit packet length).
+
+---
+
+### `POST /api/ssh/auth` — Supported auth method probe
+
+Extends `/kexinit` through service negotiation and a `none` USERAUTH_REQUEST to discover which authentication methods the server accepts.
+
+**POST body:** Same as `/kexinit` (`host`, `port`, `timeout`).
+
+**Wire exchange:**
+```
+→ SSH-2.0-CloudflareWorker_1.0\r\n
+← SSH-2.0-OpenSSH_8.9p1 ...\r\n
+→ SSH_MSG_KEXINIT (20)
+← SSH_MSG_KEXINIT (20)
+→ SSH_MSG_SERVICE_REQUEST (5) "ssh-userauth"
+← SSH_MSG_SERVICE_ACCEPT (6)
+→ SSH_MSG_USERAUTH_REQUEST (50) username="anonymous" service="ssh-connection" method="none"
+← SSH_MSG_USERAUTH_FAILURE (51) [methods-list]    ← most servers
+  OR SSH_MSG_USERAUTH_SUCCESS (52)                ← anonymous auth accepted
+```
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "serverBanner": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.6",
+  "authMethods": ["publickey", "password"],
+  "latencyMs": 152
+}
+```
+
+`authMethods: ["none"]` means the server accepted anonymous login.
+
+Note: the KEXINIT exchange is **not completed** (no KEXECDH_INIT is sent). The SERVICE_REQUEST is sent unencrypted. Some hardened servers may reject the connection if they enforce encryption before service requests — in practice this is rare.
+
+---
+
+### `GET /api/ssh/terminal` — Interactive SSH session (WebSocket)
+
+**WebSocket upgrade required.** Implements full SSH-2:
+
+| Phase | Detail |
+|---|---|
+| Version exchange | Client sends `SSH-2.0-PortOfCall_1.0\r\n`; skips non-SSH banner lines |
+| Key exchange | curve25519-sha256 (X25519 ECDH + SHA-256) |
+| Cipher | aes128-ctr (both directions) |
+| MAC | hmac-sha2-256 (32-byte tags, both directions) |
+| Compression | none |
+| Auth | password or Ed25519 public key |
+| Terminal | PTY: xterm-256color, 220 cols × 50 rows (hardcoded) |
+| I/O | Channel data forwarded as raw bytes; window: 1 MB initial, refilled when < 256 KB |
+
+**Connection URL:**
+```
+wss://portofcall.ross.gg/api/ssh/terminal?host=example.com&port=22&username=admin&authMethod=password&password=secret
+```
+
+**Query parameters:**
+
+| Param | Required | Notes |
+|---|---|---|
+| `host` | ✅ | |
+| `port` | — | Default `22` |
+| `username` | ✅ | |
+| `authMethod` | ✅ | `"password"` or `"privateKey"` |
+| `password` | — | Required if `authMethod=password` |
+| `privateKey` | — | OpenSSH PEM string; required if `authMethod=privateKey` |
+| `passphrase` | — | Passphrase for encrypted private keys |
+| `timeout` | — | Connection timeout ms (default 30000) |
+
+⚠️ All credentials appear in the WebSocket URL query string.
+
+#### Worker → browser messages
+
+```jsonc
+// SSH protocol negotiation complete, PTY and shell open; raw output begins after this:
+{ "type": "connected" }
+
+// Informational (auth banner, status):
+{ "type": "info", "message": "Authenticating…" }
+
+// Fatal error (WebSocket closes after this):
+{ "type": "error", "message": "Authentication failed" }
+
+// Server closed the channel:
+{ "type": "disconnected" }
+```
+
+After `connected`, terminal output is sent as raw `Uint8Array` (binary WebSocket frames), not JSON.
+
+#### Browser → worker messages
+
+Send raw text or binary bytes — they are forwarded directly as `SSH_MSG_CHANNEL_DATA`. The Worker filters out JSON control messages: **any input that starts with `{` and contains `"type"` is silently dropped** and not forwarded to the SSH channel.
+
+There is no resize message or keepalive ping from the browser; the Worker does not process any JSON input after the connection is established.
+
+---
+
+### `POST /api/ssh/execute` — Stub (501)
+
+Always returns HTTP 501. Use `/terminal` WebSocket for command execution.
+
+### `POST /api/ssh/disconnect` — Stub
+
+Returns `{ "success": true, "message": "Close WebSocket connection to disconnect SSH session" }`. Close the WebSocket to disconnect.
+
+---
+
+## Key Exchange Details (ssh2-impl.ts)
+
+The full key exchange follows RFC 4253 curve25519-sha256:
+
+1. **X25519 ephemeral keypair** generated via WebCrypto `generateKey({ name: 'X25519' })`
+2. **KEXECDH_INIT (30)** sent with client ephemeral public key
+3. **KEXECDH_REPLY (31)** received: host key blob + server ephemeral pubkey + signature
+4. **No host key verification** — the exchange hash signature is received but not verified against a known-hosts list
+5. **Shared secret** derived via WebCrypto `deriveBits({ name: 'X25519' })`
+6. **Exchange hash H** = SHA-256 of: client version, server version, client KEXINIT payload, server KEXINIT payload, host key blob, client ephemeral pubkey, server ephemeral pubkey, shared secret mpint
+7. **Session ID** = H (first exchange hash; unchanged for session lifetime — no re-keying)
+8. **Session keys** derived per RFC 4253 §7.2: `A`=IVc→s, `B`=IVs→c, `C`=encc→s, `D`=encs→c, `E`=macc→s, `F`=macs→c
+
+---
+
+## Authentication Details
+
+### Password (`authMethod=password`)
+
+Sends `SSH_MSG_USERAUTH_REQUEST (50)` with method `"password"`, `change_request = false`, and the cleartext password as an SSH string. This is encrypted because it is sent after NEWKEYS.
+
+### Ed25519 Public Key (`authMethod=privateKey`)
+
+Parses OpenSSH private key format (the `-----BEGIN OPENSSH PRIVATE KEY-----` format, RFC 4716 / OpenSSH wire format) via `parseOpenSshEd25519`:
+
+- **Only Ed25519 is supported.** RSA, ECDSA, and DSA keys are rejected with `"Unsupported key type"`.
+- **Passphrase-protected keys** are decrypted using `bcrypt-pbkdf` (KDF) + AES-CTR or AES-CBC (Web Crypto). Supported ciphers: `aes256-ctr`, `aes256-cbc`, `aes192-ctr`, `aes128-ctr`. Other ciphers (e.g. `chacha20-poly1305@openssh.com`, the current OpenSSH default) throw `"Unsupported cipher"`.
+- **Unencrypted keys** (`-N ""`) work without a passphrase.
+- If the wrong passphrase is supplied: `"Wrong passphrase — OpenSSH key integrity check failed"`.
+
+Signature method: `Ed25519` via WebCrypto `crypto.subtle.sign('Ed25519', ...)`. The signed blob is: `session_id + SSH_MSG_USERAUTH_REQUEST (no signature field)`.
+
+To export an unencrypted Ed25519 key for use with this endpoint:
+```bash
+ssh-keygen -t ed25519 -f /tmp/poc_key -N ""
+# Use /tmp/poc_key (private) content as the privateKey parameter
+```
+
+To strip passphrase from an existing key:
+```bash
+ssh-keygen -p -N "" -f ~/.ssh/id_ed25519 -o /tmp/stripped_key
+```
+
+---
+
+## Known Limitations
+
+**No RSA or ECDSA key auth.** Only Ed25519 is supported in `/terminal`. The `/kexinit` endpoint advertises `rsa-sha2-256`, `rsa-sha2-512` in KEXINIT (read from server only), but `/terminal`'s auth code parses only `ssh-ed25519`.
+
+**No host key verification.** The server's host key signature in KEXECDH_REPLY is received but not checked. MITM attacks on the TCP path are not detected.
+
+**chacha20-poly1305@openssh.com passphrase-protected keys rejected.** OpenSSH 9.x switched to `chacha20-poly1305` as the default KDF cipher. Keys generated with recent OpenSSH versions using the default cipher will fail with `"Unsupported cipher"`. Workaround: generate with `-Z aes256-ctr` or strip the passphrase.
+
+**Hardcoded PTY size: 220×50.** There is no resize message protocol. The terminal dimensions cannot be changed after connection.
+
+**JSON input filtering.** Any terminal input starting with `{` and containing `"type"` is silently dropped. This means you cannot type JSON-looking strings that start with `{` and contain `"type"` in the terminal.
+
+**No re-keying.** The session ID is fixed at the initial exchange hash H. Long-lived sessions use the same encryption keys throughout. OpenSSH servers typically rekey after 1 GB of data or 1 hour.
+
+**No port forwarding.** `SSH_MSG_CHANNEL_OPEN` with type `"direct-tcpip"` or `"forwarded-tcpip"` is not sent or handled.
+
+**Window flow control.** The Worker tracks `remoteWindow` (server's window into client sends) and silently drops input when `data.length > remoteWindow`. The remote window is decremented on send but only refreshed when the server sends `SSH_MSG_CHANNEL_WINDOW_ADJUST`. Input is also capped: if `data.length > remoteWindow`, it is dropped entirely rather than split.
+
+**`/connect` WebSocket is a raw pipe.** Only bytes are forwarded. The `ssh-options` JSON first message is for browser-side SSH clients; the Worker itself does no SSH protocol processing in `/connect` WebSocket mode.
+
+**Single `reader.read()` for banner in HTTP mode.** If the SSH banner arrives across multiple TCP segments, the banner field may be truncated.
+
+---
+
+## SSH-2 Message Type Reference
+
+| Dec | Constant | Direction | Notes |
+|---|---|---|---|
+| 1 | DISCONNECT | ← | Server-initiated disconnect; reason string at offset 5 |
+| 2 | IGNORE | ← | Keepalive / padding; silently skipped |
+| 5 | SERVICE_REQUEST | → | Requests "ssh-userauth" service |
+| 6 | SERVICE_ACCEPT | ← | Confirms service available |
+| 20 | KEXINIT | ↔ | Algorithm negotiation |
+| 21 | NEWKEYS | ↔ | Encryption begins after this |
+| 30 | KEXECDH_INIT | → | Client ephemeral pubkey (curve25519) |
+| 31 | KEXECDH_REPLY | ← | Host key + server ephemeral pubkey + sig |
+| 50 | USERAUTH_REQUEST | → | Auth attempt |
+| 51 | USERAUTH_FAILURE | ← | Lists continuable methods |
+| 52 | USERAUTH_SUCCESS | ← | Auth accepted |
+| 53 | USERAUTH_BANNER | ← | Forwarded to browser via `info` event |
+| 80 | GLOBAL_REQUEST | ← | e.g. hostkeys-00@openssh.com; Worker replies with REQUEST_FAILURE |
+| 82 | REQUEST_FAILURE | → | Response to unrequested global requests |
+| 90 | CHANNEL_OPEN | → | Opens "session" channel |
+| 91 | CHANNEL_OPEN_CONFIRMATION | ← | Channel established |
+| 92 | CHANNEL_OPEN_FAILURE | ← | Channel rejected |
+| 93 | CHANNEL_WINDOW_ADJUST | ↔ | Flow control window update |
+| 94 | CHANNEL_DATA | ↔ | Terminal I/O |
+| 95 | CHANNEL_EXTENDED_DATA | ← | stderr; forwarded to browser as raw bytes |
+| 96 | CHANNEL_EOF | ← | Half-close; Worker waits for CHANNEL_CLOSE |
+| 97 | CHANNEL_CLOSE | ← | Session over |
+| 98 | CHANNEL_REQUEST | → | "pty-req", "shell" |
+| 99 | CHANNEL_SUCCESS | ← | PTY/shell accepted |
+| 100 | CHANNEL_FAILURE | ← | PTY/shell rejected |
+
+---
+
+## Key Derivation (RFC 4253 §7.2)
 
 ```
-uint32    packet_length
-byte      padding_length
-byte[n1]  payload
-byte[n2]  random padding
-byte[m]   mac (message authentication code)
+K  = shared secret (mpint-encoded)
+H  = exchange hash (SHA-256, 32 bytes)
+session_id = H (fixed at first kex)
+
+IV c→s  = SHA-256(K || H || 'A' || session_id)   [16 bytes]
+IV s→c  = SHA-256(K || H || 'B' || session_id)   [16 bytes]
+Key c→s = SHA-256(K || H || 'C' || session_id)   [16 bytes for aes128-ctr]
+Key s→c = SHA-256(K || H || 'D' || session_id)   [16 bytes]
+MAC c→s = SHA-256(K || H || 'E' || session_id)   [32 bytes for hmac-sha2-256]
+MAC s→c = SHA-256(K || H || 'F' || session_id)   [32 bytes]
 ```
 
-All packets are encrypted after key exchange.
+If more than 32 bytes are needed, the derivation extends: `K2 = SHA-256(K || H || K1)` concatenated with K1.
 
-## Worker Implementation
+---
 
-### Strategy: Use SSH2 Library
-
-**Problem**: SSH is extremely complex (crypto, packet framing, channels, etc.)
-
-**Solution**: Use existing TypeScript SSH client library
+## curl Examples
 
 ```bash
-npm install ssh2
+# HTTP banner probe
+curl -s https://portofcall.ross.gg/api/ssh/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"test.rebex.net","port":22}' | jq '{banner}'
+
+# GET form
+curl -s 'https://portofcall.ross.gg/api/ssh/connect?host=test.rebex.net'
+
+# Algorithm probe
+curl -s https://portofcall.ross.gg/api/ssh/kexinit \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"test.rebex.net"}' | jq '{kexAlgorithms,hostKeyAlgorithms,ciphers}'
+
+# Auth methods
+curl -s https://portofcall.ross.gg/api/ssh/auth \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"test.rebex.net"}' | jq '{serverBanner,authMethods}'
 ```
 
-### SSH Client Wrapper
+---
 
-```typescript
-// src/worker/protocols/ssh/client.ts
+## Public Test Servers
 
-import { Client, ClientChannel } from 'ssh2';
-import { connect as tcpConnect } from 'cloudflare:sockets';
+| Host | Notes |
+|---|---|
+| `test.rebex.net` | Public SFTP/SSH test server; accepts password auth (demo/password) |
 
-export interface SSHConfig {
-  host: string;
-  port: number;
-  username: string;
-  password?: string;
-  privateKey?: string;
-  passphrase?: string;
-}
-
-export class SSHClient {
-  private client: Client;
-  private channel: ClientChannel | null = null;
-  private socket: Socket;
-
-  constructor(private config: SSHConfig) {
-    this.client = new Client();
-  }
-
-  async connect(): Promise<void> {
-    // Open TCP socket
-    this.socket = tcpConnect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
-
-    return new Promise((resolve, reject) => {
-      this.client.on('ready', () => resolve());
-      this.client.on('error', reject);
-
-      // Connect SSH over the TCP socket
-      this.client.connect({
-        host: this.config.host,
-        port: this.config.port,
-        username: this.config.username,
-        password: this.config.password,
-        privateKey: this.config.privateKey,
-        passphrase: this.config.passphrase,
-        sock: this.socket, // Use our TCP socket
-      });
-    });
-  }
-
-  async openShell(): Promise<ClientChannel> {
-    return new Promise((resolve, reject) => {
-      this.client.shell((err, channel) => {
-        if (err) return reject(err);
-        this.channel = channel;
-        resolve(channel);
-      });
-    });
-  }
-
-  async exec(command: string): Promise<{ stdout: string; stderr: string; code: number }> {
-    return new Promise((resolve, reject) => {
-      this.client.exec(command, (err, channel) => {
-        if (err) return reject(err);
-
-        let stdout = '';
-        let stderr = '';
-
-        channel.on('data', (data: Buffer) => {
-          stdout += data.toString();
-        });
-
-        channel.stderr.on('data', (data: Buffer) => {
-          stderr += data.toString();
-        });
-
-        channel.on('close', (code: number) => {
-          resolve({ stdout, stderr, code });
-        });
-      });
-    });
-  }
-
-  async close(): Promise<void> {
-    this.client.end();
-    await this.socket.close();
-  }
-}
-```
-
-### WebSocket Terminal Tunnel
-
-```typescript
-// src/worker/protocols/ssh/tunnel.ts
-
-export async function sshTunnel(
-  request: Request,
-  config: SSHConfig
-): Promise<Response> {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  server.accept();
-
-  (async () => {
-    try {
-      const ssh = new SSHClient(config);
-      await ssh.connect();
-
-      server.send(JSON.stringify({ type: 'connected' }));
-
-      const channel = await ssh.openShell();
-
-      // Terminal → SSH
-      server.addEventListener('message', (event) => {
-        if (typeof event.data === 'string') {
-          const msg = JSON.parse(event.data);
-
-          if (msg.type === 'input') {
-            channel.write(msg.data);
-          } else if (msg.type === 'resize') {
-            channel.setWindow(msg.rows, msg.cols, msg.height, msg.width);
-          }
-        }
-      });
-
-      // SSH → Terminal
-      channel.on('data', (data: Buffer) => {
-        server.send(JSON.stringify({
-          type: 'output',
-          data: data.toString('utf-8'),
-        }));
-      });
-
-      channel.stderr.on('data', (data: Buffer) => {
-        server.send(JSON.stringify({
-          type: 'output',
-          data: data.toString('utf-8'),
-        }));
-      });
-
-      channel.on('close', () => {
-        server.send(JSON.stringify({ type: 'closed' }));
-        server.close();
-      });
-
-      server.addEventListener('close', () => {
-        ssh.close();
-      });
-
-    } catch (error) {
-      server.send(JSON.stringify({
-        type: 'error',
-        error: error instanceof Error ? error.message : 'Connection failed',
-      }));
-      server.close();
-    }
-  })();
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
-}
-```
-
-### API Endpoints
-
-```typescript
-// Add to src/worker/index.ts
-
-// Quick SSH command execution
-if (url.pathname === '/api/ssh/exec' && request.method === 'POST') {
-  const { host, port, username, password, command } = await request.json();
-
-  const ssh = new SSHClient({ host, port, username, password });
-  await ssh.connect();
-
-  const result = await ssh.exec(command);
-  await ssh.close();
-
-  return Response.json(result);
-}
-
-// WebSocket terminal
-if (url.pathname === '/api/ssh/connect') {
-  const config = await request.json();
-  return sshTunnel(request, config);
-}
-```
-
-## Web UI Design
-
-### Terminal Component
-
-Use **xterm.js** for terminal emulation:
-
-```bash
-npm install xterm xterm-addon-fit xterm-addon-web-links
-```
-
-```typescript
-// src/components/SSHTerminal.tsx
-
-import { useEffect, useRef, useState } from 'react';
-import { Terminal } from 'xterm';
-import { FitAddon } from 'xterm-addon-fit';
-import { WebLinksAddon } from 'xterm-addon-web-links';
-import 'xterm/css/xterm.css';
-
-export interface SSHCredentials {
-  host: string;
-  port: number;
-  username: string;
-  password?: string;
-  privateKey?: string;
-}
-
-export function SSHTerminal() {
-  const terminalRef = useRef<HTMLDivElement>(null);
-  const [terminal, setTerminal] = useState<Terminal | null>(null);
-  const [ws, setWs] = useState<WebSocket | null>(null);
-  const [connected, setConnected] = useState(false);
-
-  // Credentials form state
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState(22);
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-
-  useEffect(() => {
-    if (!terminalRef.current) return;
-
-    // Create terminal
-    const term = new Terminal({
-      cursorBlink: true,
-      fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: '#1e1e1e',
-        foreground: '#d4d4d4',
-      },
-    });
-
-    const fitAddon = new FitAddon();
-    const webLinksAddon = new WebLinksAddon();
-
-    term.loadAddon(fitAddon);
-    term.loadAddon(webLinksAddon);
-
-    term.open(terminalRef.current);
-    fitAddon.fit();
-
-    setTerminal(term);
-
-    // Handle window resize
-    const handleResize = () => fitAddon.fit();
-    window.addEventListener('resize', handleResize);
-
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      term.dispose();
-    };
-  }, []);
-
-  const connect = async () => {
-    if (!terminal) return;
-
-    const socket = new WebSocket('/api/ssh/connect');
-
-    socket.onopen = () => {
-      // Send credentials
-      socket.send(JSON.stringify({
-        host,
-        port,
-        username,
-        password,
-      }));
-    };
-
-    socket.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-
-      if (msg.type === 'connected') {
-        setConnected(true);
-        terminal.write('\r\n✓ Connected to SSH server\r\n\r\n');
-      } else if (msg.type === 'output') {
-        terminal.write(msg.data);
-      } else if (msg.type === 'error') {
-        terminal.write(`\r\n✗ Error: ${msg.error}\r\n`);
-      } else if (msg.type === 'closed') {
-        terminal.write('\r\n[Connection closed]\r\n');
-        setConnected(false);
-      }
-    };
-
-    socket.onclose = () => {
-      setConnected(false);
-    };
-
-    // Send input to SSH
-    terminal.onData((data) => {
-      if (connected) {
-        socket.send(JSON.stringify({
-          type: 'input',
-          data,
-        }));
-      }
-    });
-
-    // Send resize events
-    terminal.onResize(({ cols, rows }) => {
-      socket.send(JSON.stringify({
-        type: 'resize',
-        cols,
-        rows,
-      }));
-    });
-
-    setWs(socket);
-  };
-
-  const disconnect = () => {
-    if (ws) {
-      ws.close();
-      setWs(null);
-    }
-  };
-
-  return (
-    <div className="ssh-terminal">
-      {!connected ? (
-        <div className="ssh-login">
-          <h2>SSH Connection</h2>
-          <form onSubmit={(e) => { e.preventDefault(); connect(); }}>
-            <input
-              type="text"
-              placeholder="Host"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              required
-            />
-            <input
-              type="number"
-              placeholder="Port"
-              value={port}
-              onChange={(e) => setPort(Number(e.target.value))}
-              required
-            />
-            <input
-              type="text"
-              placeholder="Username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-            <button type="submit">Connect</button>
-          </form>
-        </div>
-      ) : (
-        <div className="terminal-container">
-          <div className="terminal-header">
-            <span>
-              {username}@{host}:{port}
-            </span>
-            <button onClick={disconnect}>Disconnect</button>
-          </div>
-          <div ref={terminalRef} className="terminal" />
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-### Connection Manager
-
-```typescript
-// src/components/SSHConnectionManager.tsx
-
-interface SavedConnection {
-  id: string;
-  name: string;
-  host: string;
-  port: number;
-  username: string;
-}
-
-export function SSHConnectionManager() {
-  const [connections, setConnections] = useState<SavedConnection[]>([]);
-
-  useEffect(() => {
-    // Load from localStorage
-    const saved = localStorage.getItem('ssh-connections');
-    if (saved) {
-      setConnections(JSON.parse(saved));
-    }
-  }, []);
-
-  const saveConnection = (conn: Omit<SavedConnection, 'id'>) => {
-    const newConn = { ...conn, id: crypto.randomUUID() };
-    const updated = [...connections, newConn];
-    setConnections(updated);
-    localStorage.setItem('ssh-connections', JSON.stringify(updated));
-  };
-
-  const deleteConnection = (id: string) => {
-    const updated = connections.filter(c => c.id !== id);
-    setConnections(updated);
-    localStorage.setItem('ssh-connections', JSON.stringify(updated));
-  };
-
-  return (
-    <div className="connection-manager">
-      <h3>Saved Connections</h3>
-      <ul>
-        {connections.map(conn => (
-          <li key={conn.id}>
-            <span>{conn.name} ({conn.username}@{conn.host})</span>
-            <button onClick={() => deleteConnection(conn.id)}>Delete</button>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-```
-
-## Data Flow
-
-```
-┌─────────┐         ┌──────────┐         ┌──────────┐
-│ xterm.js│         │  Worker  │         │SSH Server│
-│ Browser │         │          │         │          │
-└────┬────┘         └────┬─────┘         └────┬─────┘
-     │                   │                     │
-     │ WS: Connect + creds                     │
-     ├──────────────────>│                     │
-     │                   │ TCP Connect :22     │
-     │                   ├────────────────────>│
-     │                   │ SSH Protocol Version│
-     │                   │<───────────────────>│
-     │                   │ Key Exchange        │
-     │                   │<───────────────────>│
-     │                   │ Auth (password)     │
-     │                   │<───────────────────>│
-     │                   │ Open Channel (PTY)  │
-     │                   │<───────────────────>│
-     │ {type: "connected"}│                    │
-     │<──────────────────┤                     │
-     │                   │                     │
-     │ {type: "input", data: "ls\n"}          │
-     ├──────────────────>│ Encrypted data      │
-     │                   ├────────────────────>│
-     │                   │ Encrypted response  │
-     │                   │<────────────────────┤
-     │ {type: "output", data: "file1\nfile2"} │
-     │<──────────────────┤                     │
-     │                   │                     │
-```
-
-## Security
-
-### Credential Handling
-
-**NEVER** store passwords in Worker or browser:
-
-```typescript
-// ✗ BAD: Don't store passwords
-localStorage.setItem('password', password);
-
-// ✓ GOOD: Only keep during session
-const [password, setPassword] = useState('');
-// Password only lives in memory during connection
-```
-
-### Host Key Verification
-
-```typescript
-client.on('hostkey', (key, verify) => {
-  // Store known hosts in KV or Durable Object
-  const knownHost = await env.KV.get(`ssh:hostkey:${host}`);
-
-  if (!knownHost) {
-    // First connection - prompt user
-    server.send(JSON.stringify({
-      type: 'hostkey-unknown',
-      fingerprint: key.toString('base64'),
-    }));
-    // Wait for user confirmation
-  } else if (knownHost !== key.toString('base64')) {
-    // Host key changed - MITM attack?
-    throw new Error('Host key verification failed');
-  }
-
-  verify(); // Accept key
-});
-```
-
-### Rate Limiting
-
-```typescript
-// Limit SSH connection attempts per IP
-const SSH_RATE_LIMIT = 5; // per minute
-const LOCKOUT_DURATION = 15 * 60 * 1000; // 15 minutes
-```
-
-### Allowlists
-
-```typescript
-// Only allow connections to specific hosts
-const ALLOWED_SSH_HOSTS = [
-  'myserver.com',
-  '*.example.com',
-  '10.0.1.*',
-];
-```
-
-## Testing
-
-### Test Server
-
-Set up test SSH server:
-
-```bash
-# Using Docker
-docker run -d \
-  -p 2222:22 \
-  -e SUDO_ACCESS=true \
-  -e USER_NAME=testuser \
-  -e USER_PASSWORD=testpass \
-  linuxserver/openssh-server
-```
-
-### Unit Tests
-
-```typescript
-// tests/ssh.test.ts
-
-describe('SSH Client', () => {
-  it('should connect and authenticate', async () => {
-    const ssh = new SSHClient({
-      host: 'localhost',
-      port: 2222,
-      username: 'testuser',
-      password: 'testpass',
-    });
-
-    await ssh.connect();
-    await ssh.close();
-  });
-
-  it('should execute command', async () => {
-    const ssh = new SSHClient({ /* ... */ });
-    await ssh.connect();
-
-    const result = await ssh.exec('echo "Hello"');
-
-    expect(result.stdout).toBe('Hello\n');
-    expect(result.code).toBe(0);
-
-    await ssh.close();
-  });
-});
-```
-
-## Challenges & Solutions
-
-### Challenge 1: Large Dependencies
-
-**Problem**: `ssh2` library is large (~500KB)
-
-**Solution**:
-- Use code splitting
-- Lazy load SSH component
-- Consider WebAssembly SSH implementation
-
-### Challenge 2: Terminal Encoding
-
-**Problem**: Unicode, colors, control sequences
-
-**Solution**: Use xterm.js - it handles everything
-
-### Challenge 3: Key-Based Auth
-
-**Problem**: Users want to use SSH keys, not passwords
-
-**Solution**:
-- Accept PEM-encoded private keys in UI
-- Parse with `ssh2` library
-- Never store keys - only session memory
-
-### Challenge 4: Connection Persistence
-
-**Problem**: WebSocket disconnect kills SSH session
-
-**Solution**:
-- Use Durable Objects to persist SSH session
-- WebSocket reconnection resumes session
+---
 
 ## Resources
 
-- **SSH2 Library**: [mscdex/ssh2](https://github.com/mscdex/ssh2)
-- **xterm.js**: [xtermjs/xterm.js](https://github.com/xtermjs/xterm.js)
-- **SSH RFCs**: [RFC 4250-4254](https://tools.ietf.org/html/rfc4250)
-- **Example**: [webssh](https://github.com/huashengdun/webssh)
-
-## Next Steps
-
-1. Set up ssh2 and xterm.js dependencies
-2. Implement basic password auth connection
-3. Add public key authentication
-4. Build connection manager UI
-5. Implement host key verification
-6. Add session persistence with Durable Objects
-7. Support SFTP file browser (separate protocol plan)
-
-## Notes
-
-- SSH is the **most complex** protocol but also **highest value**
-- Consider building simpler protocols (Echo, Telnet, Redis) first
-- Terminal emulation is handled by xterm.js
-- SSH crypto is handled by ssh2 library
-- Focus on Worker integration and WebSocket tunneling
+- [RFC 4251](https://www.rfc-editor.org/rfc/rfc4251) — SSH Architecture
+- [RFC 4253](https://www.rfc-editor.org/rfc/rfc4253) — SSH Transport Layer
+- [RFC 4252](https://www.rfc-editor.org/rfc/rfc4252) — SSH Auth Protocol
+- [RFC 4254](https://www.rfc-editor.org/rfc/rfc4254) — SSH Connection Protocol
+- [curve25519-sha256](https://www.rfc-editor.org/rfc/rfc8731) — ECDH key exchange method

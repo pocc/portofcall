@@ -50,6 +50,7 @@ interface S7commResponse {
   plantId?: string;
   copyright?: string;
   error?: string;
+  message?: string;
   isCloudflare?: boolean;
 }
 
@@ -352,6 +353,86 @@ function validateS7Input(host: string, port: number, rack: number, slot: number)
   return null;
 }
 
+/**
+ * Build S7 ReadVar request for a data block (DB)
+ * Reads `byteCount` bytes from DB `dbNumber` starting at byte `startByte`
+ */
+function buildS7ReadDB(dbNumber: number, startByte: number, byteCount: number): Uint8Array {
+  const cotpData = new Uint8Array([0x02, 0xF0, 0x80]);
+
+  // Item address: Area=0x84 (DB), Transport size=0x02 (BYTE), Length, DB number, Start address in bits
+  const startBit = startByte * 8;
+  const s7 = new Uint8Array([
+    0x32, 0x01,       // Protocol ID + Job
+    0x00, 0x00,       // Reserved
+    0x00, 0x02,       // PDU reference
+    0x00, 0x0E,       // Parameter length (14)
+    0x00, 0x00,       // Data length (0)
+    // Parameters
+    0x04,             // Function: Read
+    0x01,             // Item count: 1
+    // Item 1: Variable specification
+    0x12,             // Variable spec type
+    0x0A,             // Spec length (10)
+    0x10,             // Syntax ID: S7ANY
+    0x02,             // Transport size: BYTE
+    (byteCount >> 8) & 0xFF, byteCount & 0xFF, // Data length
+    (dbNumber >> 8) & 0xFF, dbNumber & 0xFF,    // DB number
+    0x84,             // Area: DB
+    (startBit >> 16) & 0xFF, (startBit >> 8) & 0xFF, startBit & 0xFF, // Start address
+  ]);
+
+  const payload = new Uint8Array(cotpData.length + s7.length);
+  payload.set(cotpData, 0);
+  payload.set(s7, cotpData.length);
+  return wrapTPKT(payload);
+}
+
+/**
+ * Build S7 WriteVar request for a data block (DB)
+ * Writes data bytes to DB `dbNumber` starting at byte `startByte`
+ */
+function buildS7WriteDB(dbNumber: number, startByte: number, data: Uint8Array): Uint8Array {
+  const cotpData = new Uint8Array([0x02, 0xF0, 0x80]);
+  const byteCount = data.length;
+  const startBit = startByte * 8;
+  const bitCount = byteCount * 8;
+  const padded = byteCount % 2 === 1 ? byteCount + 1 : byteCount;
+  const paramLen = 14;
+  const dataLen = 4 + padded;
+
+  const s7 = new Uint8Array([
+    0x32, 0x01,       // Protocol ID + Job
+    0x00, 0x00,       // Reserved
+    0x00, 0x04,       // PDU reference
+    0x00, paramLen,   // Parameter length
+    (dataLen >> 8) & 0xFF, dataLen & 0xFF, // Data length
+    0x05,             // Function: Write
+    0x01,             // Item count: 1
+    0x12,             // Variable spec type
+    0x0A,             // Spec length (10)
+    0x10,             // Syntax ID: S7ANY
+    0x02,             // Transport size: BYTE
+    (byteCount >> 8) & 0xFF, byteCount & 0xFF,
+    (dbNumber >> 8) & 0xFF, dbNumber & 0xFF,
+    0x84,             // Area: DB
+    (startBit >> 16) & 0xFF, (startBit >> 8) & 0xFF, startBit & 0xFF,
+    // Data section header
+    0xFF,             // Return code: Success
+    0x04,             // Transport size: BYTE
+    (bitCount >> 8) & 0xFF, bitCount & 0xFF,
+  ]);
+
+  const paddedData = new Uint8Array(padded);
+  paddedData.set(data);
+
+  const payload = new Uint8Array(cotpData.length + s7.length + paddedData.length);
+  payload.set(cotpData, 0);
+  payload.set(s7, cotpData.length);
+  payload.set(paddedData, cotpData.length + s7.length);
+  return wrapTPKT(payload);
+}
+
 // --- Handlers ---
 
 /**
@@ -515,6 +596,253 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
       } satisfies S7commResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Handle S7comm data block (DB) read
+ *
+ * POST /api/s7comm/read
+ * Body: { host, port?, rack?, slot?, db, start?, length?, timeout? }
+ *
+ * Performs COTP+S7 setup then reads `length` bytes from DB `db` at offset `start`
+ */
+export async function handleS7ReadDB(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as S7commConnectRequest & {
+      db?: number;
+      start?: number;
+      length?: number;
+    };
+    const { host, port = 102, rack = 0, slot = 2, timeout = 10000 } = body;
+    const dbNumber = body.db ?? 1;
+    const startByte = body.start ?? 0;
+    const byteCount = Math.min(body.length ?? 64, 240); // Max ~240 bytes per read
+
+    const validationError = validateS7Input(host, port, rack, slot);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError } satisfies S7commResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true } satisfies S7commResponse),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Step 1: COTP CR
+      await writer.write(buildCOTPConnectionRequest(rack, slot));
+      const cotpResp = await readTPKTPacket(reader, timeoutPromise);
+      if (!parseCOTPConnectionConfirm(cotpResp)) {
+        throw new Error('COTP connection rejected');
+      }
+
+      // Step 2: S7 Setup
+      await writer.write(buildS7SetupCommunication());
+      const setupResp = await readTPKTPacket(reader, timeoutPromise);
+      const pduSize = parseS7SetupResponse(setupResp);
+      if (!pduSize) {
+        throw new Error('S7 setup communication failed');
+      }
+
+      // Step 3: Read DB
+      await writer.write(buildS7ReadDB(dbNumber, startByte, byteCount));
+      const readResp = await readTPKTPacket(reader, timeoutPromise);
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Parse S7 ReadVar response: skip TPKT(4)+COTP(3)+S7Header(10)+ReturnCode(1)+TSize(1)+DataLen(2) = 21 bytes
+      let dataBytes: Uint8Array | null = null;
+      if (readResp.length > 21 && readResp[7] === 0x32 && readResp[8] === 0x03) {
+        // Ack_Data, check return code at offset 21
+        const returnCode = readResp[21];
+        if (returnCode === 0xFF) {
+          const dataLen = ((readResp[23] << 8) | readResp[24]) / 8; // length in bits, convert to bytes
+          dataBytes = readResp.slice(25, 25 + dataLen);
+        }
+      }
+
+      const hexDump = dataBytes
+        ? Array.from(dataBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
+        : null;
+
+      return new Response(JSON.stringify({
+        success: dataBytes !== null,
+        host, port, rack, slot,
+        db: dbNumber,
+        startByte,
+        byteCount: dataBytes?.length ?? 0,
+        hex: hexDump,
+        bytes: dataBytes ? Array.from(dataBytes) : null,
+        error: dataBytes === null ? 'Read failed — check DB number and permissions' : undefined,
+        message: dataBytes !== null
+          ? `Read ${dataBytes.length} bytes from DB${dbNumber}[${startByte}..${startByte + dataBytes.length - 1}]`
+          : 'DB read failed',
+      } satisfies S7commResponse & { db: number; startByte: number; byteCount: number; hex: string | null; bytes: number[] | null }),
+        { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' } satisfies S7commResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Handle S7comm DB write
+ *
+ * POST /api/s7comm/write
+ * Body: { host, port?, rack?, slot?, db, startByte?, data: number[], timeout? }
+ *
+ * Performs COTP + S7 setup then writes bytes to a data block.
+ */
+export async function handleS7WriteDB(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' } satisfies S7commResponse),
+      { status: 405, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  try {
+    const body = (await request.json()) as S7commConnectRequest & {
+      db: number;
+      startByte?: number;
+      data: number[];
+    };
+
+    const {
+      host,
+      port = 102,
+      rack = 0,
+      slot = 2,
+      timeout = 10000,
+    } = body;
+
+    const dbNumber = body.db;
+    const startByte = body.startByte ?? 0;
+    const dataBytes = body.data;
+
+    if (!dbNumber || !dataBytes || dataBytes.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'db and non-empty data array are required' } satisfies S7commResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (dataBytes.length > 200) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Maximum 200 bytes per write' } satisfies S7commResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const validationError = validateS7Input(host, port, rack, slot);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError } satisfies S7commResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true } satisfies S7commResponse),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Step 1: COTP CR
+      await writer.write(buildCOTPConnectionRequest(rack, slot));
+      const cotpResp = await readTPKTPacket(reader, timeoutPromise);
+      if (!parseCOTPConnectionConfirm(cotpResp)) {
+        throw new Error('COTP connection rejected');
+      }
+
+      // Step 2: S7 Setup
+      await writer.write(buildS7SetupCommunication());
+      const setupResp = await readTPKTPacket(reader, timeoutPromise);
+      const pduSize = parseS7SetupResponse(setupResp);
+      if (!pduSize) {
+        throw new Error('S7 setup communication failed');
+      }
+
+      // Step 3: Write DB
+      const writeData = new Uint8Array(dataBytes);
+      await writer.write(buildS7WriteDB(dbNumber, startByte, writeData));
+      const writeResp = await readTPKTPacket(reader, timeoutPromise);
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Parse WriteVar response: ack at TPKT(4)+COTP(3)+S7Header(10) = offset 17
+      // Data section: returnCode at offset 21, for write it's just 1 byte per item
+      let writeOk = false;
+      if (writeResp.length > 21 && writeResp[7] === 0x32 && writeResp[8] === 0x03) {
+        const returnCode = writeResp[21];
+        writeOk = returnCode === 0xFF;
+      }
+
+      return new Response(JSON.stringify({
+        success: writeOk,
+        host, port, rack, slot,
+        db: dbNumber,
+        startByte,
+        bytesWritten: writeOk ? writeData.length : 0,
+        error: writeOk ? undefined : 'Write failed — check DB number, address, and write permissions',
+        message: writeOk
+          ? `Wrote ${writeData.length} bytes to DB${dbNumber}[${startByte}..${startByte + writeData.length - 1}]`
+          : 'DB write failed',
+      } satisfies S7commResponse & { db: number; startByte: number; bytesWritten: number }),
+        { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' } satisfies S7commResponse),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
   }

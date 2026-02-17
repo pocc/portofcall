@@ -1,666 +1,504 @@
-# Neo4j Protocol Implementation Plan
+# Neo4j — Power User Reference
 
-## Overview
+**Port:** 7687 | **Protocol:** Bolt Protocol | **Deployed**
 
-**Protocol:** Bolt Protocol (Neo4j)
-**Port:** 7687 (Bolt), 7474 (HTTP)
-**Specification:** [Bolt Protocol Specification](https://neo4j.com/docs/bolt/current/)
-**Complexity:** High
-**Purpose:** Graph database queries
+Port of Call implements the Bolt protocol from scratch — no `neo4j-driver` npm library. All five endpoints open a direct TCP connection from the Cloudflare Worker, perform the Bolt handshake, exchange PackStream-encoded messages, and return JSON.
 
-Neo4j enables **querying graph databases** via the Bolt protocol - execute Cypher queries, traverse relationships, and visualize connected data from the browser.
+**Authentication:** `/connect` performs an anonymous probe (no credentials needed); all other endpoints require `username` + `password`.
 
-### Use Cases
-- Social network analysis
-- Recommendation engines
-- Fraud detection
-- Knowledge graphs
-- Network topology
-- Dependency analysis
+**No TLS.** Plain TCP only.
 
-## Protocol Specification
+---
 
-### Bolt Protocol
+## API Endpoints
 
-```
-Client → Server: Handshake (4 versions)
-Server → Client: Selected version
-Client → Server: HELLO {auth, user_agent}
-Server → Client: SUCCESS
-Client ↔ Server: Messages (QUERY, PULL, etc.)
-```
+### `POST /api/neo4j/connect` — Anonymous server probe
 
-### Handshake
+Performs the Bolt handshake and sends a HELLO with `scheme: none` (no credentials). Succeeds even on servers that require authentication — the `authRequired` flag tells you which case you hit.
 
-```
-0x6060B017  (magic number)
-[version4] [version3] [version2] [version1]
+**Request:**
 
-Each version is uint32 (e.g., 0x00000504 = v5.4)
-```
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `7687` | |
+| `timeout` | number (ms) | `10000` | |
 
-### Message Structure
-
-```
-┌────────────┬────────────┬────────────┐
-│  Chunk     │  Chunk     │  End       │
-│  Header    │  Data      │  Marker    │
-├────────────┼────────────┼────────────┤
-│ uint16 len │ ... data   │ 0x00 0x00  │
-└────────────┴────────────┴────────────┘
+**Success (200):**
+```json
+{
+  "success": true,
+  "host": "neo4j.example.com",
+  "port": 7687,
+  "connectTime": 11,
+  "rtt": 34,
+  "boltVersion": "5.4",
+  "selectedVersion": 1284,
+  "helloSuccess": true,
+  "serverInfo": {
+    "server": "Neo4j/5.15.0",
+    "connection_id": "bolt-123",
+    "hints": { "connection.recv_timeout_seconds": 120 }
+  }
+}
 ```
 
-### Message Types
+**Auth-required server (200 — still `success: true`):**
+```json
+{
+  "success": true,
+  "host": "neo4j.example.com",
+  "port": 7687,
+  "boltVersion": "5.4",
+  "helloSuccess": false,
+  "authRequired": true,
+  "errorMessage": "Authentication required"
+}
+```
 
-| Tag | Name | Description |
-|-----|------|-------------|
-| 0x01 | HELLO | Initialize connection |
-| 0x10 | RUN | Execute Cypher query |
-| 0x3F | PULL | Fetch query results |
-| 0x11 | BEGIN | Begin transaction |
-| 0x12 | COMMIT | Commit transaction |
-| 0x13 | ROLLBACK | Rollback transaction |
-| 0x70 | SUCCESS | Operation succeeded |
-| 0x7F | FAILURE | Operation failed |
-| 0x71 | RECORD | Result record |
+`success: true` is returned in both cases. Check `helloSuccess` and `authRequired` to distinguish open vs. auth-protected servers. `selectedVersion` is the raw uint32 from the handshake (e.g. `0x00000504` = `1284` decimal for v5.4).
+
+---
+
+### `POST /api/neo4j/query` — Execute Cypher (no parameters)
+
+Authenticates and executes a Cypher query. Parameters are not supported — use `/query-params` for parameterized queries.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `7687` | |
+| `username` | string | `"neo4j"` | |
+| `password` | string | `""` | |
+| `query` | string | required | Cypher query text |
+| `database` | string | — | Target DB (Bolt 4+ only; uses BEGIN with `db` metadata) |
+| `timeout` | number (ms) | `15000` | |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "host": "neo4j.example.com",
+  "port": 7687,
+  "boltVersion": "5.4",
+  "serverVersion": "Neo4j/5.15.0",
+  "columns": ["n.name", "n.age"],
+  "rows": [
+    ["Alice", 30],
+    ["Bob", 25]
+  ],
+  "rowCount": 2
+}
+```
+
+**Query error (200, success: false):**
+```json
+{
+  "success": false,
+  "host": "neo4j.example.com",
+  "port": 7687,
+  "boltVersion": "5.4",
+  "error": "SyntaxError: Invalid input 'SLECT': expected ..."
+}
+```
+
+**Row values:** Each element of `rows` is an array corresponding to `columns`. Values are raw PackStream-decoded types (see [PackStream Decoding](#packstream-decoding)). Bolt graph types (Node, Relationship, Path) are returned as `{ "_tag": <hex>, "_fields": [...] }` objects — not as typed documents.
+
+---
+
+### `POST /api/neo4j/query-params` — Cypher with parameters
+
+Same as `/query` but accepts a `params` map that is PackStream-encoded and passed as the second argument to the Bolt `RUN` message. Use this for all queries with user-supplied data.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `7687` | |
+| `username` | string | `"neo4j"` | |
+| `password` | string | `""` | |
+| `query` | string | required | Cypher with `$param` placeholders |
+| `params` | object | `{}` | Parameter map |
+| `database` | string | — | Target DB (Bolt 4+ only) |
+| `timeout` | number (ms) | `15000` | |
+
+**Success (200):** Same shape as `/query`.
+
+**`params` type encoding:** Sent as a PackStream map. Supported value types:
+
+| JS type | PackStream encoding |
+|---|---|
+| `null`/`undefined` | `0xC0` |
+| `boolean` | `0xC2`/`0xC3` |
+| Integer in [-16, 127] | Tiny int (1 byte) |
+| Integer [-128, -17] | Int8 `0xC8` |
+| Integer [-32768, -129] or [128, 32767] | Int16 `0xC9` |
+| Integer outside int16 range | Int32 `0xCA` |
+| Non-integer number | Float64 `0xC1` (big-endian) |
+| String | Tiny string or String8 |
+| Array (< 16 elements) | Tiny list `0x9n` |
+| Array (≥ 16 elements) | `0xD4, count` (not in decoder; round-trip not tested) |
+| Object | Tiny map or Map8 |
+
+**No int64 support.** Integer parameters outside `[-2147483648, 2147483647]` will be truncated by the Int32 encoder (the `packInteger` function uses bitwise ops which truncate to 32 bits).
+
+---
+
+### `GET /api/neo4j/schema` — Graph schema discovery
+
+**Note: This is a GET request with query string parameters, not a POST with a JSON body.**
+
+Authenticates and runs three schema procedures sequentially on the same connection:
+- `CALL db.labels()`
+- `CALL db.relationshipTypes()`
+- `CALL db.propertyKeys()`
+
+Returns empty arrays for any procedure that fails (e.g., insufficient privileges) — not an error.
+
+**Request (query parameters):**
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `host` | required | |
+| `port` | `7687` | |
+| `username` | `"neo4j"` | |
+| `password` | `""` | |
+
+No `database` parameter. No configurable timeout (hardcoded to 15s).
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "host": "neo4j.example.com",
+  "port": 7687,
+  "boltVersion": "5.4",
+  "schema": {
+    "labels": ["Person", "Movie", "Genre"],
+    "relationshipTypes": ["ACTED_IN", "DIRECTED", "FOLLOWS"],
+    "propertyKeys": ["name", "born", "title", "released", "tagline"]
+  }
+}
+```
+
+**Community Edition Note:** `CALL db.labels()` returns labels visible in the current database only. On Neo4j 5.x you may need `SHOW LABELS` instead if `db.labels()` is deprecated.
+
+---
+
+### `POST /api/neo4j/create` — Create a node
+
+Creates a single node with a label and properties. Validates the label against `/^[A-Za-z_][A-Za-z0-9_]*$/` before sending.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `7687` | |
+| `username` | string | `"neo4j"` | |
+| `password` | string | `""` | |
+| `label` | string | required | Node label (validated identifier) |
+| `properties` | object | `{}` | Node properties |
+| `database` | string | — | Target DB (Bolt 4+ only) |
+| `timeout` | number (ms) | `15000` | |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "host": "neo4j.example.com",
+  "port": 7687,
+  "boltVersion": "5.4",
+  "label": "Person",
+  "node": { "_tag": 78, "_fields": [1234, ["Person"], {"name": "Alice", "age": 30}] }
+}
+```
+
+`node` is the raw PackStream struct from the RECORD response. Tag `78` = `0x4E` = Bolt Node. Fields are `[nodeId, labels[], properties{}]`.
+
+**Invalid label (400):**
+```json
+{ "success": false, "error": "Label must be a valid identifier" }
+```
+
+Labels with spaces, hyphens, or special characters are rejected by the HTTP layer before reaching Neo4j. The Cypher uses backtick-escaping: `CREATE (n:\`${label}\` $props) RETURN n`.
+
+---
+
+## Wire Protocol Details
+
+### Bolt Handshake
+
+```
+Client → [0x60 0x60 0xB0 0x17]   magic (4 bytes)
+         [0x00 0x00 0x05 0x04]   offer v5.4
+         [0x00 0x00 0x05 0x03]   offer v5.3
+         [0x00 0x00 0x04 0x04]   offer v4.4
+         [0x00 0x00 0x04 0x03]   offer v4.3
+Server → [uint32 big-endian]     selected version (0 = none supported)
+```
+
+Version format: `(uint32 >> 8) & 0xFF` = major, `uint32 & 0xFF` = minor. Example: `0x00000504` → major=5, minor=4 → `"5.4"`.
+
+If the server returns `0x00000000`, the connection closes with "Server does not support any offered Bolt protocol versions".
+
+### Chunked Message Framing
+
+All Bolt messages use chunked framing:
+```
+[chunk_size 2B big-endian] [chunk_data ...]   (repeated for large messages)
+[0x00 0x00]                                   end-of-message marker
+```
+
+The implementation always sends messages as a single chunk (not multi-chunk). The end-of-message marker (`0x00 0x00`) is appended by `buildChunkedMessage`.
+
+### Message Sequence (data endpoints)
+
+```
+Client → HELLO  { user_agent, scheme: "basic", principal, credentials }
+Server → SUCCESS(serverInfo) | FAILURE(message)
+
+[If Bolt 4+ and database specified:]
+Client → BEGIN  { db: database }
+Server → SUCCESS
+
+Client → RUN    { query, params, [runMeta] }
+Client → PULL   { [n: -1] }      ← pipelined (both sent before reading)
+Server → SUCCESS { fields: ["col1", "col2", ...] }   ← RUN response
+Server → RECORD { values: [...] }                     ← 0 or more
+Server → SUCCESS { type, server }                     ← PULL summary
+  OR
+Server → FAILURE { message, code }
+```
+
+RUN and PULL are pipelined — both are written before reading any response. This is valid per the Bolt protocol and reduces round trips.
+
+**Bolt 3 vs. Bolt 4+ RUN format:**
+
+| Version | RUN struct fields |
+|---|---|
+| Bolt 3 | `[query_string, params_map]` |
+| Bolt 4+ | `[query_string, params_map, run_metadata_map]` |
+
+`run_metadata_map` contains `db` for database routing if specified; otherwise an empty map.
+
+**Bolt 3 vs. Bolt 4+ PULL format:**
+
+| Version | PULL struct |
+|---|---|
+| Bolt 3 | `packStruct(0x3F, [])` — zero fields |
+| Bolt 4+ | `packStruct(0x3F, [{ n: -1 }])` — `n=-1` means fetch all |
 
 ### PackStream Encoding
 
-Bolt uses PackStream (similar to MessagePack):
+PackStream is a type-length-value format similar to MessagePack.
 
-```
-Integers:   0x00-0x7F (tiny int)
-Strings:    0x80-0x8F (tiny string)
-Lists:      0x90-0x9F (tiny list)
-Maps:       0xA0-0xAF (tiny map)
-Structures: 0xB0-0xBF (tiny struct)
-```
+**Marker byte ranges:**
 
-## Worker Implementation
+| Range | Type |
+|---|---|
+| `0x00`–`0x7F` | Tiny integer (0–127) |
+| `0x80`–`0x8F` | Tiny string (0–15 UTF-8 bytes) |
+| `0x90`–`0x9F` | Tiny list (0–15 elements) |
+| `0xA0`–`0xAF` | Tiny map (0–15 entries) |
+| `0xB0`–`0xBF` | Tiny struct (0–15 fields) |
+| `0xC0` | Null |
+| `0xC1` | Float64 (8 bytes, big-endian) |
+| `0xC2` | Boolean false |
+| `0xC3` | Boolean true |
+| `0xC8` | Int8 (1 byte) |
+| `0xC9` | Int16 (2 bytes, big-endian) |
+| `0xCA` | Int32 (4 bytes, big-endian) |
+| `0xD0` | String8 (1-byte length prefix) |
+| `0xD1` | String16 (2-byte big-endian length prefix) |
+| `0xD8` | Map8 (1-byte count) |
+| `0xF0`–`0xFF` | Tiny integer (−16 to −1) |
 
-```typescript
-// src/worker/protocols/neo4j/client.ts
+**Unknown markers:** The decoder advances by 1 byte and returns `null`, which stops parsing at that field. On a response with Int64 fields (0xCB), the entire message will be truncated — all remaining fields after the Int64 become null.
 
-import { connect } from 'cloudflare:sockets';
+### PackStream Decoding
 
-export interface Neo4jConfig {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  database?: string;
-}
+The `unpackValue` decoder maps PackStream types to JS values:
 
-export interface QueryResult {
-  records: Record[];
-  summary: ResultSummary;
-}
+| Type | Result |
+|---|---|
+| Tiny int / Int8/16/32 | JS number |
+| Float64 | JS number |
+| String (all forms) | JS string |
+| Boolean | JS boolean |
+| Null | `null` |
+| Tiny list | `unknown[]` |
+| Tiny/Map8 map | `Record<string, unknown>` |
+| Tiny struct | `{ _tag: number, _fields: unknown[] }` |
+| Unknown marker | `null` (stops parsing at that field) |
 
-export interface Record {
-  keys: string[];
-  values: any[];
-  get(key: string): any;
-}
+**Graph type structs from RECORD responses:**
 
-export interface ResultSummary {
-  query: string;
-  queryType: string;
-  counters: StatementStatistics;
-}
+| Tag | Type | `_fields` layout |
+|---|---|---|
+| `0x4E` (78) | Node | `[nodeId, [labels...], {properties}]` |
+| `0x52` (82) | Relationship | `[id, startNodeId, endNodeId, "TYPE", {properties}]` |
+| `0x50` (80) | Path | `[nodes[], rels[], sequence[]]` |
 
-export interface StatementStatistics {
-  nodesCreated: number;
-  nodesDeleted: number;
-  relationshipsCreated: number;
-  relationshipsDeleted: number;
-  propertiesSet: number;
-}
+These structs are not unpacked further — `MATCH (n) RETURN n` returns each node as `{ "_tag": 78, "_fields": [id, ["Label"], {key: val}] }`. Parse `_fields[2]` to get the properties map.
 
-export class Neo4jClient {
-  private socket: any;
-  private version: number = 0;
+### Response Accumulator
 
-  constructor(private config: Neo4jConfig) {}
+`readBoltMessages` accumulates raw bytes across multiple TCP reads using a deadline loop. It parses chunk headers, skips `0x0000` end-of-message markers, and stops reading when a terminal message (`SUCCESS=0x70` or `FAILURE=0x7F`) is found. This correctly handles:
+- Pipelined responses where RUN SUCCESS arrives before RECORD chunks
+- Large result sets fragmented across TCP reads
 
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
+The `/connect` endpoint uses the older single-read `parseResponse` function instead, which reads only the first TCP chunk. This is sufficient for the HELLO response but would truncate oversized server responses.
 
-    // Perform handshake
-    await this.handshake();
+---
 
-    // Send HELLO
-    await this.hello();
-  }
+## Known Limitations
 
-  private async handshake(): Promise<void> {
-    const handshake = new Uint8Array(20);
-    const view = new DataView(handshake.buffer);
+**No TLS.** `cloudflare:sockets` `connect()` is plain TCP. Neo4j AuraDB and cloud instances require TLS — connections will fail or be rejected.
 
-    // Magic number
-    view.setUint32(0, 0x6060B017);
+**No Int64 encoding.** `packInteger` uses bitwise operations that truncate to 32 bits. Parameters with integer values outside `[-2147483648, 2147483647]` are silently truncated. Use strings for large IDs.
 
-    // Supported versions (4.4, 4.3, 4.2, 4.1)
-    view.setUint32(4, 0x00000404);
-    view.setUint32(8, 0x00000403);
-    view.setUint32(12, 0x00000402);
-    view.setUint32(16, 0x00000401);
+**No Int64 decoding.** The decoder does not handle `0xCB` (Int64). A response containing Int64 fields (e.g., node IDs on large databases, timestamps) will have those fields decoded as `null`, and any subsequent fields in the same map will also be lost.
 
-    const writer = this.socket.writable.getWriter();
-    await writer.write(handshake);
-    writer.releaseLock();
+**Struct encoding limited to 15 fields.** `packStruct` uses the tiny struct format (`0xB0|fieldCount`). Commands with 16+ fields are not supported — this is not a practical limitation for the current endpoints.
 
-    // Read server's chosen version
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
+**No multi-chunk send.** Messages are always sent as a single chunk. Very long Cypher queries (>65535 bytes) would overflow the 2-byte chunk size field, though no validation catches this.
 
-    const versionView = new DataView(value.buffer);
-    this.version = versionView.getUint32(0);
+**`/schema` is GET, not POST.** Unlike all other endpoints, query parameters are used instead of a JSON body. No `database` routing is available.
 
-    if (this.version === 0) {
-      throw new Error('Server does not support any offered protocol versions');
-    }
-  }
+**`/create` returns raw Node struct.** The created node is in `{ _tag: 78, _fields: [...] }` form. The properties are in `_fields[2]`.
 
-  private async hello(): Promise<void> {
-    const auth = {
-      scheme: 'basic',
-      principal: this.config.username,
-      credentials: this.config.password,
-    };
+**BEGIN only on Bolt 4+ with `database` set.** If you omit `database`, no BEGIN is sent and no explicit database selection occurs — the server uses its configured default database.
 
-    const message = {
-      user_agent: 'PortOfCall/1.0',
-      ...auth,
-    };
+**Bolt 3 auth branch is identical to Bolt 4+.** Both branches of `openBoltSession` send auth in HELLO. No functional difference; just dead code.
 
-    if (this.config.database) {
-      Object.assign(message, { routing: { db: this.config.database } });
-    }
+---
 
-    await this.sendMessage(0x01, message); // HELLO
-    const response = await this.receiveMessage();
-
-    if (response.tag !== 0x70) { // SUCCESS
-      throw new Error('Authentication failed');
-    }
-  }
-
-  async run(query: string, parameters: Record<string, any> = {}): Promise<QueryResult> {
-    // Send RUN message
-    await this.sendMessage(0x10, {
-      query,
-      parameters,
-      metadata: {},
-    });
-
-    const runResponse = await this.receiveMessage();
-    if (runResponse.tag !== 0x70) {
-      throw new Error('Query failed');
-    }
-
-    // Send PULL message
-    await this.sendMessage(0x3F, { n: -1 }); // Pull all
-
-    // Collect records
-    const records: Record[] = [];
-    const keys: string[] = runResponse.data.fields || [];
-
-    while (true) {
-      const message = await this.receiveMessage();
-
-      if (message.tag === 0x71) { // RECORD
-        const values = message.data;
-        records.push(this.createRecord(keys, values));
-      } else if (message.tag === 0x70) { // SUCCESS
-        const summary = this.createSummary(query, message.data);
-        return { records, summary };
-      } else if (message.tag === 0x7F) { // FAILURE
-        throw new Error(message.data.message);
-      }
-    }
-  }
-
-  async beginTransaction(): Promise<void> {
-    await this.sendMessage(0x11, {}); // BEGIN
-    await this.receiveMessage();
-  }
-
-  async commit(): Promise<void> {
-    await this.sendMessage(0x12, {}); // COMMIT
-    await this.receiveMessage();
-  }
-
-  async rollback(): Promise<void> {
-    await this.sendMessage(0x13, {}); // ROLLBACK
-    await this.receiveMessage();
-  }
-
-  private async sendMessage(tag: number, data: any): Promise<void> {
-    // Encode message with PackStream
-    const encoded = this.packStruct(tag, data);
-
-    // Chunk the message
-    const chunks: Uint8Array[] = [];
-    const chunkSize = 8192;
-
-    for (let i = 0; i < encoded.length; i += chunkSize) {
-      const chunk = encoded.slice(i, i + chunkSize);
-      const header = new Uint8Array(2);
-      new DataView(header.buffer).setUint16(0, chunk.length);
-
-      const chunkWithHeader = new Uint8Array(header.length + chunk.length);
-      chunkWithHeader.set(header);
-      chunkWithHeader.set(chunk, header.length);
-
-      chunks.push(chunkWithHeader);
-    }
-
-    // End marker
-    const endMarker = new Uint8Array([0x00, 0x00]);
-    chunks.push(endMarker);
-
-    // Send all chunks
-    const writer = this.socket.writable.getWriter();
-    for (const chunk of chunks) {
-      await writer.write(chunk);
-    }
-    writer.releaseLock();
-  }
-
-  private async receiveMessage(): Promise<{ tag: number; data: any }> {
-    const reader = this.socket.readable.getReader();
-    const chunks: Uint8Array[] = [];
-
-    while (true) {
-      const { value } = await reader.read();
-
-      // Read chunk header
-      const view = new DataView(value.buffer);
-      const chunkSize = view.getUint16(0);
-
-      if (chunkSize === 0) break; // End marker
-
-      // Read chunk data
-      const chunk = value.slice(2, 2 + chunkSize);
-      chunks.push(chunk);
-    }
-
-    reader.releaseLock();
-
-    // Combine chunks
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const combined = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // Unpack message
-    return this.unpackStruct(combined);
-  }
-
-  private packStruct(tag: number, data: any): Uint8Array {
-    const fields = this.packValue(data);
-    const result = new Uint8Array(2 + fields.length);
-
-    result[0] = 0xB1; // Tiny struct with 1 field
-    result[1] = tag;
-    result.set(fields, 2);
-
-    return result;
-  }
-
-  private packValue(value: any): Uint8Array {
-    if (value === null) {
-      return new Uint8Array([0xC0]);
-    }
-
-    if (typeof value === 'boolean') {
-      return new Uint8Array([value ? 0xC3 : 0xC2]);
-    }
-
-    if (typeof value === 'number') {
-      return this.packNumber(value);
-    }
-
-    if (typeof value === 'string') {
-      return this.packString(value);
-    }
-
-    if (Array.isArray(value)) {
-      return this.packList(value);
-    }
-
-    if (typeof value === 'object') {
-      return this.packMap(value);
-    }
-
-    throw new Error(`Cannot pack value of type ${typeof value}`);
-  }
-
-  private packNumber(n: number): Uint8Array {
-    if (Number.isInteger(n)) {
-      if (n >= -16 && n <= 127) {
-        return new Uint8Array([n & 0xFF]);
-      } else if (n >= -128 && n <= 127) {
-        return new Uint8Array([0xC8, n & 0xFF]);
-      } else if (n >= -32768 && n <= 32767) {
-        const buffer = new Uint8Array(3);
-        buffer[0] = 0xC9;
-        new DataView(buffer.buffer).setInt16(1, n);
-        return buffer;
-      } else {
-        const buffer = new Uint8Array(5);
-        buffer[0] = 0xCA;
-        new DataView(buffer.buffer).setInt32(1, n);
-        return buffer;
-      }
-    } else {
-      const buffer = new Uint8Array(9);
-      buffer[0] = 0xC1;
-      new DataView(buffer.buffer).setFloat64(1, n);
-      return buffer;
-    }
-  }
-
-  private packString(str: string): Uint8Array {
-    const bytes = new TextEncoder().encode(str);
-    const length = bytes.length;
-
-    if (length < 16) {
-      const result = new Uint8Array(1 + length);
-      result[0] = 0x80 | length;
-      result.set(bytes, 1);
-      return result;
-    } else {
-      const result = new Uint8Array(2 + length);
-      result[0] = 0xD0;
-      result[1] = length;
-      result.set(bytes, 2);
-      return result;
-    }
-  }
-
-  private packList(list: any[]): Uint8Array {
-    const packed = list.map(item => this.packValue(item));
-    const totalLength = packed.reduce((sum, p) => sum + p.length, 0);
-
-    const result = new Uint8Array(1 + totalLength);
-    result[0] = 0x90 | list.length;
-
-    let offset = 1;
-    for (const p of packed) {
-      result.set(p, offset);
-      offset += p.length;
-    }
-
-    return result;
-  }
-
-  private packMap(map: Record<string, any>): Uint8Array {
-    const entries = Object.entries(map);
-    const packed = entries.flatMap(([k, v]) => [
-      this.packString(k),
-      this.packValue(v),
-    ]);
-
-    const totalLength = packed.reduce((sum, p) => sum + p.length, 0);
-
-    const result = new Uint8Array(1 + totalLength);
-    result[0] = 0xA0 | entries.length;
-
-    let offset = 1;
-    for (const p of packed) {
-      result.set(p, offset);
-      offset += p.length;
-    }
-
-    return result;
-  }
-
-  private unpackStruct(data: Uint8Array): { tag: number; data: any } {
-    const marker = data[0];
-    const size = marker & 0x0F;
-    const tag = data[1];
-
-    const [value, _] = this.unpackValue(data, 2);
-
-    return { tag, data: value };
-  }
-
-  private unpackValue(data: Uint8Array, offset: number): [any, number] {
-    const marker = data[offset];
-
-    if (marker >= 0x00 && marker <= 0x7F) {
-      return [marker, offset + 1]; // Tiny int
-    }
-
-    if (marker >= 0x80 && marker <= 0x8F) {
-      const length = marker & 0x0F;
-      const str = new TextDecoder().decode(data.slice(offset + 1, offset + 1 + length));
-      return [str, offset + 1 + length];
-    }
-
-    if (marker >= 0xA0 && marker <= 0xAF) {
-      const size = marker & 0x0F;
-      const map: Record<string, any> = {};
-      let pos = offset + 1;
-
-      for (let i = 0; i < size; i++) {
-        const [key, newPos] = this.unpackValue(data, pos);
-        pos = newPos;
-        const [value, newPos2] = this.unpackValue(data, pos);
-        pos = newPos2;
-        map[key] = value;
-      }
-
-      return [map, pos];
-    }
-
-    if (marker === 0xC0) {
-      return [null, offset + 1];
-    }
-
-    // Add more unpacking as needed
-    return [null, offset + 1];
-  }
-
-  private createRecord(keys: string[], values: any[]): Record {
-    const record: Record = {
-      keys,
-      values,
-      get(key: string) {
-        const index = keys.indexOf(key);
-        return index >= 0 ? values[index] : undefined;
-      },
-    };
-    return record;
-  }
-
-  private createSummary(query: string, data: any): ResultSummary {
-    return {
-      query,
-      queryType: data.type || 'r',
-      counters: data.stats || {
-        nodesCreated: 0,
-        nodesDeleted: 0,
-        relationshipsCreated: 0,
-        relationshipsDeleted: 0,
-        propertiesSet: 0,
-      },
-    };
-  }
-
-  async close(): Promise<void> {
-    await this.socket.close();
-  }
-}
-```
-
-## Web UI Design
-
-```typescript
-// src/components/Neo4jClient.tsx
-
-export function Neo4jClient() {
-  const [connected, setConnected] = useState(false);
-  const [query, setQuery] = useState('MATCH (n) RETURN n LIMIT 25');
-  const [result, setResult] = useState<QueryResult | null>(null);
-
-  const executeQuery = async () => {
-    const response = await fetch('/api/neo4j/query', {
-      method: 'POST',
-      body: JSON.stringify({ query }),
-    });
-
-    const data = await response.json();
-    setResult(data);
-  };
-
-  const quickQueries = [
-    { label: 'All Nodes', query: 'MATCH (n) RETURN n LIMIT 25' },
-    { label: 'All Relationships', query: 'MATCH ()-[r]->() RETURN r LIMIT 25' },
-    { label: 'Node Count', query: 'MATCH (n) RETURN count(n)' },
-    { label: 'Relationship Count', query: 'MATCH ()-[r]->() RETURN count(r)' },
-  ];
-
-  return (
-    <div className="neo4j-client">
-      <h2>Neo4j Cypher Client</h2>
-
-      <div className="query-editor">
-        <textarea
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          rows={5}
-          placeholder="Enter Cypher query..."
-        />
-        <button onClick={executeQuery}>Execute</button>
-
-        <div className="quick-queries">
-          {quickQueries.map(q => (
-            <button
-              key={q.label}
-              onClick={() => setQuery(q.query)}
-            >
-              {q.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {result && (
-        <div className="results">
-          <h3>Results ({result.records.length} records)</h3>
-
-          {result.summary.counters && (
-            <div className="stats">
-              <span>Nodes Created: {result.summary.counters.nodesCreated}</span>
-              <span>Relationships Created: {result.summary.counters.relationshipsCreated}</span>
-            </div>
-          )}
-
-          <table>
-            <thead>
-              <tr>
-                {result.records[0]?.keys.map(key => (
-                  <th key={key}>{key}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {result.records.map((record, i) => (
-                <tr key={i}>
-                  {record.keys.map(key => (
-                    <td key={key}>
-                      <pre>{JSON.stringify(record.get(key), null, 2)}</pre>
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-## Security
-
-### Authentication
-
-```typescript
-// Basic auth (default)
-const config = {
-  username: 'neo4j',
-  password: 'password',
-};
-
-// Kerberos
-const config = {
-  scheme: 'kerberos',
-  principal: 'user@REALM',
-  credentials: 'ticket',
-};
-```
-
-## Testing
+## curl Examples
 
 ```bash
-# Docker Neo4j
-docker run -d \
-  -p 7474:7474 \
-  -p 7687:7687 \
-  -e NEO4J_AUTH=neo4j/testpassword \
-  neo4j:latest
+# Probe: detect server version and whether auth is required
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"neo4j.example.com"}' | jq '{boltVersion, helloSuccess, authRequired, server: .serverInfo.server}'
 
-# Web UI
-open http://localhost:7474
+# Count all nodes
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "neo4j.example.com",
+    "username": "neo4j",
+    "password": "secret",
+    "query": "MATCH (n) RETURN count(n) AS total"
+  }' | jq '.rows[0][0]'
 
-# Create test data
-CYPHER:
-CREATE (a:Person {name: 'Alice'})
-CREATE (b:Person {name: 'Bob'})
-CREATE (a)-[:KNOWS]->(b)
+# Find nodes with relationship depth
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "neo4j.example.com",
+    "username": "neo4j",
+    "password": "secret",
+    "query": "MATCH (a:Person)-[:KNOWS*1..2]-(b:Person) WHERE a.name = '\''Alice'\'' RETURN DISTINCT b.name AS name, b.age AS age ORDER BY b.name"
+  }' | jq '.rows[] | {name: .[0], age: .[1]}'
+
+# Parameterized query (safe for user input)
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/query-params \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "neo4j.example.com",
+    "username": "neo4j",
+    "password": "secret",
+    "query": "MATCH (n:Person {name: $name}) RETURN n.age AS age",
+    "params": {"name": "Alice"}
+  }' | jq '.rows[0][0]'
+
+# Create node with properties
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/create \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "neo4j.example.com",
+    "username": "neo4j",
+    "password": "secret",
+    "label": "Movie",
+    "properties": {"title": "The Matrix", "released": 1999}
+  }' | jq '.node._fields | {id: .[0], labels: .[1], props: .[2]}'
+
+# Graph schema discovery
+curl -s "https://portofcall.ross.gg/api/neo4j/schema?host=neo4j.example.com&username=neo4j&password=secret" \
+  | jq '.schema | {labels: (.labels | length), relTypes: (.relationshipTypes | length), propKeys: (.propertyKeys | length)}'
+
+# Multi-hop path query
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "neo4j.example.com",
+    "username": "neo4j",
+    "password": "secret",
+    "query": "MATCH (a:Person)-[r:ACTED_IN]->(m:Movie) RETURN a.name AS actor, m.title AS movie, r.roles AS roles LIMIT 10"
+  }' | jq '.rows[] | {actor: .[0], movie: .[1], roles: .[2]}'
+
+# Database selection (Bolt 4+, named database)
+curl -s -X POST https://portofcall.ross.gg/api/neo4j/query \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "neo4j.example.com",
+    "username": "neo4j",
+    "password": "secret",
+    "query": "RETURN db.info().name AS db",
+    "database": "movies"
+  }' | jq '.rows[0][0]'
 ```
+
+---
+
+## Local Testing
+
+```bash
+# Neo4j 5 — default auth (neo4j/neo4j, must change on first login)
+docker run -d --name neo4j5 \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=neo4j/testpassword \
+  neo4j:5
+
+# Neo4j 5 — no auth
+docker run -d --name neo4j5-open \
+  -p 7474:7474 -p 7687:7687 \
+  -e NEO4J_AUTH=none \
+  neo4j:5
+
+# Load the movies dataset (from Neo4j browser at localhost:7474)
+:play movies
+# Or via cypher-shell:
+cypher-shell -u neo4j -p testpassword \
+  "CALL apoc.import.json('https://data.neo4j.com/bulk-importer/movies-with-ids.json')"
+```
+
+---
+
+## Bolt Message Type Reference
+
+| Tag | Name | Direction | Notes |
+|---|---|---|---|
+| `0x01` | HELLO | Client→Server | Auth + user_agent |
+| `0x10` | RUN | Client→Server | Cypher query |
+| `0x11` | BEGIN | Client→Server | Start explicit transaction |
+| `0x12` | COMMIT | Client→Server | Not used by implementation |
+| `0x13` | ROLLBACK | Client→Server | Not used by implementation |
+| `0x3F` | PULL | Client→Server | Fetch result rows |
+| `0x70` | SUCCESS | Server→Client | Terminal or intermediate success |
+| `0x71` | RECORD | Server→Client | One result row |
+| `0x7E` | IGNORED | Server→Client | Not handled by decoder |
+| `0x7F` | FAILURE | Server→Client | Error with `message` + `code` |
+
+---
 
 ## Resources
 
-- **Bolt Protocol**: [Specification](https://neo4j.com/docs/bolt/current/)
-- **Cypher**: [Query Language Guide](https://neo4j.com/docs/cypher-manual/current/)
-- **Neo4j Drivers**: [Official drivers](https://neo4j.com/developer/language-guides/)
-
-## Common Cypher Patterns
-
-### Create Nodes
-```cypher
-CREATE (p:Person {name: 'Alice', age: 30})
-```
-
-### Create Relationships
-```cypher
-MATCH (a:Person {name: 'Alice'})
-MATCH (b:Person {name: 'Bob'})
-CREATE (a)-[:KNOWS {since: 2020}]->(b)
-```
-
-### Find Paths
-```cypher
-MATCH path = (a:Person)-[:KNOWS*1..3]-(b:Person)
-WHERE a.name = 'Alice' AND b.name = 'Charlie'
-RETURN path
-```
-
-## Notes
-
-- **Bolt protocol** uses PackStream encoding (similar to MessagePack)
-- **Graph database** - optimized for relationships
-- **Cypher** is declarative graph query language
-- **ACID** transactions
-- **Chunked** message transfer for streaming large results
-- Very efficient for **connected data** queries
+- [Bolt Protocol specification](https://neo4j.com/docs/bolt/current/)
+- [PackStream specification](https://neo4j.com/docs/bolt/current/packstream/)
+- [Cypher query language](https://neo4j.com/docs/cypher-manual/current/)
+- [Neo4j graph types in Bolt](https://neo4j.com/docs/bolt/current/bolt/structure-semantics/)

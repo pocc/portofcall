@@ -385,3 +385,132 @@ export async function handleJupyterQuery(request: Request): Promise<Response> {
     });
   }
 }
+
+// ---------------------------------------------------------------------------
+// Jupyter kernel lifecycle and notebook browsing (uses fetch())
+// ---------------------------------------------------------------------------
+
+function jupyterHeaders(token?: string): Record<string, string> {
+  const h: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'application/json' };
+  if (token) h['Authorization'] = 'token ' + token;
+  return h;
+}
+
+/**
+ * Create a new Jupyter kernel.
+ * POST /api/jupyter/kernels
+ */
+export async function handleJupyterKernelCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; token?: string; kernelName?: string };
+    const { host, port = 8888, token, kernelName = 'python3' } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const start = Date.now();
+    const resp = await fetch('http://' + host + ':' + String(port) + '/api/kernels', {
+      method: 'POST',
+      headers: jupyterHeaders(token),
+      body: JSON.stringify({ name: kernelName }),
+    });
+    const latencyMs = Date.now() - start;
+    const data = await resp.json() as { id: string; name: string; last_activity: string; execution_state: string; connections: number };
+    return new Response(JSON.stringify({ success: resp.ok, statusCode: resp.status, host, port, kernel: data, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Create failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * List running Jupyter kernels.
+ * GET /api/jupyter/kernels
+ */
+export async function handleJupyterKernelList(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const port = parseInt(url.searchParams.get('port') || '8888', 10);
+    const token = url.searchParams.get('token') || undefined;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const start = Date.now();
+    const resp = await fetch('http://' + host + ':' + String(port) + '/api/kernels', { headers: jupyterHeaders(token) });
+    const latencyMs = Date.now() - start;
+    const data = await resp.json() as Array<{ id: string; name: string; last_activity: string; execution_state: string; connections: number }>;
+    return new Response(JSON.stringify({ success: resp.ok, statusCode: resp.status, host, port, count: Array.isArray(data) ? data.length : 0, kernels: data, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'List failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Delete a Jupyter kernel.
+ * DELETE /api/jupyter/kernels/:id
+ */
+export async function handleJupyterKernelDelete(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; token?: string; kernelId: string };
+    const { host, port = 8888, token, kernelId } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!kernelId) return new Response(JSON.stringify({ success: false, error: 'kernelId is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const start = Date.now();
+    const resp = await fetch('http://' + host + ':' + String(port) + '/api/kernels/' + encodeURIComponent(kernelId), { method: 'DELETE', headers: jupyterHeaders(token) });
+    const latencyMs = Date.now() - start;
+    return new Response(JSON.stringify({ success: resp.status === 204 || resp.ok, statusCode: resp.status, host, port, kernelId, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Delete failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * List notebooks and files at a path.
+ * GET /api/jupyter/notebooks
+ */
+export async function handleJupyterNotebooks(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const port = parseInt(url.searchParams.get('port') || '8888', 10);
+    const token = url.searchParams.get('token') || undefined;
+    const path = url.searchParams.get('path') || '';
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const apiPath = '/api/contents/' + (path ? encodeURIComponent(path) : '');
+    const start = Date.now();
+    const resp = await fetch('http://' + host + ':' + String(port) + apiPath, { headers: jupyterHeaders(token) });
+    const latencyMs = Date.now() - start;
+    if (!resp.ok) {
+      const text = await resp.text();
+      return new Response(JSON.stringify({ success: false, statusCode: resp.status, error: 'Jupyter returned ' + String(resp.status) + ': ' + text.substring(0, 256), latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const data = await resp.json() as { name: string; path: string; type: string; content: Array<{ name: string; path: string; type: string; last_modified: string; size: number | null }> };
+    const items = (data.content || []).map((item: { name: string; path: string; type: string; last_modified: string; size: number | null }) => ({ name: item.name, path: item.path, type: item.type, last_modified: item.last_modified, size: item.size }));
+    return new Response(JSON.stringify({ success: true, statusCode: resp.status, host, port, path, count: items.length, items, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Notebooks list failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Get notebook content (cells, outputs).
+ * GET /api/jupyter/notebook
+ */
+export async function handleJupyterNotebookGet(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const port = parseInt(url.searchParams.get('port') || '8888', 10);
+    const token = url.searchParams.get('token') || undefined;
+    const path = url.searchParams.get('path');
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!path) return new Response(JSON.stringify({ success: false, error: 'path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const apiPath = '/api/contents/' + encodeURIComponent(path) + '?content=1';
+    const start = Date.now();
+    const resp = await fetch('http://' + host + ':' + String(port) + apiPath, { headers: jupyterHeaders(token) });
+    const latencyMs = Date.now() - start;
+    if (!resp.ok) {
+      const text = await resp.text();
+      return new Response(JSON.stringify({ success: false, statusCode: resp.status, error: 'Jupyter returned ' + String(resp.status) + ': ' + text.substring(0, 256), latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const data = await resp.json() as { name: string; path: string; type: string; content: { cells: unknown[]; metadata: unknown; nbformat: number; nbformat_minor: number } };
+    return new Response(JSON.stringify({ success: true, statusCode: resp.status, host, port, path, name: data.name, type: data.type, content: data.content, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Notebook get failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

@@ -276,6 +276,70 @@ function parseRefusePacket(data: Uint8Array): {
 }
 
 /**
+ * Create a TNS DATA packet wrapping a text payload string.
+ * Structure: header(8) + data_flags(2) + payload_bytes
+ */
+function createTNSDataPacket(payload: string): Uint8Array {
+  const payloadBytes = new TextEncoder().encode(payload);
+  // TNS DATA packet: header(8) + data_flags(2) + payload
+  const totalLength = 8 + 2 + payloadBytes.length;
+  const packet = new Uint8Array(totalLength);
+
+  const header = createTNSHeader(totalLength, TNS_PACKET_TYPE.DATA);
+  packet.set(header, 0);
+
+  // Data flags (2 bytes, big-endian) — 0x0000 for normal data
+  packet[8] = 0x00;
+  packet[9] = 0x00;
+
+  packet.set(payloadBytes, 10);
+  return packet;
+}
+
+/**
+ * Extract all occurrences of a TNS descriptor key from a response string.
+ * E.g. extractTNSValues(text, "SERVICE_NAME") returns all values in SERVICE_NAME=... entries.
+ */
+function extractTNSValues(text: string, key: string): string[] {
+  const results: string[] = [];
+  const upperText = text.toUpperCase();
+  const upperKey = key.toUpperCase() + '=';
+  let searchFrom = 0;
+
+  while (true) {
+    const idx = upperText.indexOf(upperKey, searchFrom);
+    if (idx === -1) break;
+
+    const valueStart = idx + upperKey.length;
+    if (valueStart >= text.length) break;
+
+    let valueEnd: number;
+    if (text[valueStart] === '(') {
+      // Nested descriptor — find matching ')'
+      let depth = 1;
+      valueEnd = valueStart + 1;
+      while (valueEnd < text.length && depth > 0) {
+        if (text[valueEnd] === '(') depth++;
+        else if (text[valueEnd] === ')') depth--;
+        valueEnd++;
+      }
+    } else {
+      // Simple value — terminated by ')' or end of string
+      valueEnd = text.indexOf(')', valueStart);
+      if (valueEnd === -1) valueEnd = text.length;
+    }
+
+    const value = text.slice(valueStart, valueEnd).trim();
+    if (value && !results.includes(value)) {
+      results.push(value);
+    }
+    searchFrom = valueEnd;
+  }
+
+  return results;
+}
+
+/**
  * Handle Oracle TNS connection test (HTTP mode)
  * Tests basic connectivity to Oracle database via TNS protocol
  */
@@ -460,4 +524,226 @@ export async function handleOracleConnect(request: Request): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
+}
+
+/**
+ * Handle Oracle TNS Listener Status — query the listener for service names,
+ * instance names, version info, and endpoints without needing credentials.
+ *
+ * Sends a TNS DATA packet with the status command string:
+ *   (CONNECT_DATA=(COMMAND=STATUS))
+ * The Oracle listener responds with a TNS DATA packet containing a descriptor
+ * like TNSLSNR version, DESCRIPTION_LIST with service/instance info, etc.
+ *
+ * Request body: { host, port?, timeout? }
+ * Response:     { listenerVersion, services, endpoints, rtt }
+ */
+export async function handleOracleTNSServices(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+    };
+
+    const { host, port = 1521, timeout = 15000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Send a TNS Connect packet first (required by some Oracle versions to
+        // establish the TNS session before a DATA packet is accepted)
+        const connectPacket = createConnectPacket(host, port, 'LISTENER', undefined);
+        await writer.write(connectPacket);
+
+        // Read the initial response (ACCEPT, REFUSE, or REDIRECT)
+        let initialResp: Uint8Array | null = null;
+        {
+          const readResult = await Promise.race([
+            reader.read(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Read timeout')), Math.min(timeout, 5000)),
+            ),
+          ]);
+          if (!readResult.done && readResult.value) {
+            initialResp = readResult.value;
+          }
+        }
+
+        if (!initialResp || initialResp.length < 8) {
+          throw new Error('No response to TNS Connect');
+        }
+
+        const initialHeader = parseTNSHeader(initialResp);
+        if (!initialHeader) throw new Error('Failed to parse initial TNS response');
+
+        // If REFUSED, we may still try DATA directly. If REDIRECT, note the address.
+        // If ACCEPTED, send the status DATA packet.
+        // Some listeners respond REFUSE to LISTENER service_name but still answer STATUS.
+        // We proceed to send the status command regardless.
+
+        // Send the STATUS command as a TNS DATA packet
+        const statusPayload = '(CONNECT_DATA=(COMMAND=STATUS))';
+        const dataPacket = createTNSDataPacket(statusPayload);
+        await writer.write(dataPacket);
+
+        // Collect all response data (may come in multiple chunks)
+        const responseChunks: Uint8Array[] = [];
+        let responseTotal = 0;
+        const readDeadline = Date.now() + Math.min(timeout, 8000);
+
+        while (Date.now() < readDeadline && responseTotal < 128 * 1024) {
+          const remaining = readDeadline - Date.now();
+          let chunk: ReadableStreamReadResult<Uint8Array>;
+          try {
+            chunk = await Promise.race([
+              reader.read(),
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error('Read timeout')), remaining),
+              ),
+            ]);
+          } catch {
+            break;
+          }
+          if (chunk.done || !chunk.value) break;
+          responseChunks.push(chunk.value);
+          responseTotal += chunk.value.length;
+
+          // Stop once we have a reasonably complete response
+          if (responseTotal > 1024) break;
+        }
+
+        const rtt = Date.now() - startTime;
+
+        if (responseTotal === 0) {
+          // Try to extract info from the initial response (some listeners reply directly)
+          const initText = new TextDecoder('utf-8', { fatal: false }).decode(initialResp);
+          return buildOracleServicesResult(host, port, initText, initialHeader.type, rtt);
+        }
+
+        // Combine chunks
+        const combined = new Uint8Array(responseTotal);
+        let combineOff = 0;
+        for (const c of responseChunks) { combined.set(c, combineOff); combineOff += c.length; }
+
+        // Decode as text (TNS STATUS response is ASCII/text-based)
+        const responseText = new TextDecoder('utf-8', { fatal: false }).decode(combined);
+
+        return buildOracleServicesResult(host, port, responseText, -1, rtt);
+
+      } finally {
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Parse the Oracle listener STATUS response text and build the structured result.
+ */
+function buildOracleServicesResult(
+  host: string,
+  port: number,
+  responseText: string,
+  packetType: number,
+  rtt: number,
+): object {
+  // Extract listener version — typically appears as:
+  //   "TNSLSNR for Linux: Version X.Y.Z" or similar
+  let listenerVersion: string | null = null;
+  const versionPatterns = [
+    /TNSLSNR[^:]*:\s*Version\s+([\d.]+)/i,
+    /Version\s+([\d.]+\.\d+\.\d+\.\d+)/i,
+  ];
+  for (const pat of versionPatterns) {
+    const m = responseText.match(pat);
+    if (m) { listenerVersion = m[1]; break; }
+  }
+
+  // Extract service names
+  const serviceNames = extractTNSValues(responseText, 'SERVICE_NAME');
+
+  // Extract instance names
+  const instanceNames = extractTNSValues(responseText, 'INSTANCE_NAME');
+
+  // Extract endpoints (HOST/PORT pairs from DESCRIPTION or ADDRESS blocks)
+  const endpoints: string[] = [];
+  const addrRegex = /\(ADDRESS=\([^)]*HOST=([^)]+)\)[^)]*PORT=(\d+)[^)]*\)/gi;
+  let addrMatch: RegExpExecArray | null;
+  while ((addrMatch = addrRegex.exec(responseText)) !== null) {
+    const ep = `${addrMatch[1].trim()}:${addrMatch[2].trim()}`;
+    if (!endpoints.includes(ep)) endpoints.push(ep);
+  }
+
+  // Build services array by pairing service names with instance names
+  const services = serviceNames.map((sn, i) => ({
+    serviceName: sn,
+    instanceName: instanceNames[i] ?? instanceNames[0] ?? null,
+    status: 'READY',
+  }));
+
+  // If no service names found but we have instance names, emit them
+  if (services.length === 0 && instanceNames.length > 0) {
+    instanceNames.forEach(inst => {
+      services.push({ serviceName: null as unknown as string, instanceName: inst, status: 'UNKNOWN' });
+    });
+  }
+
+  const rawResponsePreview = responseText.slice(0, 2048).replace(/\x00/g, '');
+
+  return {
+    success: true,
+    host,
+    port,
+    packetType: packetType >= 0 ? getPacketTypeName(packetType) : undefined,
+    listenerVersion,
+    services,
+    endpoints,
+    rawResponse: rawResponsePreview,
+    rtt,
+  };
 }

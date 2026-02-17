@@ -1,294 +1,328 @@
-# VNC Protocol Implementation Plan
+# VNC (RFB) Protocol Reference
 
-## Overview
+**Port:** 5900 (default; 5901 = display :1, etc.)
+**RFC:** [6143](https://tools.ietf.org/html/rfc6143)
+**Implementation:** `src/worker/vnc.ts`
+**Tests:** `tests/vnc.test.ts` (5/5 passing, `/connect` only)
 
-**Protocol:** VNC (Virtual Network Computing) / RFB
-**Port:** 5900+ (5900 = display :0, 5901 = display :1, etc.)
-**RFC:** [RFC 6143](https://tools.ietf.org/html/rfc6143)
-**Complexity:** Very High
-**Purpose:** Remote desktop / screen sharing
+---
 
-VNC enables **viewing and controlling remote desktops** from the browser - a full graphical remote desktop experience without plugins.
+## Endpoints
 
-### Use Cases
-- Remote desktop access
-- Server GUI management
-- Tech support / screen sharing
-- Remote education
-- Data center management
-- Cross-platform remote access
+| Method | Path | Behavior |
+|--------|------|----------|
+| `POST` | `/api/vnc/connect` | RFB handshake — enumerate security types, no auth |
+| `POST` | `/api/vnc/auth` | VNC Authentication (type 2) — DES challenge-response |
 
-## Protocol Specification
+No WebSocket tunnel exists. The planning doc described a noVNC proxy — it is not implemented.
 
-### RFB Protocol (Remote FrameBuffer)
+---
 
-```
-1. Handshake (version exchange)
-2. Security negotiation
-3. ClientInit / ServerInit
-4. Normal operation (framebuffer updates)
-```
+## `/api/vnc/connect` — Security Type Discovery
 
-### Handshake
+Performs the RFB version exchange and reads the server's offered security types. Does **not** select a security type or proceed to authentication. Closes the socket after reading the security type list.
 
-```
-Server → Client: "RFB 003.008\n"
-Client → Server: "RFB 003.008\n"
+### Request
+
+```json
+{ "host": "vnc.example.com", "port": 5900, "timeout": 10000 }
 ```
 
-### Security Types
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `host` | string | required | |
+| `port` | number | `5900` | validated 1–65535 |
+| `timeout` | number | `10000` ms | covers TCP connect + entire RFB handshake |
 
-| Type | Description |
-|------|-------------|
-| 0 | Invalid |
-| 1 | None |
-| 2 | VNC Authentication |
-| 5-16 | RealVNC |
-| 30-35 | Apple |
+### Response — success
 
-### Message Types (Client → Server)
-
-| Type | Name |
-|------|------|
-| 0 | SetPixelFormat |
-| 2 | SetEncodings |
-| 3 | FramebufferUpdateRequest |
-| 4 | KeyEvent |
-| 5 | PointerEvent |
-| 6 | ClientCutText |
-
-### Message Types (Server → Client)
-
-| Type | Name |
-|------|------|
-| 0 | FramebufferUpdate |
-| 1 | SetColourMapEntries |
-| 2 | Bell |
-| 3 | ServerCutText |
-
-## Worker Implementation
-
-### Use noVNC Library
-
-```bash
-npm install @novnc/novnc
-```
-
-```typescript
-// src/worker/protocols/vnc/proxy.ts
-
-import { connect } from 'cloudflare:sockets';
-
-/**
- * VNC WebSocket proxy
- * Translates WebSocket → TCP for VNC protocol
- */
-export async function vncProxy(
-  request: Request,
-  vncHost: string,
-  vncPort: number
-): Promise<Response> {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  server.accept();
-
-  (async () => {
-    try {
-      // Connect to VNC server
-      const socket = connect(`${vncHost}:${vncPort}`);
-      await socket.opened;
-
-      // Bidirectional pipe: WebSocket ↔ TCP
-
-      // WebSocket → TCP
-      server.addEventListener('message', async (event) => {
-        const writer = socket.writable.getWriter();
-
-        if (event.data instanceof ArrayBuffer) {
-          await writer.write(new Uint8Array(event.data));
-        } else if (typeof event.data === 'string') {
-          const encoder = new TextEncoder();
-          await writer.write(encoder.encode(event.data));
-        }
-
-        writer.releaseLock();
-      });
-
-      // TCP → WebSocket
-      (async () => {
-        const reader = socket.readable.getReader();
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          server.send(value.buffer);
-        }
-
-        server.close();
-      })();
-
-      // Handle close
-      server.addEventListener('close', () => {
-        socket.close();
-      });
-
-    } catch (error) {
-      console.error('VNC proxy error:', error);
-      server.close();
-    }
-  })();
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
+```json
+{
+  "success": true,
+  "host": "vnc.example.com",
+  "port": 5900,
+  "connectTime": 12,
+  "rtt": 87,
+  "serverVersion": "RFB 003.008",
+  "serverMajor": 3,
+  "serverMinor": 8,
+  "negotiatedVersion": "RFB 003.008",
+  "securityTypes": [
+    { "id": 1, "name": "None" },
+    { "id": 2, "name": "VNC Authentication" }
+  ],
+  "authRequired": false
 }
 ```
 
-## Web UI Design
+| Field | Notes |
+|-------|-------|
+| `connectTime` | ms from call start to `socket.opened` |
+| `rtt` | ms from call start to receipt of security type list |
+| `serverVersion` | raw version string with `\n` trimmed |
+| `negotiatedVersion` | version we sent: min of server's and `3.8` |
+| `authRequired` | `true` if type `1` (None) is **not** in `securityTypes` |
+| `securityError` | set (and `success` still `true`) if server refused — see below |
 
-### noVNC Integration
+### Response — server-refused (quirk)
 
-```typescript
-// src/components/VNCViewer.tsx
+When the server refuses with count `0` (RFB 3.7+) or security type `0` (RFB 3.3), the response is:
 
-import RFB from '@novnc/novnc/core/rfb';
-import { useEffect, useRef, useState } from 'react';
-
-export function VNCViewer() {
-  const screenRef = useRef<HTMLDivElement>(null);
-  const rfbRef = useRef<RFB | null>(null);
-
-  const [connected, setConnected] = useState(false);
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState(5900);
-  const [password, setPassword] = useState('');
-
-  const connect = () => {
-    if (!screenRef.current) return;
-
-    // WebSocket URL to our proxy
-    const url = `/api/vnc/connect?host=${host}&port=${port}`;
-
-    try {
-      rfbRef.current = new RFB(screenRef.current, url, {
-        credentials: { password },
-      });
-
-      rfbRef.current.addEventListener('connect', () => {
-        setConnected(true);
-      });
-
-      rfbRef.current.addEventListener('disconnect', () => {
-        setConnected(false);
-      });
-
-      // Set quality
-      rfbRef.current.qualityLevel = 6;
-      rfbRef.current.compressionLevel = 2;
-
-    } catch (error) {
-      console.error('VNC connection failed:', error);
-    }
-  };
-
-  const disconnect = () => {
-    rfbRef.current?.disconnect();
-    setConnected(false);
-  };
-
-  const sendCtrlAltDel = () => {
-    rfbRef.current?.sendCtrlAltDel();
-  };
-
-  return (
-    <div className="vnc-viewer">
-      {!connected ? (
-        <div className="connection-form">
-          <h2>VNC Connection</h2>
-          <input
-            type="text"
-            placeholder="VNC Host"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <input
-            type="number"
-            placeholder="Port"
-            value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
-          />
-          <input
-            type="password"
-            placeholder="Password (if required)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <>
-          <div className="vnc-toolbar">
-            <span>Connected to {host}:{port}</span>
-            <button onClick={sendCtrlAltDel}>Ctrl+Alt+Del</button>
-            <button onClick={disconnect}>Disconnect</button>
-          </div>
-
-          <div ref={screenRef} className="vnc-screen" />
-        </>
-      )}
-    </div>
-  );
+```json
+{
+  "success": true,
+  "securityError": "Too many authentication failures",
+  "securityTypes": [],
+  "authRequired": true
 }
 ```
 
-## Security
+`success: true` even though the server refused. Check `securityError` to detect this case. The error string is truncated to 256 bytes.
 
-### VNC Authentication
+### Response — error (400/403/500)
 
-```typescript
-// VNC authentication is weak (DES-based)
-// Always use SSH tunnel or VPN
-
-// Recommend SSH tunnel
-ssh -L 5900:localhost:5900 user@remote-host
-// Then connect to localhost:5900
+```json
+{ "success": false, "error": "Host is required" }          // 400
+{ "success": false, "error": "...", "isCloudflare": true }  // 403
+{ "success": false, "error": "Connection timeout" }         // 500
 ```
 
-### Encrypted VNC
+---
 
-```typescript
-// Use VeNCrypt for TLS encryption
-// Or tunnel through SSH
+## `/api/vnc/auth` — VNC Authentication (Type 2)
+
+Performs the full RFB handshake up to and including VNC Authentication (security type 2). Sends credentials as a DES-encrypted challenge response.
+
+### Request
+
+```json
+{
+  "host": "vnc.example.com",
+  "port": 5900,
+  "timeout": 10000,
+  "password": "secret"
+}
 ```
 
-## Testing
+| Field | Type | Default | Notes |
+|-------|------|---------|-------|
+| `host` | string | required | |
+| `port` | number | `5900` | validated 1–65535 |
+| `timeout` | number | `10000` ms | |
+| `password` | string | required | `null`/`undefined` → 400; empty string `""` is valid for servers with no password |
+
+### Response — authentication attempted
+
+```json
+{
+  "success": true,
+  "host": "vnc.example.com",
+  "port": 5900,
+  "serverVersion": "RFB 003.008",
+  "negotiatedVersion": "RFB 003.008",
+  "securityTypes": [
+    { "id": 2, "name": "VNC Authentication" }
+  ],
+  "challenge": "a1b2c3d4e5f60708090a0b0c0d0e0f10",
+  "authResult": "ok",
+  "desAvailable": true,
+  "rtt": 142
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `success` | `true` only when `authResult === 'ok'` |
+| `authResult` | `"ok"` / `"failed"` / `"tooMany"` |
+| `reason` | present on `"failed"` — from server's 3.8+ reason string (may be absent) |
+| `challenge` | 16-byte server challenge as lowercase hex |
+| `desAvailable` | always `true` (hardcoded — DES is always implemented) |
+
+### `authResult` values
+
+| Value | SecurityResult code | Meaning |
+|-------|---------------------|---------|
+| `"ok"` | `0` | Authentication successful |
+| `"failed"` | `1` | Wrong password (RFB 3.8+ sends `reason` string) |
+| `"tooMany"` | `2` | Too many failures — server locked out client |
+| `"failed"` + `reason: "Unknown result code: N"` | other | Non-standard result |
+
+### When server does not offer type 2
+
+If the server's security type list does not include `2`, the call fails with HTTP 500:
+
+```json
+{
+  "success": false,
+  "error": "VNC Authentication (type 2) not offered. Available types: 1"
+}
+```
+
+No `securityTypes` array is returned in the error response. Use `/connect` first to check what types are available.
+
+### Password encoding
+
+VNC Authentication uses DES ECB with a **bit-reversed key** (LSB-first, per the RFB spec):
+
+1. Password is UTF-8 encoded, then padded with `\0` or truncated to 8 bytes
+2. Each key byte's bits are reversed (bit 7 becomes bit 0, etc.)
+3. DES ECB encrypts the two 8-byte halves of the 16-byte server challenge separately
+4. 16-byte response is sent to server
+
+Passwords longer than 8 bytes are silently truncated at byte 8. Empty password uses an all-zero key.
+
+`crypto.subtle` does not support DES; the implementation includes a full manual DES in TypeScript (S-boxes, key schedule, Feistel network).
+
+---
+
+## RFB Protocol Flow
+
+### Version Exchange
+
+```
+Server → Client:  "RFB 003.008\n"   (12 bytes, always)
+Client → Server:  "RFB 003.008\n"   (12 bytes, negotiated)
+```
+
+Worker supports up to RFB 3.8. Negotiated version = `min(server, 3.8)`.
+
+```
+clientMajor = min(serverMajor, 3)
+clientMinor = (serverMajor >= 3) ? min(serverMinor, 8) : serverMinor
+```
+
+### Security Negotiation (RFB 3.7+)
+
+```
+Server → Client:  [count: 1 byte] [type₁, type₂, ...count bytes]
+Client → Server:  [chosen type: 1 byte]   (only in /auth)
+```
+
+If count is `0`, server follows with a reason string:
+```
+[reason length: uint32 BE] [reason: UTF-8 string]
+```
+
+### Security Negotiation (RFB 3.3 — legacy)
+
+```
+Server → Client:  [type: uint32 BE]   (server decides, not client)
+```
+
+Type `0` = failure (server sends reason string). Worker handles both paths.
+
+In `/auth`: for RFB 3.3, if server already chose type 2, no client selection byte is sent.
+
+### VNC Authentication (type 2) wire
+
+```
+Server → Client:  [challenge: 16 bytes]
+Client → Server:  [DES(challenge[0:8], key) ++ DES(challenge[8:16], key)]  (16 bytes)
+Server → Client:  [result: uint32 BE]  0=OK, 1=failed, 2=tooMany
+```
+
+RFB 3.8+ on failure:
+```
+Server → Client:  [reason length: uint32 BE] [reason: UTF-8]
+```
+
+---
+
+## Security Type Reference
+
+| ID | Name | Notes |
+|----|------|-------|
+| 0 | Invalid | Server refusing (RFB 3.3 error code) |
+| 1 | None | No authentication |
+| 2 | VNC Authentication | DES challenge-response (implemented in `/auth`) |
+| 5 | RA2 | RealVNC proprietary |
+| 6 | RA2ne | RealVNC proprietary (no encryption) |
+| 16 | Tight | TightVNC |
+| 17 | Ultra | UltraVNC |
+| 18 | TLS | TLS wrapping |
+| 19 | VeNCrypt | VeNCrypt (FOSS TLS/x509 variant) |
+| 20 | GTK-VNC SASL | GTK-VNC with SASL |
+| 21 | MD5 hash | |
+| 22 | Colin Dean xvp | |
+| 30 | Apple Remote Desktop (ARD30) | |
+| 35 | Apple Remote Desktop (ARD35) | |
+| other | `Unknown(N)` | Not in name table |
+
+Types 7–15 (between RA2ne and Tight) are not named — they appear as `Unknown(N)`. The source comment says "5-16 = RealVNC extensions" but only 5, 6, 16 are mapped.
+
+---
+
+## Timeout Behavior
+
+Unlike most other worker protocols that use per-step inner timeouts, VNC uses a single outer `Promise.race` for the **entire call** including TCP connect, version exchange, and security negotiation.
+
+The timeout starts at the beginning of the function, before the Cloudflare detection check. Cloudflare detection runs first; if that exceeds the timeout, the race fires.
+
+Default timeout: **10000 ms** (other protocols typically use 15000 ms or 30000 ms).
+
+---
+
+## Known Limitations
+
+| Limitation | Affected endpoint(s) | Detail |
+|---|---|---|
+| No WebSocket tunnel | all | Planning doc's noVNC proxy is not implemented |
+| Auth type 2 only | `/auth` | Only VNC Authentication; None/TLS/VeNCrypt not supported |
+| 8-byte password max | `/auth` | Password truncated to 8 bytes; longer passwords silently truncated |
+| Server-refused returns `success:true` | `/connect` | `count=0` path sets `securityError` but not `success:false` |
+| No reason on 500 for missing type 2 | `/auth` | Error response lacks `securityTypes` to show what was offered |
+| `desAvailable` always true | `/auth` | Hardcoded; not a capability probe |
+| Reason string silently dropped | `/auth` | Read errors on RFB 3.8 failure reason are caught and ignored |
+| 256-byte reason cap | `/connect` | `securityError` truncated to 256 bytes |
+| 1024-byte reason cap | `/auth` | Failure reason string limited to 1024 bytes |
+| Cloudflare detection | all | Cloudflare-fronted hosts rejected with HTTP 403 |
+| No TLS | all | VNC over TLS (type 18/19) requires TCP layer TLS; `connect()` uses `secureTransport:'off'` |
+
+---
+
+## Test Coverage
+
+Tests in `tests/vnc.test.ts` cover `/connect` only:
+
+- Missing `host` → HTTP 400
+- Invalid `port` (99999) → HTTP 400
+- Non-existent host → HTTP 500, `success: false`
+- Default port 5900 (implicit in failed connection)
+- Custom `timeout` — verifies call completes within 15s
+
+No automated tests for `/auth`, successful RFB handshakes, or server-refused paths.
+
+---
+
+## Testing Locally
 
 ```bash
-# VNC server (Linux)
-apt-get install tightvncserver
-vncserver :1 -geometry 1024x768
+# Check what security types a server offers
+curl -s -X POST https://portofcall.ross.gg/api/vnc/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"vnc.example.com","port":5900}' | jq .
 
-# VNC server (Docker)
-docker run -d \
-  -p 5900:5900 \
-  -e VNC_PASSWORD=vncpassword \
-  consol/ubuntu-xfce-vnc
+# Attempt VNC Authentication
+curl -s -X POST https://portofcall.ross.gg/api/vnc/auth \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"vnc.example.com","port":5900,"password":"secret"}' | jq .
+
+# Test with no password (empty string)
+curl -s -X POST https://portofcall.ross.gg/api/vnc/auth \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"vnc.example.com","port":5900,"password":""}' | jq .
+
+# Local VNC server (Docker)
+docker run -d -p 5900:5900 -e VNC_PASSWORD=test123 consol/ubuntu-xfce-vnc
+curl -s -X POST https://portofcall.ross.gg/api/vnc/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"<your-ip>","port":5900}' | jq .
 ```
+
+---
 
 ## Resources
 
-- **RFC 6143**: [RFB Protocol](https://tools.ietf.org/html/rfc6143)
-- **noVNC**: [JavaScript VNC client](https://github.com/novnc/noVNC)
-- **TightVNC**: [Popular VNC implementation](https://www.tightvnc.com/)
-
-## Notes
-
-- **Very complex** protocol (framebuffer streaming)
-- **noVNC** handles most complexity
-- Worker acts as **WebSocket ↔ TCP proxy**
-- VNC authentication is **weak** - use SSH tunnel
-- Different **encodings** for performance (Raw, Tight, ZRLE)
-- Requires significant **bandwidth** for smooth operation
+- **RFC 6143** — [The Remote Framebuffer Protocol](https://tools.ietf.org/html/rfc6143)
+- **RFB 3.3/3.7/3.8** — RFC 6143 §7 covers version-specific behavior differences
+- **IANA VNC Security Types** — [Registered type numbers](https://www.iana.org/assignments/rfb/rfb.xhtml)

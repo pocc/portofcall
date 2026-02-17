@@ -1,72 +1,56 @@
 /**
- * MMS Protocol Implementation (Microsoft Media Server)
+ * MMS (Microsoft Media Server) Protocol Implementation — MMST over TCP
  *
- * Microsoft Media Server (MMS) is a proprietary streaming protocol developed
- * by Microsoft for Windows Media Services. It was the primary protocol for
- * streaming Windows Media Audio (WMA) and Windows Media Video (WMV) files
- * before HTTP-based streaming became dominant.
+ * MMST (MMS over TCP) is the streaming variant of Microsoft's Network
+ * Streaming Protocol (NSP) used by Windows Media Services and legacy players.
  *
- * Protocol Overview:
- * - Port: 1755 (TCP), 7007 (UDP variant - MMSU)
- * - Transport: TCP (MMST) or UDP (MMSU)
- * - Format: Binary protocol
- * - Variants: MMST (TCP), MMSU (UDP), MMSH (HTTP tunneling)
+ * Port: 1755 (TCP) — MMST
  *
- * Protocol Structure:
- * - Magic Header: 0x01 (protocol version)
- * - Command Code: Identifies request type
- * - Length Fields: Variable-length packets
- * - Payload: Command-specific data
+ * MMST packet format:
+ *   Preheader (8 bytes):
+ *     [0-3]  B: bandwidth/session ID (uint32 LE, usually 0)
+ *     [4-5]  chunk_count (uint16 LE, usually 0)
+ *     [6-7]  flags (uint16 LE, 0x0003)
+ *   Header (12 bytes):
+ *     [8-11] timestamp_low (uint32 LE)
+ *     [12-15] timestamp_high (uint32 LE)
+ *     [16-19] packet_id_type (uint32 LE)
+ *     [20-21] command (uint16 LE)
+ *     [22-23] direction/reserved (uint16 LE)
+ *   Body: command-specific payload
  *
- * Common Commands:
- * - 0x01: Connect/Link request
- * - 0x02: Stream request
- * - 0x05: Start streaming
- * - 0x07: Stop streaming
- * - 0x15: Keepalive/ping
- * - 0x1E: Describe (get metadata)
+ * Commands (client→server):
+ *   0x0001: CONNECT — initial link request with client GUID and player info
+ *   0x0005: MEDIA_HEADER — request media stream header
+ *   0x0007: STOP — stop streaming
+ *   0x001E: DESCRIBE — request stream description / metadata
  *
- * Server Response:
- * - 0x01: Connect response (server info, version)
- * - 0x05: Stream data packets
- * - 0x1E: Stream description (metadata)
+ * Commands (server→client):
+ *   0x0001: CONNECT_RESPONSE — server version + capabilities
+ *   0x0004: CONNECTED       — transport notification
+ *   0x0005: MEDIA_HEADER    — media header data
+ *   0x001E: DESCRIBE_RESPONSE — stream metadata
  *
- * Connection Flow:
- * 1. Client → Server: Connect command (0x01)
- * 2. Server → Client: Connect response with server info
- * 3. Client → Server: Stream request (0x02)
- * 4. Server → Client: Stream response
- * 5. Client → Server: Start streaming (0x05)
- * 6. Server → Client: Media packets
+ * References:
+ *   https://wiki.multimedia.cx/index.php/MMS_Protocol
+ *   VLC/FFmpeg mmst.c implementations
  *
- * Header Format (simplified):
- * - Signature: 0x01 or MMS magic bytes
- * - Length: 2-4 bytes (packet length)
- * - Sequence: Packet sequence number
- * - Command: Command code
- * - Payload: Variable data
- *
- * Use Cases:
- * - Legacy Windows Media streaming detection
- * - Network forensics and traffic analysis
- * - Historical streaming protocol research
- * - Enterprise media server inventory
- *
- * Modern Alternatives:
- * - HTTP Live Streaming (HLS)
- * - MPEG-DASH
- * - Microsoft Smooth Streaming (HTTP-based)
- * - RTSP/RTP
- *
- * Note: MMS is largely deprecated but still found in legacy systems.
+ * Endpoints:
+ *   POST /api/mms/probe     — connect + get server version info
+ *   POST /api/mms/describe  — connect + get stream metadata
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+
+const enc = new TextEncoder();
+const dec = new TextDecoder('utf-8', { fatal: false });
 
 interface MMSRequest {
   host: string;
   port?: number;
   timeout?: number;
+  url?: string;
 }
 
 interface MMSResponse {
@@ -82,212 +66,228 @@ interface MMSResponse {
   error?: string;
 }
 
-// MMS Command Codes
-enum MMSCommand {
-  Connect = 0x01,
-  StreamRequest = 0x02,
-  StartStream = 0x05,
-  StopStream = 0x07,
-  Keepalive = 0x15,
-  Describe = 0x1E,
+// MMST Command codes
+const MMS_CMD_CONNECT          = 0x0001;
+const MMS_CMD_CONNECTED        = 0x0004;
+const MMS_CMD_MEDIA_HEADER     = 0x0005;
+const MMS_CMD_DESCRIBE         = 0x001E;
+
+function cmdName(cmd: number): string {
+  switch (cmd) {
+    case MMS_CMD_CONNECT:      return 'Connect';
+    case MMS_CMD_CONNECTED:    return 'Connected';
+    case MMS_CMD_MEDIA_HEADER: return 'MediaHeader';
+    case MMS_CMD_DESCRIBE:     return 'Describe';
+    default: return `Unknown(0x${cmd.toString(16).padStart(4, '0')})`;
+  }
 }
 
 /**
- * Build MMS Connect request packet
- * This is a simplified MMS connect - real MMS has more complex handshake
+ * Build an MMST packet.
+ * preheader(8) + header(12) + body
  */
-function buildMMSConnect(): Buffer {
-  // MMS Connect packet structure (simplified)
-  // Real MMS protocol is more complex with GUIDs and capabilities
-  const packet = Buffer.allocUnsafe(20);
+function buildMMSTPacket(command: number, body: Uint8Array, seqno = 0): Uint8Array {
+  const headerLen = 20; // 8 preheader + 12 header (without preheader's 8 bytes)
+  const total = 8 + 12 + body.length;
+  const pkt = new Uint8Array(total);
+  const dv = new DataView(pkt.buffer);
 
-  // Signature/Magic (simplified)
-  packet.writeUInt8(0x01, 0); // Protocol version
+  // Preheader
+  dv.setUint32(0, 0, true);         // bandwidth (LE)
+  dv.setUint16(4, 0, true);         // chunk_count (LE)
+  dv.setUint16(6, 0x0003, true);    // flags = 3 (LE)
 
-  // Command code (Connect)
-  packet.writeUInt8(MMSCommand.Connect, 1);
+  // Header
+  dv.setUint32(8, seqno, true);     // timestamp_low (LE)
+  dv.setUint32(12, 0, true);        // timestamp_high (LE)
+  dv.setUint32(16, headerLen + body.length, true); // packet_id_type = length
+  dv.setUint16(20, command, true);  // command (LE)
+  dv.setUint16(22, 0x0000, true);   // direction
 
-  // Length (big-endian)
-  packet.writeUInt16BE(20, 2);
-
-  // Sequence number
-  packet.writeUInt32BE(0, 4);
-
-  // Timestamp (placeholder)
-  packet.writeUInt32BE(Date.now() & 0xFFFFFFFF, 8);
-
-  // Flags and padding
-  packet.fill(0, 12);
-
-  return packet;
+  pkt.set(body, 24);
+  return pkt;
 }
 
 /**
- * Build MMS Describe request packet
- * Used to get stream metadata
+ * Build MMST CONNECT body.
+ * Contains a null-terminated transport string and player GUID.
  */
-function buildMMSDescribe(): Buffer {
-  const packet = Buffer.allocUnsafe(16);
+function buildConnectBody(streamUrl: string): Uint8Array {
+  // Transport string in Unicode (UTF-16LE) with null terminator
+  // Format: "\0\0" then UTF-16LE encoded transport string + "\0\0"
+  const playerGuid = '{00000000-0000-0000-0000-000000000000}';
+  const transport = `\\\\.\\${streamUrl}`;
 
-  packet.writeUInt8(0x01, 0); // Protocol version
-  packet.writeUInt8(MMSCommand.Describe, 1);
-  packet.writeUInt16BE(16, 2);
-  packet.writeUInt32BE(1, 4); // Sequence
-  packet.fill(0, 8);
-
-  return packet;
-}
-
-/**
- * Parse MMS response packet
- */
-function parseMMSResponse(data: Buffer): {
-  signature: number;
-  commandCode: number;
-  length: number;
-  sequence?: number;
-  isValidMMS: boolean;
-} | null {
-  if (data.length < 4) {
-    return null;
+  // Build as UTF-16LE
+  function toUTF16LE(s: string): Uint8Array {
+    const buf = new Uint8Array(s.length * 2 + 2);
+    const dv = new DataView(buf.buffer);
+    for (let i = 0; i < s.length; i++) {
+      dv.setUint16(i * 2, s.charCodeAt(i), true);
+    }
+    // null terminator already zero
+    return buf;
   }
 
-  const signature = data.readUInt8(0);
+  const guidBytes = enc.encode(playerGuid + '\0');
+  const transportBytes = toUTF16LE(transport);
+  const reserved = new Uint8Array(8);
 
-  // Check for MMS signature (0x01 is common, but there are variants)
-  // Some servers use different magic bytes like 0x4D 0x4D 0x53 ("MMS")
-  const isValidMMS = signature === 0x01 ||
-    (data.length >= 3 && data.toString('ascii', 0, 3) === 'MMS');
+  // Body: [4 bytes reserved][4 bytes protocol version=0x00020000][guid][transport]
+  const body = new Uint8Array(4 + 4 + guidBytes.length + transportBytes.length + reserved.length);
+  const dv = new DataView(body.buffer);
+  dv.setUint32(0, 0, true);         // reserved
+  dv.setUint32(4, 0x00020000, true); // protocol version
+  let off = 8;
+  body.set(guidBytes, off); off += guidBytes.length;
+  body.set(transportBytes, off); off += transportBytes.length;
+  body.set(reserved, off);
 
-  const commandCode = data.length > 1 ? data.readUInt8(1) : 0;
-  const length = data.length >= 4 ? data.readUInt16BE(2) : data.length;
-  const sequence = data.length >= 8 ? data.readUInt32BE(4) : undefined;
-
-  return {
-    signature,
-    commandCode,
-    length,
-    sequence,
-    isValidMMS,
-  };
+  return body;
 }
 
 /**
- * Probe MMS server by attempting connection.
- * Detects Microsoft Media Server and basic protocol support.
+ * Parse an MMST response packet.
+ */
+function parseMMSTResponse(data: Uint8Array): {
+  command: number;
+  commandName: string;
+  bodyLength: number;
+  body: Uint8Array;
+} | null {
+  if (data.length < 24) return null;
+  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const command = dv.getUint16(20, true);
+  const bodyLength = Math.max(0, dv.getUint32(16, true) - 12);
+  const body = data.slice(24, 24 + bodyLength);
+  return { command, commandName: cmdName(command), bodyLength, body };
+}
+
+/**
+ * Read until at least minBytes are available, with timeout.
+ */
+async function readWithTimeout(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    let result: ReadableStreamReadResult<Uint8Array>;
+    try {
+      result = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('read timeout')), deadline - Date.now())),
+      ]);
+    } catch {
+      break;
+    }
+    if (result.done || !result.value) break;
+    chunks.push(result.value);
+    // Return after getting at least one chunk
+    break;
+  }
+
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+/**
+ * Probe an MMS server: connect and get server version information.
+ *
+ * POST /api/mms/probe
+ * Body: { host, port?, timeout?, url? }
  */
 export async function handleMMSProbe(request: Request): Promise<Response> {
   try {
     const body = await request.json() as MMSRequest;
     const { host, port = 1755, timeout = 15000 } = body;
+    const streamUrl = body.url || `mms://${host}/`;
 
     if (!host) {
       return new Response(JSON.stringify({
-        success: false,
-        host: '',
-        port,
+        success: false, host: '', port,
         error: 'Host is required',
       } satisfies MMSResponse), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: 'Port must be between 1 and 65535',
+      } satisfies MMSResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    if (port < 1 || port > 65535) {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
-        success: false,
-        host,
-        port,
-        error: 'Port must be between 1 and 65535',
-      } satisfies MMSResponse), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
-
     const socket = connect(`${host}:${port}`);
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
+    const tp = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
 
     try {
-      await Promise.race([socket.opened, timeoutPromise]);
-
-      // Send MMS Connect request
-      const connectRequest = buildMMSConnect();
+      await Promise.race([socket.opened, tp]);
 
       const writer = socket.writable.getWriter();
-      await writer.write(connectRequest);
+      const reader = socket.readable.getReader();
+
+      // Send MMST CONNECT command
+      const connectBody = buildConnectBody(streamUrl);
+      const connectPkt = buildMMSTPacket(MMS_CMD_CONNECT, connectBody, 1);
+      await writer.write(connectPkt);
       writer.releaseLock();
 
       // Read server response
-      const reader = socket.readable.getReader();
-
-      const { value, done } = await Promise.race([
-        reader.read(),
-        timeoutPromise,
-      ]);
-
-      if (done || !value) {
-        reader.releaseLock();
-        socket.close();
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: 'No response from MMS server',
-        } satisfies MMSResponse), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const parsed = parseMMSResponse(Buffer.from(value));
-
-      if (!parsed || !parsed.isValidMMS) {
-        reader.releaseLock();
-        socket.close();
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: 'Invalid MMS response format',
-        } satisfies MMSResponse), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const rtt = Date.now() - start;
-
+      const respData = await Promise.race([readWithTimeout(reader, Math.min(timeout, 8000)), tp]);
       reader.releaseLock();
       socket.close();
 
-      // Map command code to name
-      const commandNames: { [key: number]: string } = {
-        [MMSCommand.Connect]: 'Connect',
-        [MMSCommand.StreamRequest]: 'Stream Request',
-        [MMSCommand.StartStream]: 'Start Stream',
-        [MMSCommand.StopStream]: 'Stop Stream',
-        [MMSCommand.Keepalive]: 'Keepalive',
-        [MMSCommand.Describe]: 'Describe',
-      };
+      const rtt = Date.now() - start;
+
+      if (respData.length === 0) {
+        return new Response(JSON.stringify({
+          success: false, host, port,
+          error: 'No response from MMS server (port open but no MMST response)',
+          rtt,
+        } satisfies MMSResponse), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const parsed = parseMMSTResponse(respData);
+      const rawText = dec.decode(respData.slice(0, Math.min(256, respData.length)));
+
+      // Try to extract server version string from response body
+      let serverVersion: string | undefined;
+      if (parsed?.body) {
+        const bodyText = dec.decode(parsed.body);
+        const verMatch = bodyText.match(/(?:Windows Media Services?|WMS|MSFT)\s+([\d.]+)/i);
+        if (verMatch) serverVersion = verMatch[1];
+      }
 
       return new Response(JSON.stringify({
         success: true,
-        host,
-        port,
-        commandCode: parsed.commandCode,
-        commandName: commandNames[parsed.commandCode] || `Unknown (0x${parsed.commandCode.toString(16)})`,
-        dataLength: parsed.length,
+        host, port,
+        commandCode: parsed?.command,
+        commandName: parsed?.commandName,
+        serverVersion,
+        serverInfo: rawText.replace(/\0/g, '').trim().slice(0, 256) || undefined,
+        dataLength: respData.length,
         rtt,
-      } satisfies MMSResponse), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+      } satisfies MMSResponse), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     } catch (error) {
       socket.close();
@@ -296,95 +296,118 @@ export async function handleMMSProbe(request: Request): Promise<Response> {
 
   } catch (error) {
     return new Response(JSON.stringify({
-      success: false,
-      host: '',
-      port: 1755,
+      success: false, host: '', port: 1755,
       error: error instanceof Error ? error.message : 'Unknown error',
-    } satisfies MMSResponse), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    } satisfies MMSResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
 
 /**
  * Request stream description from MMS server.
- * Attempts to get metadata about available streams.
+ * Sends CONNECT then DESCRIBE (0x001E) to get stream metadata.
+ *
+ * POST /api/mms/describe
+ * Body: { host, port?, timeout?, url? }
  */
 export async function handleMMSDescribe(request: Request): Promise<Response> {
   try {
     const body = await request.json() as MMSRequest;
-    const { host, port = 1755, timeout = 10000 } = body;
+    const { host, port = 1755, timeout = 15000 } = body;
+    const streamUrl = body.url || `mms://${host}/`;
 
     if (!host) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Host is required',
-      }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    const socket = connect(`${host}:${port}`);
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
+    const start = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const tp = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
 
     try {
-      await Promise.race([socket.opened, timeoutPromise]);
-
-      // Send Connect then Describe
-      const connectRequest = buildMMSConnect();
-      const describeRequest = buildMMSDescribe();
+      await Promise.race([socket.opened, tp]);
 
       const writer = socket.writable.getWriter();
-      await writer.write(connectRequest);
-      await writer.write(describeRequest);
-      writer.releaseLock();
-
-      // Read responses
       const reader = socket.readable.getReader();
 
-      const chunks: Buffer[] = [];
-      let totalBytes = 0;
-      const maxResponseSize = 2000;
+      // Phase 1: CONNECT
+      const connectBody = buildConnectBody(streamUrl);
+      await writer.write(buildMMSTPacket(MMS_CMD_CONNECT, connectBody, 1));
 
+      // Read CONNECT response
+      let connectResp: Uint8Array;
       try {
-        while (totalBytes < maxResponseSize) {
-          const { value, done } = await Promise.race([
-            reader.read(),
-            timeoutPromise,
-          ]);
-
-          if (done) break;
-
-          if (value) {
-            chunks.push(Buffer.from(value));
-            totalBytes += value.length;
-
-            // Stop after getting enough data
-            if (chunks.length >= 2) break;
-          }
-        }
+        connectResp = await Promise.race([readWithTimeout(reader, 5000), tp]);
       } catch {
-        // Connection closed or timeout (expected)
+        connectResp = new Uint8Array(0);
+      }
+
+      if (connectResp.length === 0) {
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false, host, port,
+          error: 'No CONNECT response from MMS server',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Phase 2: DESCRIBE
+      const urlBytes = enc.encode(streamUrl + '\0');
+      await writer.write(buildMMSTPacket(MMS_CMD_DESCRIBE, urlBytes, 2));
+      writer.releaseLock();
+
+      // Collect DESCRIBE response(s)
+      const descChunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      const descDeadline = Date.now() + Math.min(timeout - (Date.now() - start), 8000);
+
+      while (Date.now() < descDeadline && totalBytes < 32768) {
+        let chunk: Uint8Array;
+        try {
+          chunk = await Promise.race([
+            readWithTimeout(reader, descDeadline - Date.now()),
+            tp,
+          ]);
+        } catch {
+          break;
+        }
+        if (chunk.length === 0) break;
+        descChunks.push(chunk);
+        totalBytes += chunk.length;
+        if (descChunks.length >= 3) break;
       }
 
       reader.releaseLock();
       socket.close();
 
+      const rtt = Date.now() - start;
+
+      // Parse what we got
+      const connectParsed = parseMMSTResponse(connectResp);
+      const allDescData = new Uint8Array(totalBytes);
+      let off = 0;
+      for (const c of descChunks) { allDescData.set(c, off); off += c.length; }
+
+      const descParsed = allDescData.length >= 24 ? parseMMSTResponse(allDescData) : null;
+
       return new Response(JSON.stringify({
-        success: chunks.length > 0,
-        host,
-        port,
-        message: chunks.length > 0 ? 'MMS server responded to describe' : 'No describe response',
+        success: descChunks.length > 0 || connectResp.length > 0,
+        host, port, streamUrl,
+        connectCommand: connectParsed?.commandName,
+        describeCommand: descParsed?.commandName,
         dataLength: totalBytes,
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     } catch (error) {
       socket.close();
@@ -395,9 +418,6 @@ export async function handleMMSDescribe(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
-    }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

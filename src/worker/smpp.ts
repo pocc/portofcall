@@ -408,6 +408,7 @@ export async function handleSMPPConnect(request: Request): Promise<Response> {
 const SUBMIT_SM      = 0x00000004;
 const SUBMIT_SM_RESP = 0x80000004;
 
+
 /**
  * Build an SMPP submit_sm PDU for sending an SMS message
  */
@@ -742,6 +743,154 @@ export async function handleSMPPProbe(request: Request): Promise<Response> {
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// query_sm/query_sm_resp command IDs
+const QUERY_SM      = 0x00000003;
+const QUERY_SM_RESP = 0x80000003;
+
+const MESSAGE_STATE_NAMES: Record<number, string> = {
+  0: 'ENROUTE', 1: 'DELIVERED', 2: 'EXPIRED', 3: 'DELETED',
+  4: 'UNDELIVERABLE', 5: 'ACCEPTED', 6: 'UNKNOWN', 7: 'REJECTED',
+};
+
+/**
+ * Handle SMPP query_sm — query delivery status of a submitted message
+ *
+ * POST /api/smpp/query
+ * Body: { host, port?, system_id, password, message_id, source_addr?, timeout? }
+ */
+export async function handleSMPPQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; system_id: string; password: string;
+      message_id: string; source_addr?: string; timeout?: number;
+    };
+
+    if (!body.host || !body.system_id || !body.password || !body.message_id) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, system_id, password, message_id',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const host = body.host;
+    const port = body.port || 2775;
+    const timeout = body.timeout || 15000;
+    const sourceAddr = body.source_addr || '';
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const smppQueryPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      const readNBytes = async (n: number, ms: number): Promise<Uint8Array> => {
+        const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Read timeout')), ms));
+        const rp = (async () => {
+          const chunks: Uint8Array[] = [];
+          let tot = 0;
+          while (tot < n) {
+            const { value, done } = await reader.read();
+            if (done || !value) throw new Error('Connection closed');
+            chunks.push(value); tot += value.length;
+          }
+          const out = new Uint8Array(tot);
+          let o = 0;
+          for (const c of chunks) { out.set(c, o); o += c.length; }
+          return out;
+        })();
+        return Promise.race([rp, tp]);
+      };
+
+      const readPDU = async (ms: number) => {
+        const hdr = await readNBytes(16, ms);
+        const v = new DataView(hdr.buffer);
+        const length = v.getUint32(0, false);
+        const commandId = v.getUint32(4, false);
+        const commandStatus = v.getUint32(8, false);
+        const sequenceNumber = v.getUint32(12, false);
+        const bodyData = length > 16 ? await readNBytes(length - 16, ms) : new Uint8Array(0);
+        return { length, commandId, commandStatus, sequenceNumber, body: bodyData };
+      };
+
+      try {
+        await writer.write(buildBindTransceiverPDU(body.system_id, body.password));
+        const bindResp = await readPDU(5000);
+        if (bindResp.commandStatus !== 0) throw new Error(`Bind failed: ${getStatusName(bindResp.commandStatus)}`);
+
+        const msgIdBytes = encodeCOctet(body.message_id, 65);
+        const srcBytes = encodeCOctet(sourceAddr, 21);
+        const qBody = new Uint8Array(msgIdBytes.length + 2 + srcBytes.length);
+        let qi = 0;
+        qBody.set(msgIdBytes, qi); qi += msgIdBytes.length;
+        qBody[qi++] = 0x00; qBody[qi++] = 0x00; // ton, npi
+        qBody.set(srcBytes, qi);
+
+        const qLen = 16 + qBody.length;
+        const qPDU = new Uint8Array(qLen);
+        const qv = new DataView(qPDU.buffer);
+        qv.setUint32(0, qLen, false); qv.setUint32(4, QUERY_SM, false);
+        qv.setUint32(8, 0, false);    qv.setUint32(12, 2, false);
+        qPDU.set(qBody, 16);
+
+        await writer.write(qPDU);
+        const qResp = await readPDU(5000);
+        const rtt = Date.now() - startTime;
+
+        await writer.write(buildUnbindPDU(3));
+        try { await readPDU(2000); } catch { /* ignore */ }
+        writer.releaseLock(); reader.releaseLock(); await socket.close();
+
+        if (qResp.commandId !== QUERY_SM_RESP) throw new Error(`Unexpected: ${getCommandName(qResp.commandId)}`);
+        if (qResp.commandStatus !== 0) throw new Error(`query_sm failed: ${getStatusName(qResp.commandStatus)}`);
+
+        let p = 0;
+        const { value: retMsgId, nextOffset: p1 } = decodeCOctet(qResp.body, p); p = p1;
+        const { value: finalDate, nextOffset: p2 } = decodeCOctet(qResp.body, p); p = p2;
+        const messageState = qResp.body[p] ?? 6;
+        const errorCode = qResp.body[p + 1] ?? 0;
+
+        return {
+          success: true, host, port,
+          messageId: retMsgId || body.message_id,
+          messageState,
+          messageStateName: MESSAGE_STATE_NAMES[messageState] ?? `UNKNOWN(${messageState})`,
+          finalDate: finalDate || null, errorCode, rtt,
+        };
+      } catch (err) {
+        writer.releaseLock(); reader.releaseLock(); await socket.close();
+        throw err;
+      }
+    })();
+
+    const qTimeout = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+    try {
+      const qResult = await Promise.race([smppQueryPromise, qTimeout]);
+      return new Response(JSON.stringify(qResult), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }
 }

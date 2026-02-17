@@ -173,6 +173,324 @@ function buildPktLine(data: string): Uint8Array {
   return result;
 }
 
+/** Build a flush pkt-line (four ASCII zeros) */
+function buildFlushPkt(): Uint8Array {
+  return new TextEncoder().encode('0000');
+}
+
+/**
+ * Parse Git pack object type+size from a variable-length header.
+ * Each byte: bits [6:4] = type (first byte only), bit 7 = more, bits [3:0] = size bits.
+ * Returns { type, size, bytesConsumed }.
+ */
+function parsePackObjectHeader(data: Uint8Array, offset: number): {
+  type: number;
+  size: number;
+  bytesConsumed: number;
+} | null {
+  if (offset >= data.length) return null;
+
+  const firstByte = data[offset];
+  const type = (firstByte >> 4) & 0x07;
+  let size = firstByte & 0x0F;
+  let shift = 4;
+  let consumed = 1;
+  offset++;
+
+  while (offset < data.length && (data[offset - 1] & 0x80)) {
+    const byte = data[offset];
+    size |= (byte & 0x7F) << shift;
+    shift += 7;
+    consumed++;
+    offset++;
+    if (!(data[offset - 1] & 0x80)) break;
+  }
+
+  return { type, size, bytesConsumed: consumed };
+}
+
+const GIT_OBJ_TYPE_NAMES: Record<number, string> = {
+  1: 'commit',
+  2: 'tree',
+  3: 'blob',
+  4: 'tag',
+  6: 'ofs_delta',
+  7: 'ref_delta',
+};
+
+/**
+ * Handle Git fetch request — connects to a git daemon, advertises a want ref,
+ * sends done, and parses the PACK header to report object metadata.
+ *
+ * Request body: { host, port?, timeout?, repository, wantRef? }
+ * Response:     { wantedRef, sha, packVersion, objectCount, objects, rtt }
+ */
+export async function handleGitFetch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const body = (await request.json()) as {
+    host: string;
+    port?: number;
+    timeout?: number;
+    repository: string;
+    wantRef?: string;
+  };
+
+  const { host, port = 9418, timeout = 20000, repository, wantRef = 'HEAD' } = body;
+
+  if (!host) {
+    return new Response(
+      JSON.stringify({ success: false, error: 'Host is required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+  if (!repository) {
+    return new Response(
+      JSON.stringify({ success: false, error: 'repository is required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+  if (port < 1 || port > 65535) {
+    return new Response(
+      JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  const repoPath = repository.startsWith('/') ? repository : `/${repository}`;
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Connection timeout')), timeout),
+  );
+
+  const connectionPromise = (async () => {
+    const startTime = Date.now();
+
+    const socket = connect(`${host}:${port}`);
+    await socket.opened;
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    try {
+      // Step 1: Send git-upload-pack request
+      const uploadPackReq = `git-upload-pack ${repoPath}\0host=${host}\0`;
+      await writer.write(buildPktLine(uploadPackReq));
+
+      // Step 2: Read ref advertisement
+      const rawLines = await Promise.race([
+        readPktLines(reader, 10000),
+        timeoutPromise,
+      ]);
+
+      // Parse refs to find the desired ref's SHA
+      const refs: Array<{ sha: string; name: string }> = [];
+      let capabilities: string[] = [];
+
+      for (let i = 0; i < rawLines.length; i++) {
+        const line = rawLines[i];
+        if (i === 0) {
+          const [refPart, capsPart] = line.split('\0');
+          if (capsPart) capabilities = capsPart.split(' ').filter(Boolean);
+          const spaceIdx = refPart.indexOf(' ');
+          if (spaceIdx > 0) refs.push({ sha: refPart.substring(0, spaceIdx), name: refPart.substring(spaceIdx + 1) });
+        } else {
+          const spaceIdx = line.indexOf(' ');
+          if (spaceIdx > 0) refs.push({ sha: line.substring(0, spaceIdx), name: line.substring(spaceIdx + 1) });
+        }
+      }
+
+      // Resolve the wanted ref (HEAD symref, branch name, or full ref)
+      let wantedSha: string | undefined;
+      let resolvedRef = wantRef;
+
+      // Check HEAD symref in capabilities (e.g. "symref=HEAD:refs/heads/main")
+      if (wantRef === 'HEAD') {
+        const headRef = refs.find(r => r.name === 'HEAD');
+        if (headRef) wantedSha = headRef.sha;
+
+        // Also try to resolve through symref capability
+        if (!wantedSha) {
+          const symref = capabilities.find(c => c.startsWith('symref=HEAD:'));
+          if (symref) {
+            const target = symref.split(':')[1];
+            const resolved = refs.find(r => r.name === target);
+            if (resolved) { wantedSha = resolved.sha; resolvedRef = target; }
+          }
+        }
+      } else {
+        // Try exact match first, then suffix match
+        const exact = refs.find(r => r.name === wantRef || r.name === `refs/heads/${wantRef}` || r.name === `refs/tags/${wantRef}`);
+        if (exact) { wantedSha = exact.sha; resolvedRef = exact.name; }
+      }
+
+      if (!wantedSha) {
+        await socket.close();
+        return {
+          success: false,
+          error: `Ref not found: ${wantRef}`,
+          availableRefs: refs.map(r => r.name),
+        };
+      }
+
+      // Step 3: Send want line + flush + done
+      const wantLine = buildPktLine(`want ${wantedSha}\n`);
+      const flushPkt = buildFlushPkt();
+      const doneLine = buildPktLine('done\n');
+
+      const negotiation = new Uint8Array(wantLine.length + flushPkt.length + doneLine.length);
+      negotiation.set(wantLine, 0);
+      negotiation.set(flushPkt, wantLine.length);
+      negotiation.set(doneLine, wantLine.length + flushPkt.length);
+      await writer.write(negotiation);
+
+      // Step 4: Read server response — expect "NAK\n" pkt-line(s) then PACK data
+      // Collect raw bytes since PACK is binary
+      const packChunks: Uint8Array[] = [];
+      let packTotal = 0;
+      const packDeadline = Date.now() + Math.min(timeout, 15000);
+
+      while (Date.now() < packDeadline && packTotal < 4 * 1024 * 1024) {
+        const remaining = packDeadline - Date.now();
+        let chunk: ReadableStreamReadResult<Uint8Array>;
+        try {
+          chunk = await Promise.race([
+            reader.read(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Read timeout')), remaining),
+            ),
+          ]);
+        } catch {
+          break;
+        }
+        if (chunk.done || !chunk.value) break;
+        packChunks.push(chunk.value);
+        packTotal += chunk.value.length;
+
+        // Once we have enough data, check if we have a PACK header
+        if (packTotal >= 32) break;
+      }
+
+      const rtt = Date.now() - startTime;
+
+      // Combine all received bytes
+      const allData = new Uint8Array(packTotal);
+      let off = 0;
+      for (const c of packChunks) { allData.set(c, off); off += c.length; }
+
+      // Scan for PACK magic bytes (may be preceded by pkt-line sideband data)
+      let packOffset = -1;
+      for (let i = 0; i <= allData.length - 4; i++) {
+        if (allData[i] === 0x50 && allData[i + 1] === 0x41 &&
+            allData[i + 2] === 0x43 && allData[i + 3] === 0x4B) {
+          packOffset = i;
+          break;
+        }
+      }
+
+      if (packOffset === -1) {
+        // Try to decode as text to see if it's an error pkt-line
+        const textPreview = new TextDecoder('utf-8', { fatal: false })
+          .decode(allData.slice(0, Math.min(256, allData.length)));
+        return {
+          success: false,
+          error: 'PACK magic bytes not found in server response',
+          serverResponse: textPreview.replace(/\x00/g, '\\0'),
+          wantedRef: resolvedRef,
+          sha: wantedSha,
+          rtt,
+        };
+      }
+
+      const packData = allData.slice(packOffset);
+
+      if (packData.length < 12) {
+        return {
+          success: false,
+          error: 'PACK data too short to parse header',
+          wantedRef: resolvedRef,
+          sha: wantedSha,
+          rtt,
+        };
+      }
+
+      const packView = new DataView(packData.buffer, packData.byteOffset, packData.byteLength);
+      const packVersion = packView.getUint32(4);
+      const objectCount = packView.getUint32(8);
+
+      // Parse object headers (up to 100 objects or end of data)
+      const objects: Array<{ type: string; size: number }> = [];
+      let objOffset = 12;
+      const maxObjects = Math.min(objectCount, 100);
+
+      for (let i = 0; i < maxObjects && objOffset < packData.length; i++) {
+        const hdr = parsePackObjectHeader(packData, objOffset);
+        if (!hdr) break;
+        objects.push({
+          type: GIT_OBJ_TYPE_NAMES[hdr.type] ?? `unknown(${hdr.type})`,
+          size: hdr.size,
+        });
+        // We can't easily skip the compressed data without inflating it,
+        // so we only report what we can parse from headers
+        break; // report first object only to avoid inflating
+      }
+
+      await socket.close();
+
+      return {
+        success: true,
+        host,
+        port,
+        repository: repoPath,
+        wantedRef: resolvedRef,
+        sha: wantedSha,
+        packVersion,
+        objectCount,
+        objects,
+        rtt,
+      };
+
+    } catch (error) {
+      try { await socket.close(); } catch { /* ignore */ }
+      throw error;
+    } finally {
+      writer.releaseLock();
+      reader.releaseLock();
+    }
+  })();
+
+  try {
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Connection failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
 /**
  * Handle Git ref listing request
  * Lists all branches, tags, and HEAD for a remote repository

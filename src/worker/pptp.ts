@@ -311,3 +311,261 @@ export async function handlePPTPConnect(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Handle PPTP Start-Control-Connection handshake with detailed result codes.
+ * Sends SCCRQ and parses SCCRP, returning resultCode, errorCode, and vendor info.
+ * Request body: { host, port=1723, timeout=10000 }
+ */
+export async function handlePPTPStartControl(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; timeout?: number };
+    const { host, port = 1723, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const start = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        await writer.write(buildSCCRQ());
+        writer.releaseLock();
+        const data = await readExact(reader, SCCRQ_LENGTH);
+        const latencyMs = Date.now() - start;
+        reader.releaseLock();
+        socket.close();
+
+        const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        const ctrlType = view.getUint16(8, false);
+        const cookie   = view.getUint32(4, false);
+        if (cookie !== PPTP_MAGIC_COOKIE) throw new Error(`Bad magic cookie: 0x${cookie.toString(16)}`);
+        if (ctrlType !== PPTP_CTRL_START_REPLY) throw new Error(`Expected SCCRP (type 2), got ${ctrlType}`);
+
+        // Body starts at offset 12
+        const protoVer  = view.getUint16(12, false);
+        const resultCode = view.getUint8(14);
+        const errorCode  = view.getUint8(15);
+        const maxChannels = view.getUint16(24, false);
+        const dec = new TextDecoder();
+        const hostName   = dec.decode(data.subarray(28, 92)).replace(/\0+$/, '').trim();
+        const vendorName = dec.decode(data.subarray(92, 156)).replace(/\0+$/, '').trim();
+
+        return {
+          success: resultCode === 1,
+          resultCode,
+          resultText: getResultCodeName(resultCode),
+          errorCode,
+          protocolVersion: `${(protoVer >> 8) & 0xff}.${protoVer & 0xff}`,
+          maxChannels,
+          hostName,
+          vendorName,
+          latencyMs,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/** PPTP Outgoing Call message types (RFC 2637 §9.1) */
+const PPTP_CTRL_OUTGOING_CALL_REQUEST = 7;
+const PPTP_CTRL_OUTGOING_CALL_REPLY   = 8;
+
+/** OCRQ total length: 12-byte header + 156-byte body = 168 bytes */
+const OCRQ_LENGTH = 168;
+
+/** OCRP result codes (RFC 2637 §9.1.2) */
+const OCRP_RESULT_CODES: Record<number, string> = {
+  1: 'Connected',
+  2: 'General error',
+  3: 'No carrier',
+  4: 'Busy',
+  5: 'No dial tone',
+  6: 'Time out',
+  7: 'Do not accept',
+};
+
+/**
+ * Build an Outgoing-Call-Request (OCRQ) message.
+ * RFC 2637 §9.1.1 — Initiates an outgoing call from client to server.
+ *
+ * Header (12 bytes):
+ *   Length(2) | PPTP-Type(2)=1 | Cookie(4) | Ctrl-Type(2)=7 | Reserved(2)
+ * Body (156 bytes):
+ *   Call ID(2) | Call Serial(2) | Min BPS(4) | Max BPS(4)
+ *   Bearer Type(4) | Framing Type(4) | Recv Window(2) | Proc Delay(2)
+ *   Phone Len(2) | Reserved(2) | Phone(64) | Subaddress(64)
+ */
+function buildOCRQ(callId: number): Uint8Array {
+  const buf = new ArrayBuffer(OCRQ_LENGTH);
+  const v = new DataView(buf);
+  let off = 0;
+
+  // Header
+  v.setUint16(off, OCRQ_LENGTH, false);          off += 2;  // Length
+  v.setUint16(off, 1, false);                    off += 2;  // PPTP Message Type
+  v.setUint32(off, PPTP_MAGIC_COOKIE, false);    off += 4;  // Magic Cookie
+  v.setUint16(off, PPTP_CTRL_OUTGOING_CALL_REQUEST, false); off += 2;
+  v.setUint16(off, 0, false);                    off += 2;  // Reserved
+
+  // Body
+  v.setUint16(off, callId & 0xFFFF, false);      off += 2;  // Call ID
+  v.setUint16(off, 1, false);                    off += 2;  // Call Serial Number
+  v.setUint32(off, 300, false);                  off += 4;  // Minimum BPS
+  v.setUint32(off, 100000000, false);            off += 4;  // Maximum BPS (100 Mbps)
+  v.setUint32(off, 0x00000001, false);           off += 4;  // Bearer Type (analog)
+  v.setUint32(off, 0x00000001, false);           off += 4;  // Framing Type (async)
+  v.setUint16(off, 64, false);                   off += 2;  // Receive Window Size
+  v.setUint16(off, 0, false);                    off += 2;  // Processing Delay
+  v.setUint16(off, 0, false);                    off += 2;  // Phone Number Length (0 = no number)
+  v.setUint16(off, 0, false);                    off += 2;  // Reserved
+  // Phone Number (64 bytes, zeros) + Subaddress (64 bytes, zeros) — left zeroed by ArrayBuffer
+
+  return new Uint8Array(buf);
+}
+
+/**
+ * PPTP Call Setup Handler
+ * POST /api/pptp/call-setup
+ * Body: { host, port=1723, timeout=10000 }
+ *
+ * Full PPTP call establishment flow (RFC 2637):
+ *   1. SCCRQ → SCCRP  (tunnel setup)
+ *   2. OCRQ → OCRP    (outgoing call setup)
+ *
+ * Returns server hostname, vendor, protocol version, call ID, connect speed.
+ */
+export async function handlePPTPCallSetup(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; timeout?: number };
+    const { host, port = 1723, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const start = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Step 1: SCCRQ → SCCRP (control tunnel)
+        await writer.write(buildSCCRQ());
+        const sccrpData = await readExact(reader, SCCRQ_LENGTH);
+
+        const dv = new DataView(sccrpData.buffer, sccrpData.byteOffset, sccrpData.byteLength);
+        if (dv.getUint32(4, false) !== PPTP_MAGIC_COOKIE) throw new Error('Bad SCCRP magic cookie');
+        if (dv.getUint16(8, false) !== PPTP_CTRL_START_REPLY) throw new Error('Expected SCCRP');
+
+        const protocolVersion = `${(dv.getUint16(12, false) >> 8) & 0xFF}.${dv.getUint16(12, false) & 0xFF}`;
+        const sccrpResult    = dv.getUint8(14);
+        const maxChannels    = dv.getUint16(24, false);
+        const dec            = new TextDecoder();
+        const serverHostname = dec.decode(sccrpData.subarray(28, 92)).replace(/\0+$/, '').trim();
+        const serverVendor   = dec.decode(sccrpData.subarray(92, 156)).replace(/\0+$/, '').trim();
+
+        const tunnelEstablished = sccrpResult === 1;
+
+        // Step 2: OCRQ → OCRP (outgoing call)
+        const localCallId = Math.floor(Math.random() * 0xFFFF) + 1;
+        await writer.write(buildOCRQ(localCallId));
+
+        // OCRP is 32 bytes: 12 header + 18 body + 2 padding
+        const ocrpData = await readExact(reader, 32);
+        const ocrpDv = new DataView(ocrpData.buffer, ocrpData.byteOffset, ocrpData.byteLength);
+
+        if (ocrpDv.getUint32(4, false) !== PPTP_MAGIC_COOKIE) throw new Error('Bad OCRP magic cookie');
+        const ocrpCtrlType = ocrpDv.getUint16(8, false);
+        if (ocrpCtrlType !== PPTP_CTRL_OUTGOING_CALL_REPLY) {
+          throw new Error(`Expected OCRP (type 8), got ${ocrpCtrlType}`);
+        }
+
+        // OCRP body (starts at offset 12):
+        // peerCallId(2) + reserved(1) + resultCode(1) + errorCode(1) + causeCode(2) + connectSpeed(4)
+        // + recvWindowSize(2) + procDelay(2) + physChannelId(4)
+        const peerCallId    = ocrpDv.getUint16(12, false);
+        const ocrpResult    = ocrpDv.getUint8(15);
+        const ocrpError     = ocrpDv.getUint8(16);
+        const connectSpeed  = ocrpDv.getUint32(19, false);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        return {
+          success: tunnelEstablished && ocrpResult === 1,
+          tunnelEstablished,
+          serverHostname,
+          serverVendor,
+          protocolVersion,
+          maxChannels,
+          localCallId,
+          peerCallId,
+          callResult: ocrpResult,
+          callResultText: OCRP_RESULT_CODES[ocrpResult] ?? `Unknown(${ocrpResult})`,
+          callErrorCode: ocrpError,
+          connectSpeed,
+          latencyMs: Date.now() - start,
+          note: ocrpResult !== 1
+            ? 'OCRP rejected call — server may require PPP authentication before allowing outgoing calls'
+            : undefined,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'PPTP call setup failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

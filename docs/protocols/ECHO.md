@@ -1,513 +1,228 @@
-# Echo Protocol Implementation Plan
+# Echo — Power User Reference
 
-## Overview
+**Port:** 7/tcp (RFC 862) | any port works
+**Tests:** 9/9 ✅ Deployed
+**Source:** `src/worker/echo.ts`
 
-**Protocol:** TCP Echo Service
-**Port:** 7
-**RFC:** [RFC 862](https://tools.ietf.org/html/rfc862)
-**Complexity:** Low
-**Purpose:** Testing and validation
+Two endpoints. No persistent state.
 
-Echo is the simplest TCP protocol - it echoes back everything sent to it. Perfect for testing TCP connectivity and establishing baseline implementation patterns.
+---
 
-### Use Cases
-- TCP connectivity testing
-- Latency measurement
-- Protocol development debugging
-- Network troubleshooting
+## Endpoints
 
-## Protocol Specification
+### `POST /api/echo/test` — One-shot echo test
 
-### Wire Format
-Extremely simple - no protocol overhead:
+Connects, sends a message, reads the first response chunk, and closes.
 
-```
-Client → Server: [any data]
-Server → Client: [same data]
-```
+**Request (JSON body — POST only, no GET form):**
 
-No headers, no commands, no encoding rules. Pure echo.
+| Field | Default | Notes |
+|---|---|---|
+| `host` | — | ✅ Required |
+| `port` | `7` | Standard echo port; use `4242` for tcpbin.com |
+| `message` | — | ✅ Required; must be non-empty |
+| `timeout` | `10000` | Wall-clock timeout in ms, shared between connect and read |
 
-### Example Session
-```
-Client: Hello, World!
-Server: Hello, World!
+**Success (200):**
 
-Client: Testing 123
-Server: Testing 123
-```
-
-## Worker Implementation
-
-### Socket Handler
-
-```typescript
-// src/worker/protocols/echo.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface EchoRequest {
-  host: string;
-  port: number;
-  message?: string;  // For simple test
-}
-
-export interface EchoResponse {
-  success: boolean;
-  echoed?: string;
-  rtt?: number;
-  error?: string;
-}
-
-/**
- * Simple echo test - send message, receive echo, measure RTT
- */
-export async function echoTest(
-  host: string,
-  port: number,
-  message: string
-): Promise<EchoResponse> {
-  const start = Date.now();
-
-  try {
-    const socket = connect(`${host}:${port}`);
-    await socket.opened;
-
-    // Send message
-    const writer = socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(message));
-
-    // Read echo response
-    const reader = socket.readable.getReader();
-    const { value } = await reader.read();
-    const decoder = new TextDecoder();
-    const echoed = decoder.decode(value);
-
-    const rtt = Date.now() - start;
-
-    await socket.close();
-
-    return {
-      success: true,
-      echoed,
-      rtt,
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error instanceof Error ? error.message : 'Unknown error',
-    };
-  }
-}
-
-/**
- * WebSocket tunnel for interactive echo session
- */
-export async function echoTunnel(
-  request: Request,
-  host: string,
-  port: number
-): Promise<Response> {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  server.accept();
-
-  try {
-    const socket = connect(`${host}:${port}`);
-    await socket.opened;
-
-    // Pipe WebSocket → TCP
-    server.addEventListener('message', async (event) => {
-      const writer = socket.writable.getWriter();
-      const data = typeof event.data === 'string'
-        ? new TextEncoder().encode(event.data)
-        : event.data;
-      await writer.write(data);
-      writer.releaseLock();
-    });
-
-    // Pipe TCP → WebSocket
-    (async () => {
-      const reader = socket.readable.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        server.send(value);
-      }
-    })();
-
-    // Handle close
-    server.addEventListener('close', () => {
-      socket.close();
-    });
-
-  } catch (error) {
-    server.send(JSON.stringify({
-      error: error instanceof Error ? error.message : 'Connection failed',
-    }));
-    server.close();
-  }
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
+```json
+{
+  "success": true,
+  "sent": "hello",
+  "received": "hello",
+  "match": true,
+  "rtt": 23
 }
 ```
 
-### API Endpoints
+**Success with mismatch (200):**
 
-```typescript
-// Add to src/worker/index.ts
-
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
-
-    // Simple echo test
-    if (url.pathname === '/api/echo/test' && request.method === 'POST') {
-      const { host, port, message } = await request.json();
-      const result = await echoTest(host, port, message || 'Hello');
-      return Response.json(result);
-    }
-
-    // WebSocket tunnel for interactive echo
-    if (url.pathname === '/api/echo/connect') {
-      const { host, port } = await request.json();
-      return echoTunnel(request, host, port);
-    }
-
-    // ... other routes
-  }
-};
-```
-
-## Web UI Design
-
-### Component Structure
-
-```typescript
-// src/components/EchoClient.tsx
-
-import { useState } from 'react';
-
-interface EchoResult {
-  message: string;
-  echoed?: string;
-  rtt?: number;
-  error?: string;
-}
-
-export function EchoClient() {
-  const [host, setHost] = useState('tcpbin.com');
-  const [port, setPort] = useState(4242);
-  const [message, setMessage] = useState('Hello, Echo!');
-  const [results, setResults] = useState<EchoResult[]>([]);
-  const [loading, setLoading] = useState(false);
-
-  const sendEcho = async () => {
-    setLoading(true);
-    try {
-      const response = await fetch('/api/echo/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port, message }),
-      });
-
-      const result = await response.json();
-      setResults([...results, {
-        message,
-        echoed: result.echoed,
-        rtt: result.rtt,
-        error: result.error,
-      }]);
-    } catch (error) {
-      setResults([...results, {
-        message,
-        error: error instanceof Error ? error.message : 'Failed',
-      }]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="echo-client">
-      <h2>TCP Echo Service</h2>
-
-      <div className="connection-form">
-        <input
-          type="text"
-          placeholder="Host"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Port"
-          value={port}
-          onChange={(e) => setPort(Number(e.target.value))}
-        />
-      </div>
-
-      <div className="message-form">
-        <input
-          type="text"
-          placeholder="Message to echo"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && sendEcho()}
-        />
-        <button onClick={sendEcho} disabled={loading}>
-          {loading ? 'Sending...' : 'Send Echo'}
-        </button>
-      </div>
-
-      <div className="results">
-        <h3>Echo Results</h3>
-        {results.map((result, i) => (
-          <div key={i} className={result.error ? 'error' : 'success'}>
-            <div className="sent">Sent: {result.message}</div>
-            {result.echoed && (
-              <>
-                <div className="received">Received: {result.echoed}</div>
-                <div className="rtt">RTT: {result.rtt}ms</div>
-              </>
-            )}
-            {result.error && <div className="error">{result.error}</div>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+```json
+{
+  "success": true,
+  "sent": "hello",
+  "received": "hello\n",
+  "match": false,
+  "rtt": 19,
+  "error": "Echo mismatch: sent \"hello\" but received \"hello\\n\""
 }
 ```
 
-### Interactive Mode (WebSocket)
+**Failure (400 validation / 500 connection error):**
 
-```typescript
-// src/components/EchoInteractive.tsx
-
-export function EchoInteractive() {
-  const [ws, setWs] = useState<WebSocket | null>(null);
-  const [connected, setConnected] = useState(false);
-  const [messages, setMessages] = useState<Array<{sent: string, received: string}>>([]);
-
-  const connect = async () => {
-    const socket = new WebSocket(`${location.origin}/api/echo/connect`);
-
-    socket.onopen = () => setConnected(true);
-    socket.onclose = () => setConnected(false);
-
-    socket.onmessage = (event) => {
-      const received = event.data;
-      setMessages(prev => [...prev, { sent: prev[prev.length - 1]?.sent || '', received }]);
-    };
-
-    setWs(socket);
-  };
-
-  const send = (message: string) => {
-    if (ws && connected) {
-      ws.send(message);
-      setMessages(prev => [...prev, { sent: message, received: '' }]);
-    }
-  };
-
-  return (
-    <div className="echo-interactive">
-      <button onClick={connect} disabled={connected}>
-        {connected ? 'Connected' : 'Connect'}
-      </button>
-
-      {connected && (
-        <input
-          type="text"
-          onKeyPress={(e) => {
-            if (e.key === 'Enter') {
-              send(e.currentTarget.value);
-              e.currentTarget.value = '';
-            }
-          }}
-        />
-      )}
-
-      <div className="messages">
-        {messages.map((msg, i) => (
-          <div key={i}>
-            <div className="sent">→ {msg.sent}</div>
-            <div className="received">← {msg.received}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+```json
+{
+  "success": false,
+  "error": "Connection timeout",
+  "sent": "",
+  "received": "",
+  "match": false,
+  "rtt": 0
 }
 ```
 
-## Data Flow
+**Key fields:**
 
-### Simple Echo Test
+| Field | Notes |
+|---|---|
+| `sent` | Exact string sent (same as request `message`) |
+| `received` | First chunk returned by the server, decoded via TextDecoder |
+| `match` | `true` iff `sent === received` (strict string equality) |
+| `rtt` | ms from `socket.opened` resolution to receipt of first byte |
 
-```
-┌─────────┐         ┌──────────┐         ┌─────────────┐
-│ Browser │         │  Worker  │         │ Echo Server │
-└────┬────┘         └────┬─────┘         └──────┬──────┘
-     │                   │                       │
-     │ POST /api/echo/test                       │
-     │ {host, port, msg} │                       │
-     ├──────────────────>│                       │
-     │                   │ connect(host:port)    │
-     │                   ├──────────────────────>│
-     │                   │ <── TCP handshake ──> │
-     │                   │                       │
-     │                   │ write(message)        │
-     │                   ├──────────────────────>│
-     │                   │                       │
-     │                   │        read()         │
-     │                   │<──────────────────────┤
-     │                   │ (echoed message)      │
-     │                   │                       │
-     │ {echoed, rtt}     │                       │
-     │<──────────────────┤                       │
-     │                   │                       │
-```
+**Validation errors (HTTP 400):**
+- Missing or empty `host` → `{ success: false, error: "Host is required" }`
+- Missing or empty `message` → `{ success: false, error: "Message is required" }`
+- Port outside 1–65535 → `{ success: false, error: "Port must be between 1 and 65535" }`
 
-### WebSocket Tunnel
+---
 
-```
-┌─────────┐         ┌──────────┐         ┌─────────────┐
-│ Browser │         │  Worker  │         │ Echo Server │
-└────┬────┘         └────┬─────┘         └──────┬──────┘
-     │                   │                       │
-     │ WS /api/echo/connect                      │
-     ├──────────────────>│                       │
-     │                   │ connect(host:port)    │
-     │ <── WS Accept ──> │<───────────────────> │
-     │                   │                       │
-     │ WS: "Hello"       │                       │
-     ├──────────────────>│ TCP: "Hello"         │
-     │                   ├──────────────────────>│
-     │                   │                       │
-     │                   │ TCP: "Hello"          │
-     │ WS: "Hello"       │<──────────────────────┤
-     │<──────────────────┤                       │
-     │                   │                       │
+### `GET /api/echo/connect` — WebSocket tunnel
+
+Upgrades to WebSocket and bridges all traffic to/from a TCP echo server. Useful for testing multiple messages without reconnecting, or for binary echo sessions.
+
+**Query params (GET only):**
+
+| Param | Default | Notes |
+|---|---|---|
+| `host` | — | Required; returns HTTP 400 if absent |
+| `port` | `7` | |
+
+**Connection:**
+
+```javascript
+const ws = new WebSocket('wss://portofcall.ross.gg/api/echo/connect?host=tcpbin.com&port=4242');
+
+ws.onopen = () => ws.send('ping');                // → TCP: "ping"
+ws.onmessage = (e) => console.log(e.data);       // ← TCP: "ping" (decoded to string)
+ws.onclose = () => console.log('closed');
 ```
 
-## Security
+**Data flow:**
 
-### Input Validation
+| Direction | What happens |
+|---|---|
+| WS → TCP | String messages encoded to UTF-8; ArrayBuffer forwarded as Uint8Array |
+| TCP → WS | Each TCP chunk decoded via `TextDecoder` then sent as a string frame |
+| WS close | TCP socket closed |
+| TCP close/EOF | WebSocket closed |
 
-```typescript
-function validateEchoRequest(host: string, port: number): boolean {
-  // Validate port range
-  if (port < 1 || port > 65535) return false;
+Returns HTTP 426 if the request is not a WebSocket upgrade.
 
-  // Validate hostname (prevent SSRF)
-  if (host.includes('localhost') || host.includes('127.0.0.1')) return false;
-  if (host.includes('192.168.') || host.includes('10.')) return false;
+---
 
-  return true;
-}
+## Wire Exchange
+
+```
+→ (TCP connect to host:port)
+→ hello\r\n
+← hello\r\n
+→ (more messages or close)
 ```
 
-### Rate Limiting
+RFC 862 defines no framing, no commands, no handshake. The server echoes every byte it receives. Connection can remain open for multiple exchanges.
 
-```typescript
-// Limit echo requests per IP
-const ECHO_RATE_LIMIT = 60; // requests per minute
+---
 
-async function checkRateLimit(ip: string): Promise<boolean> {
-  // Use KV or Durable Objects to track request counts
-  // Return false if limit exceeded
-}
+## Implementation Notes
+
+### Single-read limitation
+
+`handleEchoTest` issues exactly one `reader.read()` call after sending. If the echo server returns the data spread across multiple TCP segments (e.g., a 100 KB message on a slow link), `received` will only contain the first segment and `match` will be `false` even if the server is behaving correctly.
+
+This is rarely a problem in practice since echo servers typically send one segment per send. But for large messages or high-latency paths, expect false negatives.
+
+### Shared timeout
+
+The same `timeoutPromise` races against both `socket.opened` and `reader.read()`:
+
+```
+timeout budget ──────────────────────────────────▶
+connect phase   [────────────────]
+                                  read phase [────]
 ```
 
-### Message Size Limits
+If the connection takes 9 of your 10 s, the read phase has only 1 s left. There is no separate per-phase timeout.
 
-```typescript
-const MAX_ECHO_MESSAGE_SIZE = 4096; // 4KB
+### match is strict string equality
 
-if (message.length > MAX_ECHO_MESSAGE_SIZE) {
-  return Response.json({ error: 'Message too large' }, { status: 400 });
-}
+`match = (sent === received)` — both values are JavaScript strings after TextDecoder decoding. Servers that append `\n` or `\r\n`, echo CRLF for LF, add timestamps, or change encoding will produce `match: false` even though they echoed the payload correctly. Check `received` directly when diagnosing.
+
+### Error response shape diverges from success
+
+On connection/read failure, the response shape is:
+```json
+{ "success": false, "error": "...", "sent": "", "received": "", "match": false, "rtt": 0 }
+```
+On success with mismatch, `success` stays `true` and `sent`/`received` are the actual values. The `error` field appears in both cases but means different things — in the mismatch case it's an explanation, not a failure indicator.
+
+### Binary data in WebSocket mode
+
+The WebSocket tunnel sends TCP data as **string frames** (decoded via `TextDecoder`). Binary echo servers that return arbitrary bytes will have those bytes transcoded through UTF-8 replacement characters. For binary echo testing, use the HTTP endpoint (`/api/echo/test`) — it does the same TextDecoder decode but at least keeps it to a single request/response cycle.
+
+---
+
+## curl Examples
+
+```bash
+# Basic echo test (tcpbin.com public server)
+curl -s -X POST https://portofcall.ross.gg/api/echo/test \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"tcpbin.com","port":4242,"message":"hello"}' | jq .
+
+# Check match and RTT
+curl -s -X POST https://portofcall.ross.gg/api/echo/test \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"tcpbin.com","port":4242,"message":"ping"}' \
+  | jq '{match,rtt,received}'
+
+# Non-standard port
+curl -s -X POST https://portofcall.ross.gg/api/echo/test \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"myserver.example.com","port":9999,"message":"test","timeout":5000}' | jq .
+
+# WebSocket tunnel (wscat)
+wscat -c 'wss://portofcall.ross.gg/api/echo/connect?host=tcpbin.com&port=4242'
+# then type messages; each is echoed back
+
+# Test large message (detect single-read limitation)
+python3 -c "import json; print(json.dumps({'host':'tcpbin.com','port':4242,'message':'x'*8000}))" \
+  | curl -s -X POST https://portofcall.ross.gg/api/echo/test \
+    -H 'Content-Type: application/json' -d @- | jq '{match,sent_len:.sent|length,received_len:.received|length}'
 ```
 
-## Testing
+---
 
-### Test Servers
+## Known Limitations
 
-Public echo servers for testing:
-- `tcpbin.com:4242` - Reliable test server
-- `echo.websocket.org` (WebSocket echo, not pure TCP)
+- **Single TCP read** — `received` contains only the first chunk; large messages or slow paths cause false `match: false`
+- **No GET form** — `/api/echo/test` is POST-only; there is no query-param GET variant
+- **No Cloudflare detection** — unlike most other Port of Call endpoints, the echo handler does not call `checkIfCloudflare`. Probing Cloudflare-protected hosts will silently connect or fail with a generic error
+- **Binary data** — TCP responses decoded to string via `TextDecoder`; binary echo is lossy
+- **Shared timeout** — connect phase and read phase share the same `timeout` budget
 
-### Unit Tests
+---
 
-```typescript
-// tests/echo.test.ts
+## Public Test Servers
 
-import { echoTest } from '../src/worker/protocols/echo';
+| Host | Port | Notes |
+|---|---|---|
+| `tcpbin.com` | `4242` | Reliable public TCP echo server; responds quickly |
+| Any host | `7` | Standard port; blocked on most hosts; enabled only on legacy/embedded systems |
 
-describe('Echo Protocol', () => {
-  it('should echo message correctly', async () => {
-    const result = await echoTest('tcpbin.com', 4242, 'Test');
-    expect(result.success).toBe(true);
-    expect(result.echoed).toBe('Test');
-    expect(result.rtt).toBeGreaterThan(0);
-  });
+---
 
-  it('should handle connection failures', async () => {
-    const result = await echoTest('invalid-host.example', 9999, 'Test');
-    expect(result.success).toBe(false);
-    expect(result.error).toBeDefined();
-  });
-});
+## Local Test Server
+
+```bash
+# netcat echo server (one-shot)
+nc -l 4242 | nc -l 4242   # won't actually loop — use socat instead
+
+# socat echo server (persistent, recommended)
+socat TCP-LISTEN:4242,fork PIPE
+
+# Then test locally via the API:
+curl -s -X POST https://portofcall.ross.gg/api/echo/test \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"YOUR_LOCAL_IP","port":4242,"message":"test"}'
 ```
-
-### Integration Tests
-
-```typescript
-// tests/echo-integration.test.ts
-
-describe('Echo API Endpoints', () => {
-  it('POST /api/echo/test should work', async () => {
-    const response = await fetch('http://localhost:8787/api/echo/test', {
-      method: 'POST',
-      body: JSON.stringify({
-        host: 'tcpbin.com',
-        port: 4242,
-        message: 'Integration Test',
-      }),
-    });
-
-    const result = await response.json();
-    expect(result.success).toBe(true);
-    expect(result.echoed).toBe('Integration Test');
-  });
-});
-```
-
-## Resources
-
-- **RFC 862**: [Echo Protocol Specification](https://tools.ietf.org/html/rfc862)
-- **Test Server**: [tcpbin.com](http://tcpbin.com/)
-- **Implementation Example**: See [echo-server npm package](https://www.npmjs.com/package/echo-server)
-
-## Next Steps
-
-1. Implement basic echo test endpoint
-2. Add WebSocket tunnel support
-3. Build React UI component
-4. Add comprehensive error handling
-5. Implement rate limiting
-6. Create visual latency graphs
-
-## Notes
-
-- Echo is perfect as the **first protocol** to implement
-- Establishes patterns for all other protocols
-- Simple enough to validate entire architecture
-- Useful for ongoing connectivity testing

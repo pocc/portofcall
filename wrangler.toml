@@ -17,6 +17,11 @@ mode = "smart"
 directory = "./dist"
 binding = "ASSETS"
 
+# KV namespace for checklist state
+[[kv_namespaces]]
+binding = "CHECKLIST"
+id = "58bdaee877ab4378815034882860c5c2"
+
 # Observability configuration
 [observability.logs]
 enabled = true

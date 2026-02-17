@@ -1,776 +1,430 @@
-# Redis Protocol Implementation Plan
+# Redis — Power User Reference
 
-## Overview
+**Port:** 6379 (default) | **Protocol:** RESP2 | **Tests:** 17/17 ✅ Deployed
 
-**Protocol:** RESP (REdis Serialization Protocol)
-**Port:** 6379
-**RFC:** None (proprietary but open spec)
-**Complexity:** Low-Medium
-**Purpose:** Key-value store, caching, pub/sub messaging
+Port of Call provides three Redis endpoints: an HTTP connection probe, a one-shot command executor, and a persistent WebSocket REPL session. All three open a direct TCP connection from the Cloudflare Worker to your Redis instance.
 
-Redis is one of the **highest-value, lowest-complexity** protocols to implement. The RESP protocol is human-readable and well-documented, making it perfect for a web-based client.
+---
 
-### Use Cases
-- Database administration and querying
-- Cache management and monitoring
-- Real-time pub/sub messaging dashboard
-- Development/debugging tool
-- Educational - learn Redis commands interactively
+## API Endpoints
 
-## Protocol Specification
+### `GET/POST /api/redis/connect` — Connection probe
 
-### RESP Protocol Basics
+Connects, optionally authenticates and selects a database, sends `PING`, then runs `INFO server` to extract the server version. Opens and closes the TCP connection each call.
 
-Redis uses RESP (Redis Serialization Protocol) - a simple text-based protocol.
+**POST body / GET query params:**
 
-#### Data Types
+| Field      | Type    | Default | Notes |
+|------------|---------|---------|-------|
+| `host`     | string  | —       | Required |
+| `port`     | number  | `6379`  | |
+| `password` | string  | —       | Sent as `AUTH <password>` |
+| `database` | number  | —       | Sent as `SELECT <n>` if provided |
+| `timeout`  | number  | `30000` | Total timeout in ms |
 
-| Type | Prefix | Example |
-|------|--------|---------|
-| Simple String | `+` | `+OK\r\n` |
-| Error | `-` | `-ERR unknown command\r\n` |
-| Integer | `:` | `:1000\r\n` |
-| Bulk String | `$` | `$5\r\nhello\r\n` |
-| Array | `*` | `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n` |
-
-#### Command Format
-
-Commands are sent as arrays of bulk strings:
-
-```
-*<number of arguments>\r\n
-$<length of arg1>\r\n
-<arg1>\r\n
-$<length of arg2>\r\n
-<arg2>\r\n
-...
-```
-
-### Example Session
-
-```
-Client: *1\r\n$4\r\nPING\r\n
-Server: +PONG\r\n
-
-Client: *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
-Server: +OK\r\n
-
-Client: *2\r\n$3\r\nGET\r\n$3\r\nkey\r\n
-Server: $5\r\nvalue\r\n
-
-Client: *2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n
-Server: *3\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n$4\r\nkey3\r\n
-```
-
-## Worker Implementation
-
-### RESP Parser/Serializer
-
-```typescript
-// src/worker/protocols/redis/resp.ts
-
-export type RESPValue =
-  | { type: 'simple-string'; value: string }
-  | { type: 'error'; value: string }
-  | { type: 'integer'; value: number }
-  | { type: 'bulk-string'; value: string | null }
-  | { type: 'array'; value: RESPValue[] };
-
-/**
- * Serialize a Redis command to RESP format
- */
-export function serializeCommand(...args: string[]): Uint8Array {
-  const encoder = new TextEncoder();
-  let result = `*${args.length}\r\n`;
-
-  for (const arg of args) {
-    const bytes = encoder.encode(arg);
-    result += `$${bytes.length}\r\n${arg}\r\n`;
-  }
-
-  return encoder.encode(result);
-}
-
-/**
- * Parse RESP response
- */
-export class RESPParser {
-  private buffer: string = '';
-  private decoder = new TextDecoder();
-
-  append(chunk: Uint8Array): void {
-    this.buffer += this.decoder.decode(chunk, { stream: true });
-  }
-
-  parse(): RESPValue | null {
-    if (this.buffer.length === 0) return null;
-
-    const firstChar = this.buffer[0];
-
-    switch (firstChar) {
-      case '+':
-        return this.parseSimpleString();
-      case '-':
-        return this.parseError();
-      case ':':
-        return this.parseInteger();
-      case '$':
-        return this.parseBulkString();
-      case '*':
-        return this.parseArray();
-      default:
-        throw new Error(`Unknown RESP type: ${firstChar}`);
-    }
-  }
-
-  private parseSimpleString(): RESPValue | null {
-    const idx = this.buffer.indexOf('\r\n');
-    if (idx === -1) return null;
-
-    const value = this.buffer.substring(1, idx);
-    this.buffer = this.buffer.substring(idx + 2);
-
-    return { type: 'simple-string', value };
-  }
-
-  private parseError(): RESPValue | null {
-    const idx = this.buffer.indexOf('\r\n');
-    if (idx === -1) return null;
-
-    const value = this.buffer.substring(1, idx);
-    this.buffer = this.buffer.substring(idx + 2);
-
-    return { type: 'error', value };
-  }
-
-  private parseInteger(): RESPValue | null {
-    const idx = this.buffer.indexOf('\r\n');
-    if (idx === -1) return null;
-
-    const value = parseInt(this.buffer.substring(1, idx), 10);
-    this.buffer = this.buffer.substring(idx + 2);
-
-    return { type: 'integer', value };
-  }
-
-  private parseBulkString(): RESPValue | null {
-    const firstLineEnd = this.buffer.indexOf('\r\n');
-    if (firstLineEnd === -1) return null;
-
-    const length = parseInt(this.buffer.substring(1, firstLineEnd), 10);
-
-    if (length === -1) {
-      // Null bulk string
-      this.buffer = this.buffer.substring(firstLineEnd + 2);
-      return { type: 'bulk-string', value: null };
-    }
-
-    const contentStart = firstLineEnd + 2;
-    const contentEnd = contentStart + length;
-
-    if (this.buffer.length < contentEnd + 2) return null; // Not enough data
-
-    const value = this.buffer.substring(contentStart, contentEnd);
-    this.buffer = this.buffer.substring(contentEnd + 2);
-
-    return { type: 'bulk-string', value };
-  }
-
-  private parseArray(): RESPValue | null {
-    const firstLineEnd = this.buffer.indexOf('\r\n');
-    if (firstLineEnd === -1) return null;
-
-    const count = parseInt(this.buffer.substring(1, firstLineEnd), 10);
-    this.buffer = this.buffer.substring(firstLineEnd + 2);
-
-    if (count === -1) {
-      return { type: 'array', value: [] };
-    }
-
-    const elements: RESPValue[] = [];
-    for (let i = 0; i < count; i++) {
-      const element = this.parse();
-      if (element === null) return null; // Not enough data
-      elements.push(element);
-    }
-
-    return { type: 'array', value: elements };
-  }
+**Success (200):**
+```json
+{
+  "success": true,
+  "message": "Redis server reachable",
+  "host": "redis.example.com",
+  "port": 6379,
+  "serverInfo": "Authenticated. Database 2 selected. PING successful.",
+  "version": "7.2.4"
 }
 ```
 
-### Redis Client
+**Error (500):** `{ "success": false, "error": "Authentication failed: -WRONGPASS..." }`
 
-```typescript
-// src/worker/protocols/redis/client.ts
+**Cloudflare-protected host (403):** `{ "success": false, "error": "...", "isCloudflare": true }`
 
-import { connect } from 'cloudflare:sockets';
-import { serializeCommand, RESPParser, RESPValue } from './resp';
+**Notes:**
+- AUTH uses the single-argument form (`AUTH <password>`). Redis 6+ ACL username/password (`AUTH <user> <password>`) is not supported.
+- `version` is extracted from `INFO server` via the `redis_version:` field. Only the `server` section is fetched.
+- `INFO` response is read in a single `readRESPResponse` call. On very slow or busy servers the bulk string may span multiple TCP reads; see [Known Limitations](#known-limitations).
 
-export class RedisClient {
-  private socket: Socket;
-  private parser = new RESPParser();
-  private connected = false;
+---
 
-  constructor(
-    private host: string,
-    private port: number
-  ) {}
+### `POST /api/redis/command` — One-shot command execution
 
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.host}:${this.port}`);
-    await this.socket.opened;
-    this.connected = true;
+Connects, optionally authenticates/selects DB, sends one command, returns the raw RESP response string, and closes.
 
-    // Start reading responses
-    this.readResponses();
-  }
-
-  private async readResponses(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        this.parser.append(value);
-      }
-    } catch (error) {
-      console.error('Redis read error:', error);
-    } finally {
-      reader.releaseLock();
-    }
-  }
-
-  async command(...args: string[]): Promise<RESPValue> {
-    if (!this.connected) throw new Error('Not connected');
-
-    const writer = this.socket.writable.getWriter();
-    await writer.write(serializeCommand(...args));
-    writer.releaseLock();
-
-    // Wait for response
-    while (true) {
-      const response = this.parser.parse();
-      if (response !== null) return response;
-      await new Promise(resolve => setTimeout(resolve, 10));
-    }
-  }
-
-  async close(): Promise<void> {
-    await this.socket.close();
-    this.connected = false;
-  }
-
-  // Convenience methods
-  async ping(): Promise<string> {
-    const result = await this.command('PING');
-    return result.type === 'simple-string' ? result.value : '';
-  }
-
-  async get(key: string): Promise<string | null> {
-    const result = await this.command('GET', key);
-    return result.type === 'bulk-string' ? result.value : null;
-  }
-
-  async set(key: string, value: string): Promise<string> {
-    const result = await this.command('SET', key, value);
-    return result.type === 'simple-string' ? result.value : '';
-  }
-
-  async keys(pattern: string = '*'): Promise<string[]> {
-    const result = await this.command('KEYS', pattern);
-    if (result.type !== 'array') return [];
-
-    return result.value
-      .filter(v => v.type === 'bulk-string' && v.value !== null)
-      .map(v => (v.type === 'bulk-string' && v.value) || '');
-  }
-
-  async info(section?: string): Promise<string> {
-    const args = section ? ['INFO', section] : ['INFO'];
-    const result = await this.command(...args);
-    return result.type === 'bulk-string' && result.value ? result.value : '';
-  }
+**POST body:**
+```json
+{
+  "host": "redis.example.com",
+  "port": 6379,
+  "password": "secret",
+  "database": 2,
+  "command": ["SET", "foo", "bar"],
+  "timeout": 30000
 }
 ```
 
-### WebSocket Tunnel
+The `command` field is a **pre-tokenized array** — each element maps to one RESP bulk string. No shell quoting is applied.
 
-```typescript
-// src/worker/protocols/redis/tunnel.ts
-
-export async function redisTunnel(
-  request: Request,
-  host: string,
-  port: number,
-  password?: string
-): Promise<Response> {
-  const pair = new WebSocketPair();
-  const [client, server] = Object.values(pair);
-
-  server.accept();
-
-  try {
-    const redis = new RedisClient(host, port);
-    await redis.connect();
-
-    // Authenticate if password provided
-    if (password) {
-      await redis.command('AUTH', password);
-    }
-
-    // Handle commands from browser
-    server.addEventListener('message', async (event) => {
-      try {
-        const { command, args } = JSON.parse(event.data);
-        const result = await redis.command(command, ...args);
-
-        server.send(JSON.stringify({
-          type: 'response',
-          result,
-        }));
-      } catch (error) {
-        server.send(JSON.stringify({
-          type: 'error',
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }));
-      }
-    });
-
-    // Handle close
-    server.addEventListener('close', () => {
-      redis.close();
-    });
-
-  } catch (error) {
-    server.send(JSON.stringify({
-      type: 'error',
-      error: error instanceof Error ? error.message : 'Connection failed',
-    }));
-    server.close();
-  }
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
+**Success (200):**
+```json
+{
+  "success": true,
+  "response": "+OK\r\n",
+  "command": ["SET", "foo", "bar"]
 }
 ```
 
-### API Endpoints
+The `response` field is the **raw RESP wire bytes** decoded as UTF-8. Parse it with a RESP parser if you need structured output.
 
-```typescript
-// Add to src/worker/index.ts
+There is no command allowlist or blocklist. `FLUSHALL`, `CONFIG SET`, `DEBUG OBJECT`, `SHUTDOWN`, etc. all pass through.
 
-// Quick command execution
-if (url.pathname === '/api/redis/exec' && request.method === 'POST') {
-  const { host, port, password, command, args } = await request.json();
-
-  const client = new RedisClient(host, port);
-  await client.connect();
-
-  if (password) {
-    await client.command('AUTH', password);
-  }
-
-  const result = await client.command(command, ...args);
-  await client.close();
-
-  return Response.json({ result });
-}
-
-// WebSocket tunnel for interactive session
-if (url.pathname === '/api/redis/connect') {
-  const { host, port, password } = await request.json();
-  return redisTunnel(request, host, port, password);
-}
-```
-
-## Web UI Design
-
-### Main Redis Client Component
-
-```typescript
-// src/components/RedisClient.tsx
-
-import { useState, useEffect, useRef } from 'react';
-
-interface RedisCommand {
-  command: string;
-  args: string[];
-  result?: any;
-  error?: string;
-  timestamp: number;
-}
-
-export function RedisClient() {
-  const [host, setHost] = useState('localhost');
-  const [port, setPort] = useState(6379);
-  const [password, setPassword] = useState('');
-  const [connected, setConnected] = useState(false);
-  const [commandHistory, setCommandHistory] = useState<RedisCommand[]>([]);
-  const [currentCommand, setCurrentCommand] = useState('');
-
-  const ws = useRef<WebSocket | null>(null);
-
-  const connect = async () => {
-    ws.current = new WebSocket('/api/redis/connect');
-
-    ws.current.onopen = () => {
-      // Send connection params
-      ws.current?.send(JSON.stringify({ host, port, password }));
-      setConnected(true);
-    };
-
-    ws.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === 'response') {
-        setCommandHistory(prev => [
-          ...prev.slice(0, -1),
-          { ...prev[prev.length - 1], result: data.result },
-        ]);
-      } else if (data.type === 'error') {
-        setCommandHistory(prev => [
-          ...prev.slice(0, -1),
-          { ...prev[prev.length - 1], error: data.error },
-        ]);
-      }
-    };
-
-    ws.current.onclose = () => {
-      setConnected(false);
-    };
-  };
-
-  const executeCommand = (cmdString: string) => {
-    const parts = cmdString.trim().split(/\s+/);
-    const command = parts[0].toUpperCase();
-    const args = parts.slice(1);
-
-    const entry: RedisCommand = {
-      command,
-      args,
-      timestamp: Date.now(),
-    };
-
-    setCommandHistory(prev => [...prev, entry]);
-
-    ws.current?.send(JSON.stringify({ command, args }));
-    setCurrentCommand('');
-  };
-
-  return (
-    <div className="redis-client">
-      <div className="connection-panel">
-        <h2>Redis Client</h2>
-
-        {!connected ? (
-          <div className="connection-form">
-            <input
-              type="text"
-              placeholder="Host"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-            />
-            <input
-              type="number"
-              placeholder="Port"
-              value={port}
-              onChange={(e) => setPort(Number(e.target.value))}
-            />
-            <input
-              type="password"
-              placeholder="Password (optional)"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-            <button onClick={connect}>Connect</button>
-          </div>
-        ) : (
-          <div className="connected-status">
-            <span className="status-indicator">●</span>
-            Connected to {host}:{port}
-          </div>
-        )}
-      </div>
-
-      {connected && (
-        <>
-          <div className="command-input">
-            <span className="prompt">redis&gt;</span>
-            <input
-              type="text"
-              value={currentCommand}
-              onChange={(e) => setCurrentCommand(e.target.value)}
-              onKeyPress={(e) => {
-                if (e.key === 'Enter' && currentCommand) {
-                  executeCommand(currentCommand);
-                }
-              }}
-              placeholder="Enter Redis command (e.g., GET mykey)"
-              autoFocus
-            />
-          </div>
-
-          <div className="command-history">
-            {commandHistory.map((cmd, i) => (
-              <div key={i} className="command-entry">
-                <div className="command-line">
-                  <span className="timestamp">
-                    {new Date(cmd.timestamp).toLocaleTimeString()}
-                  </span>
-                  <span className="command">
-                    {cmd.command} {cmd.args.join(' ')}
-                  </span>
-                </div>
-
-                {cmd.result && (
-                  <div className="result">
-                    <RedisValueDisplay value={cmd.result} />
-                  </div>
-                )}
-
-                {cmd.error && (
-                  <div className="error">Error: {cmd.error}</div>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <CommandSuggestions onSelect={executeCommand} />
-        </>
-      )}
-    </div>
-  );
-}
-
-function RedisValueDisplay({ value }: { value: any }) {
-  if (value.type === 'simple-string') {
-    return <span className="simple-string">{value.value}</span>;
-  }
-
-  if (value.type === 'integer') {
-    return <span className="integer">(integer) {value.value}</span>;
-  }
-
-  if (value.type === 'bulk-string') {
-    return value.value === null
-      ? <span className="null">(nil)</span>
-      : <span className="bulk-string">"{value.value}"</span>;
-  }
-
-  if (value.type === 'array') {
-    return (
-      <div className="array">
-        {value.value.map((item: any, i: number) => (
-          <div key={i} className="array-item">
-            {i + 1}) <RedisValueDisplay value={item} />
-          </div>
-        ))}
-      </div>
-    );
-  }
-
-  if (value.type === 'error') {
-    return <span className="error">(error) {value.value}</span>;
-  }
-
-  return <span>{JSON.stringify(value)}</span>;
-}
-
-function CommandSuggestions({ onSelect }: { onSelect: (cmd: string) => void }) {
-  const commonCommands = [
-    'PING',
-    'KEYS *',
-    'INFO',
-    'GET mykey',
-    'SET mykey myvalue',
-    'DEL mykey',
-    'INCR counter',
-    'LPUSH mylist value',
-    'LRANGE mylist 0 -1',
-    'HGETALL myhash',
-  ];
-
-  return (
-    <div className="suggestions">
-      <h3>Common Commands</h3>
-      <div className="suggestion-buttons">
-        {commonCommands.map(cmd => (
-          <button
-            key={cmd}
-            onClick={() => onSelect(cmd)}
-            className="suggestion"
-          >
-            {cmd}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-```
-
-### Key Browser Component
-
-```typescript
-// src/components/RedisKeyBrowser.tsx
-
-export function RedisKeyBrowser({ ws }: { ws: WebSocket }) {
-  const [keys, setKeys] = useState<string[]>([]);
-  const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [keyValue, setKeyValue] = useState<any>(null);
-
-  const loadKeys = () => {
-    ws.send(JSON.stringify({ command: 'KEYS', args: ['*'] }));
-  };
-
-  const loadKey = (key: string) => {
-    setSelectedKey(key);
-    ws.send(JSON.stringify({ command: 'GET', args: [key] }));
-  };
-
-  return (
-    <div className="key-browser">
-      <div className="key-list">
-        <button onClick={loadKeys}>Refresh Keys</button>
-        <ul>
-          {keys.map(key => (
-            <li
-              key={key}
-              onClick={() => loadKey(key)}
-              className={selectedKey === key ? 'selected' : ''}
-            >
-              {key}
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {selectedKey && (
-        <div className="key-detail">
-          <h3>{selectedKey}</h3>
-          <pre>{JSON.stringify(keyValue, null, 2)}</pre>
-        </div>
-      )}
-    </div>
-  );
-}
-```
-
-## Data Flow
-
-```
-┌─────────┐         ┌──────────┐         ┌──────────┐
-│ Browser │         │  Worker  │         │  Redis   │
-└────┬────┘         └────┬─────┘         └────┬─────┘
-     │                   │                     │
-     │ WS: Connect       │                     │
-     ├──────────────────>│                     │
-     │                   │ TCP Connect         │
-     │                   ├────────────────────>│
-     │ <── WS Accept ──> │<── TCP Handshake ──>│
-     │                   │                     │
-     │ {command: "GET", args: ["key"]}        │
-     ├──────────────────>│                     │
-     │                   │ *2\r\n$3\r\nGET\r\n$3\r\nkey\r\n
-     │                   ├────────────────────>│
-     │                   │                     │
-     │                   │ $5\r\nvalue\r\n     │
-     │                   │<────────────────────┤
-     │ {type: "response", result: ...}        │
-     │<──────────────────┤                     │
-     │                   │                     │
-```
-
-## Security
-
-### Authentication
-
-```typescript
-// Always authenticate if password is provided
-if (password) {
-  const authResult = await redis.command('AUTH', password);
-  if (authResult.type === 'error') {
-    throw new Error('Authentication failed');
-  }
-}
-```
-
-### Dangerous Commands
-
-Block potentially dangerous commands:
-
-```typescript
-const DANGEROUS_COMMANDS = [
-  'FLUSHDB',
-  'FLUSHALL',
-  'SHUTDOWN',
-  'CONFIG',
-  'DEBUG',
-  'BGSAVE',
-  'BGREWRITEAOF',
-];
-
-function validateCommand(command: string): boolean {
-  return !DANGEROUS_COMMANDS.includes(command.toUpperCase());
-}
-```
-
-### Rate Limiting
-
-```typescript
-// Limit commands per connection
-const COMMAND_RATE_LIMIT = 100; // per minute
-```
-
-## Testing
-
-### Test Setup
-
-Use Docker for local Redis:
-
+**curl example:**
 ```bash
-docker run -d -p 6379:6379 redis:latest
+curl -s -X POST https://portofcall.ross.gg/api/redis/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","port":6379,"command":["INFO","replication"]}' \
+  | jq -r '.response'
 ```
 
-### Unit Tests
+---
 
-```typescript
-// tests/redis.test.ts
+### `GET /api/redis/session` — Interactive WebSocket REPL
 
-describe('RESP Parser', () => {
-  it('should parse simple string', () => {
-    const parser = new RESPParser();
-    parser.append(new TextEncoder().encode('+OK\r\n'));
-    const result = parser.parse();
-    expect(result).toEqual({ type: 'simple-string', value: 'OK' });
-  });
+Upgrades to WebSocket and maintains a persistent TCP connection to Redis for the session duration.
 
-  it('should parse bulk string', () => {
-    const parser = new RESPParser();
-    parser.append(new TextEncoder().encode('$5\r\nhello\r\n'));
-    const result = parser.parse();
-    expect(result).toEqual({ type: 'bulk-string', value: 'hello' });
-  });
-});
+**Connection URL:**
 ```
+wss://portofcall.ross.gg/api/redis/session?host=redis.example.com&port=6379&password=secret&database=0
+```
+
+Query params: `host` (required), `port`, `password`, `database`.
+
+**Worker → browser messages:**
+
+```jsonc
+// On successful connect (after AUTH and SELECT, if applicable):
+{ "type": "connected", "version": "7.2.4", "host": "redis.example.com", "port": 6379 }
+
+// Command result:
+{
+  "type": "response",
+  "response": "1) \"foo\"\n2) \"bar\"",  // redis-cli-style formatted string
+  "raw": "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",  // raw RESP wire bytes
+  "command": ["KEYS", "*"]
+}
+
+// Fatal error (session closes after this):
+{ "type": "error", "message": "Authentication failed: -WRONGPASS invalid username-password pair" }
+```
+
+**Browser → worker messages:**
+```json
+{ "type": "command", "command": ["HGETALL", "myhash"] }
+```
+
+The `command` array is sent directly as RESP bulk strings — pre-tokenize before sending programmatically.
+
+**wscat example:**
+```bash
+wscat -c 'wss://portofcall.ross.gg/api/redis/session?host=redis.example.com&port=6379'
+# After receiving {"type":"connected",...}:
+> {"type":"command","command":["CLIENT","INFO"]}
+> {"type":"command","command":["XINFO","STREAM","events"]}
+```
+
+**Formatting applied to `response`:**
+
+| RESP type | Formatted output |
+|-----------|-----------------|
+| `+OK` | `OK` |
+| `-ERR …` | `(error) ERR …` |
+| `:42` | `(integer) 42` |
+| `$-1` | `(nil)` |
+| `$N\r\ndata` | `"data"` |
+| `*0` | `(empty array)` |
+| `*-1` | `(nil)` |
+| `*N` (flat bulk strings) | `1) "a"\n2) "b"` |
+| `*N` with integer elements | `1) (integer) 42` |
+
+Nested arrays (e.g. `XREAD`, `CONFIG GET` with multiple fields) fall back to raw RESP in the `response` string. Parse `raw` directly for structured access.
+
+---
+
+## RESP Wire Format Reference
+
+Commands are always sent as RESP arrays of bulk strings:
+
+```
+*<argc>\r\n
+$<len(arg0)>\r\n<arg0>\r\n
+$<len(arg1)>\r\n<arg1>\r\n
+```
+
+Response type prefixes:
+
+| Prefix | Type | Example |
+|--------|------|---------|
+| `+` | Simple string | `+OK\r\n` |
+| `-` | Error | `-ERR unknown command\r\n` |
+| `:` | Integer | `:1000\r\n` |
+| `$` | Bulk string | `$5\r\nhello\r\n` |
+| `$-1` | Null bulk string | `$-1\r\n` |
+| `*` | Array | `*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n` |
+
+Inline commands (`PING\r\n` without RESP framing) are not used. RESP3 (`HELLO 3`) is not implemented.
+
+---
+
+## Auth Sequence
+
+On session connect (or HTTP probe):
+
+```
+AUTH <password>      ← only if password is non-empty
+SELECT <n>           ← only if database param is provided (default: Redis db 0)
+INFO server          ← to extract redis_version
+```
+
+If `AUTH` returns a non-`+OK` response the session sends `{ type: 'error' }` and closes. Same for `SELECT`.
+
+---
+
+## UI Input Parsing
+
+The browser UI splits the command input on `/\s+/` — each whitespace-delimited token becomes one RESP bulk string. There is no shell-style quoting.
+
+| You type | Tokens sent | Result |
+|----------|-------------|--------|
+| `GET mykey` | `["GET","mykey"]` | ✅ correct |
+| `SET key hello world` | `["SET","key","hello","world"]` | ❌ wrong arity |
+| `SET key "hello world"` | `["SET","key","\"hello","world\""]` | ❌ quotes are literal |
+| `HSET h f1 v1 f2 v2` | `["HSET","h","f1","v1","f2","v2"]` | ✅ correct |
+
+To set values containing spaces, use the `/api/redis/command` endpoint with a pre-tokenized array, or encode the value to avoid spaces before storing.
+
+Command history stores the last 100 commands per session, navigable with ↑/↓ arrows.
+
+---
+
+## Known Limitations
+
+**Single-read response parsing:** `readRESPResponse` accumulates reads until any `\r\n` appears in the buffer, then returns immediately. For large multi-bulk responses (`KEYS *` on a huge keyspace, full `INFO` with all sections, large `HGETALL`), the first TCP segment may contain only the header line (e.g. `*10000\r\n`). The formatter then renders a truncated result. `raw` in the WS response contains whatever chunk arrived. Works reliably for typical-sized responses on low-latency connections.
+
+**ACL AUTH (Redis 6+):** `AUTH` is called as `AUTH <password>` (single-argument). Redis 6+ ACL logins require `AUTH <username> <password>`. Workaround: use the `default` user, or send `["AUTH","username","password"]` via `/api/redis/command`.
+
+**No TLS:** the worker uses `connect()` (plain TCP) only. Redis TLS-only instances (port 6380, `tls-replication yes`, `requirepass` with TLS) are not reachable. Put a TLS-terminating proxy (stunnel, HAProxy) in front and connect to its plaintext port.
+
+**No pipelining:** each call to `/api/redis/command` opens and closes a new TCP connection. Use the WebSocket session for sequential commands without reconnect overhead.
+
+**Pub/sub mode:** `SUBSCRIBE`, `PSUBSCRIBE`, and `SSUBSCRIBE` put the connection into subscriber mode where the server pushes messages without waiting for commands. The session handler reads one response per command — it surfaces the initial subscription confirmation but silently drops all subsequent pushed messages. Do not use pub/sub commands.
+
+**MONITOR:** `MONITOR` returns `+OK` which the session shows as `OK`, but all subsequent command-stream lines from Redis are never forwarded. The session effectively goes silent.
+
+**MULTI/EXEC transactions:** each command is a separate round-trip. `MULTI` → `OK`, each queued command → `QUEUED`, `EXEC` → multi-bulk reply. Mechanically works, but if the WebSocket drops mid-transaction no `DISCARD` is sent, leaving a dangling transaction on the server until the TCP connection times out.
+
+**Binary values:** `TextDecoder` is used throughout. Binary Redis values (MessagePack, protobuf, raw bytes) are corrupted on decode.
+
+**Cluster / Sentinel:** not supported. Connecting to a cluster node or Sentinel port (26379) works at the RESP level, but `MOVED`/`ASK` redirects are surfaced as error strings with no slot routing. Multi-key commands that hash to different slots return `CROSSSLOT` errors.
+
+**Password in WebSocket URL:** `password` is passed as a query parameter and appears in Cloudflare access logs. Use short-lived or read-only credentials for session connections.
+
+---
+
+## Useful Commands for Port of Call
+
+Commands that work well given the one-response-per-command model and the response size limitations:
+
+```
+INFO server
+INFO replication
+INFO keyspace
+INFO stats
+CLIENT INFO
+CLIENT LIST
+CLIENT GETNAME
+CONFIG GET maxmemory
+CONFIG GET save
+CONFIG GET hz
+DBSIZE
+LASTSAVE
+TIME
+MEMORY USAGE <key>
+TYPE <key>
+TTL <key>
+PTTL <key>
+OBJECT ENCODING <key>
+OBJECT REFCOUNT <key>
+OBJECT IDLETIME <key>
+OBJECT FREQ <key>
+SCAN 0 COUNT 100
+SCAN 0 MATCH prefix:* COUNT 100
+HSCAN myhash 0 COUNT 20
+ZSCAN myzset 0
+SSCAN myset 0
+XLEN <stream>
+XINFO STREAM <stream>
+XINFO GROUPS <stream>
+XINFO CONSUMERS <stream> <group>
+XRANGE <stream> - + COUNT 10
+SLOWLOG GET 10
+SLOWLOG LEN
+LATENCY LATEST
+LATENCY HISTORY event
+ACL WHOAMI
+ACL CAT
+ACL LIST
+MODULE LIST
+COMMAND COUNT
+COMMAND INFO GET SET HGETALL
+CLUSTER INFO
+CLUSTER NODES
+```
+
+Commands that **will not work** as expected:
+- `SUBSCRIBE` / `PSUBSCRIBE` / `SSUBSCRIBE` — pub/sub push mode (see above)
+- `MONITOR` — streaming mode; session goes silent after `+OK`
+- `WAIT` — blocks until replicas acknowledge; may hit the 30s timeout on under-replicated setups
+
+---
 
 ## Resources
 
-- **Protocol Spec**: [Redis Protocol](https://redis.io/docs/reference/protocol-spec/)
-- **Commands Reference**: [Redis Commands](https://redis.io/commands/)
-- **RESP3**: [New protocol version](https://github.com/redis/redis-specifications/blob/master/protocol/RESP3.md)
-- **Node.js Client**: [ioredis](https://github.com/luin/ioredis) (reference implementation)
+- [RESP specification](https://redis.io/docs/reference/protocol-spec/)
+- [RESP3 specification](https://github.com/redis/redis-specifications/blob/master/protocol/RESP3.md)
+- [Redis command reference](https://redis.io/commands/)
+- [Redis ACL / AUTH (v6+)](https://redis.io/docs/management/security/acl/)
+- [Redis Cluster spec](https://redis.io/docs/reference/cluster-spec/)
 
-## Next Steps
+---
 
-1. Implement RESP parser/serializer
-2. Create RedisClient class
-3. Add WebSocket tunnel
-4. Build React UI with command history
-5. Add key browser component
-6. Implement pub/sub visualization
-7. Add monitoring dashboard (INFO command parsing)
+## Practical Examples
+
+### curl
+
+```bash
+# Connectivity probe (no auth)
+curl -s https://portofcall.ross.gg/api/redis/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","port":6379}'
+
+# Probe with ACL user — use command endpoint for AUTH <user> <password>
+curl -s https://portofcall.ross.gg/api/redis/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","command":["AUTH","alice","password"]}'
+
+# HGETALL — returns raw RESP array; parse msg.raw for structured access
+curl -s https://portofcall.ross.gg/api/redis/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","password":"secret","command":["HGETALL","myhash"]}'
+
+# SCAN instead of KEYS * on large keystores
+curl -s https://portofcall.ross.gg/api/redis/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","command":["SCAN","0","MATCH","user:*","COUNT","100"]}'
+
+# Memory usage of a single key (bytes, including overhead)
+curl -s https://portofcall.ross.gg/api/redis/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","command":["MEMORY","USAGE","bigkey"]}'
+
+# Replication lag
+curl -s https://portofcall.ross.gg/api/redis/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"redis.example.com","command":["INFO","replication"]}'
+```
+
+### WebSocket session (JavaScript)
+
+```js
+const ws = new WebSocket(
+  '/api/redis/session?host=redis.example.com&port=6379&password=secret&database=0'
+);
+
+const send = (command) =>
+  ws.send(JSON.stringify({ type: 'command', command }));
+
+ws.onmessage = ({ data }) => {
+  const msg = JSON.parse(data);
+  if (msg.type === 'connected') {
+    console.log('Redis', msg.version, 'at', msg.host + ':' + msg.port);
+    send(['CLIENT', 'SETNAME', 'portofcall']);
+    send(['INFO', 'keyspace']);
+  } else if (msg.type === 'response') {
+    // msg.response — redis-cli style (display)
+    // msg.raw      — raw RESP (parse for structured access)
+    console.log(msg.response);
+  } else if (msg.type === 'error') {
+    console.error(msg.message);
+  }
+};
+```
+
+Commands are serialized over a single connection, amortizing the TCP overhead for multi-step operations.
+
+---
+
+## Power User Tips
+
+### SCAN instead of KEYS \*
+
+`KEYS *` blocks the Redis event loop for the full scan — dangerous on large keystores.
+Use iterative `SCAN 0 MATCH prefix:* COUNT 100` and loop until cursor returns `"0"`.
+
+### INFO sections
+
+The `/api/redis/connect` endpoint only fetches `INFO server`. Fetch other sections via the command endpoint:
+
+| Section | Key fields |
+|---------|-----------|
+| `server` | version, OS, uptime, config file |
+| `clients` | connected_clients, blocked_clients, tracking_clients |
+| `memory` | used_memory_human, mem_fragmentation_ratio, maxmemory_policy |
+| `persistence` | rdb_last_bgsave_status, aof_enabled, aof_last_bgrewrite_status |
+| `stats` | total_commands_processed, instantaneous_ops_per_sec, keyspace_hits, keyspace_misses |
+| `replication` | role, connected_slaves, master_replid, master_repl_offset |
+| `keyspace` | db0:keys=N,expires=N,avg_ttl=N (one line per active DB) |
+| `all` | all sections |
+
+### ACL users (Redis 6+)
+
+`/api/redis/connect` only sends `AUTH <password>`. For named ACL users, send
+`["AUTH", "username", "password"]` via `/api/redis/command` as the first call,
+or use the WebSocket session where AUTH can be issued inline before other commands.
+
+Each `/api/redis/command` call opens a fresh TCP connection, so credentials don't
+carry over between calls.
+
+### OBJECT ENCODING — memory layout
+
+```
+OBJECT ENCODING <key>
+→ "listpack" | "ziplist" | "hashtable" | "quicklist" | "skiplist" | "embstr" | "raw" | "int"
+```
+
+Compact encodings (listpack, ziplist, embstr, int) use less memory but upgrade to
+heap-allocated forms once element-count or size thresholds are exceeded.
+
+### WAIT — write durability
+
+After a write, confirm N replicas acknowledged before continuing:
+
+```
+WAIT <numreplicas> <timeout_ms>
+→ (integer) <replicas that acked>
+```
+
+### Live introspection commands
+
+```
+MEMORY USAGE <key>              → bytes (including Redis overhead)
+OBJECT FREQ <key>               → LFU frequency counter (allkeys-lfu / volatile-lfu policies only)
+OBJECT IDLETIME <key>           → seconds since last access (non-LFU policies only)
+MEMORY DOCTOR                   → plain-text analysis of memory issues
+MEMORY STATS                    → structured memory breakdown
+CONFIG GET maxmemory-policy     → eviction policy
+CONFIG GET maxmemory            → memory cap
+COMMAND COUNT                   → number of commands in this Redis build
+COMMAND DOCS SET                → documentation for SET (Redis 7+)
+LATENCY HISTORY event           → recent latency samples for an event
+SLOWLOG GET 10                  → last 10 slow queries (threshold: slowlog-log-slower-than μs)
+```
+
+No command blocklist is enforced — `CONFIG SET`, `FLUSHALL`, `SHUTDOWN`, etc. all pass through.

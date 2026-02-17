@@ -593,3 +593,160 @@ export async function handleRadsecConnect(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Encode a RADIUS Accounting-Request packet (RFC 2866).
+ * acctStatusType: 1=Start, 2=Stop, 3=Interim-Update
+ */
+function encodeAccountingRequest(params: {
+  identifier: number;
+  authenticator: Uint8Array;
+  username: string;
+  nasIdentifier?: string;
+  nasIpAddress?: string;
+  acctStatusType?: number;
+  acctSessionId?: string;
+  acctInputOctets?: number;
+  acctOutputOctets?: number;
+  acctSessionTime?: number;
+}): Uint8Array {
+  const { identifier, authenticator, username, nasIdentifier, nasIpAddress,
+          acctStatusType = 1, acctSessionId, acctInputOctets = 0,
+          acctOutputOctets = 0, acctSessionTime = 0 } = params;
+
+  const attributes: Uint8Array[] = [];
+  attributes.push(encodeAttribute(RADIUS_ATTR.USER_NAME, username));
+  attributes.push(encodeAttribute(RADIUS_ATTR.ACCT_STATUS_TYPE, new Uint8Array([0, 0, 0, acctStatusType])));
+  if (acctSessionId) attributes.push(encodeAttribute(44, acctSessionId)); // Acct-Session-Id = 44
+  // Acct-Input-Octets = 42, Acct-Output-Octets = 43
+  const ioBytes = new Uint8Array(4);
+  new DataView(ioBytes.buffer).setUint32(0, acctInputOctets, false);
+  attributes.push(encodeAttribute(42, ioBytes));
+  const ooBytes = new Uint8Array(4);
+  new DataView(ooBytes.buffer).setUint32(0, acctOutputOctets, false);
+  attributes.push(encodeAttribute(43, ooBytes));
+  // Acct-Session-Time = 46
+  const stBytes = new Uint8Array(4);
+  new DataView(stBytes.buffer).setUint32(0, acctSessionTime, false);
+  attributes.push(encodeAttribute(46, stBytes));
+  if (nasIdentifier) attributes.push(encodeAttribute(RADIUS_ATTR.NAS_IDENTIFIER, nasIdentifier));
+  if (nasIpAddress) {
+    try { attributes.push(encodeNasIpAddress(nasIpAddress)); } catch { /* skip invalid IP */ }
+  }
+
+  const attrLen = attributes.reduce((s, a) => s + a.length, 0);
+  const totalLen = 20 + attrLen;
+  const packet = new Uint8Array(totalLen);
+  packet[0] = RADIUS_CODE.ACCOUNTING_REQUEST;
+  packet[1] = identifier;
+  packet[2] = (totalLen >> 8) & 0xFF;
+  packet[3] = totalLen & 0xFF;
+  packet.set(authenticator, 4);
+  let off = 20;
+  for (const attr of attributes) { packet.set(attr, off); off += attr.length; }
+  return packet;
+}
+
+/**
+ * POST /api/radsec/accounting
+ * Send a RADIUS Accounting-Request over TLS (RADSEC).
+ * Body: { host, port?, username, nasIdentifier?, nasIpAddress?, timeout?,
+ *         acctStatusType? (1=Start|2=Stop|3=Interim), acctSessionId?,
+ *         acctInputOctets?, acctOutputOctets?, acctSessionTime? }
+ * Response: { success, code, codeText, rtt }
+ */
+export async function handleRadsecAccounting(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    interface AcctRequest extends RadsecRequest {
+      acctStatusType?: number;
+      acctSessionId?: string;
+      acctInputOctets?: number;
+      acctOutputOctets?: number;
+      acctSessionTime?: number;
+    }
+    const body = await request.json() as AcctRequest;
+    const { host, port = 2083, username, nasIdentifier, nasIpAddress, timeout = 15000,
+            acctStatusType = 1, acctSessionId, acctInputOctets = 0,
+            acctOutputOctets = 0, acctSessionTime = 0 } = body;
+
+    if (!host) return new Response(JSON.stringify({ success: false, host: '', port, error: 'Host is required' } satisfies RadsecResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!username) return new Response(JSON.stringify({ success: false, host, port, error: 'Username is required' } satisfies RadsecResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const identifier = generateIdentifier();
+    const authenticator = generateAuthenticator();
+    const radiusRequest = encodeAccountingRequest({
+      identifier, authenticator, username, nasIdentifier, nasIpAddress,
+      acctStatusType, acctSessionId, acctInputOctets, acctOutputOctets, acctSessionTime,
+    });
+
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    const start = Date.now();
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+      await writer.write(radiusRequest);
+      writer.releaseLock();
+
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      const readTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Response timeout')), timeout));
+      try {
+        while (true) {
+          const { value, done } = await Promise.race([reader.read(), readTimeout]);
+          if (done) break;
+          if (value) {
+            chunks.push(value); totalBytes += value.length;
+            if (totalBytes >= 4) {
+              const combined2 = new Uint8Array(totalBytes);
+              let off2 = 0;
+              for (const c of chunks) { combined2.set(c, off2); off2 += c.length; }
+              const pktLen = (combined2[2] << 8) | combined2[3];
+              if (totalBytes >= pktLen) break;
+            }
+          }
+        }
+      } catch { if (chunks.length === 0) throw new Error('No response received'); }
+
+      const rtt = Date.now() - start;
+      const combined = new Uint8Array(totalBytes);
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+      reader.releaseLock();
+      socket.close();
+
+      const parsed = parseRadiusResponse(combined);
+      if (!parsed) {
+        return new Response(JSON.stringify({ success: false, host, port, rtt, error: 'Invalid RADIUS response' } satisfies RadsecResponse), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const statusLabels: Record<number, string> = { 1: 'Start', 2: 'Stop', 3: 'Interim-Update' };
+      return new Response(JSON.stringify({
+        success: parsed.code === RADIUS_CODE.ACCOUNTING_RESPONSE,
+        host, port,
+        code: parsed.code,
+        codeText: getCodeText(parsed.code),
+        acctStatusType,
+        acctStatusLabel: statusLabels[acctStatusType] ?? 'Unknown',
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      host: '',
+      port: 2083,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies RadsecResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

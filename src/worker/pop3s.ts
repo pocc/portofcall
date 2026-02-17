@@ -536,3 +536,284 @@ export async function handlePOP3SRetrieve(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Handle POP3S DELE command (mark message for deletion over TLS)
+ */
+export async function handlePOP3SDele(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const options = await request.json() as {
+      host?: string; port?: number; username?: string; password?: string; msgnum?: number; timeout?: number;
+    };
+    if (!options.host || !options.username || !options.password || options.msgnum == null) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, msgnum',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const host = options.host;
+    const port = options.port || 995;
+    const timeoutMs = options.timeout || 30000;
+    const msgnum = options.msgnum;
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+    const delePromise = (async () => {
+      const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const greeting = await readPOP3Response(reader, 5000);
+        if (!greeting.startsWith('+OK')) throw new Error(`Invalid POP3S greeting: ${greeting.trim()}`);
+        const userResp = await sendPOP3Command(reader, writer, `USER ${options.username}`, 5000);
+        if (!userResp.startsWith('+OK')) throw new Error(`USER command failed: ${userResp.trim()}`);
+        const passResp = await sendPOP3Command(reader, writer, `PASS ${options.password}`, 5000);
+        if (!passResp.startsWith('+OK')) throw new Error(`Authentication failed: ${passResp.trim()}`);
+        const deleResp = await sendPOP3Command(reader, writer, `DELE ${msgnum}`, 5000);
+        if (!deleResp.startsWith('+OK')) throw new Error(`DELE command failed: ${deleResp.trim()}`);
+        await sendPOP3Command(reader, writer, 'QUIT', 5000);
+        await socket.close();
+        return { success: true, msgnum, message: deleResp.trim(), tls: true };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('DELE timeout')), timeoutMs)
+    );
+    try {
+      const result = await Promise.race([delePromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'DELE timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'POP3S DELE failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle POP3S UIDL command (list unique message IDs over TLS)
+ */
+export async function handlePOP3SUidl(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const options = await request.json() as {
+      host?: string; port?: number; username?: string; password?: string; timeout?: number;
+    };
+    if (!options.host || !options.username || !options.password) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const host = options.host;
+    const port = options.port || 995;
+    const timeoutMs = options.timeout || 30000;
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+    const uidlPromise = (async () => {
+      const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const greeting = await readPOP3Response(reader, 5000);
+        if (!greeting.startsWith('+OK')) throw new Error(`Invalid POP3S greeting: ${greeting.trim()}`);
+        const userResp = await sendPOP3Command(reader, writer, `USER ${options.username}`, 5000);
+        if (!userResp.startsWith('+OK')) throw new Error(`USER command failed: ${userResp.trim()}`);
+        const passResp = await sendPOP3Command(reader, writer, `PASS ${options.password}`, 5000);
+        if (!passResp.startsWith('+OK')) throw new Error(`Authentication failed: ${passResp.trim()}`);
+        await writer.write(new TextEncoder().encode('UIDL\r\n'));
+        const uidlResp = await readPOP3MultiLine(reader, 10000);
+        const messages: Array<{ msgnum: number; uid: string }> = [];
+        const lines = uidlResp.split('\r\n');
+        for (const line of lines) {
+          if (line === '.' || line.startsWith('+OK') || line === '') continue;
+          const match = line.match(/^(\d+)\s+(\S+)/);
+          if (match) messages.push({ msgnum: parseInt(match[1]), uid: match[2] });
+        }
+        await sendPOP3Command(reader, writer, 'QUIT', 5000);
+        await socket.close();
+        return { success: true, messages, count: messages.length, tls: true };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('UIDL timeout')), timeoutMs)
+    );
+    try {
+      const result = await Promise.race([uidlPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'UIDL timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'POP3S UIDL failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle POP3S TOP command (retrieve headers + first N body lines over TLS)
+ */
+export async function handlePOP3STop(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const options = await request.json() as {
+      host?: string; port?: number; username?: string; password?: string;
+      msgnum?: number; lines?: number; timeout?: number;
+    };
+    if (!options.host || !options.username || !options.password || options.msgnum == null) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host, username, password, msgnum',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const host = options.host;
+    const port = options.port || 995;
+    const timeoutMs = options.timeout || 30000;
+    const msgnum = options.msgnum;
+    const lines = options.lines ?? 0;
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+    const topPromise = (async () => {
+      const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const greeting = await readPOP3Response(reader, 5000);
+        if (!greeting.startsWith('+OK')) throw new Error(`Invalid POP3S greeting: ${greeting.trim()}`);
+        const userResp = await sendPOP3Command(reader, writer, `USER ${options.username}`, 5000);
+        if (!userResp.startsWith('+OK')) throw new Error(`USER command failed: ${userResp.trim()}`);
+        const passResp = await sendPOP3Command(reader, writer, `PASS ${options.password}`, 5000);
+        if (!passResp.startsWith('+OK')) throw new Error(`Authentication failed: ${passResp.trim()}`);
+        await writer.write(new TextEncoder().encode(`TOP ${msgnum} ${lines}\r\n`));
+        const topResp = await readPOP3MultiLine(reader, 30000);
+        if (!topResp.startsWith('+OK')) throw new Error(`TOP command failed: ${topResp.trim()}`);
+        const respLines = topResp.split('\r\n');
+        const contentLines = respLines.slice(1, -2);
+        const content = contentLines.join('\r\n');
+        await sendPOP3Command(reader, writer, 'QUIT', 5000);
+        await socket.close();
+        return { success: true, msgnum, lines, content, tls: true };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('TOP timeout')), timeoutMs)
+    );
+    try {
+      const result = await Promise.race([topPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'TOP timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'POP3S TOP failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle POP3S CAPA command (server capabilities over TLS, no auth required)
+ */
+export async function handlePOP3SCapa(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    let host = '';
+    let port = 995;
+    if (request.method === 'POST') {
+      const body = await request.json() as { host?: string; port?: number };
+      host = body.host || '';
+      port = body.port || 995;
+    } else {
+      host = url.searchParams.get('host') || '';
+      port = parseInt(url.searchParams.get('port') || '995');
+    }
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+    const capaPromise = (async () => {
+      const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const greeting = await readPOP3Response(reader, 5000);
+        if (!greeting.startsWith('+OK')) throw new Error(`Invalid POP3S greeting: ${greeting.trim()}`);
+        await writer.write(new TextEncoder().encode('CAPA\r\n'));
+        const capaResp = await readPOP3MultiLine(reader, 10000);
+        const capabilities: string[] = [];
+        const lines = capaResp.split('\r\n');
+        for (const line of lines) {
+          if (line === '.' || line.startsWith('+OK') || line === '') continue;
+          capabilities.push(line);
+        }
+        await writer.write(new TextEncoder().encode('QUIT\r\n'));
+        await socket.close();
+        return { success: true, host, port, capabilities, tls: true };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('CAPA timeout')), 30000)
+    );
+    try {
+      const result = await Promise.race([capaPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'CAPA timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'POP3S CAPA failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

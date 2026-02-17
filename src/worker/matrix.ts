@@ -567,3 +567,114 @@ export async function handleMatrixSend(request: Request): Promise<Response> {
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+/**
+ * Handle Matrix room creation.
+ * POST /_matrix/client/v3/createRoom
+ *
+ * Accept JSON: { host, port?, access_token, name?, topic?, preset?, timeout? }
+ * preset: 'public_chat' | 'private_chat' | 'trusted_private_chat'
+ */
+export async function handleMatrixRoomCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; access_token?: string;
+      name?: string; topic?: string; preset?: string; timeout?: number;
+    };
+    const {
+      host, port = 8448,
+      access_token = '',
+      name = 'PortOfCall Test Room',
+      topic = 'Created by PortOfCall',
+      preset = 'public_chat',
+      timeout = 15000,
+    } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+
+    const roomBody = JSON.stringify({
+      name, topic, preset,
+      visibility: preset === 'public_chat' ? 'public' : 'private',
+    });
+    const start = Date.now();
+    let result;
+    try {
+      result = await sendHttpRequest(host, port, 'POST', '/_matrix/client/v3/createRoom', roomBody, access_token, timeout);
+    } catch {
+      result = await sendHttpRequest(host, port, 'POST', '/_matrix/client/r0/createRoom', roomBody, access_token, timeout);
+    }
+    const latencyMs = Date.now() - start;
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = JSON.parse(result.body); } catch { parsed = null; }
+
+    if (result.statusCode === 200) {
+      return new Response(JSON.stringify({
+        success: true, host, port, statusCode: result.statusCode, latencyMs,
+        roomId: parsed?.room_id as string | null, name, topic, preset,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      success: false, host, port, statusCode: result.statusCode, latencyMs,
+      error: (parsed?.error as string | undefined) || result.body.substring(0, 500),
+      errcode: parsed?.errcode as string | undefined,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Matrix room create failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Matrix room join.
+ * POST /_matrix/client/v3/join/{roomIdOrAlias}
+ *
+ * Accept JSON: { host, port?, access_token, room_id_or_alias, timeout? }
+ */
+export async function handleMatrixRoomJoin(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; access_token?: string;
+      room_id_or_alias?: string; timeout?: number;
+    };
+    const { host, port = 8448, access_token = '', room_id_or_alias = '', timeout = 15000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+    if (!room_id_or_alias) return new Response(JSON.stringify({ success: false, error: 'room_id_or_alias is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+
+    const encodedRoom = encodeURIComponent(room_id_or_alias);
+    const start = Date.now();
+    let result;
+    try {
+      result = await sendHttpRequest(host, port, 'POST', `/_matrix/client/v3/join/${encodedRoom}`, '{}', access_token, timeout);
+    } catch {
+      result = await sendHttpRequest(host, port, 'POST', `/_matrix/client/r0/join/${encodedRoom}`, '{}', access_token, timeout);
+    }
+    const latencyMs = Date.now() - start;
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = JSON.parse(result.body); } catch { parsed = null; }
+
+    if (result.statusCode === 200) {
+      return new Response(JSON.stringify({
+        success: true, host, port, statusCode: result.statusCode, latencyMs,
+        roomId: parsed?.room_id as string | null, room_id_or_alias,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      success: false, host, port, statusCode: result.statusCode, latencyMs,
+      error: (parsed?.error as string | undefined) || result.body.substring(0, 500),
+      errcode: parsed?.errcode as string | undefined,
+      room_id_or_alias,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Matrix room join failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

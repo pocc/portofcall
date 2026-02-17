@@ -2,7 +2,7 @@
  * H.323 Protocol Worker Handler
  *
  * Implements H.225 call signaling probe based on Q.931 (ITU-T).
- * H.323 is a legacy VoIP standard on port 1720 (TCP).
+ * H.323 is a legacy VoIP/multimedia standard on port 1720 (TCP).
  *
  * Message structure:
  * - Protocol Discriminator: 0x08 (Q.931)
@@ -13,6 +13,10 @@
  *
  * The probe sends a minimal SETUP message and parses the response
  * (Call Proceeding, Release Complete, or other Q.931 messages).
+ *
+ * handleH323Connect — send Q.931 SETUP, parse full response exchange
+ * handleH323Register — send H.225 Setup UUIE (GRQ-style discovery)
+ * handleH323Info — lightweight port probe returning connection metadata
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -97,32 +101,29 @@ function getCauseDescription(causeValue: number): string {
 
 /**
  * Build a minimal Q.931 SETUP message for H.323 probing.
- * Includes Bearer Capability, Display, and User-User (H.323) IEs.
+ * Includes Bearer Capability, Display, Called/Calling Party Number, and H.323 User-User IE.
  */
 function buildSetupMessage(callRef: number, callingNumber: string, calledNumber: string): Uint8Array {
   const parts: Uint8Array[] = [];
   const encoder = new TextEncoder();
 
-  // --- Header ---
-  // Protocol Discriminator
+  // --- Q.931 Header ---
   parts.push(new Uint8Array([Q931_PROTOCOL_DISCRIMINATOR]));
-  // Call Reference Length = 2
-  parts.push(new Uint8Array([0x02]));
-  // Call Reference (2 bytes, originating side has bit 7 of first byte = 0)
+  parts.push(new Uint8Array([0x02]));  // Call Reference Length = 2
+  // Call Reference value (originating side: bit 7 of first byte = 0)
   parts.push(new Uint8Array([(callRef >> 8) & 0x7f, callRef & 0xff]));
-  // Message Type: SETUP
   parts.push(new Uint8Array([Q931_SETUP]));
 
   // --- Bearer Capability IE ---
   parts.push(new Uint8Array([
     IE_BEARER_CAPABILITY,
     0x03,  // Length
-    0x80,  // Coding: ITU-T, speech
-    0x90,  // Transfer capability: unrestricted digital
-    0xa3,  // Transfer rate: packet mode, layer 1 = H.221/H.242
+    0x80,  // Coding: ITU-T, Information Transfer Capability: speech
+    0x90,  // Transfer rate: 64 kbps
+    0xa3,  // Layer 1 protocol: H.221 and H.242
   ]));
 
-  // --- Display IE (optional, identifies caller) ---
+  // --- Display IE ---
   const displayText = `Probe from ${callingNumber}`;
   const displayBytes = encoder.encode(displayText);
   parts.push(new Uint8Array([IE_DISPLAY, displayBytes.length]));
@@ -134,7 +135,7 @@ function buildSetupMessage(callRef: number, callingNumber: string, calledNumber:
     parts.push(new Uint8Array([
       IE_CALLED_PARTY_NUMBER,
       calledBytes.length + 1,
-      0x80,  // Type of number: unknown, Numbering plan: unknown
+      0x80,  // Type: unknown, Plan: unknown
     ]));
     parts.push(calledBytes);
   }
@@ -151,17 +152,17 @@ function buildSetupMessage(callRef: number, callingNumber: string, calledNumber:
     parts.push(callingBytes);
   }
 
-  // --- User-User IE (H.323 specific - minimal H225 Setup UUIE) ---
-  // This is a simplified H.323 User-User Information Element
-  // Real implementations use ASN.1 PER encoding for H225-Setup-UUIE
+  // --- User-User IE (H.323-specific H.225 Setup-UUIE stub) ---
+  // Per H.225.0: H.323 endpoint identification uses ASN.1 PER.
+  // This is a minimal stub that signals H.323 identity to the gatekeeper.
+  // H.225 Protocol Identifier OID: 0.0.8.2250.0.4 (H.225 v4) encoded as 6 bytes.
   const uuData = new Uint8Array([
-    H323_UU_PROTOCOL_DISCRIMINATOR,
-    // Minimal H225 Setup-UUIE stub (not fully ASN.1 PER encoded)
-    // Protocol identifier for H.225.0v4
+    H323_UU_PROTOCOL_DISCRIMINATOR,  // H.323 UU protocol discriminator
+    // H.225.0 v4 protocol identifier (simplified OID encoding)
     0x00, 0x08, 0x91, 0x4a, 0x00, 0x04,
-    // sourceAddress (empty)
+    // sourceAddress: empty (omitted)
     0x00,
-    // activeMC = false
+    // activeMC: false
     0x00,
   ]);
   parts.push(new Uint8Array([IE_USER_USER, uuData.length]));
@@ -180,20 +181,20 @@ function buildSetupMessage(callRef: number, callingNumber: string, calledNumber:
 }
 
 /**
- * Build a Q.931 RELEASE COMPLETE message to cleanly end the call.
+ * Build a Q.931 RELEASE COMPLETE message to cleanly terminate a call.
  */
 function buildReleaseComplete(callRef: number): Uint8Array {
   return new Uint8Array([
     Q931_PROTOCOL_DISCRIMINATOR,
-    0x02, // Call Reference Length
-    ((callRef >> 8) & 0x7f) | 0x80, // Call ref with response flag (bit 7 = 1)
+    0x02,                              // Call Reference Length
+    ((callRef >> 8) & 0x7f) | 0x80,   // Call ref with response flag (bit 7 = 1)
     callRef & 0xff,
     Q931_RELEASE_COMPLETE,
-    // Cause IE: Normal call clearing
+    // Cause IE: Normal call clearing (cause 16)
     0x08, // Cause IE identifier
     0x02, // Length
     0x80, // Coding: ITU-T, Location: user
-    0x90, // Cause: Normal call clearing (16) with extension bit
+    0x90, // Cause value: Normal call clearing (16) + extension bit
   ]);
 }
 
@@ -263,12 +264,9 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
 
     // Single-octet IEs (bit 7 = 1 for some codeset 0 IEs)
     if ((ieId & 0x80) !== 0 && ieId !== IE_USER_USER && ieId !== IE_CALLED_PARTY_NUMBER && ieId !== IE_CALLING_PARTY_NUMBER) {
-      // Shift/locking shift or single-octet IE
-      // Skip if it looks like a single-byte IE
       if (ieId >= 0x90 && ieId <= 0x9f) continue; // Sending complete
       if (ieId >= 0xa0 && ieId <= 0xaf) continue; // Congestion level
       if (ieId >= 0xb0 && ieId <= 0xbf) continue; // Repeat indicator
-      // Otherwise treat as variable-length
     }
 
     if (offset >= data.length) break;
@@ -285,7 +283,7 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
       data: ieData,
     });
 
-    // Extract cause
+    // Extract cause value
     if (ieId === 0x08 && ieLength >= 2) {
       const causeValue = ieData[ieLength - 1];
       cause = {
@@ -294,7 +292,7 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
       };
     }
 
-    // Extract display
+    // Extract display text
     if (ieId === IE_DISPLAY && ieLength > 0) {
       display = decoder.decode(ieData);
     }
@@ -314,9 +312,13 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
 }
 
 /**
- * Read exact number of bytes from the socket with timeout.
+ * Read exact number of bytes from the socket with a deadline.
  */
-export async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, length: number, timeoutMs: number): Promise<Uint8Array> {
+export async function readExact(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  length: number,
+  timeoutMs: number,
+): Promise<Uint8Array> {
   const buffer = new Uint8Array(length);
   let offset = 0;
 
@@ -343,9 +345,13 @@ export async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>,
 }
 
 /**
- * Read whatever bytes are available from the socket with timeout.
+ * Read whatever bytes arrive next from the socket, with a timeout.
+ * Returns null if the connection closes or the timeout fires first.
  */
-async function readAvailable(reader: ReadableStreamDefaultReader<Uint8Array>, timeoutMs: number): Promise<Uint8Array | null> {
+async function readAvailable(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<Uint8Array | null> {
   const readPromise = reader.read();
   const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
     setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs)
@@ -356,9 +362,360 @@ async function readAvailable(reader: ReadableStreamDefaultReader<Uint8Array>, ti
   return value;
 }
 
+// ---------------------------------------------------------------------------
+// handleH323Register
+// ---------------------------------------------------------------------------
+
+interface H323RegisterResult {
+  success: boolean;
+  messageType: number;
+  messageTypeName: string;
+  h225Version: string;
+  destinationAddress?: string;
+  latencyMs: number;
+  raw: number[];
+  cause?: { value: number; description: string };
+  display?: string;
+  error?: string;
+}
+
+/**
+ * Send an H.225 Setup message (GRQ-style gatekeeper discovery over TCP port 1720).
+ *
+ * Background: H.225 RAS uses UDP port 1719 for GatekeeperRequest (GRQ) messages.
+ * Because Cloudflare Workers expose TCP-only via connect(), we instead connect to
+ * TCP port 1720 (Q.931 call signaling) and send an H.225 Setup-UUIE that announces
+ * H.323 capability.  Responses like CALL PROCEEDING, ALERTING, CONNECT, or
+ * RELEASE COMPLETE reveal gatekeeper/gateway presence and capability.
+ *
+ * Q.931 SETUP message contents:
+ *   - Protocol Discriminator: 0x08
+ *   - Call Reference: 2-byte random ID
+ *   - Message Type: 0x05 (SETUP)
+ *   - Bearer Capability IE
+ *   - Display IE
+ *   - Called Party Number IE
+ *   - Calling Party Number IE
+ *   - User-User IE with H.225 UUIE stub (H.225 v4 protocol ID)
+ *
+ * Parsed response fields:
+ *   messageType / messageTypeName  — Q.931 message code
+ *   h225Version                    — extracted from User-User IE if present
+ *   destinationAddress             — Connected Number IE if present
+ *   cause                          — Q.931 Cause IE (Release Complete)
+ *   latencyMs                      — round-trip time
+ *   raw                            — first response packet bytes
+ *
+ * POST /api/h323/register
+ * Body: { host, port=1720, calledNumber='100', callingNumber='200', timeout=10000 }
+ */
+export async function handleH323Register(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json() as {
+      host?: string;
+      port?: number;
+      calledNumber?: string;
+      callingNumber?: string;
+      timeout?: number;
+    };
+
+    const host = (body.host ?? '').trim();
+    const port = body.port ?? 1720;
+    const calledNumber = (body.calledNumber ?? '100').trim();
+    const callingNumber = (body.callingNumber ?? '200').trim();
+    const timeout = Math.min(body.timeout ?? 10000, 30000);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const phoneRegex = /^[0-9*#+]+$/;
+    if (callingNumber && !phoneRegex.test(callingNumber)) {
+      return new Response(JSON.stringify({ success: false, error: 'Calling number contains invalid characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (calledNumber && !phoneRegex.test(calledNumber)) {
+      return new Response(JSON.stringify({ success: false, error: 'Called number contains invalid characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const registerPromise = (async (): Promise<H323RegisterResult> => {
+      const startTime = Date.now();
+      const socket = connect({ hostname: host, port });
+      await socket.opened;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        // Generate a random call reference (1–0x7FFF)
+        const callRef = (Math.floor(Math.random() * 0x7ffe) + 1);
+
+        // Build and send H.225 Setup UUIE over Q.931
+        const setupMsg = buildSetupMessage(callRef, callingNumber, calledNumber);
+        await writer.write(setupMsg);
+
+        // Read the first response with a reasonable per-read timeout
+        const readTimeout = Math.max(timeout - (Date.now() - startTime) - 200, 1000);
+        const responseData = await readAvailable(reader, readTimeout);
+        const latencyMs = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        if (!responseData) {
+          return {
+            success: false,
+            messageType: 0,
+            messageTypeName: 'NO RESPONSE',
+            h225Version: 'Unknown',
+            latencyMs,
+            raw: [],
+            error: 'No response received from server',
+          };
+        }
+
+        const parsed = parseQ931Message(responseData);
+
+        if (!parsed) {
+          return {
+            success: true,
+            messageType: responseData[0] ?? 0,
+            messageTypeName: 'UNPARSEABLE',
+            h225Version: 'Unknown',
+            latencyMs,
+            raw: Array.from(responseData.slice(0, 64)),
+            error: 'Could not parse Q.931 response',
+          };
+        }
+
+        // Extract H.225 version from User-User IE if present
+        let h225Version = 'Unknown';
+        let destinationAddress: string | undefined;
+
+        for (const ie of parsed.informationElements) {
+          if (ie.id === IE_USER_USER && ie.length >= 7) {
+            // User-User IE: first byte = protocol discriminator (0x05 for H.323)
+            // Bytes 1–6: H.225 OID (protocol version info)
+            if (ie.data[0] === H323_UU_PROTOCOL_DISCRIMINATOR) {
+              // Derive version from byte 5 of the OID field (byte 6 overall)
+              const versionByte = ie.data[5] ?? 0;
+              h225Version = `H.225 v${versionByte === 0 ? 1 : versionByte}`;
+            }
+          }
+          // Connected Number IE (0x4c) carries the destination address post-connect
+          if (ie.id === 0x4c && ie.length > 1) {
+            const decoder = new TextDecoder('utf-8', { fatal: false });
+            destinationAddress = decoder.decode(ie.data.slice(1));
+          }
+        }
+
+        // Determine success: any response except parse failure is a successful probe
+        const success = parsed.messageType !== 0;
+
+        return {
+          success,
+          messageType: parsed.messageType,
+          messageTypeName: parsed.messageTypeName,
+          h225Version,
+          destinationAddress,
+          latencyMs,
+          raw: Array.from(responseData.slice(0, 64)),
+          cause: parsed.cause,
+          display: parsed.display,
+        };
+      } catch (err) {
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([registerPromise, timeoutPromise]);
+
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'H.323 register failed',
+      messageType: 0,
+      messageTypeName: 'ERROR',
+      h225Version: 'Unknown',
+      latencyMs: 0,
+      raw: [],
+    } satisfies H323RegisterResult), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleH323Info
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight H.323 port probe.
+ * Connects to the H.323 signaling port, sends a minimal SETUP, and returns
+ * connection metadata — server responsiveness, latency, and any Q.931 details
+ * gleaned from the connection attempt — without committing to a full call flow.
+ *
+ * This is useful for:
+ * - Verifying an H.323 endpoint or gatekeeper is live
+ * - Measuring connect latency
+ * - Detecting whether the port speaks Q.931 at all
+ *
+ * POST /api/h323/info
+ * Body: { host, port=1720, timeout=10000 }
+ */
+export async function handleH323Info(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json() as {
+      host?: string;
+      port?: number;
+      timeout?: number;
+    };
+
+    const host = (body.host ?? '').trim();
+    const port = body.port ?? 1720;
+    const timeout = Math.min(body.timeout ?? 10000, 30000);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const infoPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect({ hostname: host, port });
+      await socket.opened;
+      const connectTime = Date.now() - startTime;
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      try {
+        // Send a minimal SETUP to provoke any Q.931 response
+        const callRef = (Math.floor(Math.random() * 0x7ffe) + 1);
+        const setupMsg = buildSetupMessage(callRef, '200', '100');
+        await writer.write(setupMsg);
+
+        const readTimeout = Math.max(timeout - connectTime - 200, 1000);
+        const responseData = await readAvailable(reader, readTimeout);
+        const rtt = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        let q931 = false;
+        let messageTypeName = 'No response';
+        let messageType = -1;
+        let cause: { value: number; description: string } | undefined;
+        let display: string | undefined;
+
+        if (responseData) {
+          const parsed = parseQ931Message(responseData);
+          if (parsed && parsed.protocolDiscriminator === Q931_PROTOCOL_DISCRIMINATOR) {
+            q931 = true;
+            messageType = parsed.messageType;
+            messageTypeName = parsed.messageTypeName;
+            cause = parsed.cause;
+            display = parsed.display;
+          } else if (responseData.length > 0) {
+            messageTypeName = `Non-Q.931 data (${responseData.length} bytes)`;
+          }
+        }
+
+        return {
+          success: true,
+          host,
+          port,
+          connectTime,
+          rtt,
+          protocol: 'H.323/Q.931',
+          q931Detected: q931,
+          messageType: messageType >= 0 ? messageType : undefined,
+          messageTypeName,
+          cause,
+          display,
+        };
+      } catch (err) {
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([infoPromise, timeoutPromise]);
+
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'H.323 info probe failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleH323Connect  (original, unchanged)
+// ---------------------------------------------------------------------------
+
 /**
  * Handle H.323 call signaling probe.
- * Sends a Q.931 SETUP message and parses the response.
+ * Sends a Q.931 SETUP message and parses the full response exchange
+ * (Call Proceeding → Alerting → Connect/Release Complete).
+ *
+ * POST /api/h323/connect
+ * Body: { host, port=1720, callingNumber='1000', calledNumber='2000', timeout=10000 }
  */
 export async function handleH323Connect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
@@ -434,7 +791,7 @@ export async function handleH323Connect(request: Request): Promise<Response> {
         timestamp: number;
       }> = [];
 
-      // Read response(s) - may get Call Proceeding, Alerting, Connect, or Release Complete
+      // Read response(s) — may get Call Proceeding, Alerting, Connect, or Release Complete
       let gotFinalResponse = false;
       let responseStatus = 'no_response';
       const readStart = Date.now();
@@ -477,16 +834,13 @@ export async function handleH323Connect(request: Request): Promise<Response> {
             responseStatus = 'connected';
             gotFinalResponse = true;
             // Send Release Complete to clean up
-            const releaseMsg = buildReleaseComplete(callRef);
-            await writer.write(releaseMsg);
+            await writer.write(buildReleaseComplete(callRef));
             break;
           case Q931_CALL_PROCEEDING:
             responseStatus = 'call_proceeding';
-            // Keep reading for more messages
             break;
           case Q931_ALERTING:
             responseStatus = 'alerting';
-            // Keep reading for Connect or Release Complete
             break;
           case Q931_PROGRESS:
             responseStatus = 'progress';
@@ -505,11 +859,10 @@ export async function handleH323Connect(request: Request): Promise<Response> {
         }
       }
 
-      // If we got intermediate responses but no final, send Release Complete
+      // Send Release Complete if we got intermediate responses but no final
       if (!gotFinalResponse && messages.length > 0) {
         try {
-          const releaseMsg = buildReleaseComplete(callRef);
-          await writer.write(releaseMsg);
+          await writer.write(buildReleaseComplete(callRef));
         } catch {
           // Ignore cleanup errors
         }
@@ -541,6 +894,204 @@ export async function handleH323Connect(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'H.323 connection failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// H.245 message type tags (first byte of PER-encoded MultimediaSystemControlMessage)
+// H.245 uses ASN.1 PER encoding. The outer CHOICE is:
+//   0 = request, 1 = response, 2 = command, 3 = indication
+// TerminalCapabilitySet is request[2], MasterSlaveDetermination is request[0]
+// We encode minimal but valid H.245 PDUs for capability negotiation.
+
+function buildTerminalCapabilitySet(sequenceNumber: number): Uint8Array {
+  // Minimal H.245 TerminalCapabilitySet ASN.1 PER encoding
+  // MultimediaSystemControlMessage CHOICE[0] = request
+  // request CHOICE[2] = terminalCapabilitySet
+  //
+  // TerminalCapabilitySet fields:
+  //   sequenceNumber     INTEGER(0..255)  — 1 byte
+  //   protocolIdentifier OBJECT IDENTIFIER — encoded as H.245 v13 OID
+  //   multiplexCapability — h2250Capability (CHOICE[0])
+  //   capabilityTable    — SET SIZE(0..256), here 0 entries
+  //   capabilityDescriptors — SET SIZE(0..256), here 0 entries
+  //
+  // This minimal TCS announces "we exist" so the remote sends TCSAck.
+  const buf = new Uint8Array([
+    0x00,             // CHOICE: request (0)
+    0x02,             // request CHOICE: terminalCapabilitySet (2)
+    sequenceNumber & 0xff,
+    // protocolIdentifier: OID 0.0.8.245.0.13 (H.245 v13) in DER then PER
+    0x06, 0x04, 0x00, 0x08, 0xf5, 0x00, // OID encoding
+    // multiplexCapability: CHOICE[0] = nonStandard, skip -> use h2250Capability
+    // Minimal: just indicate h2250Capability present
+    0x00,             // h2250Capability CHOICE
+    // capabilityTable: 0 entries (length 0)
+    0x00,
+    // capabilityDescriptors: 0 entries
+    0x00,
+  ]);
+  return buf;
+}
+
+function buildMasterSlaveDetermination(): Uint8Array {
+  // MultimediaSystemControlMessage CHOICE[0] = request
+  // request CHOICE[0] = masterSlaveDetermination
+  // terminalType: INTEGER(0..255) = 50 (terminal)
+  // statusDeterminationNumber: INTEGER(0..16777215) — 3 bytes, use 0x123456
+  return new Uint8Array([
+    0x00,             // CHOICE: request (0)
+    0x00,             // request CHOICE: masterSlaveDetermination (0)
+    50,               // terminalType = 50 (terminal, per H.245 Table 2)
+    0x12, 0x34, 0x56, // statusDeterminationNumber (random)
+  ]);
+}
+
+interface H245CapabilityResponse {
+  success: boolean;
+  host: string;
+  port: number;
+  tcsAckReceived: boolean;
+  msdAckReceived: boolean;
+  masterOrSlave?: string;
+  rawResponseBytes?: number;
+  messages: string[];
+  rtt: number;
+  error?: string;
+}
+
+interface H323CapabilitiesRequest {
+  host: string;
+  port: number;
+  timeout?: number;
+}
+
+export async function handleH323Capabilities(request: Request): Promise<Response> {
+  let body: H323CapabilitiesRequest;
+  try {
+    body = await request.json() as H323CapabilitiesRequest;
+  } catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port, timeout = 10000 } = body;
+  if (!host || !port) {
+    return new Response(JSON.stringify({ success: false, error: 'host and port are required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const messages: string[] = [];
+  const startTime = Date.now();
+
+  try {
+    const socket = connect({ hostname: host, port }, { secureTransport: 'off', allowHalfOpen: false });
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      // Send TerminalCapabilitySet
+      const tcs = buildTerminalCapabilitySet(1);
+      await writer.write(tcs);
+      messages.push(`Sent TerminalCapabilitySet (${tcs.length} bytes, sequenceNumber=1)`);
+
+      // Send MasterSlaveDetermination
+      const msd = buildMasterSlaveDetermination();
+      await writer.write(msd);
+      messages.push(`Sent MasterSlaveDetermination (${msd.length} bytes, terminalType=50)`);
+
+      // Read responses with timeout
+      let tcsAckReceived = false;
+      let msdAckReceived = false;
+      let masterOrSlave: string | undefined;
+      let totalBytes = 0;
+
+      const timeoutAt = Date.now() + Math.min(timeout, 10000);
+
+      while (Date.now() < timeoutAt && (!tcsAckReceived || !msdAckReceived)) {
+        const remaining = timeoutAt - Date.now();
+        if (remaining <= 0) break;
+
+        const readResult = await Promise.race([
+          reader.read(),
+          new Promise<{ done: boolean; value: undefined }>((resolve) =>
+            setTimeout(() => resolve({ done: true, value: undefined }), remaining)
+          ),
+        ]);
+
+        if (readResult.done || !readResult.value) break;
+
+        const chunk = readResult.value;
+        totalBytes += chunk.length;
+
+        // Parse H.245 PER response — first two bytes are CHOICE selectors
+        // response CHOICE[0] = masterSlaveDeterminationAck
+        // response CHOICE[1] = masterSlaveDeterminationReject
+        // response CHOICE[2] = terminalCapabilitySetAck
+        // response CHOICE[3] = terminalCapabilitySetReject
+        for (let i = 0; i < chunk.length - 1; i++) {
+          const outerChoice = chunk[i];
+          const innerChoice = chunk[i + 1];
+
+          if (outerChoice === 0x01) {
+            // response
+            if (innerChoice === 0x02) {
+              tcsAckReceived = true;
+              messages.push('Received TerminalCapabilitySetAck');
+            } else if (innerChoice === 0x03) {
+              messages.push('Received TerminalCapabilitySetReject');
+              tcsAckReceived = true; // treat as answered
+            } else if (innerChoice === 0x00) {
+              msdAckReceived = true;
+              // masterOrSlave: next byte after the 2-byte header
+              if (i + 2 < chunk.length) {
+                masterOrSlave = chunk[i + 2] === 0x00 ? 'master' : 'slave';
+              }
+              messages.push(`Received MasterSlaveDeterminationAck (${masterOrSlave ?? 'unknown'})`);
+            } else if (innerChoice === 0x01) {
+              msdAckReceived = true;
+              messages.push('Received MasterSlaveDeterminationReject');
+            }
+          }
+        }
+      }
+
+      const rtt = Date.now() - startTime;
+      const result: H245CapabilityResponse = {
+        success: true,
+        host,
+        port,
+        tcsAckReceived,
+        msdAckReceived,
+        masterOrSlave,
+        rawResponseBytes: totalBytes,
+        messages,
+        rtt,
+      };
+
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+      await socket.close();
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      error: error instanceof Error ? error.message : 'H.245 connection failed',
+      messages,
+      rtt: Date.now() - startTime,
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

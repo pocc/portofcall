@@ -345,8 +345,473 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/**
+ * HTTP handler for EPP domain info (login + domain:info)
+ * POST /api/epp/domain-info
+ * Body: { host, port?, clid, pw, domain }
+ */
+export async function handleEPPDomainInfo(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
+  try {
+    const body = await request.json() as { host: string; port?: number; clid?: string; pw?: string; domain: string };
+    if (!body.host || !body.domain) {
+      return new Response(JSON.stringify({ success: false, error: 'host and domain are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const config: EPPConfig = { host: body.host, port: body.port ?? 700, clid: body.clid, pw: body.pw };
+    const loginResult = await eppLogin(config);
+    if (!loginResult.success) {
+      return new Response(JSON.stringify(loginResult), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // EPP socket was closed by eppLogin — open a new session for info
+    let socket: ReturnType<typeof connect> | null = null;
+    try {
+      socket = connect(`${config.host}:${config.port}`);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Read server greeting
+      await readEPPFrame(reader);
+
+      // Login
+      const loginCmd = `<?xml version="1.0" encoding="UTF-8"?><epp xmlns="urn:ietf:params:xml:ns:epp-1.0"><command><login><clID>${escapeXml(config.clid ?? '')}</clID><pw>${escapeXml(config.pw ?? '')}</pw><options><version>1.0</version><lang>en</lang></options><svcs><objURI>urn:ietf:params:xml:ns:domain-1.0</objURI></svcs></login></command></epp>`;
+      await writer.write(encodeEPPFrame(loginCmd));
+      const loginResp = await readEPPFrame(reader);
+      const loginParsed = parseEPPResponse(loginResp);
+      if (loginParsed.code !== 1000) {
+        throw new Error(`Login failed: ${loginParsed.message}`);
+      }
+
+      // Domain info
+      const infoCmd = `<?xml version="1.0" encoding="UTF-8"?><epp xmlns="urn:ietf:params:xml:ns:epp-1.0"><command><info><domain:info xmlns:domain="urn:ietf:params:xml:ns:domain-1.0"><domain:name hosts="all">${escapeXml(body.domain)}</domain:name></domain:info></info></command></epp>`;
+      await writer.write(encodeEPPFrame(infoCmd));
+      const infoResp = await readEPPFrame(reader);
+      const infoParsed = parseEPPResponse(infoResp);
+
+      writer.releaseLock();
+      reader.releaseLock();
+      await socket.close();
+
+      // Extract key fields from XML
+      const extract = (xml: string, tag: string) => {
+        const m = xml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
+        return m ? m[1] : undefined;
+      };
+      const extractAll = (xml: string, tag: string) => {
+        const matches = [...xml.matchAll(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`, 'g'))];
+        return matches.map(m => m[1]);
+      };
+
+      return new Response(JSON.stringify({
+        success: infoParsed.code === 1000,
+        domain: body.domain,
+        code: infoParsed.code,
+        message: infoParsed.message,
+        registrant: extract(infoResp, 'domain:registrant'),
+        crDate: extract(infoResp, 'domain:crDate'),
+        upDate: extract(infoResp, 'domain:upDate'),
+        exDate: extract(infoResp, 'domain:exDate'),
+        status: extractAll(infoResp, 'domain:status'),
+        nameservers: extractAll(infoResp, 'domain:hostObj'),
+        raw: infoResp.substring(0, 2000),
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      try { if (socket) await socket.close(); } catch {}
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'EPP domain info failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * HTTP handler for EPP domain create
+ * POST /api/epp/domain-create
+ * Body: { host, port?, clid, pw, domain, period?, nameservers?, registrant?, password? }
+ */
+export async function handleEPPDomainCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; clid?: string; pw?: string;
+      domain: string; period?: number; nameservers?: string[];
+      registrant?: string; password?: string;
+    };
+    if (!body.host || !body.domain) {
+      return new Response(JSON.stringify({ success: false, error: 'host and domain are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const config: EPPConfig = { host: body.host, port: body.port ?? 700, clid: body.clid, pw: body.pw };
+    const period = body.period ?? 1;
+    const ns = (body.nameservers ?? []).slice(0, 13);
+    const registrant = body.registrant ?? 'REGISTRANT';
+    const authPw = body.password ?? 'authInfo2023!';
+
+    const nsXml = ns.map(n => `<domain:hostObj>${escapeXml(n)}</domain:hostObj>`).join('');
+    const nsBlock = ns.length > 0 ? `<domain:ns>${nsXml}</domain:ns>` : '';
+
+    let socket: ReturnType<typeof connect> | null = null;
+    try {
+      socket = connect(`${config.host}:${config.port}`);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await readEPPFrame(reader);
+
+      const loginCmd = `<?xml version="1.0" encoding="UTF-8"?><epp xmlns="urn:ietf:params:xml:ns:epp-1.0"><command><login><clID>${escapeXml(config.clid ?? '')}</clID><pw>${escapeXml(config.pw ?? '')}</pw><options><version>1.0</version><lang>en</lang></options><svcs><objURI>urn:ietf:params:xml:ns:domain-1.0</objURI></svcs></login></command></epp>`;
+      await writer.write(encodeEPPFrame(loginCmd));
+      const loginResp = await readEPPFrame(reader);
+      const loginParsed = parseEPPResponse(loginResp);
+      if (loginParsed.code !== 1000) throw new Error(`Login failed: ${loginParsed.message}`);
+
+      const createCmd = `<?xml version="1.0" encoding="UTF-8"?><epp xmlns="urn:ietf:params:xml:ns:epp-1.0"><command><create><domain:create xmlns:domain="urn:ietf:params:xml:ns:domain-1.0"><domain:name>${escapeXml(body.domain)}</domain:name><domain:period unit="y">${period}</domain:period>${nsBlock}<domain:registrant>${escapeXml(registrant)}</domain:registrant><domain:authInfo><domain:pw>${escapeXml(authPw)}</domain:pw></domain:authInfo></domain:create></create></command></epp>`;
+      await writer.write(encodeEPPFrame(createCmd));
+      const createResp = await readEPPFrame(reader);
+      const createParsed = parseEPPResponse(createResp);
+
+      writer.releaseLock();
+      reader.releaseLock();
+      await socket.close();
+
+      const extract = (xml: string, tag: string) => {
+        const m = xml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
+        return m ? m[1] : undefined;
+      };
+
+      return new Response(JSON.stringify({
+        success: createParsed.code === 1000,
+        domain: body.domain,
+        code: createParsed.code,
+        message: createParsed.message,
+        crDate: extract(createResp, 'domain:crDate'),
+        exDate: extract(createResp, 'domain:exDate'),
+        raw: createResp.substring(0, 2000),
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      try { if (socket) await socket.close(); } catch {}
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'EPP domain create failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
 export default {
   eppConnect,
   eppLogin,
   eppDomainCheck,
 };
+
+/**
+ * EPP Domain Update — modify nameservers or auth info
+ *
+ * POST /api/epp/domain-update
+ * Body: { host, port?, clid, pw, domain, addNs?, remNs?, authPw? }
+ */
+export async function handleEPPDomainUpdate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  interface EPPUpdateRequest {
+    host: string; port?: number; clid: string; pw: string;
+    domain: string; addNs?: string[]; remNs?: string[]; authPw?: string;
+  }
+
+  let body: EPPUpdateRequest;
+  try { body = await request.json() as EPPUpdateRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 700, clid, pw, domain, addNs = [], remNs = [], authPw } = body;
+  if (!host || !clid || !pw || !domain) {
+    return new Response(JSON.stringify({ success: false, error: 'host, clid, pw, and domain are required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let socket: ReturnType<typeof connect> | null = null;
+  try {
+    socket = connect({ hostname: host, port });
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    try {
+      // Read greeting
+      await readEPPFrame(reader);
+
+      // Login
+      const loginXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+  <command>
+    <login>
+      <clID>${clid}</clID>
+      <pw>${pw}</pw>
+      <options><version>1.0</version><lang>en</lang></options>
+      <svcs><objURI>urn:ietf:params:xml:ns:domain-1.0</objURI></svcs>
+    </login>
+    <clTRID>POC-LOGIN-001</clTRID>
+  </command>
+</epp>`;
+      await writer.write(encodeEPPFrame(loginXml));
+      const loginResp = await readEPPFrame(reader);
+      const loginResult = parseEPPResponse(loginResp);
+      if (loginResult.code < 1000 || loginResult.code >= 2000) {
+        return new Response(JSON.stringify({
+          success: false, error: `Login failed: ${loginResult.message} (code ${loginResult.code})`,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Domain Update
+      const addNsXml = addNs.length > 0
+        ? `<domain:add><domain:ns>${addNs.map((ns) => `<domain:hostObj>${ns}</domain:hostObj>`).join('')}</domain:ns></domain:add>`
+        : '';
+      const remNsXml = remNs.length > 0
+        ? `<domain:rem><domain:ns>${remNs.map((ns) => `<domain:hostObj>${ns}</domain:hostObj>`).join('')}</domain:ns></domain:rem>`
+        : '';
+      const chgXml = authPw
+        ? `<domain:chg><domain:authInfo><domain:pw>${authPw}</domain:pw></domain:authInfo></domain:chg>`
+        : '';
+
+      const updateXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+  <command>
+    <update>
+      <domain:update xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">
+        <domain:name>${domain}</domain:name>
+        ${addNsXml}${remNsXml}${chgXml}
+      </domain:update>
+    </update>
+    <clTRID>POC-UPDATE-001</clTRID>
+  </command>
+</epp>`;
+      await writer.write(encodeEPPFrame(updateXml));
+      const updateResp = await readEPPFrame(reader);
+      const result = parseEPPResponse(updateResp);
+
+      return new Response(JSON.stringify({
+        success: result.code >= 1000 && result.code < 2000,
+        domain,
+        code: result.code,
+        message: result.message,
+        addedNs: addNs,
+        removedNs: remNs,
+        raw: updateResp.substring(0, 2000),
+      }), { headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+      try { if (socket) await socket.close(); } catch {}
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'EPP domain update failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * EPP Domain Delete — remove a domain registration
+ *
+ * POST /api/epp/domain-delete
+ * Body: { host, port?, clid, pw, domain }
+ */
+export async function handleEPPDomainDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  interface EPPDeleteRequest {
+    host: string; port?: number; clid: string; pw: string; domain: string;
+  }
+
+  let body: EPPDeleteRequest;
+  try { body = await request.json() as EPPDeleteRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 700, clid, pw, domain } = body;
+  if (!host || !clid || !pw || !domain) {
+    return new Response(JSON.stringify({ success: false, error: 'host, clid, pw, and domain are required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let socket: ReturnType<typeof connect> | null = null;
+  try {
+    socket = connect({ hostname: host, port });
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    try {
+      await readEPPFrame(reader);
+
+      const loginXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+  <command>
+    <login>
+      <clID>${clid}</clID><pw>${pw}</pw>
+      <options><version>1.0</version><lang>en</lang></options>
+      <svcs><objURI>urn:ietf:params:xml:ns:domain-1.0</objURI></svcs>
+    </login>
+    <clTRID>POC-LOGIN-002</clTRID>
+  </command>
+</epp>`;
+      await writer.write(encodeEPPFrame(loginXml));
+      const loginResp = await readEPPFrame(reader);
+      const loginResult = parseEPPResponse(loginResp);
+      if (loginResult.code < 1000 || loginResult.code >= 2000) {
+        return new Response(JSON.stringify({
+          success: false, error: `Login failed: ${loginResult.message} (code ${loginResult.code})`,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const deleteXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+  <command>
+    <delete>
+      <domain:delete xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">
+        <domain:name>${domain}</domain:name>
+      </domain:delete>
+    </delete>
+    <clTRID>POC-DELETE-001</clTRID>
+  </command>
+</epp>`;
+      await writer.write(encodeEPPFrame(deleteXml));
+      const deleteResp = await readEPPFrame(reader);
+      const result = parseEPPResponse(deleteResp);
+
+      return new Response(JSON.stringify({
+        success: result.code >= 1000 && result.code < 2000,
+        domain,
+        code: result.code,
+        message: result.message,
+        raw: deleteResp.substring(0, 2000),
+      }), { headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+      try { if (socket) await socket.close(); } catch {}
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'EPP domain delete failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * EPP Domain Renew — extend a domain registration period
+ *
+ * POST /api/epp/domain-renew
+ * Body: { host, port?, clid, pw, domain, curExpDate, years? }
+ */
+export async function handleEPPDomainRenew(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  interface EPPRenewRequest {
+    host: string; port?: number; clid: string; pw: string;
+    domain: string; curExpDate: string; years?: number;
+  }
+
+  let body: EPPRenewRequest;
+  try { body = await request.json() as EPPRenewRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 700, clid, pw, domain, curExpDate, years = 1 } = body;
+  if (!host || !clid || !pw || !domain || !curExpDate) {
+    return new Response(JSON.stringify({
+      success: false, error: 'host, clid, pw, domain, and curExpDate are required',
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  let socket: ReturnType<typeof connect> | null = null;
+  try {
+    socket = connect({ hostname: host, port });
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+    try {
+      await readEPPFrame(reader);
+
+      const loginXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+  <command>
+    <login>
+      <clID>${clid}</clID><pw>${pw}</pw>
+      <options><version>1.0</version><lang>en</lang></options>
+      <svcs><objURI>urn:ietf:params:xml:ns:domain-1.0</objURI></svcs>
+    </login>
+    <clTRID>POC-LOGIN-003</clTRID>
+  </command>
+</epp>`;
+      await writer.write(encodeEPPFrame(loginXml));
+      const loginResp = await readEPPFrame(reader);
+      const loginResult = parseEPPResponse(loginResp);
+      if (loginResult.code < 1000 || loginResult.code >= 2000) {
+        return new Response(JSON.stringify({
+          success: false, error: `Login failed: ${loginResult.message} (code ${loginResult.code})`,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const renewXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
+  <command>
+    <renew>
+      <domain:renew xmlns:domain="urn:ietf:params:xml:ns:domain-1.0">
+        <domain:name>${domain}</domain:name>
+        <domain:curExpDate>${curExpDate}</domain:curExpDate>
+        <domain:period unit="y">${years}</domain:period>
+      </domain:renew>
+    </renew>
+    <clTRID>POC-RENEW-001</clTRID>
+  </command>
+</epp>`;
+      await writer.write(encodeEPPFrame(renewXml));
+      const renewResp = await readEPPFrame(reader);
+      const result = parseEPPResponse(renewResp);
+
+      // Extract new expiry date
+      const newExpDate = renewResp.match(/<domain:exDate>([^<]+)<\/domain:exDate>/)?.[1];
+
+      return new Response(JSON.stringify({
+        success: result.code >= 1000 && result.code < 2000,
+        domain,
+        code: result.code,
+        message: result.message,
+        curExpDate,
+        newExpDate: newExpDate ?? null,
+        yearsRenewed: years,
+        raw: renewResp.substring(0, 2000),
+      }), { headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+      try { if (socket) await socket.close(); } catch {}
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'EPP domain renew failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

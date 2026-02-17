@@ -611,3 +611,137 @@ export async function handleFluentdSend(request: Request): Promise<Response> {
     );
   }
 }
+
+/**
+ * Handle Fluentd bulk send — sends multiple events as a PackedForward mode message
+ * POST /api/fluentd/bulk
+ * Body: { host, port?, tag?, events: [{time?, record}], timeout? }
+ *
+ * PackedForward mode packs each [time, record] pair as msgpack, then sends
+ * the binary blob as the "entries" field instead of an array.
+ */
+export async function handleFluentdBulk(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' }),
+      { status: 405, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      tag?: string;
+      events?: Array<{ time?: number; record: Record<string, string | number> }>;
+      timeout?: number;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = body.host;
+    const port = body.port || 24224;
+    const tag = body.tag || 'portofcall.bulk';
+    const timeout = body.timeout || 10000;
+    const events = (body.events || [{ record: { message: 'Hello from Port of Call' } }]).slice(0, 100);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Build PackedForward binary entries blob
+    // Each entry: msgpack([timestamp, recordMap])
+    const entryParts: Uint8Array[] = [];
+    for (const ev of events) {
+      const ts = encodeMsgpackUint32(ev.time ?? Math.floor(Date.now() / 1000));
+      const entries = Object.entries(ev.record || {}).slice(0, 20).map(([k, v]) =>
+        [k, String(v)] as [string, string]
+      );
+      const rec = encodeMsgpackMap(entries);
+      entryParts.push(encodeMsgpackArray([ts, rec]));
+    }
+
+    // Concatenate all entry blobs
+    const totalLen = entryParts.reduce((s, p) => s + p.length, 0);
+    const entriesBlob = new Uint8Array(totalLen);
+    let off = 0;
+    for (const p of entryParts) { entriesBlob.set(p, off); off += p.length; }
+
+    // Encode entriesBlob as msgpack bin8/bin16/bin32
+    let blobEncoded: Uint8Array;
+    if (entriesBlob.length <= 255) {
+      blobEncoded = new Uint8Array(2 + entriesBlob.length);
+      blobEncoded[0] = 0xC4; blobEncoded[1] = entriesBlob.length;
+      blobEncoded.set(entriesBlob, 2);
+    } else {
+      blobEncoded = new Uint8Array(3 + entriesBlob.length);
+      blobEncoded[0] = 0xC5;
+      blobEncoded[1] = (entriesBlob.length >> 8) & 0xFF;
+      blobEncoded[2] = entriesBlob.length & 0xFF;
+      blobEncoded.set(entriesBlob, 3);
+    }
+
+    const chunkId = generateChunkId();
+    const options = encodeMsgpackMap([['chunk', chunkId], ['size', events.length]]);
+
+    // PackedForward: [tag, entries_blob, options]
+    const tagEncoded = encodeMsgpackString(tag);
+    const msg = encodeMsgpackArray([tagEncoded, blobEncoded, options]);
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(msg);
+
+      let ackReceived = false;
+      try {
+        const ackTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('ack_timeout')), 3000));
+        const { value, done } = await Promise.race([reader.read(), ackTimeout]);
+        if (!done && value && value.length > 0) {
+          const text = new TextDecoder().decode(value);
+          ackReceived = text.includes(chunkId) || value.length > 0;
+        }
+      } catch { /* no ack */ }
+
+      const rtt = Date.now() - startTime;
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host, port, tag,
+        eventCount: events.length,
+        bytesSent: msg.length,
+        ackReceived,
+        chunkId,
+        rtt,
+        message: `Sent ${events.length} events (${msg.length} bytes) in ${rtt}ms${ackReceived ? ', ACK received' : ''}`,
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Fluentd bulk failed' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}

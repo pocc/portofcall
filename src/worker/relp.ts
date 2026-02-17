@@ -401,6 +401,221 @@ export async function handleRelpSend(request: Request): Promise<Response> {
   }
 }
 
+/**
+ * Read all pending RELP response frames from the socket.
+ * Reads until timeout or EOF; returns an array of raw frame strings.
+ */
+async function readAllRelpResponses(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number
+): Promise<string[]> {
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
+  );
+
+  const frames: string[] = [];
+
+  const readPromise = (async () => {
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += new TextDecoder().decode(value);
+
+      // Extract all complete frames (each ends with \n)
+      let newlineIdx: number;
+      while ((newlineIdx = buffer.indexOf('\n')) !== -1) {
+        const frame = buffer.substring(0, newlineIdx + 1);
+        frames.push(frame);
+        buffer = buffer.substring(newlineIdx + 1);
+      }
+    }
+    return frames;
+  })();
+
+  await Promise.race([readPromise, timeoutPromise]).catch(() => {});
+  return frames;
+}
+
+/**
+ * Handle RELP batch send — sends multiple syslog messages using pipelining
+ * POST /api/relp/batch
+ *
+ * Opens a RELP session, pipelines all messages without waiting for intermediate
+ * ACKs, then collects all ACKs and matches them back to the sent transaction numbers.
+ */
+export async function handleRELPBatch(request: Request): Promise<Response> {
+  try {
+    const {
+      host,
+      port = 20514,
+      timeout = 15000,
+      messages,
+      facility = 1,
+      severity = 6,
+    } = await request.json<{
+      host: string;
+      port?: number;
+      timeout?: number;
+      messages: string[];
+      facility?: number;
+      severity?: number;
+    }>();
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+      return new Response(JSON.stringify({ error: 'messages must be a non-empty array' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (facility < 0 || facility > 23) {
+      return new Response(JSON.stringify({ error: 'Facility must be between 0 and 23' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (severity < 0 || severity > 7) {
+      return new Response(JSON.stringify({ error: 'Severity must be between 0 and 7' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Step 1: Open session (txnr=1)
+        const openData = [
+          'relp_version=0',
+          'relp_software=portofcall/1.0',
+          'commands=syslog',
+        ].join('\n');
+
+        const openFrame = buildRelpFrame(1, 'open', openData);
+        await writer.write(openFrame);
+
+        const openResponseRaw = await readRelpResponse(reader, 5000);
+        const openParsed = parseRelpResponse(openResponseRaw);
+
+        if (openParsed.statusCode !== 200) {
+          throw new Error(`RELP open rejected: ${openParsed.statusCode} ${openParsed.statusMessage || ''}`);
+        }
+
+        // Step 2: Pipeline — send all syslog messages without waiting for ACKs
+        const pri = facility * 8 + severity;
+        const timestamp = new Date().toISOString();
+        const sentTxnrs: number[] = [];
+
+        // txnr starts at 2 (1 was used for open)
+        let txnr = 2;
+        for (const msg of messages) {
+          const syslogMsg = `<${pri}>1 ${timestamp} portofcall relp-batch - - - ${msg}`;
+          const frame = buildRelpFrame(txnr, 'syslog', syslogMsg);
+          await writer.write(frame);
+          sentTxnrs.push(txnr);
+          txnr++;
+        }
+
+        // Step 3: Send close
+        const closeTxnr = txnr;
+        const closeFrame = buildRelpFrame(closeTxnr, 'close', '');
+        await writer.write(closeFrame);
+
+        // Step 4: Collect all ACKs
+        // We need responses for each syslog message plus the close
+        const ackTimeoutMs = Math.max(2000, messages.length * 200);
+        const rawFrames = await readAllRelpResponses(reader, ackTimeoutMs);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        const rtt = Date.now() - startTime;
+
+        // Parse ACKs and match to txnrs
+        const ackedTxnrs = new Set<number>();
+        for (const raw of rawFrames) {
+          try {
+            const parsed = parseRelpResponse(raw);
+            if (parsed.command === 'rsp' && parsed.statusCode === 200) {
+              ackedTxnrs.add(parsed.txnr);
+            }
+          } catch {
+            // Skip unparseable frames
+          }
+        }
+
+        const acknowledged = sentTxnrs.filter(t => ackedTxnrs.has(t)).length;
+        const allAcked = acknowledged === messages.length;
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          sent: messages.length,
+          acknowledged,
+          txnrs: sentTxnrs,
+          allAcked,
+          facility,
+          severity,
+          facilityName: FACILITY_NAMES[facility] || `facility${facility}`,
+          severityName: SEVERITY_NAMES[severity] || `severity${severity}`,
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'RELP batch send failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /** Syslog facility names */
 const FACILITY_NAMES: Record<number, string> = {
   0: 'kern',

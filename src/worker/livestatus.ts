@@ -414,3 +414,138 @@ export async function handleLivestatusQuery(request: Request): Promise<Response>
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+/**
+ * POST /api/livestatus/services
+ * Query the services table with optional host/service filters.
+ * Body: { host, port?, timeout?, filter?, limit? }
+ * Response: { success, services: [{host_name, description, state, output, ...}], rtt }
+ */
+export async function handleLivestatusServices(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    interface ServicesRequest extends LivestatusRequest { filter?: string; limit?: number; }
+    const body = await request.json() as ServicesRequest;
+    const { host, port = 6557, timeout = 10000, filter, limit = 100 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const filters = filter ? [filter] : undefined;
+    const query = buildQuery(
+      'services',
+      ['host_name', 'description', 'state', 'state_type', 'plugin_output',
+       'last_check', 'next_check', 'acknowledged', 'notifications_enabled'],
+      filters,
+      limit,
+    );
+    const result = await sendQuery(host, port, timeout, query);
+
+    if (result.status === 200 || result.status === 0) {
+      let data: unknown = result.body;
+      try { data = JSON.parse(result.body); } catch { /* leave as string */ }
+      return new Response(JSON.stringify({
+        success: true, host, port, services: data, rtt: result.rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    return new Response(JSON.stringify({
+      success: false, error: `Livestatus error ${result.status}`, rawBody: result.body, rtt: result.rtt,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * POST /api/livestatus/command
+ * Send a Nagios/Checkmk external COMMAND via Livestatus.
+ * Supports: ACKNOWLEDGE_SVC_PROBLEM, SCHEDULE_SVC_DOWNTIME, SCHEDULE_HOST_CHECK,
+ *           ACKNOWLEDGE_HOST_PROBLEM, SCHEDULE_HOST_DOWNTIME, PROCESS_SERVICE_CHECK_RESULT
+ *
+ * Body: { host, port?, timeout?, command, args? }
+ *   command: Nagios external command name (e.g. "ACKNOWLEDGE_SVC_PROBLEM")
+ *   args: array of args (e.g. ["web01", "HTTP", "1", "1", "0", "admin", "ack"])
+ * Response: { success, command, sent, rtt }
+ */
+export async function handleLivestatusCommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    interface CommandRequest extends LivestatusRequest { command: string; args?: string[]; }
+    const body = await request.json() as CommandRequest;
+    const { host, port = 6557, timeout = 10000, command, args = [] } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!command) {
+      return new Response(JSON.stringify({ success: false, error: 'command is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Nagios external command format: COMMAND [timestamp] COMMAND_NAME;arg1;arg2...
+    const timestamp = Math.floor(Date.now() / 1000);
+    const argsStr = args.length > 0 ? ';' + args.join(';') : '';
+    const cmdLine = `COMMAND [${timestamp}] ${command.toUpperCase()}${argsStr}`;
+
+    // COMMAND write: no response header, no blank line (Livestatus just reads and exits)
+    const cmdText = `${cmdLine}\n`;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(new TextEncoder().encode(cmdText));
+      // COMMAND writes don't return a response; wait briefly for connection close
+      const rtt = Date.now() - startTime;
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true, host, port, command: cmdLine, sent: true, rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

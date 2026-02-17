@@ -1,44 +1,29 @@
-# SNMP Protocol Implementation
+# SNMP — Power User Reference
 
-## Overview
+**Port:** 161 (agent queries) | **Protocol:** SNMPv1, SNMPv2c, SNMPv3 USM | **Tests:** Deployed
 
-**Simple Network Management Protocol (SNMP)** is a widely-used protocol for monitoring and managing network devices. This implementation supports SNMPv1 and SNMPv2c over TCP (RFC 3430).
+Port of Call provides three SNMP endpoints: a single-OID GET, a subtree WALK, and an SNMPv3 authenticated GET. All three open a direct TCP connection from the Cloudflare Worker to your SNMP agent (RFC 3430 — SNMP over TCP). UDP is not supported.
 
-- **Port:** 161 (agent queries), 162 (traps - not yet implemented)
-- **RFCs:** RFC 1157 (SNMPv1), RFC 1905 (SNMPv2c), RFC 3430 (SNMP over TCP)
-- **Protocol:** TCP (Workers constraint - UDP not supported)
-- **Encoding:** ASN.1/BER (Basic Encoding Rules)
-
-## Features
-
-- ✅ SNMPv1 and SNMPv2c support
-- ✅ GET operation (single OID query)
-- ✅ GETNEXT operation (sequential OID traversal)
-- ✅ GETBULK operation (efficient bulk queries, v2c only)
-- ✅ WALK operation (retrieve entire OID subtrees)
-- ✅ Community-based authentication
-- ✅ ASN.1/BER encoder/decoder
-- ✅ Support for common data types (INTEGER, STRING, OID, IPADDRESS, COUNTER, GAUGE, TIMETICKS)
+---
 
 ## API Endpoints
 
-### POST /api/snmp/get
+### `POST /api/snmp/get` — Single OID query (v1/v2c)
 
-Query a single OID from an SNMP agent.
+Sends a GET-REQUEST for one OID and returns the variable binding.
 
 **Request:**
-```json
-{
-  "host": "demo.snmplabs.com",
-  "port": 161,
-  "community": "public",
-  "oid": "1.3.6.1.2.1.1.1.0",
-  "version": 2,
-  "timeout": 10000
-}
-```
 
-**Response (Success):**
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `161` | |
+| `community` | string | `"public"` | Community string (sent in plaintext) |
+| `oid` | string | required | Dotted-decimal, e.g. `1.3.6.1.2.1.1.1.0` |
+| `version` | `1` \| `2` | `2` | `1` = SNMPv1 (GET-REQUEST), `2` = SNMPv2c (GET-REQUEST) |
+| `timeout` | number (ms) | `10000` | |
+
+**Success (200):**
 ```json
 {
   "success": true,
@@ -46,13 +31,13 @@ Query a single OID from an SNMP agent.
     {
       "oid": "1.3.6.1.2.1.1.1.0",
       "type": "STRING",
-      "value": "Linux demo 3.10.0 #1 SMP x86_64"
+      "value": "Linux myhost 5.15.0 #1 SMP x86_64"
     }
   ]
 }
 ```
 
-**Response (Error):**
+**Error (500):**
 ```json
 {
   "success": false,
@@ -61,382 +46,329 @@ Query a single OID from an SNMP agent.
 }
 ```
 
-### POST /api/snmp/walk
+`errorStatus` values: `noError`, `tooBig`, `noSuchName`, `badValue`, `readOnly`, `genErr`.
 
-Retrieve multiple OIDs under a subtree (SNMP WALK).
+**Note:** `version: 1` forces SNMPv1 GET-REQUEST (which has subtly different error semantics — `noSuchName` vs. SNMPv2c `noSuchObject` / `endOfMibView`). Always prefer `version: 2` unless targeting a v1-only agent.
+
+---
+
+### `POST /api/snmp/walk` — Subtree walk (v1/v2c)
+
+Iterates a subtree using GETNEXT (SNMPv1) or GETBULK (SNMPv2c) over a persistent TCP connection.
 
 **Request:**
-```json
-{
-  "host": "demo.snmplabs.com",
-  "port": 161,
-  "community": "public",
-  "oid": "1.3.6.1.2.1.1",
-  "version": 2,
-  "maxRepetitions": 10,
-  "timeout": 30000
-}
-```
 
-**Response:**
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `161` | |
+| `community` | string | `"public"` | |
+| `oid` | string | required | Root of the subtree to walk |
+| `version` | `1` \| `2` | `2` | v2 uses GETBULK; v1 uses GETNEXT (one OID per round-trip) |
+| `maxRepetitions` | number | `10` | GETBULK only — number of OIDs per GETBULK response |
+| `timeout` | number (ms) | `30000` | Total walk timeout (not per-request) |
+
+**Success (200):**
 ```json
 {
   "success": true,
   "count": 7,
   "results": [
-    {
-      "oid": "1.3.6.1.2.1.1.1.0",
-      "type": "STRING",
-      "value": "Linux demo 3.10.0"
-    },
-    {
-      "oid": "1.3.6.1.2.1.1.3.0",
-      "type": "TIMETICKS",
-      "value": 123456789
-    },
-    {
-      "oid": "1.3.6.1.2.1.1.5.0",
-      "type": "STRING",
-      "value": "demo.snmplabs.com"
-    }
+    { "oid": "1.3.6.1.2.1.1.1.0", "type": "STRING",    "value": "Linux myhost 5.15.0" },
+    { "oid": "1.3.6.1.2.1.1.3.0", "type": "TIMETICKS", "value": 123456789 },
+    { "oid": "1.3.6.1.2.1.1.5.0", "type": "STRING",    "value": "myhost.example.com" }
   ]
 }
 ```
 
-## Common OIDs (MIB-II System Group)
+**Walk termination:** stops when a returned OID falls outside the requested subtree, when the agent signals end-of-MIB, or when `timeout` is exhausted.
 
-| OID | Name | Description |
-|-----|------|-------------|
-| 1.3.6.1.2.1.1.1.0 | sysDescr | System description |
-| 1.3.6.1.2.1.1.3.0 | sysUpTime | System uptime (timeticks) |
-| 1.3.6.1.2.1.1.4.0 | sysContact | System contact |
-| 1.3.6.1.2.1.1.5.0 | sysName | System name |
-| 1.3.6.1.2.1.1.6.0 | sysLocation | System location |
-| 1.3.6.1.2.1.1.7.0 | sysServices | System services |
+**Performance:** For deep subtrees, increase `maxRepetitions` (20–50). GETBULK with `maxRepetitions: 50` is much faster than GETNEXT for large tables like ifTable. Be aware: very large GETBULK responses may be truncated if they span multiple TCP segments (see Known Limitations).
 
-## Usage Examples
+---
 
-### cURL - SNMP GET
+### `POST /api/snmp/v3-get` — SNMPv3 USM authenticated GET
+
+Full SNMPv3 User Security Model (USM) flow: discovery + authenticated GET-REQUEST. Supports multiple OIDs per call.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `161` | |
+| `username` | string | required | USM username configured on agent |
+| `authPassword` | string | — | If omitted, uses `noAuthNoPriv` |
+| `authProtocol` | `"SHA"` \| `"MD5"` | `"SHA"` | See note — both use SHA-1 internally |
+| `privPassword` | string | — | **Accepted but ignored** — see Known Limitations |
+| `privProtocol` | `"AES"` \| `"DES"` | — | **Accepted but ignored** — see Known Limitations |
+| `oids` | string[] | required | One or more OIDs in dotted-decimal form |
+| `timeout` | number (ms) | `10000` | Applied per TCP connection (two connections total) |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "engineId": "80001f8880a76c5a000000a5",
+  "engineBoots": 12,
+  "engineTime": 48291,
+  "securityLevel": "authNoPriv",
+  "authProtocol": "SHA",
+  "varbinds": [
+    { "oid": "1.3.6.1.2.1.1.1.0", "type": "STRING",    "value": "Linux myhost 5.15.0" },
+    { "oid": "1.3.6.1.2.1.1.3.0", "type": "TIMETICKS", "value": 123456789 }
+  ],
+  "rtt": 184
+}
+```
+
+`engineId` is the authoritative engine ID in hex. `engineBoots` + `engineTime` are the agent's boot count and seconds-since-boot, returned from the discovery step.
+
+---
+
+## SNMPv3 Flow (What the implementation does)
+
+The v3 endpoint makes **two TCP connections**:
+
+```
+Client                              Agent
+  |                                   |
+  | ---[Discovery: REPORT-REQ]------> |  empty engineID, msgFlags=0x04 (REPORTABLE)
+  | <--[REPORT: USM error]---------   |  carries engineID, engineBoots, engineTime
+  |                                   |
+  | ---[GET-REQUEST: auth'd]-------->  |  HMAC-SHA1 over full message, first 12 bytes
+  | <--[GET-RESPONSE]---------------  |  variable bindings
+```
+
+**Step 1 (Discovery):** Sends an unauthenticated message with empty engineID and `msgFlags=0x04` (REPORTABLE). The agent responds with a REPORT PDU containing its `usmStatsUnknownEngineIDs` OID, and crucially, the USM security parameters include the real engineID, engineBoots, and engineTime.
+
+**Step 2 (Authenticated GET):** Uses the discovered engineID to localize the auth key (RFC 3414 key derivation: hash 1MB of repeated password to get Ku, then hash Ku+engineID+Ku to get Kul). Builds a full GET-REQUEST PDU, computes HMAC over the whole message, inserts the first 12 bytes of the HMAC as `msgAuthenticationParameters`.
+
+---
+
+## Response Data Types
+
+Both GET/WALK and v3-get parse these ASN.1 BER types:
+
+| BER Tag | Type name | JS representation |
+|---|---|---|
+| `0x02` | `INTEGER` | number |
+| `0x04` | `STRING` | UTF-8 decoded string |
+| `0x06` | `OID` | dotted-decimal string |
+| `0x05` | `NULL` | `"null"` |
+| `0x40` | `IPADDRESS` | dotted-decimal string (e.g. `"192.168.1.1"`) |
+| `0x41` | `COUNTER32` | number |
+| `0x42` | `GAUGE32` | number |
+| `0x43` | `TIMETICKS` | number (hundredths of a second) |
+| `0x46` | `COUNTER64` | number (v3 only; v1/v2c returns UNKNOWN) |
+| other | `UNKNOWN(0xNN)` | hex string of raw bytes |
+
+**TIMETICKS note:** values are in hundredths of a second. Divide by 100 for seconds, by 8640000 for days. `sysUpTime.0` = `1.3.6.1.2.1.1.3.0`.
+
+---
+
+## Common OIDs for Daily Use
+
+### MIB-II System Group (`1.3.6.1.2.1.1`)
+
+| OID | Name | Type | Notes |
+|---|---|---|---|
+| `1.3.6.1.2.1.1.1.0` | `sysDescr` | STRING | Full OS/hardware description |
+| `1.3.6.1.2.1.1.2.0` | `sysObjectID` | OID | Vendor enterprise OID |
+| `1.3.6.1.2.1.1.3.0` | `sysUpTime` | TIMETICKS | Uptime in hundredths of a second |
+| `1.3.6.1.2.1.1.4.0` | `sysContact` | STRING | Admin contact |
+| `1.3.6.1.2.1.1.5.0` | `sysName` | STRING | Hostname |
+| `1.3.6.1.2.1.1.6.0` | `sysLocation` | STRING | Physical location |
+| `1.3.6.1.2.1.1.7.0` | `sysServices` | INTEGER | Services bitmask (L1=1, L2=2, L3=4, L4=8, L7=64) |
+
+Walk `1.3.6.1.2.1.1` to get all 7 in one request.
+
+### Interface Table (`1.3.6.1.2.1.2.2`)
+
+Walk `1.3.6.1.2.1.2.2` for the full interface table. Key columns:
+
+| Column OID | Name | Notes |
+|---|---|---|
+| `1.3.6.1.2.1.2.2.1.1` | `ifIndex` | Interface index |
+| `1.3.6.1.2.1.2.2.1.2` | `ifDescr` | Interface description |
+| `1.3.6.1.2.1.2.2.1.5` | `ifSpeed` | Speed in bits/sec (GAUGE32, max 4Gbps; use ifHighSpeed for 10G+) |
+| `1.3.6.1.2.1.2.2.1.8` | `ifOperStatus` | `1`=up `2`=down `3`=testing |
+| `1.3.6.1.2.1.2.2.1.10` | `ifInOctets` | Total input bytes (COUNTER32 — wraps at ~4GB) |
+| `1.3.6.1.2.1.2.2.1.16` | `ifOutOctets` | Total output bytes (COUNTER32) |
+| `1.3.6.1.2.1.2.2.1.14` | `ifInErrors` | Input errors |
+| `1.3.6.1.2.1.2.2.1.20` | `ifOutErrors` | Output errors |
+
+For 64-bit counters (RFC 2863 IF-MIB): `1.3.6.1.2.1.31.1.1.1` — `ifHCInOctets` (`.6`), `ifHCOutOctets` (`.10`), `ifHighSpeed` (`.15`). Requires SNMPv2c or v3.
+
+### Host Resources (`1.3.6.1.2.1.25`)
+
+| OID | Name | Notes |
+|---|---|---|
+| `1.3.6.1.2.1.25.2.3` | `hrStorageTable` | Disk/RAM: size, used, allocation units |
+| `1.3.6.1.2.1.25.3.3.1.2` | `hrProcessorLoad` | CPU % per processor |
+| `1.3.6.1.2.1.25.5.1.1.1` | `hrSWRunPerfCPU` | Per-process CPU time |
+
+---
+
+## Known Limitations
+
+**UDP not supported.** SNMP standard transport is UDP port 161. This implementation uses TCP (RFC 3430). Many modern agents support both; some embedded devices (older switches, UPS units) respond only to UDP.
+
+**SNMPv3 MD5 uses SHA-1 internally.** The `authProtocol: "MD5"` parameter is accepted but the HMAC is computed with SHA-1 (WebCrypto does not expose MD5). Agents configured for SHA-1 auth will authenticate correctly. Agents configured for MD5 auth will reject the request with `usmStatsWrongDigests`.
+
+**SNMPv3 privacy (`authPriv`) not supported.** `privPassword` and `privProtocol` fields are accepted in the request but not used — the implementation never encrypts the scoped PDU. The `securityLevel` is always either `noAuthNoPriv` (no `authPassword`) or `authNoPriv` (with `authPassword`). Sending `authPriv` traffic to an agent that requires it will result in a REPORT PDU with `usmStatsDecryptionErrors`.
+
+**Single TCP read per message.** GET and each GETBULK iteration call `reader.read()` exactly once. If a GETBULK response spans multiple TCP segments (possible with `maxRepetitions` > 20 over slow links), only the first segment is parsed and results are silently truncated. Lower `maxRepetitions` if you see suspiciously short walk results.
+
+**COUNTER64 only in v3.** The v1/v2c GET and WALK parsers handle types up to TIMETICKS (0x43); 64-bit counter values (0x46, `COUNTER64`) are returned as `UNKNOWN(0x46)`. Use `/api/snmp/v3-get` to retrieve 64-bit interface counters from the IF-MIB.
+
+**Binary OCTET STRING values.** All `STRING` values are UTF-8 decoded with `TextDecoder`. OIDs containing binary data (MAC addresses in bridge MIBs, raw keys) will be corrupted. Convert expected binary OIDs to hex by fetching them as `UNKNOWN` type (if the agent responds with an unrecognized tag) or inspect the raw hex in `UNKNOWN(0xNN)` output.
+
+**No SNMPv2c INFORM / TRAP receive.** Port of Call is a query initiator only — there is no endpoint to receive asynchronous traps or informs.
+
+**No SET operations.** Write access (SET-REQUEST) is not implemented.
+
+---
+
+## curl Examples
 
 ```bash
-curl -X POST http://localhost:8787/api/snmp/get \
-  -H "Content-Type: application/json" \
-  -d '{
-    "host": "demo.snmplabs.com",
-    "port": 161,
-    "community": "public",
-    "oid": "1.3.6.1.2.1.1.1.0",
-    "version": 2
-  }'
+# GET sysDescr
+curl -s -X POST https://portofcall.ross.gg/api/snmp/get \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.1","community":"public","oid":"1.3.6.1.2.1.1.1.0"}' | jq .
+
+# GET sysUpTime with SNMPv1 forced
+curl -s -X POST https://portofcall.ross.gg/api/snmp/get \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.1","community":"public","oid":"1.3.6.1.2.1.1.3.0","version":1}' | jq .results[0].value
+
+# Walk entire system group
+curl -s -X POST https://portofcall.ross.gg/api/snmp/walk \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.1","community":"public","oid":"1.3.6.1.2.1.1"}' | jq '.results[] | "\(.oid) = \(.type): \(.value)"'
+
+# Walk ifTable with large bulk size for efficiency
+curl -s -X POST https://portofcall.ross.gg/api/snmp/walk \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.1","community":"public","oid":"1.3.6.1.2.1.2.2","maxRepetitions":50,"timeout":60000}' | jq '.count, .results[0]'
+
+# SNMPv3 noAuthNoPriv (just username, no password)
+curl -s -X POST https://portofcall.ross.gg/api/snmp/v3-get \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.1","username":"monitor","oids":["1.3.6.1.2.1.1.1.0","1.3.6.1.2.1.1.3.0"]}' | jq .
+
+# SNMPv3 authNoPriv with SHA-1
+curl -s -X POST https://portofcall.ross.gg/api/snmp/v3-get \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.1","username":"monitor","authPassword":"myauthpass","authProtocol":"SHA","oids":["1.3.6.1.2.1.1.1.0","1.3.6.1.2.1.2.2.1.10.1"]}' | jq '{engineId:.engineId, rtt:.rtt, varbinds:.varbinds}'
 ```
 
-### cURL - SNMP WALK
+---
+
+## SNMP Error Status Codes
+
+| Code | Name | Meaning |
+|---|---|---|
+| 0 | `noError` | Success |
+| 1 | `tooBig` | Response PDU exceeds agent's max size |
+| 2 | `noSuchName` | OID does not exist (v1 only) |
+| 3 | `badValue` | Invalid value for SET |
+| 4 | `readOnly` | Attempted SET on read-only OID |
+| 5 | `genErr` | General unspecified error |
+
+SNMPv2c exceptions (appear as `type` in varbinds, not `errorStatus`): `noSuchObject` (0x80), `noSuchInstance` (0x81), `endOfMibView` (0x82). These are not surfaced as distinct types in the current implementation — they appear as `UNKNOWN(0x80)` etc.
+
+---
+
+## SNMPv3 Engine ID Format
+
+The `engineId` field is returned as a hex string (e.g., `"80001f8880a76c5a000000a5"`). RFC 3411 format:
+
+```
+[4 bytes: enterprise OID, MSB set] [1 byte: format] [N bytes: ID]
+Format byte: 1=IPv4, 2=IPv6, 3=MAC, 4=text, 5=octets
+```
+
+Common prefixes: `80001f88` = net-snmp, `8000273b` = Cisco IOS, `80007a69` = Windows SNMP service.
+
+---
+
+## Public Test Agents
+
+Most public SNMP labs have been decommissioned. Test against your own agent:
 
 ```bash
-curl -X POST http://localhost:8787/api/snmp/walk \
-  -H "Content-Type: application/json" \
-  -d '{
-    "host": "demo.snmplabs.com",
-    "port": 161,
-    "community": "public",
-    "oid": "1.3.6.1.2.1.1",
-    "version": 2,
-    "maxRepetitions": 10
-  }'
+# Run a local net-snmp agent (Linux)
+apt install snmpd
+# Edit /etc/snmp/snmpd.conf to add community/v3 user
+snmpd -f -Le  # foreground, log to stderr
+
+# Quick test with snmpget (local)
+snmpget -v2c -c public 127.0.0.1 1.3.6.1.2.1.1.1.0
+
+# Configure SNMPv3 user (net-snmp)
+net-snmp-create-v3-user -ro -A myauthpass -a SHA -X myprivpass -x AES monitor
 ```
 
-### JavaScript
+---
 
-```javascript
-// SNMP GET
-const response = await fetch('/api/snmp/get', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    host: 'demo.snmplabs.com',
-    community: 'public',
-    oid: '1.3.6.1.2.1.1.1.0',
-    version: 2,
-  }),
-});
+## Wire Format Reference
 
-const data = await response.json();
-console.log(data.results[0].value); // System description
-```
-
-## Protocol Details
-
-### SNMP Message Structure
+### SNMPv1/v2c message structure
 
 ```
 SEQUENCE {
-  version INTEGER (0=v1, 1=v2c)
-  community OCTET STRING
-  PDU {
-    request-id INTEGER
-    error-status INTEGER
-    error-index INTEGER
-    variable-bindings SEQUENCE OF {
-      SEQUENCE {
-        name OBJECT IDENTIFIER
-        value ANY
-      }
+  INTEGER version          (0 = SNMPv1, 1 = SNMPv2c)
+  OCTET_STRING community   (plaintext community string)
+  PDU {                    (tag 0xa0=GET, 0xa1=GETNEXT, 0xa5=GETBULK)
+    INTEGER request-id
+    INTEGER error-status   (GET/GETNEXT) or non-repeaters (GETBULK)
+    INTEGER error-index    (GET/GETNEXT) or max-repetitions (GETBULK)
+    SEQUENCE {
+      SEQUENCE { OID, NULL }   (one varbind per requested OID)
     }
   }
 }
 ```
 
-### ASN.1 BER Encoding
+### SNMPv3 message structure
 
-SNMP uses ASN.1 BER (Basic Encoding Rules) for message encoding:
-
-- **Type-Length-Value (TLV)** encoding
-- Type tags: INTEGER (0x02), OCTET_STRING (0x04), OID (0x06), SEQUENCE (0x30)
-- SNMP-specific types: IPADDRESS (0x40), COUNTER32 (0x41), GAUGE32 (0x42), TIMETICKS (0x43)
-
-### OID Encoding
-
-OIDs are encoded using a compressed format:
-- First two components: `40 * first + second`
-- Remaining components: variable-length encoding (base 128)
-
-Example: `1.3.6.1.2.1` → `[0x2B, 0x06, 0x01, 0x02, 0x01]`
-
-## Authentication
-
-### SNMPv1/v2c - Community Strings
-
-- Uses plaintext community strings (default: "public" for read, "private" for write)
-- No encryption
-- Sent in every message
-
-```json
-{
-  "community": "public"
+```
+SEQUENCE {
+  INTEGER version=3
+  SEQUENCE {               (global header)
+    INTEGER msgID
+    INTEGER msgMaxSize=65507
+    OCTET_STRING msgFlags  (1 byte: bit0=auth, bit1=priv, bit2=reportable)
+    INTEGER msgSecurityModel=3  (USM)
+  }
+  OCTET_STRING {           (wraps USM security parameters SEQUENCE)
+    SEQUENCE {
+      OCTET_STRING msgAuthoritativeEngineID
+      INTEGER msgAuthoritativeEngineBoots
+      INTEGER msgAuthoritativeEngineTime
+      OCTET_STRING msgUserName
+      OCTET_STRING msgAuthenticationParameters  (12 bytes HMAC, or 12 zero bytes)
+      OCTET_STRING msgPrivacyParameters         (0 bytes for noPriv)
+    }
+  }
+  SEQUENCE {               (scoped PDU)
+    OCTET_STRING contextEngineID
+    OCTET_STRING contextName  (empty string = default context)
+    PDU { ... }
+  }
 }
 ```
 
-### SNMPv3 (Not Yet Implemented)
-
-- User-based authentication (MD5/SHA)
-- Encryption (DES/AES)
-- More secure than v1/v2c
-
-## Timeouts and Keep-Alives
-
-### Request Timeout
-
-- Default: 10 seconds for GET, 30 seconds for WALK
-- Configurable via `timeout` parameter
-- TCP connection timeout handled separately
-
-### Connection Management
-
-- Each request opens a new TCP connection
-- No persistent connections (stateless protocol)
-- Connection closed after response received
-
-### Walk Operation
-
-- Iteratively sends GETNEXT/GETBULK requests
-- Stops when:
-  - No more results
-  - Response OID outside requested subtree
-  - Timeout reached
-
-## Binary vs. Text Encoding
-
-### Request Encoding
-
-- **Wire Format:** Binary ASN.1 BER
-- **API Input:** JSON (text)
-- **Conversion:** JSON → BER in Worker
-
-### Response Encoding
-
-- **Wire Format:** Binary ASN.1 BER
-- **API Output:** JSON (text)
-- **Conversion:** BER → JSON in Worker
-
-### Data Types
-
-| SNMP Type | BER Tag | JavaScript Type |
-|-----------|---------|-----------------|
-| INTEGER | 0x02 | number |
-| OCTET STRING | 0x04 | string |
-| OBJECT IDENTIFIER | 0x06 | string (dotted) |
-| IPADDRESS | 0x40 | string (dotted) |
-| COUNTER32 | 0x41 | number |
-| GAUGE32 | 0x42 | number |
-| TIMETICKS | 0x43 | number |
-| NULL | 0x05 | null |
-
-## Error Handling
-
-### SNMP Error Codes
-
-| Code | Name | Description |
-|------|------|-------------|
-| 0 | noError | No error |
-| 1 | tooBig | Response too large |
-| 2 | noSuchName | OID does not exist |
-| 3 | badValue | Invalid value |
-| 4 | readOnly | Attempted write to read-only OID |
-| 5 | genErr | General error |
-
-### Common Issues
-
-**❌ "Connection timeout"**
-- Agent is unreachable
-- Firewall blocking port 161
-- Incorrect host/port
-
-**❌ "noSuchName"**
-- OID does not exist on device
-- Wrong MIB or OID format
-
-**❌ "Authentication failed"**
-- Incorrect community string
-- SNMPv3 not supported yet
-
-**❌ "Parse error"**
-- Invalid ASN.1/BER response
-- Malformed SNMP message
-- Non-SNMP response on port
-
-## Limitations
-
-### What's Supported
-
-- ✅ SNMPv1 and SNMPv2c
-- ✅ TCP transport (RFC 3430)
-- ✅ GET, GETNEXT, GETBULK
-- ✅ Community-based authentication
-- ✅ Common data types
-
-### What's NOT Supported
-
-- ❌ SNMPv3 (user-based security)
-- ❌ UDP transport (Workers limitation)
-- ❌ SET operations (write)
-- ❌ TRAP/INFORM (async notifications)
-- ❌ MIB compilation/resolution
-
-### TCP vs. UDP
-
-**Standard:** SNMP typically uses UDP (port 161)
-
-**This Implementation:** Uses TCP (RFC 3430) due to Cloudflare Workers' TCP-only sockets API
-
-**Impact:**
-- Some devices may not support SNMP over TCP
-- Most modern SNMP agents support both UDP and TCP
-- TCP provides reliability but adds overhead
-
-## Testing
-
-### Public SNMP Test Servers
-
-```bash
-# demo.snmplabs.com (SNMPv1/v2c)
-Host: demo.snmplabs.com
-Community: public
-Port: 161
-
-# snmp.live.gambitcommunications.com
-Host: snmp.live.gambitcommunications.com
-Community: public
-Port: 161
-```
-
-### Test with Example Client
-
-```bash
-# Open the test client
-open examples/snmp-test.html
-
-# Or use the deployed version
-https://portofcall.ross.gg/examples/snmp-test.html
-```
-
-## Performance
-
-### SNMP GET
-
-- Single OID query
-- Fast (< 100ms typical)
-- One request/response
-
-### SNMP WALK
-
-- Multiple GETNEXT/GETBULK requests
-- Slower (depends on subtree size)
-- SNMPv2c GETBULK is more efficient than v1 GETNEXT
-
-**Optimization:**
-- Use SNMPv2c with high `maxRepetitions` (10-50)
-- Limit walk scope to specific subtrees
-- Set reasonable timeouts
-
-## Security Considerations
-
-### Community Strings
-
-- ⚠️ Sent in plaintext (no encryption)
-- ⚠️ Default "public" is widely known
-- ⚠️ MITM attacks possible
-
-**Best Practices:**
-- Change default community strings
-- Use SNMPv3 for sensitive data (not yet implemented)
-- Restrict SNMP access via firewall
-- Use read-only community strings
-
-### Rate Limiting
-
-- Implement rate limiting to prevent SNMP flooding
-- Monitor query frequency
-- Set reasonable timeouts
-
-### Input Validation
-
-- ✅ Host/port validation
-- ✅ OID format validation
-- ✅ Community string sanitization
-- ✅ Cloudflare detection (prevents proxy abuse)
-
-## Future Enhancements
-
-- [ ] SNMPv3 support (authentication, encryption)
-- [ ] SET operation support (write)
-- [ ] TRAP/INFORM receiver
-- [ ] MIB parsing and OID resolution
-- [ ] Bulk parallel queries
-- [ ] WebSocket-based continuous monitoring
-- [ ] SNMP agent implementation (respond to queries)
-
-## References
-
-- [RFC 1157 - SNMPv1](https://www.rfc-editor.org/rfc/rfc1157)
-- [RFC 1905 - SNMPv2c](https://www.rfc-editor.org/rfc/rfc1905)
-- [RFC 3430 - SNMP over TCP](https://www.rfc-editor.org/rfc/rfc3430)
-- [RFC 3416 - SNMPv2 Protocol Operations](https://www.rfc-editor.org/rfc/rfc3416)
-- [ASN.1 BER Encoding](https://en.wikipedia.org/wiki/X.690#BER_encoding)
-
-## Example Use Cases
-
-### Network Monitoring
-
-Query device uptime, interface statistics, CPU/memory usage
-
-### Device Discovery
-
-Walk system group to identify devices on network
-
-### Capacity Planning
-
-Collect counter data (traffic, errors, discards) over time
-
-### Alerting
-
-Monitor specific OIDs and trigger alerts on threshold violations
+---
+
+## Resources
+
+- [RFC 1157 — SNMPv1](https://www.rfc-editor.org/rfc/rfc1157)
+- [RFC 3416 — SNMPv2c Protocol Operations](https://www.rfc-editor.org/rfc/rfc3416)
+- [RFC 3411 — SNMPv3 Architecture](https://www.rfc-editor.org/rfc/rfc3411)
+- [RFC 3414 — USM for SNMPv3](https://www.rfc-editor.org/rfc/rfc3414) (key localization, auth, priv)
+- [RFC 3430 — SNMP over TCP](https://www.rfc-editor.org/rfc/rfc3430)
+- [MIB-II RFC 1213](https://www.rfc-editor.org/rfc/rfc1213)
+- [IF-MIB RFC 2863](https://www.rfc-editor.org/rfc/rfc2863) (64-bit counters, ifHighSpeed)

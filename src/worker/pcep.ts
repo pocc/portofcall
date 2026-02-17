@@ -48,11 +48,20 @@ const PCEP_VERSION = 1;
 // PCEP message types
 const MSG_OPEN = 1;
 const MSG_KEEPALIVE = 2;
+const MSG_PCREQ = 3;
+const MSG_PCREP = 4;
 const MSG_PCERR = 6;
 const MSG_CLOSE = 7;
 
 // PCEP Object Classes
 const OBJ_CLASS_OPEN = 1;
+const OBJ_CLASS_RP = 2;
+const OBJ_CLASS_NOPATH = 3;
+const OBJ_CLASS_ENDPOINTS = 4;
+const OBJ_CLASS_BANDWIDTH = 5;
+const OBJ_CLASS_METRIC = 6;
+const OBJ_CLASS_ERO = 7;
+const OBJ_CLASS_LSPA = 9;
 
 // OPEN Object Type
 const OBJ_TYPE_OPEN = 1;
@@ -462,6 +471,309 @@ export async function handlePCEPProbe(request: Request): Promise<Response> {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Build a PCEP PCReq message with RP, END-POINTS, and optional BANDWIDTH objects.
+ */
+function buildPCReqMessage(requestId: number, srcAddr: string, dstAddr: string, bandwidth?: number): Uint8Array {
+  function ipToBytes(ip: string): Uint8Array {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4) throw new Error(`Invalid IPv4 address: ${ip}`);
+    return new Uint8Array(parts);
+  }
+
+  // RP object (class 2, type 1): 4-byte header + 8-byte body (4 flags + 4 request-id)
+  const rpObjLen = 4 + 8;
+  const rpObj = new Uint8Array(rpObjLen);
+  const rpView = new DataView(rpObj.buffer);
+  rpObj[0] = OBJ_CLASS_RP;
+  rpObj[1] = (1 << 4); // type=1, P=0, I=0
+  rpView.setUint16(2, rpObjLen, false);
+  rpView.setUint32(4, 0, false); // RP flags: all zero
+  rpView.setUint32(8, requestId, false);
+
+  // END-POINTS object (class 4, type 1 = IPv4): 4-byte header + 8-byte body (src 4 + dst 4)
+  const epObjLen = 4 + 8;
+  const epObj = new Uint8Array(epObjLen);
+  const epView = new DataView(epObj.buffer);
+  epObj[0] = OBJ_CLASS_ENDPOINTS;
+  epObj[1] = (1 << 4); // type=1 IPv4
+  epView.setUint16(2, epObjLen, false);
+  epObj.set(ipToBytes(srcAddr), 4);
+  epObj.set(ipToBytes(dstAddr), 8);
+
+  const objects: Uint8Array[] = [rpObj, epObj];
+
+  // BANDWIDTH object (class 5, type 1): 4-byte header + 4-byte IEEE 754 float32
+  if (bandwidth !== undefined) {
+    const bwObjLen = 4 + 4;
+    const bwObj = new Uint8Array(bwObjLen);
+    const bwView = new DataView(bwObj.buffer);
+    bwObj[0] = OBJ_CLASS_BANDWIDTH;
+    bwObj[1] = (1 << 4);
+    bwView.setUint16(2, bwObjLen, false);
+    bwView.setFloat32(4, bandwidth, false);
+    objects.push(bwObj);
+  }
+
+  const totalObjLen = objects.reduce((s, o) => s + o.length, 0);
+  const msgLen = 4 + totalObjLen;
+  const msg = new Uint8Array(msgLen);
+  const msgView = new DataView(msg.buffer);
+  msg[0] = (PCEP_VERSION << 5);
+  msg[1] = MSG_PCREQ;
+  msgView.setUint16(2, msgLen, false);
+
+  let offset = 4;
+  for (const obj of objects) {
+    msg.set(obj, offset);
+    offset += obj.length;
+  }
+
+  return msg;
+}
+
+/**
+ * Parse a PCRep message body extracting RP, ERO, NO-PATH, LSPA, and METRIC objects.
+ */
+function parsePCRepBody(data: Uint8Array, bodyOffset: number): {
+  pathFound: boolean;
+  requestId: number;
+  noPathReason: number | null;
+  hops: Array<{ type: number; addr: string; prefix: number; loose: boolean }>;
+  igpCost: number | null;
+  teCost: number | null;
+  setupPriority: number | null;
+  holdingPriority: number | null;
+} {
+  let offset = bodyOffset;
+  let pathFound = false;
+  let requestId = 0;
+  let noPathReason: number | null = null;
+  const hops: Array<{ type: number; addr: string; prefix: number; loose: boolean }> = [];
+  let igpCost: number | null = null;
+  let teCost: number | null = null;
+  let setupPriority: number | null = null;
+  let holdingPriority: number | null = null;
+
+  while (offset + 4 <= data.length) {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    const objClass = data[offset];
+    const objLen = view.getUint16(offset + 2, false);
+
+    if (objLen < 4 || offset + objLen > data.length) break;
+
+    if (objClass === OBJ_CLASS_RP && objLen >= 12) {
+      requestId = view.getUint32(offset + 8, false);
+    } else if (objClass === OBJ_CLASS_NOPATH) {
+      pathFound = false;
+      noPathReason = data[offset + 4] & 0xff;
+    } else if (objClass === OBJ_CLASS_ERO) {
+      pathFound = true;
+      let soOffset = offset + 4;
+      while (soOffset + 2 <= offset + objLen) {
+        const soType = data[soOffset] & 0x7f;
+        const loose = (data[soOffset] & 0x80) !== 0;
+        const soLen = data[soOffset + 1];
+        if (soLen < 2 || soOffset + soLen > offset + objLen) break;
+        if (soType === 1 && soLen >= 8) {
+          // IPv4 prefix subobject
+          const addrBytes = data.slice(soOffset + 2, soOffset + 6);
+          const addr = Array.from(addrBytes).join('.');
+          const prefix = data[soOffset + 6];
+          hops.push({ type: soType, addr, prefix, loose });
+        }
+        soOffset += soLen;
+      }
+    } else if (objClass === OBJ_CLASS_LSPA && objLen >= 20) {
+      setupPriority = data[offset + 16];
+      holdingPriority = data[offset + 17];
+    } else if (objClass === OBJ_CLASS_METRIC && objLen >= 12) {
+      // METRIC: 2 reserved + 1 flags + 1 metric-type + 4 float32 value
+      const metricType = data[offset + 7];
+      const metricValue = view.getFloat32(offset + 8, false);
+      if (metricType === 1) igpCost = metricValue;
+      else if (metricType === 2) teCost = metricValue;
+    }
+
+    offset += Math.ceil(objLen / 4) * 4;
+  }
+
+  return { pathFound, requestId, noPathReason, hops, igpCost, teCost, setupPriority, holdingPriority };
+}
+
+/**
+ * Handle PCEP path computation — performs OPEN/Keepalive session establishment,
+ * then sends PCReq (type 3) and parses the PCRep (type 4) response.
+ */
+export async function handlePCEPCompute(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      requestId?: number;
+      srcAddr: string;
+      dstAddr: string;
+      bandwidth?: number;
+    };
+
+    const { host, port = 4189, timeout = 15000, srcAddr, dstAddr, bandwidth } = body;
+    const requestId = body.requestId ?? (Math.floor(Math.random() * 0xffffff) + 1);
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Missing required parameter: host',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!srcAddr || !dstAddr) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'srcAddr and dstAddr are required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    try {
+      // Step 1: Send client OPEN
+      await writer.write(buildOpenMessage());
+
+      // Step 2: Read server OPEN
+      const openHdrData = await readExact(reader, 4, timeoutPromise);
+      const openHdr = parsePCEPHeader(openHdrData);
+
+      if (!openHdr || openHdr.version !== 1) {
+        throw new Error('Server did not respond with a valid PCEP OPEN');
+      }
+
+      if (openHdr.messageType === MSG_OPEN && openHdr.messageLength > 4) {
+        await readExact(reader, openHdr.messageLength - 4, timeoutPromise);
+      }
+
+      // Step 3: Send Keepalive to confirm session
+      await writer.write(buildKeepaliveMessage());
+
+      // Step 4: Send PCReq
+      await writer.write(buildPCReqMessage(requestId, srcAddr, dstAddr, bandwidth));
+
+      // Step 5: Read response, skipping any intervening Keepalives
+      let pcrepData: Uint8Array | null = null;
+      for (let attempts = 0; attempts < 4; attempts++) {
+        const hdrBytes = await readExact(reader, 4, timeoutPromise);
+        const hdrParsed = parsePCEPHeader(hdrBytes);
+        if (!hdrParsed) break;
+
+        if (hdrParsed.messageLength > 4) {
+          const bodyBytes = await readExact(reader, hdrParsed.messageLength - 4, timeoutPromise);
+          if (hdrParsed.messageType === MSG_PCREP) {
+            pcrepData = new Uint8Array(hdrParsed.messageLength);
+            pcrepData.set(hdrBytes, 0);
+            pcrepData.set(bodyBytes, 4);
+            break;
+          }
+        } else if (hdrParsed.messageType === MSG_PCREP) {
+          pcrepData = hdrBytes;
+          break;
+        }
+        // Was a Keepalive or other — continue reading
+      }
+
+      const rtt = Date.now() - startTime;
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (!pcrepData) {
+        return new Response(JSON.stringify({
+          success: true,
+          host,
+          port,
+          rtt,
+          requestId,
+          pathFound: false,
+          hops: [],
+          igpCost: null,
+          teCost: null,
+          message: 'No PCRep received from server',
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const parsed = parsePCRepBody(pcrepData, 4);
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        requestId: parsed.requestId || requestId,
+        pathFound: parsed.pathFound,
+        hops: parsed.hops,
+        igpCost: parsed.igpCost,
+        teCost: parsed.teCost,
+        ...(parsed.noPathReason !== null ? { noPathReason: parsed.noPathReason } : {}),
+        ...(parsed.setupPriority !== null ? { setupPriority: parsed.setupPriority } : {}),
+        ...(parsed.holdingPriority !== null ? { holdingPriority: parsed.holdingPriority } : {}),
+        message: parsed.pathFound
+          ? `Path computed: ${parsed.hops.length} hop(s)`
+          : `No path found${parsed.noPathReason !== null ? ` (reason: ${parsed.noPathReason})` : ''}`,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (err) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      throw err;
+    }
 
   } catch (error) {
     return new Response(JSON.stringify({

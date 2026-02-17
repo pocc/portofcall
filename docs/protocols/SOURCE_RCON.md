@@ -1,397 +1,311 @@
-# Source RCON (Steam/Valve) Protocol Implementation
+# Source RCON Protocol — Port of Call Reference
 
-## Overview
+**Spec:** [Valve Developer Wiki — Source RCON Protocol](https://developer.valvesoftware.com/wiki/Source_RCON_Protocol)
+**Default port:** 27015 (Source engine) — **implementation default: 25575** (see gotcha below)
+**Source:** `src/worker/rcon.ts`
+**Tests:** `tests/source-rcon.test.ts`, `tests/rcon.test.ts`
 
-**Protocol:** Source RCON (Remote Console)
-**Port:** 27015 (default, configurable)
-**Specification:** [Valve Developer Wiki - Source RCON Protocol](https://developer.valvesoftware.com/wiki/Source_RCON_Protocol)
-**Complexity:** Low-Medium
-**Purpose:** Remote administration of Source engine game servers
+Source RCON is a simple binary protocol for remote administration of Valve Source engine game servers (CS:GO, TF2, L4D2, GMod, etc.) and Minecraft Java Edition. Both games use the identical wire format; only the default port differs.
 
-Source RCON enables **remote server administration** for Valve Source engine games - execute commands, manage players, configure servers, and monitor your game server from the browser.
+---
 
-### Supported Games
+## Endpoints
 
-- **Counter-Strike:** CS:GO, CS:Source, CS 1.6
-- **Team Fortress:** TF2, TF Classic
-- **Left 4 Dead:** L4D, L4D2
-- **Half-Life:** HL2DM, HLDM
-- **Portal 2:** Co-op multiplayer servers
-- **Garry's Mod**
-- **Day of Defeat: Source**
-- **Source SDK Base** and custom Source mods
+| Method | Path | Summary |
+|--------|------|---------|
+| `POST` | `/api/rcon/connect` | Authenticate to an RCON server — returns auth result only |
+| `POST` | `/api/rcon/command` | Authenticate + execute one command — returns command output |
 
-### Use Cases
+There is no persistent session. **Every request opens a new TCP connection, authenticates, and closes.** `/api/rcon/command` performs a full authenticate-then-execute exchange in a single HTTP call.
 
-- Game server administration from anywhere
-- Automated server management
-- Player moderation (kick/ban/mute)
-- Map rotation and changelevel
-- Server configuration (cvars, game rules)
-- Real-time monitoring and stats
-- Educational - game networking protocols
+---
 
-## Protocol Specification
+## `POST /api/rcon/connect` — Authentication probe
 
-### Packet Structure
+Opens a TCP connection, sends `SERVERDATA_AUTH`, and reports whether the password was accepted.
 
-Source RCON uses the same binary protocol as Minecraft RCON (both based on Valve's original specification):
+**Request:**
 
-```
-┌─────────────────────────────────┐
-│ Size (int32, little-endian)     │ Packet size (excluding this field)
-├─────────────────────────────────┤
-│ Request ID (int32)              │ Client-chosen ID
-├─────────────────────────────────┤
-│ Type (int32)                    │ 3=Auth, 2=Command, 0=Response
-├─────────────────────────────────┤
-│ Body (null-terminated string)   │ Password or command
-├─────────────────────────────────┤
-│ Terminator (null byte)          │ Extra null
-└─────────────────────────────────┘
+```json
+{
+  "host": "gameserver.example.com",
+  "port": 27015,
+  "password": "my_rcon_password",
+  "timeout": 10000
+}
 ```
 
-### Packet Types
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | Hostname or IPv4 address. Validated against `^[a-zA-Z0-9.-]+$` — no underscores, no IPv6, no embedded port |
+| `port` | **`25575`** | See port gotcha below — always specify explicitly for Source servers |
+| `password` | **required** | 1–512 characters |
+| `timeout` | `10000` | Wall-clock race timeout in ms |
 
-| Type | Value | Description |
-|------|-------|-------------|
-| SERVERDATA_AUTH | 3 | Authentication request |
-| SERVERDATA_AUTH_RESPONSE | 2 | Auth response |
-| SERVERDATA_EXECCOMMAND | 2 | Execute command |
-| SERVERDATA_RESPONSE_VALUE | 0 | Command response |
+**Response — auth success (HTTP 200):**
 
-### Authentication Flow
-
-```
-1. Client → Server: SERVERDATA_AUTH with password
-2. Server → Client: Empty SERVERDATA_RESPONSE_VALUE
-3. Server → Client: SERVERDATA_AUTH_RESPONSE
-   - ID matches: Auth success
-   - ID = -1: Auth failed
+```json
+{
+  "success": true,
+  "authenticated": true
+}
 ```
 
-## Implementation Details
+**Response — wrong password (HTTP 200):**
 
-### Backend
-
-The Source RCON implementation reuses the existing RCON protocol handler at `src/worker/rcon.ts`:
-
-- Same binary protocol as Minecraft RCON
-- Endpoints: `/api/rcon/connect` and `/api/rcon/command`
-- Password authentication (SERVERDATA_AUTH)
-- Multi-packet response handling
-- 1446-byte command limit
-
-### Frontend
-
-New component: `src/components/SourceRCONClient.tsx`
-
-- Defaults to port **27015** (vs. 25575 for Minecraft)
-- Source Engine-specific quick commands
-- Game server command categories (Status, Player Mgmt, Map Control)
-- Protocol selection support via ProtocolSelector
-
-## Common Commands
-
-### Server Information
-
-```
-status        - Show server status, map, players
-stats         - Server performance statistics
-version       - Server version and build info
-hostname      - Current server hostname
-cvarlist      - List all console variables
-maps *        - List available maps
+```json
+{
+  "success": true,
+  "authenticated": false,
+  "error": "Authentication failed - incorrect RCON password"
+}
 ```
 
-### Player Management
+> **Critical gotcha:** When authentication fails due to a wrong password, the response is `success: true` with `authenticated: false`. `success: true` means only that the TCP connection and RCON exchange completed without a system error — it does **not** mean the password was accepted. Always check `authenticated`.
 
-```
-users                      - List connected players with IDs
-kick <userid> [reason]     - Kick player by user ID
-ban <userid> [minutes]     - Ban player by user ID
-say <message>              - Broadcast message to all players
-say_team <message>         - Message to team
-```
+**Response — validation error (HTTP 400):**
 
-### Map & Game Control
-
-```
-changelevel <map>          - Change to specified map
-mp_restartgame 1           - Restart current game round
-mp_maxplayers <n>          - Set max player count
-sv_cheats <0|1>            - Enable/disable cheats
-exec <config>              - Execute config file
+```json
+{
+  "success": false,
+  "error": "Host is required"
+}
 ```
 
-### CS:GO Specific
+**Response — connection error (HTTP 500):**
 
-```
-mp_warmup_start            - Start warmup mode
-mp_warmup_end              - End warmup mode
-mp_autoteambalance <0|1>   - Toggle team balance
-mp_limitteams <n>          - Team size difference limit
-cash_team_bonus_shorthanded <n> - Bonus for outnumbered team
-```
-
-### TF2 Specific
-
-```
-mp_tournament 1            - Enable tournament mode
-mp_tournament_readymode 1  - Ready mode for tournaments
-tf_server_identity_token   - Set server identity token
-mp_scrambleteams_auto 0    - Disable auto-scramble
-tf_mm_strict 0             - Matchmaking strictness
+```json
+{
+  "success": false,
+  "error": "Connection timeout"
+}
 ```
 
-### Garry's Mod Specific
+Validation error messages:
 
-```
-ulx who                    - List online players (ULX)
-ulx map <map>              - Change map (ULX)
-gamemode <mode>            - Change game mode
-```
+| Condition | Error message |
+|-----------|---------------|
+| Empty host | `"Host is required"` |
+| Host with invalid chars | `"Host contains invalid characters"` |
+| Port < 1 or > 65535 | `"Port must be between 1 and 65535"` |
+| Empty password | `"Password is required for RCON authentication"` |
+| Password > 512 chars | `"Password too long (max 512 characters)"` |
 
-## Server Setup
+---
 
-### Enable RCON in server.cfg
+## `POST /api/rcon/command` — Execute command
 
-```cfg
-// RCON Configuration
-rcon_password "your_secure_password_here"
-hostname "Your Server Name"
+Authenticates (same as `/connect`), then sends `SERVERDATA_EXECCOMMAND` and returns the server's output.
 
-// Optional RCON settings
-sv_rcon_banpenalty 0       // Minutes to ban after max failures (0 = don't ban)
-sv_rcon_maxfailures 5      // Max auth failures before temporary ban
-sv_rcon_minfailures 5      // Min failures before ban tracking
-sv_rcon_minfailuretime 30  // Seconds window for failure tracking
-```
+**Request:**
 
-### CS:GO Setup
-
-```cfg
-// server.cfg
-rcon_password "your_password"
-hostname "My CS:GO Server"
-sv_lan 0
-sv_region 1                // 0=US East, 1=US West, 2=South America, 3=Europe, etc.
+```json
+{
+  "host": "gameserver.example.com",
+  "port": 27015,
+  "password": "my_rcon_password",
+  "command": "status",
+  "timeout": 10000
+}
 ```
 
-### TF2 Setup
+| Field | Default | Notes |
+|-------|---------|-------|
+| `command` | **required** | 1–1446 bytes. Limit enforced before connection. |
+| Other fields | same as `/connect` | |
 
-```cfg
-// server.cfg
-rcon_password "your_password"
-hostname "My TF2 Server"
-sv_pure 1                  // File consistency checking
-tf_tournament_classchange_allowed 0
+**Response — success (HTTP 200):**
+
+```json
+{
+  "success": true,
+  "authenticated": true,
+  "response": "hostname: My CS:GO Server\nversion : 1.38.0.0/13800 ...\nmap     : de_dust2\nplayers : 5 humans, 0 bots (16/0 max)\n..."
+}
 ```
 
-## Testing
+`response` is the concatenation of all `SERVERDATA_RESPONSE_VALUE` (type 0) packet bodies received after the command. It is `"(No output)"` if the server returned no data.
 
-### Enable RCON on Local Server
+**Response — wrong password (HTTP 401):**
 
-**Source Dedicated Server:**
-```bash
-./srcds_run -game csgo +map de_dust2 +rcon_password "test123" -port 27015
+```json
+{
+  "success": false,
+  "authenticated": false,
+  "error": "Authentication failed - incorrect RCON password"
+}
 ```
 
-**CS:GO:**
-```bash
-./srcds_run -game csgo \
-  +game_type 0 \
-  +game_mode 1 \
-  +mapgroup mg_active \
-  +map de_dust2 \
-  +rcon_password "test123"
+**Response — command too long (HTTP 400):**
+
+```json
+{
+  "success": false,
+  "error": "Command too long (max 1446 characters, RCON body limit)"
+}
 ```
 
-**TF2:**
-```bash
-./srcds_run -game tf \
-  +map ctf_2fort \
-  +maxplayers 24 \
-  +rcon_password "test123"
+---
+
+## Wire format
+
+All integers are **little-endian signed 32-bit** (`int32LE`). A packet consists of:
+
+```
+Offset  Size  Field
+------  ----  -----
+0       4     Size — length of the rest of the packet (excludes this field)
+4       4     Request ID — client-assigned; server echoes in response; -1 = auth failure
+8       4     Type — see table below
+12      N     Body — UTF-8 string
+12+N    1     Null terminator for body
+12+N+1  1     Null pad byte (always 0x00)
 ```
 
-### Test with rcon-cli
+`Size = 4 (id) + 4 (type) + N (body) + 2 (nulls)` — i.e. excludes the 4 bytes of the Size field itself.
 
-```bash
-# Install rcon-cli
-npm install -g rcon-cli
+**Packet types:**
 
-# Connect to CS:GO server
-rcon -H localhost -P 27015 -p test123
+| Value | Direction | Name | Meaning |
+|-------|-----------|------|---------|
+| `3` | client → server | `SERVERDATA_AUTH` | Authentication request (body = password) |
+| `2` | server → client | `SERVERDATA_AUTH_RESPONSE` | Auth result; id=-1 means failure |
+| `2` | client → server | `SERVERDATA_EXECCOMMAND` | Execute command (body = command string) |
+| `0` | server → client | `SERVERDATA_RESPONSE_VALUE` | Command output fragment |
 
-# Test commands
-> status
-> users
-> changelevel de_inferno
+Note that type `2` is used for **both** `SERVERDATA_AUTH_RESPONSE` (server→client) and `SERVERDATA_EXECCOMMAND` (client→server). Distinguish by direction and request ID.
+
+**Auth exchange:**
+
+```
+Client → Server:  [type=3, id=1, body="password"]
+Server → Client:  [type=0, id=1, body=""]        ← empty RESPONSE_VALUE first
+Server → Client:  [type=2, id=1, body=""]        ← AUTH_RESPONSE; id==-1 if wrong password
 ```
 
-## Security Considerations
+**Command exchange (after auth):**
 
-### Password Protection
-
-- Use strong, unique RCON passwords
-- Different password for each server
-- Never expose in client code or version control
-- Store in environment variables for automation
-
-### Command Validation
-
-- Input sanitization already handled by worker
-- 1446-byte command length limit enforced
-- Host/port validation prevents SSRF
-- Password never logged
-
-### Rate Limiting
-
-- Implement per-IP rate limiting in production
-- Limit failed auth attempts (sv_rcon_maxfailures)
-- Monitor for brute force attacks
-- Consider IP whitelisting for critical servers
-
-### Network Security
-
-- Use firewall rules to restrict RCON port access
-- Consider SSH tunnel for remote access:
-  ```bash
-  ssh -L 27015:localhost:27015 user@gameserver.com
-  ```
-- Use VPN for production server access
-- Monitor RCON connection logs
-
-## Integration Tests
-
-### Test Matrix
-
-| Game | Port | Auth | Status | Users | Changelevel |
-|------|------|------|--------|-------|-------------|
-| CS:GO | 27015 | ✅ | ✅ | ✅ | ✅ |
-| TF2 | 27015 | ✅ | ✅ | ✅ | ✅ |
-| L4D2 | 27015 | ✅ | ✅ | ✅ | ✅ |
-| GMod | 27015 | ✅ | ✅ | ✅ | ✅ |
-
-### Test Scenarios
-
-```typescript
-// tests/protocols/source-rcon.test.ts
-
-describe('Source RCON Protocol', () => {
-  it('should authenticate with CS:GO server', async () => {
-    // Test authentication
-  });
-
-  it('should execute status command', async () => {
-    // Test status command
-  });
-
-  it('should list users', async () => {
-    // Test users command
-  });
-
-  it('should handle changelevel command', async () => {
-    // Test map change
-  });
-
-  it('should reject incorrect password', async () => {
-    // Test auth failure
-  });
-});
+```
+Client → Server:  [type=2, id=2, body="status"]
+Server → Client:  [type=0, id=2, body="hostname: ...\nmap: ...\n"]
 ```
 
-## Resources
+**Hardcoded request IDs:** The implementation always uses `id=1` for auth and `id=2` for commands. If a server ever sends a response with a different ID, it is still processed — the parser does not validate ID matching.
 
-- **Official Specification**: [Valve Developer Wiki](https://developer.valvesoftware.com/wiki/Source_RCON_Protocol)
-- **Source Server Commands**: [Valve Developer Wiki - Server Commands](https://developer.valvesoftware.com/wiki/List_of_CS:GO_Cvars)
-- **CS:GO Server Setup**: [Valve CS:GO Wiki](https://developer.valvesoftware.com/wiki/Counter-Strike:_Global_Offensive_Dedicated_Servers)
-- **TF2 Server Setup**: [TF2 Wiki - Dedicated Servers](https://wiki.teamfortress.com/wiki/Dedicated_server_configuration)
-- **rcon npm**: [Node.js library](https://www.npmjs.com/package/rcon)
-- **SourceMod RCON**: [SourceMod RCON Admin](https://wiki.alliedmods.net/Adding_Admins_(SourceMod))
+---
 
-## Comparison: Source RCON vs. Minecraft RCON
+## Multi-packet response handling
 
-| Feature | Source RCON | Minecraft RCON |
-|---------|-------------|----------------|
-| Protocol | Valve Source RCON | Source RCON (same) |
-| Default Port | 27015 | 25575 |
-| Binary Format | Little-endian | Little-endian |
-| Max Command | 1446 bytes | 1446 bytes |
-| Multi-packet | Yes | Yes |
-| Auth Type | Password | Password |
-| Games | Source engine games | Minecraft Java |
-| Commands | Server/game-specific | Minecraft-specific |
+The `readFromSocket` function uses a **two-phase read**:
 
-**Note:** Both use the identical binary protocol. The main differences are:
-- Default port numbers
-- Available commands (game-specific)
-- Server configuration files (server.cfg vs. server.properties)
+1. **First read** — blocks until the first TCP chunk arrives (or timeout)
+2. **200ms drain** — after the first chunk, reads any additional chunks that arrive within 200ms, then stops
 
-## Troubleshooting
+This handles the common case where a server sends the auth response as two packets (the empty `RESPONSE_VALUE` followed by `AUTH_RESPONSE`), and where long command outputs (like `cvarlist`) span multiple TCP segments.
 
-### Connection Refused
+**Truncation risk:** If a command produces a very large response (e.g., `cvarlist` returns thousands of lines) that the server sends in bursts with inter-burst gaps > 200ms, only the first burst is captured. The 200ms window is hardcoded and not configurable.
 
-- Check server is running and RCON is enabled
-- Verify port is correct (default 27015, but configurable)
-- Check firewall rules allow TCP connections
-- Ensure server.cfg has `rcon_password` set
+---
 
-### Authentication Failed
+## Gotchas
 
-- Verify password matches server.cfg `rcon_password`
-- Check for typos in password
-- Ensure password doesn't contain special characters that need escaping
-- Restart server after changing password
+**Default port is 25575 (Minecraft), not 27015 (Source).** Both `handleRCONConnect` and `handleRCONCommand` default to `port: 25575`. Source engine servers use port 27015 by default. Always specify the port explicitly:
 
-### Command Not Working
+```json
+{ "host": "cs2server.example.com", "port": 27015, "password": "..." }
+```
 
-- Verify command syntax for specific game
-- Check server console for error messages
-- Some commands require specific game modes or plugins
-- Check sv_cheats setting for cheat commands
+**`success: true` does not mean authenticated.** In `/api/rcon/connect`, a successful TCP exchange + wrong password returns `{ "success": true, "authenticated": false }`. In `/api/rcon/command`, a wrong password returns `{ "success": false, "authenticated": false }` with HTTP 401 — more intuitive, but different from `/connect`.
 
-### No Response
+**Host validation rejects underscores.** The regex `^[a-zA-Z0-9.-]+$` rejects hosts like `game_server.example.com` or `192.168.1.1:27015`. Use only hostnames with hyphens or pure IP addresses.
 
-- Some commands produce no output (normal behavior)
-- Check server console for confirmation
-- Try `echo` command to test connectivity:
-  ```
-  echo "test"  # Should return "test"
-  ```
+**No persistent session.** Every `/api/rcon/command` call re-authenticates. On busy servers or those with `sv_rcon_maxfailures` set low, rapid consecutive calls may trigger the source engine's ban penalty.
 
-## Port Configuration
+**Empty command output.** Some Source commands produce no output (e.g., `say`, `changelevel`). The response body in those cases is `"(No output)"`, not `""`.
 
-If your server uses a non-standard port, specify it in launch parameters:
+**No Cloudflare detection.** Unlike most other Port of Call endpoints, there is no `checkIfCloudflare()` call. Connecting to a Cloudflare-proxied host on port 27015 will result in a generic timeout or connection error, not the structured `{ isCloudflare: true }` response.
+
+**`cvarlist` truncation.** The `cvarlist` command returns hundreds of lines. Due to the 200ms drain window, you may receive a partial result. There is no multi-packet sentinel or end-of-data signaling in Source RCON.
+
+**Command byte limit.** The 1446-byte limit on command bodies is enforced at the HTTP request layer. It is not derived from any protocol field limit — the RCON body field is actually limited by the `size` field (int32, ~2GB), but Valve's server-side parser has historically rejected longer commands.
+
+---
+
+## Auth failure response asymmetry
+
+The two endpoints behave differently when authentication fails:
+
+| Endpoint | Auth failure HTTP status | `success` | `authenticated` |
+|----------|--------------------------|-----------|-----------------|
+| `/connect` | 200 | `true` | `false` |
+| `/command` | 401 | `false` | `false` |
+
+In `/connect`, auth failure is a "successful probe result" (you learned the password is wrong). In `/command`, auth failure is treated as an error that prevents command execution.
+
+---
+
+## Quick reference — curl
 
 ```bash
-# Custom RCON port 27020
-./srcds_run -game csgo +map de_dust2 +hostport 27015 +rcon_password "test" -port 27020
+# Test authentication (check if RCON password is correct)
+curl -s -X POST https://portofcall.ross.gg/api/rcon/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":27015,"password":"mypassword"}' | jq '{authenticated,error}'
+
+# Execute a command
+curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":27015,"password":"mypassword","command":"status"}' | jq -r '.response'
+
+# List all connected players
+curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":27015,"password":"mypassword","command":"users"}' | jq -r '.response'
+
+# Get server hostname
+curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"192.168.1.10","port":27015,"password":"mypassword","command":"hostname"}' | jq -r '.response'
+
+# Minecraft RCON (default port 25575, can omit port)
+curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"mc.example.com","password":"mypassword","command":"list"}' | jq -r '.response'
 ```
 
-**Note:** The RCON port typically matches the game server port but can be configured separately in some setups.
+---
 
-## Future Enhancements
+## Local test server
 
-- WebSocket tunnel for persistent connection (like SSH client)
-- Command autocomplete based on game type
-- CVars browser and editor
-- Player list with kick/ban buttons
-- Map rotation manager
-- Server metrics dashboard
-- Config file editor
-- Log viewer with filtering
-- Multi-server management
+**Source Dedicated Server** (srcds):
 
-## Protocol History
+```bash
+./srcds_run -game csgo +map de_dust2 +rcon_password "testpass" -port 27015
+```
 
-- **2002**: Source RCON protocol introduced with Source engine
-- **2004**: Half-Life 2 and CS:Source adopt protocol
-- **2007**: TF2 launch with RCON support
-- **2008**: Left 4 Dead implements RCON
-- **2010**: Minecraft adopts Source RCON protocol (identical format)
-- **2012**: CS:GO releases with RCON
-- **2015-present**: Protocol remains stable across all Source games
+Useful Source cvars for RCON:
 
-The Source RCON protocol has become the de facto standard for game server remote administration, adopted by both Valve games and third-party games (including Minecraft).
+```
+sv_rcon_maxfailures 5     # auth failures before temporary ban
+sv_rcon_banpenalty 60     # ban duration in seconds
+sv_rcon_minfailures 5
+sv_rcon_minfailuretime 30
+```
+
+**Minecraft** (server.properties):
+
+```
+enable-rcon=true
+rcon.password=testpass
+rcon.port=25575
+```
+
+---
+
+## What is NOT implemented
+
+- **Persistent sessions** — no session caching; each call re-authenticates
+- **Multi-packet sentinel** — the standard technique to detect end-of-response (send a second empty command with a unique ID and wait for its response) is not implemented; 200ms drain is used instead
+- **SCRAM or TLS** — RCON is plaintext TCP; credentials are transmitted in cleartext
+- **Cloudflare detection** — no `isCloudflare` check
+- **Long-polling or streaming** — commands that produce continuous output (e.g., `log on`) are not supported; only the first 200ms burst is captured

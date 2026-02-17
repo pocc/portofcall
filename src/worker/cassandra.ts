@@ -362,6 +362,9 @@ export async function handleCassandraConnect(request: Request): Promise<Response
 const OPCODE_QUERY_EXEC = 0x07;
 const OPCODE_AUTH_RESPONSE_FRAME = 0x0F;
 const OPCODE_AUTH_SUCCESS_RESP = 0x10;
+const OPCODE_RESULT  = 0x08;
+const OPCODE_PREPARE = 0x09;
+const OPCODE_EXECUTE = 0x0A;
 
 /** RESULT kind = Rows */
 const RESULT_KIND_ROWS = 0x0002;
@@ -587,5 +590,154 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ============================================================
+// CQL Prepared Statement Execution (handleCassandraPrepare)
+// ============================================================
+
+/** Build a PREPARE frame (opcode 0x09): long-string encoded CQL. */
+function buildPrepareFrame(cql: string, stream = 3): Uint8Array {
+  const qBytes = new TextEncoder().encode(cql);
+  const body = new Uint8Array(4 + qBytes.length);
+  new DataView(body.buffer).setInt32(0, qBytes.length, false);
+  body.set(qBytes, 4);
+  return buildFrame(OPCODE_PREPARE, body, stream);
+}
+
+/** Extract the prepared_id bytes from a PREPARED RESULT body (kind=0x0004). */
+function parsePreparedId(body: Uint8Array): Uint8Array | null {
+  if (body.length < 6) return null;
+  const view = new DataView(body.buffer, body.byteOffset);
+  const kind = view.getInt32(0, false);
+  if (kind !== 0x0004) return null; // not PREPARED
+  const idLen = view.getInt16(4, false);
+  if (idLen <= 0 || 6 + idLen > body.length) return null;
+  return body.slice(6, 6 + idLen);
+}
+
+/**
+ * Build an EXECUTE frame (opcode 0x0A) with string-valued bound parameters.
+ * Values are serialized as UTF-8 bytes.
+ */
+function buildExecuteFrame(
+  preparedId: Uint8Array,
+  values: string[],
+  stream = 4,
+): Uint8Array {
+  // Header: short_bytes(preparedId) + consistency(2) + flags(1)
+  // If values present, flags=0x01, then 2-byte count + [4-byte len + bytes]*
+  const hasValues = values.length > 0;
+  const encodedValues = values.map(v => new TextEncoder().encode(v));
+  const valuesLen = hasValues
+    ? 2 + encodedValues.reduce((n, b) => n + 4 + b.length, 0)
+    : 0;
+  const body = new Uint8Array(2 + preparedId.length + 2 + 1 + valuesLen);
+  const view = new DataView(body.buffer);
+  let off = 0;
+  view.setInt16(off, preparedId.length, false); off += 2;
+  body.set(preparedId, off); off += preparedId.length;
+  view.setInt16(off, 0x0001, false); off += 2; // consistency ONE
+  body[off] = hasValues ? 0x01 : 0x00; off += 1; // flags
+  if (hasValues) {
+    view.setInt16(off, values.length, false); off += 2;
+    for (const b of encodedValues) {
+      view.setInt32(off, b.length, false); off += 4;
+      body.set(b, off); off += b.length;
+    }
+  }
+  return buildFrame(OPCODE_EXECUTE, body, stream);
+}
+
+/**
+ * POST /api/cassandra/prepare
+ * Body: { host, port?, timeout?, cql, values?: string[], username?, password? }
+ *
+ * PREPARE a parameterized CQL query, then EXECUTE it with bound string values.
+ * Returns the prepared statement metadata + query result rows.
+ */
+export async function handleCassandraPrepare(request: Request, _env: unknown): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; timeout?: number;
+      cql: string; values?: string[];
+      username?: string; password?: string;
+    };
+    const { host, port = 9042, timeout = 15000, cql, values = [], username = '', password = '' } = body;
+
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!cql)  return new Response(JSON.stringify({ success: false, error: 'CQL is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        // OPTIONS + STARTUP + optional AUTH
+        await writer.write(buildOptionsFrame());
+        const optResp = await readFrame(reader);
+        const supported: Record<string, string[]> = optResp.opcode === OPCODE_SUPPORTED ? parseStringMultimap(optResp.body) : {};
+
+        await writer.write(buildStartupFrame());
+        const startResp = await readFrame(reader);
+        if (startResp.opcode === OPCODE_AUTHENTICATE) {
+          await writer.write(buildAuthResponseFrame(username, password));
+          const authResp = await readFrame(reader);
+          if (authResp.opcode !== OPCODE_AUTH_SUCCESS_RESP && authResp.opcode !== OPCODE_READY) {
+            throw new Error(`Authentication failed: ${authResp.opcode === OPCODE_ERROR ? parseError(authResp.body).message : getOpcodeName(authResp.opcode)}`);
+          }
+        } else if (startResp.opcode === OPCODE_ERROR) {
+          throw new Error(`STARTUP failed: ${parseError(startResp.body).message}`);
+        } else if (startResp.opcode !== OPCODE_READY) {
+          throw new Error(`Unexpected STARTUP response: ${getOpcodeName(startResp.opcode)}`);
+        }
+
+        // PREPARE
+        await writer.write(buildPrepareFrame(cql));
+        const prepResp = await readFrame(reader);
+        if (prepResp.opcode === OPCODE_ERROR) throw new Error(`PREPARE error: ${parseError(prepResp.body).message}`);
+        if (prepResp.opcode !== OPCODE_RESULT) throw new Error(`Unexpected PREPARE response: ${getOpcodeName(prepResp.opcode)}`);
+        const preparedId = parsePreparedId(prepResp.body);
+        if (!preparedId) throw new Error('Could not parse prepared statement ID');
+
+        // EXECUTE with bound values
+        await writer.write(buildExecuteFrame(preparedId, values));
+        const execResp = await readFrame(reader);
+        const rtt = Date.now() - startTime;
+
+        if (execResp.opcode === OPCODE_ERROR) {
+          const err = parseError(execResp.body);
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return { success: false, host, port, rtt, error: `EXECUTE error: ${err.message} (code ${err.code})`, cqlVersions: supported['CQL_VERSION'] ?? [] };
+        }
+
+        let columns: Array<{ keyspace: string; table: string; name: string; type: string }> = [];
+        let rows: Array<Record<string, string | null>> = [];
+        if (execResp.opcode === OPCODE_RESULT) {
+          ({ columns, rows } = parseResultRows(execResp.body));
+        }
+
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return {
+          success: true, host, port, rtt,
+          preparedIdHex: Array.from(preparedId).map(b => b.toString(16).padStart(2, '0')).join(''),
+          cqlVersions: supported['CQL_VERSION'] ?? [],
+          columns, rows, rowCount: rows.length,
+        };
+      } catch (err) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

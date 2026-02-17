@@ -456,3 +456,395 @@ export async function handleRealAudioDescribe(request: Request): Promise<Respons
     });
   }
 }
+
+interface RealAudioSetupRequest {
+  host: string;
+  port?: number;
+  path?: string;
+  timeout?: number;
+}
+
+interface SdpTrack {
+  type: string;
+  codec: string;
+}
+
+interface RealAudioSetupResult {
+  success: boolean;
+  serverBanner?: string;
+  methods: string[];
+  describeStatus?: number;
+  contentType?: string;
+  sdp?: string;
+  sessionId?: string;
+  tracks: SdpTrack[];
+  latencyMs: number;
+  error?: string;
+}
+
+function parsePublicMethods(response: string): string[] {
+  const match = response.match(/^Public:\s*(.+)$/im);
+  if (!match) return [];
+  return match[1].split(',').map((m) => m.trim()).filter(Boolean);
+}
+
+function extractHeaderValue(response: string, name: string): string | undefined {
+  const re = new RegExp(`^${name}:\\s*(.+)$`, 'im');
+  const match = response.match(re);
+  return match ? match[1].trim() : undefined;
+}
+
+function extractRTSPStatusCode(response: string): number {
+  const match = response.match(/RTSP\/\d\.\d\s+(\d+)/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
+function parseSdpTracks(sdp: string): SdpTrack[] {
+  const tracks: SdpTrack[] = [];
+  for (const line of sdp.split(/\r?\n/)) {
+    const mMatch = line.match(/^m=(\w+)\s/);
+    if (mMatch) tracks.push({ type: mMatch[1], codec: 'unknown' });
+    const rtpMatch = line.match(/^a=rtpmap:\d+\s+([^/\s]+)/);
+    if (rtpMatch && tracks.length > 0) tracks[tracks.length - 1].codec = rtpMatch[1];
+  }
+  return tracks;
+}
+
+/**
+ * Perform a full RTSP session setup: OPTIONS → DESCRIBE → SETUP (first track).
+ * Returns server capabilities, SDP metadata, parsed tracks, and session ID.
+ *
+ * POST /api/realaudio/setup
+ * Body: { host, port?, path?, timeout? }
+ */
+export async function handleRealAudioSetup(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as RealAudioSetupRequest;
+    const { host, port = 554, path = '/testclip.rm', timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(
+        JSON.stringify({ success: false, methods: [], tracks: [], latencyMs: 0, error: 'Host is required' } satisfies RealAudioSetupResult),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const baseUrl = `rtsp://${host}:${port}${path}`;
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      async function readRTSPResp(ms: number): Promise<string> {
+        const chunks: string[] = [];
+        const dl = Date.now() + ms;
+        let contentLength = 0;
+        let headersDone = false;
+        let bodyRead = 0;
+        while (Date.now() < dl) {
+          const rem = dl - Date.now();
+          if (rem <= 0) break;
+          try {
+            const ct = new Promise<{ value: undefined; done: true }>((r) =>
+              setTimeout(() => r({ value: undefined, done: true as const }), rem),
+            );
+            const { value, done } = await Promise.race([reader.read(), ct]);
+            if (done || !value) break;
+            chunks.push(new TextDecoder().decode(value));
+            const full = chunks.join('');
+            if (!headersDone && full.includes('\r\n\r\n')) {
+              headersDone = true;
+              const clMatch = full.match(/Content-Length:\s*(\d+)/i);
+              contentLength = clMatch ? parseInt(clMatch[1], 10) : 0;
+              bodyRead = full.length - full.indexOf('\r\n\r\n') - 4;
+            }
+            if (headersDone && bodyRead >= contentLength) break;
+          } catch { break; }
+        }
+        return chunks.join('');
+      }
+
+      // OPTIONS
+      await writer.write(new TextEncoder().encode(`OPTIONS * RTSP/1.0\r\nCSeq: 1\r\nUser-Agent: RealPlayer\r\n\r\n`));
+      const optionsResp = await readRTSPResp(4000);
+      const serverBanner = extractHeaderValue(optionsResp, 'Server');
+      const methods = parsePublicMethods(optionsResp);
+
+      // DESCRIBE
+      await writer.write(new TextEncoder().encode(
+        `DESCRIBE ${baseUrl} RTSP/1.0\r\nCSeq: 2\r\nUser-Agent: RealPlayer\r\nAccept: application/sdp\r\n\r\n`,
+      ));
+      const describeResp = await readRTSPResp(5000);
+      const describeStatus = extractRTSPStatusCode(describeResp);
+      const contentType = extractHeaderValue(describeResp, 'Content-Type');
+      let sdp: string | undefined;
+      let tracks: SdpTrack[] = [];
+      if (describeStatus === 200) {
+        const bodyIdx = describeResp.indexOf('\r\n\r\n');
+        if (bodyIdx !== -1) {
+          sdp = describeResp.slice(bodyIdx + 4).trim();
+          if (sdp) tracks = parseSdpTracks(sdp);
+        }
+      }
+
+      // SETUP (first track)
+      let sessionId: string | undefined;
+      if (describeStatus === 200) {
+        await writer.write(new TextEncoder().encode(
+          `SETUP ${baseUrl}/streamid=0 RTSP/1.0\r\nCSeq: 3\r\nUser-Agent: RealPlayer\r\nTransport: RTP/AVP;unicast;client_port=6970-6971\r\n\r\n`,
+        ));
+        const setupResp = await readRTSPResp(4000);
+        const sessionHeader = extractHeaderValue(setupResp, 'Session');
+        if (sessionHeader) sessionId = sessionHeader.split(';')[0].trim();
+      }
+
+      const latencyMs = Date.now() - startTime;
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          ...(serverBanner ? { serverBanner } : {}),
+          methods,
+          describeStatus,
+          ...(contentType ? { contentType } : {}),
+          ...(sdp ? { sdp } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          tracks,
+          latencyMs,
+        } satisfies RealAudioSetupResult),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, methods: [], tracks: [], latencyMs: 0, error: error instanceof Error ? error.message : 'Unknown error' } satisfies RealAudioSetupResult),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+interface RealAudioSessionResult {
+  success: boolean;
+  serverBanner?: string;
+  methods: string[];
+  sessionId?: string;
+  tracks: SdpTrack[];
+  playStatus?: number;
+  rtpInfo?: string;
+  framesReceived?: number;
+  teardownStatus?: number;
+  latencyMs: number;
+  error?: string;
+}
+
+/**
+ * Perform a complete RTSP session: OPTIONS → DESCRIBE → SETUP → PLAY → collect frames → TEARDOWN.
+ * This is the full workflow needed to actually stream media from an RTSP server.
+ *
+ * POST /api/realaudio/session
+ * Body: { host, port?, path?, collectMs?, timeout? }
+ *   collectMs — how many ms to collect RTP interleaved frames after PLAY (default: 2000, max: 8000)
+ */
+export async function handleRealAudioSession(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+  try {
+    const body = (await request.json()) as {
+      host?: string; port?: number; path?: string; collectMs?: number; timeout?: number;
+    };
+    const host = (body.host ?? '').trim();
+    const port = body.port ?? 554;
+    const path = (body.path ?? '/').replace(/^([^/])/, '/$1');
+    const collectMs = Math.min(body.collectMs ?? 2000, 8000);
+    const timeout = Math.min(body.timeout ?? 15000, 30000);
+
+    if (!host) {
+      return new Response(
+        JSON.stringify({ success: false, methods: [], tracks: [], latencyMs: 0, error: 'Host is required' } satisfies RealAudioSessionResult),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const baseUrl = `rtsp://${host}:${port}${path}`;
+    const startTime = Date.now();
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      async function readRTSP(ms: number): Promise<string> {
+        const chunks: string[] = [];
+        const dl = Date.now() + ms;
+        let contentLength = 0;
+        let headersDone = false;
+        let bodyRead = 0;
+        while (Date.now() < dl) {
+          const rem = dl - Date.now();
+          if (rem <= 0) break;
+          try {
+            const ct = new Promise<{ value: undefined; done: true }>((r) =>
+              setTimeout(() => r({ value: undefined, done: true as const }), rem),
+            );
+            const { value, done } = await Promise.race([reader.read(), ct]);
+            if (done || !value) break;
+            chunks.push(new TextDecoder().decode(value));
+            const full = chunks.join('');
+            if (!headersDone && full.includes('\r\n\r\n')) {
+              headersDone = true;
+              const clMatch = full.match(/Content-Length:\s*(\d+)/i);
+              contentLength = clMatch ? parseInt(clMatch[1], 10) : 0;
+              bodyRead = full.length - full.indexOf('\r\n\r\n') - 4;
+            }
+            if (headersDone && bodyRead >= contentLength) break;
+          } catch { break; }
+        }
+        return chunks.join('');
+      }
+
+      // CSeq counter
+      let cseq = 0;
+      const ua = 'RealPlayer';
+
+      // OPTIONS
+      cseq++;
+      await writer.write(new TextEncoder().encode(
+        `OPTIONS * RTSP/1.0\r\nCSeq: ${cseq}\r\nUser-Agent: ${ua}\r\n\r\n`,
+      ));
+      const optResp = await readRTSP(4000);
+      const serverBanner = extractHeaderValue(optResp, 'Server');
+      const methods = parsePublicMethods(optResp);
+
+      // DESCRIBE
+      cseq++;
+      await writer.write(new TextEncoder().encode(
+        `DESCRIBE ${baseUrl} RTSP/1.0\r\nCSeq: ${cseq}\r\nUser-Agent: ${ua}\r\nAccept: application/sdp\r\n\r\n`,
+      ));
+      const descResp = await readRTSP(5000);
+      const descStatus = extractRTSPStatusCode(descResp);
+      let tracks: SdpTrack[] = [];
+      let sessionId: string | undefined;
+      let playStatus: number | undefined;
+      let rtpInfo: string | undefined;
+      let framesReceived = 0;
+      let teardownStatus: number | undefined;
+
+      if (descStatus === 200) {
+        const bodyIdx = descResp.indexOf('\r\n\r\n');
+        if (bodyIdx !== -1) {
+          const sdp = descResp.slice(bodyIdx + 4).trim();
+          if (sdp) tracks = parseSdpTracks(sdp);
+        }
+
+        // SETUP (first track, interleaved TCP so PLAY data comes back on same connection)
+        cseq++;
+        const trackUrl = tracks.length > 0
+          ? `${baseUrl}/trackID=1`
+          : `${baseUrl}/streamid=0`;
+        await writer.write(new TextEncoder().encode(
+          `SETUP ${trackUrl} RTSP/1.0\r\nCSeq: ${cseq}\r\nUser-Agent: ${ua}\r\nTransport: RTP/AVP/TCP;unicast;interleaved=0-1\r\n\r\n`,
+        ));
+        const setupResp = await readRTSP(4000);
+        const sessionHdr = extractHeaderValue(setupResp, 'Session');
+        if (sessionHdr) sessionId = sessionHdr.split(';')[0].trim();
+
+        if (sessionId) {
+          // PLAY
+          cseq++;
+          await writer.write(new TextEncoder().encode(
+            `PLAY ${baseUrl} RTSP/1.0\r\nCSeq: ${cseq}\r\nUser-Agent: ${ua}\r\nSession: ${sessionId}\r\nRange: npt=0.000-\r\n\r\n`,
+          ));
+          const playResp = await readRTSP(4000);
+          playStatus = extractRTSPStatusCode(playResp);
+          rtpInfo = extractHeaderValue(playResp, 'RTP-Info');
+
+          // Collect interleaved RTP frames for collectMs ms
+          if (playStatus === 200) {
+            const frameDeadline = Date.now() + collectMs;
+            const buf: Uint8Array[] = [];
+            let bufLen = 0;
+            while (Date.now() < frameDeadline) {
+              const rem = frameDeadline - Date.now();
+              try {
+                const ct = new Promise<{ value: undefined; done: true }>((r) =>
+                  setTimeout(() => r({ value: undefined, done: true as const }), rem),
+                );
+                const { value, done } = await Promise.race([reader.read(), ct]);
+                if (done || !value) break;
+                buf.push(value);
+                bufLen += value.length;
+                // Count interleaved frames: each starts with '$' (0x24) + channel(1) + length(2)
+                for (const chunk of buf) {
+                  for (let i = 0; i < chunk.length - 3; i++) {
+                    if (chunk[i] === 0x24) framesReceived++;
+                  }
+                }
+                buf.length = 0; // clear processed chunks
+                if (bufLen > 65536) break; // safety
+              } catch { break; }
+            }
+
+            // TEARDOWN
+            cseq++;
+            try {
+              await writer.write(new TextEncoder().encode(
+                `TEARDOWN ${baseUrl} RTSP/1.0\r\nCSeq: ${cseq}\r\nUser-Agent: ${ua}\r\nSession: ${sessionId}\r\n\r\n`,
+              ));
+              const tearResp = await readRTSP(3000);
+              teardownStatus = extractRTSPStatusCode(tearResp);
+            } catch { /* teardown is best-effort */ }
+          }
+        }
+      }
+
+      const latencyMs = Date.now() - startTime;
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(
+        JSON.stringify({
+          success: (playStatus ?? 0) >= 200 && (playStatus ?? 0) < 300 || descStatus === 200,
+          ...(serverBanner ? { serverBanner } : {}),
+          methods,
+          ...(sessionId ? { sessionId } : {}),
+          tracks,
+          ...(playStatus !== undefined ? { playStatus } : {}),
+          ...(rtpInfo ? { rtpInfo } : {}),
+          ...(playStatus === 200 ? { framesReceived } : {}),
+          ...(teardownStatus !== undefined ? { teardownStatus } : {}),
+          latencyMs,
+        } satisfies RealAudioSessionResult),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, methods: [], tracks: [], latencyMs: 0, error: error instanceof Error ? error.message : 'Unknown error' } satisfies RealAudioSessionResult),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}

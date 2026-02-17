@@ -266,6 +266,177 @@ export async function handleTorControlProbe(request: Request): Promise<Response>
 }
 
 /**
+ * Handle Tor Control signal - authenticate and send a SIGNAL command.
+ * Supports: NEWNYM (new identity/IP), RELOAD, DUMP, DEBUG, HALT, CLEARDNSCACHE.
+ * Also optionally returns circuit-status and stream-status after NEWNYM.
+ *
+ * POST /api/torcontrol/signal
+ * Body: { host, port?, password?, signal, timeout? }
+ */
+export async function handleTorControlSignal(request: Request): Promise<Response> {
+  try {
+    const options = await request.json() as {
+      host: string;
+      port?: number;
+      password?: string;
+      signal: string;
+      timeout?: number;
+    };
+
+    if (!options.host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const ALLOWED_SIGNALS = ['NEWNYM', 'RELOAD', 'DUMP', 'DEBUG', 'HALT', 'CLEARDNSCACHE', 'HEARTBEAT'];
+
+    const signal = (options.signal || '').toUpperCase();
+    if (!ALLOWED_SIGNALS.includes(signal)) {
+      return new Response(JSON.stringify({
+        error: `Invalid signal: ${options.signal}. Allowed: ${ALLOWED_SIGNALS.join(', ')}`,
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = options.host;
+    const port = options.port || 9051;
+    const password = options.password || '';
+    const timeoutMs = options.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const connectTime = Date.now() - startTime;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Authenticate
+        const authCmd = password
+          ? `AUTHENTICATE "${password.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+          : 'AUTHENTICATE';
+        const authResp = await sendTorCommand(writer, reader, authCmd, 3000);
+        const authParsed = parseTorResponse(authResp);
+
+        if (authParsed.isError) {
+          await writer.write(encoder.encode('QUIT\r\n'));
+          writer.releaseLock();
+          reader.releaseLock();
+          await socket.close();
+          return {
+            success: false,
+            error: `Authentication failed: ${authParsed.lines[0] || `status ${authParsed.statusCode}`}`,
+            host,
+            port,
+            connectTime,
+            authenticated: false,
+          };
+        }
+
+        // For NEWNYM, fetch circuit and stream status before signalling
+        let circuitsBefore: string[] = [];
+        let streamsBefore: string[] = [];
+        if (signal === 'NEWNYM') {
+          try {
+            const csResp = await sendTorCommand(writer, reader, 'GETINFO circuit-status', 2000);
+            const csParsed = parseTorResponse(csResp);
+            circuitsBefore = csParsed.lines.filter(l => l !== 'OK' && l.includes('circuit-status=') === false);
+          } catch { /* optional */ }
+          try {
+            const ssResp = await sendTorCommand(writer, reader, 'GETINFO stream-status', 2000);
+            const ssParsed = parseTorResponse(ssResp);
+            streamsBefore = ssParsed.lines.filter(l => l !== 'OK');
+          } catch { /* optional */ }
+        }
+
+        // Send SIGNAL
+        const sendTime = Date.now();
+        const sigResp = await sendTorCommand(writer, reader, `SIGNAL ${signal}`, 5000);
+        const rtt = Date.now() - sendTime;
+        const sigParsed = parseTorResponse(sigResp);
+
+        // After NEWNYM, also fetch circuit-status to show new circuits building
+        let circuitsAfter: string[] = [];
+        if (signal === 'NEWNYM' && !sigParsed.isError) {
+          try {
+            const csResp = await sendTorCommand(writer, reader, 'GETINFO circuit-status', 2000);
+            const csParsed = parseTorResponse(csResp);
+            circuitsAfter = csParsed.lines.filter(l => l !== 'OK');
+          } catch { /* optional */ }
+        }
+
+        await writer.write(encoder.encode('QUIT\r\n'));
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        const result: Record<string, unknown> = {
+          success: !sigParsed.isError,
+          message: sigParsed.isError
+            ? `SIGNAL ${signal} failed: ${sigParsed.lines[0] || 'unknown'}`
+            : `SIGNAL ${signal} sent successfully`,
+          host,
+          port,
+          connectTime,
+          rtt,
+          signal,
+          authenticated: true,
+          statusCode: sigParsed.statusCode,
+        };
+
+        if (signal === 'NEWNYM') {
+          result.circuitCountBefore = circuitsBefore.length;
+          result.circuitCountAfter = circuitsAfter.length;
+          result.circuitsAfter = circuitsAfter.slice(0, 5); // First 5 circuits
+          result.streamsBeforeCount = streamsBefore.length;
+        }
+
+        return result;
+      } catch (error) {
+        reader.releaseLock();
+        writer.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (timeoutError) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
+      }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Request failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Handle Tor Control getinfo - authenticate and query GETINFO
  * POST /api/torcontrol/getinfo
  */

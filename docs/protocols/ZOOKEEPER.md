@@ -1,892 +1,604 @@
-# ZooKeeper Protocol Implementation Plan
+# ZooKeeper — Port of Call Reference
+
+**RFC / Spec:** [ZooKeeper Programmer's Guide](https://zookeeper.apache.org/doc/current/zookeeperProgrammers.html)
+**Default port:** 2181
+**Source:** `src/worker/zookeeper.ts`
+
+---
 
 ## Overview
 
-**Protocol:** Apache ZooKeeper Client Protocol
-**Port:** 2181 (client), 2888 (peer), 3888 (leader election)
-**Documentation:** [ZooKeeper Protocol](https://zookeeper.apache.org/doc/current/zookeeperProgrammers.html)
-**Complexity:** High
-**Purpose:** Distributed coordination and configuration
+Port of Call implements two ZooKeeper transport layers on the same port (2181):
 
-ZooKeeper provides **distributed coordination** - hierarchical namespace (znodes), watches, distributed locks, leader election, and strong consistency guarantees.
+1. **Four-Letter Words (4LW)** — simple plaintext admin commands for health checking and monitoring
+2. **Jute binary protocol** — full session-based read/write operations on the znode tree
 
-### Use Cases
-- Configuration management
-- Distributed synchronization
-- Leader election
-- Service discovery
-- Distributed locking
-- Queue implementation
-- Barrier synchronization
+Each HTTP request opens a new TCP connection, completes its operation, and closes. There is no
+persistent session reuse across requests. The Jute endpoints establish a new ZooKeeper session
+per call (sessionId=0 → server assigns).
 
-## Protocol Specification
+---
 
-### Binary Protocol
+## Endpoints
 
-ZooKeeper uses a **binary protocol** with request/response pairs:
+### `POST /api/zookeeper/connect` — Health probe
 
-```
-[Length: 4 bytes] [Xid: 4 bytes] [Type: 4 bytes] [Data: variable]
+Sends `ruok` and `srvr` as two separate TCP connections. Returns a structured summary.
+
+**Request:**
+```json
+{ "host": "zk.example.com", "port": 2181, "timeout": 10000 }
 ```
 
-### Connection Flow
-
-```
-Client → Server: ConnectRequest
-Server → Client: ConnectResponse
-Client ↔ Server: Requests/Responses
-Client → Server: CloseRequest (or disconnect)
-```
-
-### ConnectRequest
-
-```
-int32  protocolVersion (0)
-int64  lastZxidSeen
-int32  timeOut
-int64  sessionId (0 for new)
-int32  passwd_len
-bytes  passwd
-```
-
-### ConnectResponse
-
-```
-int32  protocolVersion
-int32  timeOut
-int64  sessionId
-int32  passwd_len
-bytes  passwd
-```
-
-### Request Types
-
-```
-OpCode.create      = 1
-OpCode.delete      = 2
-OpCode.exists      = 3
-OpCode.getData     = 4
-OpCode.setData     = 5
-OpCode.getACL      = 6
-OpCode.setACL      = 7
-OpCode.getChildren = 8
-OpCode.sync        = 9
-OpCode.ping        = 11
-OpCode.getChildren2= 12
-OpCode.multi       = 14
-```
-
-### ZNode Hierarchy
-
-```
-/                           # Root
-/app                        # Application namespace
-/app/config                 # Configuration
-/app/config/database        # Database config
-/app/workers                # Worker nodes
-/app/workers/worker-1       # Ephemeral node (session-bound)
-/app/locks                  # Locks
-/app/locks/resource-1       # Lock node
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/zookeeper/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface ZooKeeperConfig {
-  host: string;
-  port?: number;
-  sessionTimeout?: number;
-}
-
-export interface Stat {
-  czxid: bigint;          // Created zxid
-  mzxid: bigint;          // Last modified zxid
-  ctime: bigint;          // Created time
-  mtime: bigint;          // Last modified time
-  version: number;        // Data version
-  cversion: number;       // Children version
-  aversion: number;       // ACL version
-  ephemeralOwner: bigint; // Session ID if ephemeral
-  dataLength: number;     // Data length
-  numChildren: number;    // Number of children
-  pzxid: bigint;          // Last modified children zxid
-}
-
-export interface ZNode {
-  path: string;
-  data: Uint8Array;
-  stat: Stat;
-}
-
-export enum CreateMode {
-  PERSISTENT = 0,           // /path
-  EPHEMERAL = 1,            // /path (deleted on session end)
-  PERSISTENT_SEQUENTIAL = 2, // /path0000000001
-  EPHEMERAL_SEQUENTIAL = 3,  // /path0000000001 (deleted on session end)
-}
-
-export enum EventType {
-  NodeCreated = 1,
-  NodeDeleted = 2,
-  NodeDataChanged = 3,
-  NodeChildrenChanged = 4,
-}
-
-export interface WatchEvent {
-  type: EventType;
-  state: number;
-  path: string;
-}
-
-export class ZooKeeperClient {
-  private socket: any;
-  private sessionId: bigint = 0n;
-  private password: Uint8Array = new Uint8Array(16);
-  private xid: number = 1;
-  private watches = new Map<string, ((event: WatchEvent) => void)[]>();
-  private pendingRequests = new Map<number, any>();
-
-  constructor(private config: ZooKeeperConfig) {}
-
-  async connect(): Promise<void> {
-    const port = this.config.port || 2181;
-    this.socket = connect(`${this.config.host}:${port}`);
-    await this.socket.opened;
-
-    // Send ConnectRequest
-    await this.sendConnect();
-
-    // Start reading responses
-    this.readLoop();
-  }
-
-  private async sendConnect(): Promise<void> {
-    const timeout = this.config.sessionTimeout || 10000;
-
-    const buffer = new ArrayBuffer(44);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Length (will set at end)
-    offset += 4;
-
-    // Protocol version
-    view.setInt32(offset, 0, false);
-    offset += 4;
-
-    // Last zxid seen
-    view.setBigInt64(offset, 0n, false);
-    offset += 8;
-
-    // Timeout
-    view.setInt32(offset, timeout, false);
-    offset += 4;
-
-    // Session ID
-    view.setBigInt64(offset, this.sessionId, false);
-    offset += 8;
-
-    // Password length
-    view.setInt32(offset, 16, false);
-    offset += 4;
-
-    // Password (16 bytes)
-    const data = new Uint8Array(buffer);
-    data.set(this.password, offset);
-
-    // Set length (excluding length field itself)
-    view.setInt32(0, offset + 16 - 4, false);
-
-    await this.send(new Uint8Array(buffer.slice(0, offset + 16)));
-
-    // Read ConnectResponse
-    await this.readConnect();
-  }
-
-  private async readConnect(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-
-    // Read length
-    const lengthData = await this.readExact(reader, 4);
-    const length = new DataView(lengthData.buffer).getInt32(0, false);
-
-    // Read response
-    const response = await this.readExact(reader, length);
-    const view = new DataView(response.buffer);
-
-    let offset = 0;
-
-    // Protocol version
-    const version = view.getInt32(offset, false);
-    offset += 4;
-
-    // Timeout
-    const timeout = view.getInt32(offset, false);
-    offset += 4;
-
-    // Session ID
-    this.sessionId = view.getBigInt64(offset, false);
-    offset += 8;
-
-    // Password length
-    const passwdLen = view.getInt32(offset, false);
-    offset += 4;
-
-    // Password
-    this.password = response.slice(offset, offset + passwdLen);
-
-    reader.releaseLock();
-  }
-
-  // Create ZNode
-
-  async create(
-    path: string,
-    data: Uint8Array = new Uint8Array(0),
-    mode: CreateMode = CreateMode.PERSISTENT
-  ): Promise<string> {
-    const xid = this.xid++;
-
-    // Build CreateRequest
-    const pathBytes = new TextEncoder().encode(path);
-    const bufferSize = 4 + 4 + 4 + pathBytes.length + 4 + data.length + 4 + 4;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Xid
-    view.setInt32(offset, xid, false);
-    offset += 4;
-
-    // OpCode (create = 1)
-    view.setInt32(offset, 1, false);
-    offset += 4;
-
-    // Path length and data
-    view.setInt32(offset, pathBytes.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(pathBytes, offset);
-    offset += pathBytes.length;
-
-    // Data length and data
-    view.setInt32(offset, data.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(data, offset);
-    offset += data.length;
-
-    // ACL (open ACL for simplicity)
-    view.setInt32(offset, 0, false); // ACL count
-    offset += 4;
-
-    // Flags (CreateMode)
-    view.setInt32(offset, mode, false);
-
-    const response = await this.sendRequest(xid, new Uint8Array(buffer));
-    return new TextDecoder().decode(response);
-  }
-
-  // Get ZNode data
-
-  async getData(path: string, watch: boolean = false): Promise<ZNode> {
-    const xid = this.xid++;
-
-    const pathBytes = new TextEncoder().encode(path);
-    const bufferSize = 4 + 4 + 4 + pathBytes.length + 1;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Xid
-    view.setInt32(offset, xid, false);
-    offset += 4;
-
-    // OpCode (getData = 4)
-    view.setInt32(offset, 4, false);
-    offset += 4;
-
-    // Path
-    view.setInt32(offset, pathBytes.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(pathBytes, offset);
-    offset += pathBytes.length;
-
-    // Watch
-    view.setUint8(offset, watch ? 1 : 0);
-
-    const response = await this.sendRequest(xid, new Uint8Array(buffer));
-    return this.parseGetDataResponse(path, response);
-  }
-
-  private parseGetDataResponse(path: string, response: Uint8Array): ZNode {
-    const view = new DataView(response.buffer);
-    let offset = 0;
-
-    // Data length
-    const dataLen = view.getInt32(offset, false);
-    offset += 4;
-
-    // Data
-    const data = response.slice(offset, offset + dataLen);
-    offset += dataLen;
-
-    // Stat
-    const stat = this.parseStat(view, offset);
-
-    return { path, data, stat };
-  }
-
-  // Set ZNode data
-
-  async setData(path: string, data: Uint8Array, version: number = -1): Promise<Stat> {
-    const xid = this.xid++;
-
-    const pathBytes = new TextEncoder().encode(path);
-    const bufferSize = 4 + 4 + 4 + pathBytes.length + 4 + data.length + 4;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Xid
-    view.setInt32(offset, xid, false);
-    offset += 4;
-
-    // OpCode (setData = 5)
-    view.setInt32(offset, 5, false);
-    offset += 4;
-
-    // Path
-    view.setInt32(offset, pathBytes.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(pathBytes, offset);
-    offset += pathBytes.length;
-
-    // Data
-    view.setInt32(offset, data.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(data, offset);
-    offset += data.length;
-
-    // Version
-    view.setInt32(offset, version, false);
-
-    const response = await this.sendRequest(xid, new Uint8Array(buffer));
-    return this.parseStat(new DataView(response.buffer), 0);
-  }
-
-  // Delete ZNode
-
-  async delete(path: string, version: number = -1): Promise<void> {
-    const xid = this.xid++;
-
-    const pathBytes = new TextEncoder().encode(path);
-    const bufferSize = 4 + 4 + 4 + pathBytes.length + 4;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Xid
-    view.setInt32(offset, xid, false);
-    offset += 4;
-
-    // OpCode (delete = 2)
-    view.setInt32(offset, 2, false);
-    offset += 4;
-
-    // Path
-    view.setInt32(offset, pathBytes.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(pathBytes, offset);
-    offset += pathBytes.length;
-
-    // Version
-    view.setInt32(offset, version, false);
-
-    await this.sendRequest(xid, new Uint8Array(buffer));
-  }
-
-  // Get children
-
-  async getChildren(path: string, watch: boolean = false): Promise<string[]> {
-    const xid = this.xid++;
-
-    const pathBytes = new TextEncoder().encode(path);
-    const bufferSize = 4 + 4 + 4 + pathBytes.length + 1;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Xid
-    view.setInt32(offset, xid, false);
-    offset += 4;
-
-    // OpCode (getChildren = 8)
-    view.setInt32(offset, 8, false);
-    offset += 4;
-
-    // Path
-    view.setInt32(offset, pathBytes.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(pathBytes, offset);
-    offset += pathBytes.length;
-
-    // Watch
-    view.setUint8(offset, watch ? 1 : 0);
-
-    const response = await this.sendRequest(xid, new Uint8Array(buffer));
-    return this.parseGetChildrenResponse(response);
-  }
-
-  private parseGetChildrenResponse(response: Uint8Array): string[] {
-    const view = new DataView(response.buffer);
-    let offset = 0;
-
-    // Count
-    const count = view.getInt32(offset, false);
-    offset += 4;
-
-    const children: string[] = [];
-
-    for (let i = 0; i < count; i++) {
-      // Child name length
-      const len = view.getInt32(offset, false);
-      offset += 4;
-
-      // Child name
-      const name = new TextDecoder().decode(response.slice(offset, offset + len));
-      children.push(name);
-      offset += len;
-    }
-
-    return children;
-  }
-
-  // Exists (check if node exists)
-
-  async exists(path: string, watch: boolean = false): Promise<Stat | null> {
-    const xid = this.xid++;
-
-    const pathBytes = new TextEncoder().encode(path);
-    const bufferSize = 4 + 4 + 4 + pathBytes.length + 1;
-    const buffer = new ArrayBuffer(bufferSize);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Xid
-    view.setInt32(offset, xid, false);
-    offset += 4;
-
-    // OpCode (exists = 3)
-    view.setInt32(offset, 3, false);
-    offset += 4;
-
-    // Path
-    view.setInt32(offset, pathBytes.length, false);
-    offset += 4;
-    new Uint8Array(buffer).set(pathBytes, offset);
-    offset += pathBytes.length;
-
-    // Watch
-    view.setUint8(offset, watch ? 1 : 0);
-
-    try {
-      const response = await this.sendRequest(xid, new Uint8Array(buffer));
-      return this.parseStat(new DataView(response.buffer), 0);
-    } catch (error) {
-      // Node doesn't exist
-      return null;
-    }
-  }
-
-  private parseStat(view: DataView, offset: number): Stat {
-    return {
-      czxid: view.getBigInt64(offset, false),
-      mzxid: view.getBigInt64(offset + 8, false),
-      ctime: view.getBigInt64(offset + 16, false),
-      mtime: view.getBigInt64(offset + 24, false),
-      version: view.getInt32(offset + 32, false),
-      cversion: view.getInt32(offset + 36, false),
-      aversion: view.getInt32(offset + 40, false),
-      ephemeralOwner: view.getBigInt64(offset + 44, false),
-      dataLength: view.getInt32(offset + 52, false),
-      numChildren: view.getInt32(offset + 56, false),
-      pzxid: view.getBigInt64(offset + 60, false),
-    };
-  }
-
-  private async sendRequest(xid: number, data: Uint8Array): Promise<Uint8Array> {
-    return new Promise(async (resolve, reject) => {
-      this.pendingRequests.set(xid, { resolve, reject });
-
-      // Prepend length
-      const buffer = new ArrayBuffer(4 + data.length);
-      const view = new DataView(buffer);
-      view.setInt32(0, data.length, false);
-      new Uint8Array(buffer).set(data, 4);
-
-      await this.send(new Uint8Array(buffer));
-    });
-  }
-
-  private async send(data: Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  private async readLoop(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-
-    while (true) {
-      try {
-        // Read length
-        const lengthData = await this.readExact(reader, 4);
-        const length = new DataView(lengthData.buffer).getInt32(0, false);
-
-        // Read message
-        const message = await this.readExact(reader, length);
-        await this.handleMessage(message);
-      } catch (error) {
-        console.error('Read error:', error);
-        break;
-      }
-    }
-  }
-
-  private async handleMessage(message: Uint8Array): Promise<void> {
-    const view = new DataView(message.buffer);
-
-    // Xid
-    const xid = view.getInt32(0, false);
-
-    // Zxid
-    const zxid = view.getBigInt64(4, false);
-
-    // Error code
-    const err = view.getInt32(12, false);
-
-    if (xid === -1) {
-      // Watch event
-      this.handleWatchEvent(message.slice(16));
-      return;
-    }
-
-    const pending = this.pendingRequests.get(xid);
-    if (!pending) return;
-
-    this.pendingRequests.delete(xid);
-
-    if (err !== 0) {
-      pending.reject(new Error(`ZooKeeper error: ${err}`));
-    } else {
-      pending.resolve(message.slice(16));
-    }
-  }
-
-  private handleWatchEvent(data: Uint8Array): void {
-    const view = new DataView(data.buffer);
-    let offset = 0;
-
-    // Event type
-    const type = view.getInt32(offset, false) as EventType;
-    offset += 4;
-
-    // State
-    const state = view.getInt32(offset, false);
-    offset += 4;
-
-    // Path length
-    const pathLen = view.getInt32(offset, false);
-    offset += 4;
-
-    // Path
-    const path = new TextDecoder().decode(data.slice(offset, offset + pathLen));
-
-    const event: WatchEvent = { type, state, path };
-
-    // Call registered watchers
-    const watchers = this.watches.get(path);
-    if (watchers) {
-      watchers.forEach(watcher => watcher(event));
-    }
-  }
-
-  private async readExact(reader: any, length: number): Promise<Uint8Array> {
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = length - offset;
-      const toCopy = Math.min(remaining, value.length);
-      buffer.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    return buffer;
-  }
-
-  async close(): Promise<void> {
-    await this.socket.close();
-  }
-}
-
-// Distributed Lock using ZooKeeper
-
-export class ZooKeeperLock {
-  private lockPath?: string;
-
-  constructor(
-    private client: ZooKeeperClient,
-    private basePath: string,
-    private prefix: string = 'lock-'
-  ) {}
-
-  async acquire(): Promise<void> {
-    // Create sequential ephemeral node
-    this.lockPath = await this.client.create(
-      `${this.basePath}/${this.prefix}`,
-      new Uint8Array(0),
-      CreateMode.EPHEMERAL_SEQUENTIAL
-    );
-
-    while (true) {
-      // Get all children
-      const children = await this.client.getChildren(this.basePath);
-
-      // Sort children
-      children.sort();
-
-      // Get our sequence number
-      const ourSeq = this.lockPath.split('/').pop()!;
-
-      // Are we the first?
-      if (children[0] === ourSeq) {
-        // We have the lock!
-        return;
-      }
-
-      // Wait for the node before us to be deleted
-      const ourIndex = children.indexOf(ourSeq);
-      const prevNode = children[ourIndex - 1];
-
-      // Set watch on previous node
-      await this.client.exists(`${this.basePath}/${prevNode}`, true);
-
-      // Wait for watch event (simplified - should listen for deletion)
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-  }
-
-  async release(): Promise<void> {
-    if (this.lockPath) {
-      await this.client.delete(this.lockPath);
-      this.lockPath = undefined;
-    }
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `port` | `2181` | |
+| `timeout` | `10000` | ms; applied independently to each TCP connection |
+
+**Response:**
+```json
+{
+  "success": true,
+  "host": "zk.example.com",
+  "port": 2181,
+  "rtt": 18,
+  "healthy": true,
+  "ruokResponse": "imok",
+  "serverInfo": {
+    "version": "3.8.1-74db005175a4ec545697012f9069cb9e2047e56f, built on 2023-01-25 16:31 UTC",
+    "mode": "standalone",
+    "connections": "1",
+    "outstanding": "0",
+    "nodeCount": "5",
+    "latencyMin": "0/0/0",
+    "received": "2",
+    "sent": "2"
   }
 }
 ```
 
-## Web UI Design
+| Field | Notes |
+|-------|-------|
+| `healthy` | `true` only when `ruokResponse === "imok"` |
+| `ruokResponse` | Raw response from `ruok` command — any value other than `"imok"` indicates unhealthy |
+| `serverInfo.version` | From `srvr` — full version string including git hash and build date |
+| `serverInfo.mode` | `standalone`, `leader`, `follower`, or `observer` |
+| `serverInfo.connections` | Current live client connections |
+| `serverInfo.outstanding` | Requests queued but not yet processed |
+| `serverInfo.nodeCount` | Total znodes in the tree (includes `/zookeeper` internals) |
+| `serverInfo.latencyMin` | `min/avg/max` latency in ms |
+| `serverInfo.*` | Any field is `undefined` if `srvr` is disabled or returns no data |
 
-```typescript
-// src/components/ZooKeeperClient.tsx
+`rtt` covers both TCP connections (ruok + srvr) combined. If `srvr` is disabled by the server
+ACL (ZooKeeper 3.5+ requires `4lw.commands.whitelist`), `serverInfo` fields will all be
+`undefined` but the call still succeeds if `ruok` responds.
 
-export function ZooKeeperClient() {
-  const [host, setHost] = useState('localhost');
-  const [connected, setConnected] = useState(false);
-  const [currentPath, setCurrentPath] = useState('/');
-  const [children, setChildren] = useState<string[]>([]);
-  const [nodeData, setNodeData] = useState<string>('');
-  const [newPath, setNewPath] = useState('');
-  const [newData, setNewData] = useState('');
+**Cloudflare detection:** runs before connecting; returns HTTP 403 with `isCloudflare:true` if
+the target IP resolves to Cloudflare.
 
-  const connect = async () => {
-    const response = await fetch('/api/zookeeper/connect', {
-      method: 'POST',
-      body: JSON.stringify({ host }),
-    });
+---
 
-    if (response.ok) {
-      setConnected(true);
-      await browse('/');
-    }
-  };
+### `POST /api/zookeeper/command` — Four-Letter Word
 
-  const browse = async (path: string) => {
-    const response = await fetch(`/api/zookeeper/children?path=${encodeURIComponent(path)}`);
-    const data = await response.json();
-    setChildren(data.children);
-    setCurrentPath(path);
-  };
+Sends any valid 4LW command and returns the raw text response plus structured parsing for
+applicable commands.
 
-  const getNodeData = async (path: string) => {
-    const response = await fetch(`/api/zookeeper/data?path=${encodeURIComponent(path)}`);
-    const data = await response.json();
-    setNodeData(data.data);
-  };
-
-  const createNode = async () => {
-    await fetch('/api/zookeeper/create', {
-      method: 'POST',
-      body: JSON.stringify({
-        path: newPath,
-        data: newData,
-        mode: 'PERSISTENT',
-      }),
-    });
-
-    setNewPath('');
-    setNewData('');
-    await browse(currentPath);
-  };
-
-  const deleteNode = async (path: string) => {
-    await fetch('/api/zookeeper/delete', {
-      method: 'DELETE',
-      body: JSON.stringify({ path }),
-    });
-
-    await browse(currentPath);
-  };
-
-  return (
-    <div className="zookeeper-client">
-      <h2>ZooKeeper Browser</h2>
-
-      {!connected ? (
-        <div className="connection">
-          <input
-            type="text"
-            placeholder="ZooKeeper Host"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <>
-          <div className="browser">
-            <div className="path">
-              Current: <strong>{currentPath}</strong>
-              {currentPath !== '/' && (
-                <button onClick={() => browse(currentPath.split('/').slice(0, -1).join('/') || '/')}>
-                  ↑ Parent
-                </button>
-              )}
-            </div>
-
-            <ul className="children">
-              {children.map(child => (
-                <li key={child}>
-                  <span onClick={() => browse(`${currentPath}/${child}`)}>{child}</span>
-                  <button onClick={() => getNodeData(`${currentPath}/${child}`)}>View</button>
-                  <button onClick={() => deleteNode(`${currentPath}/${child}`)}>Delete</button>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="create">
-            <h3>Create ZNode</h3>
-            <input
-              type="text"
-              placeholder="Path"
-              value={newPath}
-              onChange={(e) => setNewPath(e.target.value)}
-            />
-            <input
-              type="text"
-              placeholder="Data"
-              value={newData}
-              onChange={(e) => setNewData(e.target.value)}
-            />
-            <button onClick={createNode}>Create</button>
-          </div>
-
-          {nodeData && (
-            <div className="data">
-              <h3>Node Data</h3>
-              <pre>{nodeData}</pre>
-            </div>
-          )}
-        </>
-      )}
-
-      <div className="info">
-        <h3>About ZooKeeper</h3>
-        <ul>
-          <li>Distributed coordination service</li>
-          <li>Hierarchical namespace (like filesystem)</li>
-          <li>Strong consistency guarantees</li>
-          <li>Ephemeral nodes (session-bound)</li>
-          <li>Sequential nodes for locks/queues</li>
-          <li>Watches for change notifications</li>
-        </ul>
-      </div>
-    </div>
-  );
+**Request:**
+```json
+{
+  "host": "zk.example.com",
+  "port": 2181,
+  "command": "mntr",
+  "timeout": 10000
 }
 ```
 
-## Security
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `command` | **required** | Must be one of the 11 valid commands below |
+| `port` | `2181` | |
+| `timeout` | `10000` | |
 
-### ACL (Access Control Lists)
+**Valid commands:**
 
-```typescript
-// ZooKeeper supports ACLs but implementation is complex
-// For simplicity, using world:anyone:cdrwa (open ACL)
+| Command | Output format | `parsed` field | Description |
+|---------|--------------|----------------|-------------|
+| `ruok` | Plain text | — | Liveness check; returns `"imok"` or nothing |
+| `srvr` | `Key: Value` lines | `key:value` map | Server stats summary |
+| `stat` | `Key: Value` lines | — | Stats + connected client list |
+| `conf` | `key=value` lines | `key:value` map | Runtime configuration |
+| `envi` | `key=value` lines | `key:value` map | JVM + OS environment |
+| `mntr` | `key\tvalue` lines | `key:value` map (tab-delimited) | Full metrics for monitoring |
+| `cons` | Plain text | — | Per-client connection detail |
+| `dump` | Plain text | — | Outstanding sessions and ephemeral nodes |
+| `wchs` | Plain text | — | Watch summary |
+| `dirs` | Plain text | — | Data and log directory sizes |
+| `isro` | Plain text | — | `"rw"` or `"ro"` — read-write vs read-only mode |
+
+Commands are validated against the whitelist before sending. An unrecognised command returns
+HTTP 400 before any TCP connection is made.
+
+**Response:**
+```json
+{
+  "success": true,
+  "host": "zk.example.com",
+  "port": 2181,
+  "command": "mntr",
+  "rtt": 12,
+  "response": "zk_version\t3.8.1-74db005175a4...\nzk_avg_latency\t0\n...",
+  "parsed": {
+    "zk_version": "3.8.1-74db005175a4ec545697012f9069cb9e2047e56f",
+    "zk_avg_latency": "0",
+    "zk_max_latency": "0",
+    "zk_outstanding_requests": "0",
+    "zk_server_state": "leader",
+    "zk_znode_count": "147",
+    "zk_watch_count": "23",
+    "zk_ephemerals_count": "8",
+    "zk_approximate_data_size": "3721",
+    "zk_open_file_descriptor_count": "42",
+    "zk_followers": "2",
+    "zk_synced_followers": "2"
+  }
+}
 ```
 
-### TLS
+| Field | Notes |
+|-------|-------|
+| `response` | Raw text exactly as returned by ZooKeeper; server closes connection after sending |
+| `parsed` | Structured key→value map; only present for `srvr`, `conf`, `envi`, `mntr` |
+
+**Parsing rules:**
+- `srvr`, `conf`, `envi`: parsed by splitting on first `:` per line
+- `mntr`: parsed by splitting on first `\t` (tab) per line
+- `stat`, `cons`, `dump`, `wchs`, `dirs`, `ruok`, `isro`: `parsed` is `undefined`
+
+Response cap: 64 KB. Responses larger than 64 KB are silently truncated (rare in practice).
+
+**No Cloudflare detection** on this endpoint — detection is only in the Jute binary endpoints
+and `/connect`.
+
+---
+
+### `POST /api/zookeeper/get` — Read a znode (Jute binary)
+
+Establishes a ZooKeeper session and executes a `getData` request (opcode 4). Returns the
+node's data and stat metadata.
+
+**Request:**
+```json
+{
+  "host": "zk.example.com",
+  "port": 2181,
+  "path": "/myapp/config",
+  "watch": false,
+  "timeout": 10000
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `path` | `"/"` | Absolute znode path |
+| `watch` | `false` | Set watcher on the node (has no effect since connection closes immediately after) |
+| `port` | `2181` | |
+| `timeout` | `10000` | |
+
+**Wire sequence:**
+```
+TCP connect
+→ ConnectRequest (40 bytes, protocolVersion=0, timeOut=30000, sessionId=0, passwd=16×\0)
+← ConnectResponse (protocolVersion + negotiatedTimeout + sessionId + passwd)
+→ Request (xid=1, type=4/GET_DATA, path + watch byte)
+← Response (xid + zxid + err + data_len + data_bytes + stat[80])
+TCP close
+```
+
+**Response (node exists):**
+```json
+{
+  "success": true,
+  "host": "zk.example.com",
+  "port": 2181,
+  "path": "/myapp/config",
+  "data": "jdbc:mysql://db.internal:3306/mydb",
+  "version": 3,
+  "dataLength": 34,
+  "numChildren": 0,
+  "czxid": "0x00000001000000a3",
+  "mzxid": "0x0000000100000212",
+  "ctime": 1700000000000,
+  "mtime": 1700001234567,
+  "rtt": 22
+}
+```
+
+**Response (node does not exist — ZNONODE error -101):**
+```json
+{
+  "success": true,
+  "exists": false,
+  "path": "/myapp/config"
+}
+```
+
+Note: ZNONODE is treated as a successful non-error response (`success:true, exists:false`).
+All other ZK errors return `success:false` with an `error` string from the error code table.
+
+| Field | Notes |
+|-------|-------|
+| `data` | Node data decoded as UTF-8. If bytes are not valid UTF-8, falls back to base64 string |
+| `version` | Data version; incremented on every `setData` |
+| `dataLength` | Raw byte length from the Jute response (before UTF-8 decode). `-1` means null data |
+| `numChildren` | Number of child znodes |
+| `czxid` | Create ZooKeeper Transaction ID, as 16-character hex string |
+| `mzxid` | Last-modified ZXID |
+| `ctime` | Creation time in ms since epoch (JavaScript `Date`-compatible) |
+| `mtime` | Last modification time in ms since epoch |
+
+**Stat structure detail** — the 80-byte stat block contains:
+
+```
+czxid(8) mzxid(8) ctime(8) mtime(8) version(4) cversion(4) aversion(4)
+ephemeralOwner(8) dataLength(4) numChildren(4) pzxid(8)
+```
+
+Fields parsed: `czxid`, `mzxid`, `ctime`, `mtime`, `version`, `numChildren`.
+Not exposed: `cversion` (child version), `aversion` (ACL version), `ephemeralOwner`, `pzxid`.
+
+---
+
+### `POST /api/zookeeper/set` — Write a znode (Jute binary)
+
+Establishes a ZooKeeper session and executes a `setData` request (opcode 5).
+
+**Request:**
+```json
+{
+  "host": "zk.example.com",
+  "port": 2181,
+  "path": "/myapp/config",
+  "data": "jdbc:mysql://db.internal:3306/newdb",
+  "version": 3,
+  "timeout": 10000
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `path` | **required** | Absolute znode path |
+| `data` | **required** | String data to write (UTF-8 encoded) |
+| `version` | `-1` | Expected current version; `-1` = unconditional write (skip version check) |
+| `port` | `2181` | |
+| `timeout` | `10000` | |
+
+**Wire sequence:**
+```
+ConnectRequest → ConnectResponse
+→ Request (xid=2, type=5/SET_DATA, path + data_bytes + version)
+← Response (xid + zxid + err + stat[80])
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "zk.example.com",
+  "port": 2181,
+  "path": "/myapp/config",
+  "version": 4,
+  "rtt": 19
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `version` | New data version after the write (previous version + 1) |
+
+**Version conflict (ZBADVERSION -103):**
+```json
+{
+  "success": false,
+  "error": "ZBADVERSION: Version conflict",
+  "path": "/myapp/config"
+}
+```
+
+Use `version:-1` to force-overwrite without checking. Provide the exact current version (from a
+prior `/get`) for optimistic concurrency control. The version in the request must match the
+server's current `version`; if another client wrote between your read and write, the server
+increments the version and your write fails with ZBADVERSION.
+
+---
+
+### `POST /api/zookeeper/create` — Create a znode (Jute binary)
+
+Establishes a ZooKeeper session and executes a `create` request (opcode 1).
+
+**Request:**
+```json
+{
+  "host": "zk.example.com",
+  "port": 2181,
+  "path": "/myapp/lock/candidate-001",
+  "data": "node42",
+  "flags": 1,
+  "timeout": 10000
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `path` | **required** | Absolute path for the new znode |
+| `data` | `""` | Initial string data (UTF-8 encoded) |
+| `flags` | `0` | Node type — see table below |
+| `port` | `2181` | |
+| `timeout` | `10000` | |
+
+**`flags` values:**
+
+| Value | Type | Description |
+|-------|------|-------------|
+| `0` | Persistent | Node survives client disconnect (default) |
+| `1` | Ephemeral | Deleted when creating client session ends — but since each request opens a new session, ephemeral nodes are deleted almost immediately after creation |
+| `2` | Persistent Sequential | Path gets a 10-digit monotonic suffix (e.g. `/lock/candidate0000000042`) |
+| `3` | Ephemeral Sequential | Ephemeral + sequential — useful for temporary numbered entries |
+
+**ACL:** All created nodes use `world:anyone` with full permissions (CREATE + DELETE + READ +
+WRITE + ADMIN = 31). There is no way to specify custom ACLs through this endpoint.
+
+**Wire sequence:**
+```
+ConnectRequest → ConnectResponse
+→ Request (xid=3, type=1/CREATE, path + data + acl[world:anyone, perms=31] + flags)
+← Response (xid + zxid + err + created-path-string)
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "zk.example.com",
+  "port": 2181,
+  "path": "/myapp/lock/candidate-001",
+  "createdPath": "/myapp/lock/candidate-001",
+  "rtt": 24
+}
+```
+
+For sequential nodes, `createdPath` will differ from `path` — it contains the server-assigned
+numeric suffix. Always use `createdPath` to reference the node you just created.
+
+**Node already exists (ZNODEEXISTS -110):**
+```json
+{
+  "success": false,
+  "error": "Node already exists",
+  "path": "/myapp/lock/candidate-001"
+}
+```
+
+---
+
+## Jute Binary Protocol Details
+
+### Session handshake (all binary endpoints)
+
+The connect packet (40 bytes, sent with a 4-byte big-endian length prefix):
+
+```
+protocolVersion (int32 BE) = 0
+lastZxidSeen    (int64 BE) = 0
+timeOut         (int32 BE) = 30000   ← hardcoded; server may negotiate lower
+sessionId       (int64 BE) = 0       ← 0 = new session
+passwd_len      (int32 BE) = 16
+passwd          (16 bytes) = 0x00×16
+```
+
+The connect response (also length-prefixed) contains the server-assigned `sessionId` (8 bytes
+at offset 8) and `negotiatedTimeout` (int32 at offset 4). The sessionId is read but not
+reused across requests.
+
+### Request frame
+
+```
+[4-byte total length (BE)] [xid (4 BE)] [opcode (4 BE)] [payload...]
+```
+
+XIDs are hardcoded per endpoint: GET_DATA=1, SET_DATA=2, CREATE=3.
+
+### Response frame
+
+```
+[4-byte total length (BE)] [xid (4 BE)] [zxid (8 BE)] [err (4 BE)] [payload...]
+```
+
+Response payload starts at byte 16 (after 4+8+4 header). Error code 0 = OK; see error table
+below.
+
+### Jute string encoding
+
+All strings (paths, data keys) use Jute encoding: `int32 BE length` + UTF-8 bytes. A length
+of -1 means null (decoded as empty string). This is distinct from the 2-byte short strings in
+Cassandra or MQTT.
+
+### Frame reader: `zkReadPacket`
+
+The reader accumulates TCP chunks until it has received `4 + frameLen` bytes. Unlike a simple
+single-read, it handles TCP fragmentation correctly. It races against a per-call timeout
+promise — if no data arrives within `timeout` ms, throws `"ZooKeeper read timeout"`.
+
+---
+
+## Error Codes
+
+| Code | Name | Meaning |
+|------|------|---------|
+| `0` | OK | Success |
+| `-101` | ZNONODE | Node does not exist |
+| `-102` | ZNOAUTH | Not authenticated |
+| `-103` | ZBADVERSION | Version mismatch in setData |
+| `-108` | ZNOCHILDRENFOREPHEMERALS | Ephemeral nodes cannot have children |
+| `-110` | ZNODEEXISTS | Node already exists |
+| `-111` | ZNOTEMPTY | Cannot delete a node that has children |
+| `-112` | ZSESSIONEXPIRED | Session timed out (shouldn't occur here — new session per request) |
+| `-113` | ZINVALIDCALLBACK | Invalid callback specification |
+| `-114` | ZINVALIDACL | Invalid ACL |
+| `-115` | ZAUTHFAILED | Authentication failed |
+| `-116` | ZCLOSING | Server is shutting down |
+| `-117` | ZNOTHING | No server responses to process |
+| `-118` | ZSESSIONMOVED | Session moved to another ensemble member |
+
+Errors appear in the response as `"error": "<NAME>: <description>"` (e.g.,
+`"ZBADVERSION: Version conflict"`). Unknown error codes appear as
+`"ZooKeeper error code: <N>"`.
+
+---
+
+## Four-Letter Word Reference
+
+ZooKeeper 3.5+ requires 4LW commands to be whitelisted:
+
+```
+# zoo.cfg
+4lw.commands.whitelist=ruok,srvr,stat,conf,envi,mntr,cons,dump,wchs,dirs,isro
+# or allow all:
+4lw.commands.whitelist=*
+```
+
+If a command is not whitelisted, the server returns `"<cmd> is not executed because it is not
+in the whitelist."` — this is returned in `response` with `success:true`.
+
+### `mntr` key reference (commonly monitored fields)
+
+| Key | Meaning |
+|-----|---------|
+| `zk_version` | Full version string |
+| `zk_avg_latency` / `zk_max_latency` | Request latency in ms |
+| `zk_outstanding_requests` | Queued but unprocessed requests |
+| `zk_server_state` | `leader` / `follower` / `observer` / `standalone` |
+| `zk_znode_count` | Total znodes |
+| `zk_watch_count` | Active client watches |
+| `zk_ephemerals_count` | Ephemeral znodes |
+| `zk_approximate_data_size` | Total data size in bytes (approximate) |
+| `zk_open_file_descriptor_count` | OS FDs open |
+| `zk_followers` | Number of followers (leader only) |
+| `zk_synced_followers` | Followers fully caught up (leader only) |
+| `zk_pending_syncs` | Followers not yet synced (leader only) |
+
+---
+
+## Patterns and Gotchas
+
+**Ephemeral nodes are immediately deleted.** Since each `/create` call opens a new session and
+closes the connection, ephemeral nodes (flags=1 or 3) are created and then deleted within
+milliseconds as the session expires. Use persistent nodes (flags=0 or 2) for durable storage.
+
+**Sequential nodes return a different path.** With flags=2 or 3, ZooKeeper appends a
+10-digit zero-padded monotonic counter to the path. Always check `createdPath` in the response,
+not the input `path`.
+
+**Version check in setData.** The default `version:-1` bypasses optimistic locking. To use
+optimistic concurrency: read the node with `/get` (note `version`), then write with that
+`version`. If the write fails with ZBADVERSION, another client modified the node between your
+read and write.
+
+**Session timeout is 30 seconds (hardcoded).** The ConnectRequest sends `timeOut=30000` ms.
+The server may negotiate a lower value. Because each request opens a new session, this value
+only affects how long the server waits before cleaning up the connection if it goes silent.
+
+**`/zookeeper` internal nodes.** `nodeCount` from `srvr` includes the `/zookeeper/quota` and
+`/zookeeper/config` internal nodes. A fresh cluster shows count=5 (/, /zookeeper,
+/zookeeper/quota, /zookeeper/config, /zookeeper/config/version).
+
+**Non-UTF-8 data.** `/get` first tries `new TextDecoder('utf-8', { fatal: true })`. If decoding
+fails (binary data), it falls back to base64 via `btoa(String.fromCharCode(...bytes))`. Check
+`dataLength` to distinguish empty string (`dataLength=0`) from null data (`dataLength=-1`).
+
+---
+
+## curl Quick Reference
 
 ```bash
-# Enable TLS in ZooKeeper
-secureClientPort=2281
-ssl.keyStore.location=/path/to/keystore.jks
-ssl.trustStore.location=/path/to/truststore.jks
+BASE="https://portofcall.ross.gg"
+ZK="zk.example.com"
+
+# Health check
+curl -s -X POST $BASE/api/zookeeper/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'"}' | jq '{healthy,ruokResponse,"mode":.serverInfo.mode,"version":.serverInfo.version}'
+
+# Server mode (standalone / leader / follower)
+curl -s -X POST $BASE/api/zookeeper/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","command":"srvr"}' | jq '.parsed.Mode'
+
+# Full monitoring metrics
+curl -s -X POST $BASE/api/zookeeper/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","command":"mntr"}' | jq '.parsed | {state:.zk_server_state, znodes:.zk_znode_count, watches:.zk_watch_count}'
+
+# Check if read-only mode
+curl -s -X POST $BASE/api/zookeeper/command \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","command":"isro"}' | jq '.response'
+
+# Read a znode
+curl -s -X POST $BASE/api/zookeeper/get \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","path":"/myapp/config"}' | jq '{data,version,numChildren,exists}'
+
+# Write a znode (unconditional)
+curl -s -X POST $BASE/api/zookeeper/set \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","path":"/myapp/config","data":"new-value","version":-1}' | jq '{success,version}'
+
+# Create a persistent node
+curl -s -X POST $BASE/api/zookeeper/create \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","path":"/myapp/locks/primary","data":"owner-42","flags":0}' | jq '{success,createdPath}'
+
+# Create a sequential node (distributed election candidate)
+curl -s -X POST $BASE/api/zookeeper/create \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"'$ZK'","path":"/election/candidate","data":"node-7","flags":2}' | jq '.createdPath'
 ```
 
-## Testing
+---
+
+## Local Test Server
 
 ```bash
-# Docker ZooKeeper
-docker run -d \
-  -p 2181:2181 \
-  --name zookeeper \
-  zookeeper:latest
+# Single-node ZooKeeper (no auth)
+docker run -d -p 2181:2181 --name zookeeper zookeeper:3.8
 
-# CLI
-zkCli.sh -server localhost:2181
+# Verify it's up
+echo ruok | nc localhost 2181
 
-# Commands
-ls /
-create /test "data"
-get /test
-set /test "new data"
-delete /test
+# With all 4LW commands enabled
+docker run -d -p 2181:2181 \
+  -e ZOO_CFG_EXTRA="4lw.commands.whitelist=*" \
+  --name zookeeper zookeeper:3.8
 ```
 
-## Resources
+---
 
-- **ZooKeeper Docs**: [Documentation](https://zookeeper.apache.org/doc/current/)
-- **Programmer's Guide**: [Guide](https://zookeeper.apache.org/doc/current/zookeeperProgrammers.html)
-- **Recipes**: [Common patterns](https://zookeeper.apache.org/doc/current/recipes.html)
+## What Is NOT Implemented
 
-## Notes
-
-- **Binary protocol** - More complex than HTTP/JSON APIs
-- **Strong consistency** - CP in CAP theorem
-- **Watches** - One-time triggers for changes
-- **Ephemeral nodes** - Deleted when session ends
-- **Sequential nodes** - Auto-incrementing suffixes
-- **Zxid** - ZooKeeper transaction ID (version)
-- **Session-based** - Client must maintain heartbeat
-- Used by **Kafka**, **Hadoop**, **HBase**
-- **Curator** library simplifies recipes (locks, leader election)
-- Not meant for **large data** storage (max 1MB per znode)
+| Feature | Notes |
+|---------|-------|
+| Auth/ACL enforcement | All znodes created with `world:anyone` (full perms); auth schemes (digest, ip, sasl) not supported |
+| getChildren | Listing child znodes not implemented |
+| delete | Deleting znodes not implemented |
+| exists | Checking node existence without fetching data — use `/get` and check `exists:false` |
+| Multi/batch | Atomic multi-op transactions not supported |
+| Watches | `watch:true` has no effect — connection closes before any watch event arrives |
+| Session resumption | Each request creates a new session (sessionId=0); ephemeral nodes vanish immediately |
+| TLS (port 2281) | Encrypted ZooKeeper client port not supported |
+| SASL authentication | No Kerberos or DIGEST-MD5 |
+| ZooKeeper 3.4 | Tested against 3.6+; older servers may differ in stat struct layout |

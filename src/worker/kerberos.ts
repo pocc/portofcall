@@ -455,6 +455,345 @@ function parseEData(data: Uint8Array, result: ReturnType<typeof parseKerberosRes
   }
 }
 
+// ─── TGS-REQ builder ─────────────────────────────────────────────────────────
+
+const KRB_TGS_REQ = 12;
+
+/**
+ * Build a minimal TGS-REQ without PA-TGS-REQ (no TGT).
+ *
+ * The KDC will reject this but the specific error code reveals SPN existence:
+ *   KDC_ERR_S_PRINCIPAL_UNKNOWN (7) → SPN not in the database
+ *   Any other error                  → SPN exists (auth/policy issue)
+ */
+function buildTGSReqNoAuth(realm: string, sname: string): Uint8Array {
+  // sname: "service/host" → NT-SRV-HST(3) with two parts; bare "service" → NT-PRINCIPAL(1)
+  const snameParts = sname.split('/');
+  const snameType  = encodeContextTag(0, encodeInteger(snameParts.length > 1 ? 3 : 1));
+  const snameStr   = encodeContextTag(1, encodeSequence(snameParts.map(p => encodeString(p, 0x1B))));
+
+  const nonce    = Math.floor(Math.random() * 0x7FFFFFFF);
+  const till     = new Date('2037-09-13T02:48:05Z');
+
+  const reqBody = encodeSequence([
+    encodeContextTag(0, encodeBitString(new Uint8Array([0x40, 0x81, 0x00, 0x10]))),
+    encodeContextTag(2, encodeString(realm.toUpperCase(), 0x1B)),
+    encodeContextTag(3, encodeSequence([snameType, snameStr])),
+    encodeContextTag(5, encodeGeneralizedTime(till)),
+    encodeContextTag(7, encodeInteger(nonce)),
+    encodeContextTag(8, encodeSequence([
+      encodeInteger(18), encodeInteger(17), encodeInteger(23),
+    ])),
+  ]);
+
+  const kdcReq = encodeSequence([
+    encodeContextTag(1, encodeInteger(5)),
+    encodeContextTag(2, encodeInteger(KRB_TGS_REQ)),
+    // No [3] padata — deliberately omitted to probe SPN existence
+    encodeContextTag(4, reqBody),
+  ]);
+
+  return encodeApplicationTag(KRB_TGS_REQ, kdcReq);
+}
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+async function sendKerberosRequest(
+  host: string,
+  port: number,
+  msg: Uint8Array,
+  timeoutMs: number,
+): Promise<Uint8Array | null> {
+  const framed = new Uint8Array(4 + msg.length);
+  new DataView(framed.buffer).setUint32(0, msg.length, false);
+  framed.set(msg, 4);
+
+  const socket = connect(`${host}:${port}`);
+  await socket.opened;
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+
+  await writer.write(framed);
+
+  let responseData: Uint8Array | null = null;
+  try {
+    const timer = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs));
+    const result = await Promise.race([reader.read(), timer]);
+    if (result.value && result.value.length > 4) {
+      responseData = result.value.slice(4);
+    }
+  } catch { /* timeout */ }
+
+  writer.releaseLock();
+  reader.releaseLock();
+  socket.close();
+  return responseData;
+}
+
+// ─── POST /api/kerberos/user-enum ─────────────────────────────────────────────
+
+/**
+ * Check one or more usernames against a KDC to determine if they exist
+ * and whether pre-authentication is required.
+ *
+ * Classification:
+ *   AS-REP (11)                   → exists, DONT_REQ_PREAUTH set (ASREProastable)
+ *   PREAUTH_REQUIRED (25)         → exists, pre-auth required (normal)
+ *   PREAUTH_FAILED (24)           → exists, pre-auth failed
+ *   CLIENT_REVOKED (18)           → exists, account disabled/revoked
+ *   C_PRINCIPAL_UNKNOWN (6)       → user does NOT exist
+ *   KEY_EXPIRED (31)              → exists, password expired
+ *
+ * Request body: { host, port=88, realm, usernames: string[], timeout=10000 }
+ */
+export async function handleKerberosUserEnum(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      realm: string;
+      usernames: string[];
+      timeout?: number;
+    };
+
+    const { host, port = 88, realm, timeout = 10000 } = body;
+    const usernames = body.usernames ?? [];
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!realm) {
+      return new Response(JSON.stringify({ success: false, error: 'Realm is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!Array.isArray(usernames) || usernames.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Provide usernames array' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const perUserTimeout = Math.min(Math.floor(timeout / usernames.length) + 500, 8000);
+    const results: Array<{
+      username: string;
+      exists: boolean | null;
+      preauthRequired: boolean | null;
+      asrepRoastable: boolean;
+      errorCode: number | null;
+      errorName: string | null;
+      note: string;
+    }> = [];
+
+    for (const username of usernames.slice(0, 50)) {
+      try {
+        const asReq = buildASReq(realm.toUpperCase(), username);
+        const responseData = await sendKerberosRequest(host, port, asReq, perUserTimeout);
+
+        if (!responseData) {
+          results.push({
+            username, exists: null, preauthRequired: null, asrepRoastable: false,
+            errorCode: null, errorName: null, note: 'No response (timeout)',
+          });
+          continue;
+        }
+
+        const parsed = parseKerberosResponse(responseData);
+
+        if (parsed.msgType === KRB_AS_REP) {
+          results.push({
+            username, exists: true, preauthRequired: false, asrepRoastable: true,
+            errorCode: null, errorName: null,
+            note: 'AS-REP received — account does not require pre-authentication',
+          });
+        } else if (parsed.msgType === KRB_ERROR) {
+          const code = parsed.errorCode ?? -1;
+          const name = parsed.errorName ?? `UNKNOWN(${code})`;
+          let exists: boolean | null = null;
+          let preauthRequired: boolean | null = null;
+          let note = name;
+
+          if (code === 25) { // PREAUTH_REQUIRED
+            exists = true; preauthRequired = true;
+            note = 'User exists, pre-authentication required';
+          } else if (code === 6) { // C_PRINCIPAL_UNKNOWN
+            exists = false; preauthRequired = null;
+            note = 'User not found in directory';
+          } else if (code === 24) { // PREAUTH_FAILED
+            exists = true; preauthRequired = true;
+            note = 'User exists (pre-auth failed without credentials)';
+          } else if (code === 18) { // CLIENT_REVOKED
+            exists = true; preauthRequired = null;
+            note = 'Account disabled or revoked';
+          } else if (code === 31) { // KEY_EXPIRED
+            exists = true; preauthRequired = true;
+            note = 'User exists, password expired';
+          } else if (code === 68) { // WRONG_REALM
+            exists = null; preauthRequired = null;
+            note = 'Wrong realm — user may exist in a different realm';
+          } else {
+            exists = true; preauthRequired = null;
+            note = `User likely exists (error: ${name})`;
+          }
+
+          results.push({
+            username, exists, preauthRequired, asrepRoastable: false,
+            errorCode: code, errorName: name, note,
+          });
+        } else {
+          results.push({
+            username, exists: null, preauthRequired: null, asrepRoastable: false,
+            errorCode: null, errorName: null,
+            note: `Unexpected message type: ${parsed.msgTypeName}`,
+          });
+        }
+      } catch (err) {
+        results.push({
+          username, exists: null, preauthRequired: null, asrepRoastable: false,
+          errorCode: null, errorName: null,
+          note: `Error: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, realm: realm.toUpperCase(),
+      checkedCount: results.length,
+      results,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ─── POST /api/kerberos/spn-check ────────────────────────────────────────────
+
+/**
+ * Probe whether a Service Principal Name (SPN) exists in the KDC by sending
+ * a TGS-REQ without a TGT.  The KDC's error code reveals SPN existence:
+ *
+ *   KDC_ERR_S_PRINCIPAL_UNKNOWN (7)  → SPN not in the database
+ *   KDC_ERR_PADATA_TYPE_NOSUPP (16)  → SPN exists (missing pre-auth padata)
+ *   KDC_ERR_POLICY (12)              → SPN exists (policy rejected the request)
+ *   Any other error                  → SPN likely exists
+ *
+ * Request body: { host, port=88, realm, spn='host/server.example.com', timeout=8000 }
+ */
+export async function handleKerberosSPNCheck(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      realm: string;
+      spn: string;
+      timeout?: number;
+    };
+
+    const { host, port = 88, realm, spn, timeout = 8000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!realm || !spn) {
+      return new Response(JSON.stringify({ success: false, error: 'realm and spn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const tgsReq = buildTGSReqNoAuth(realm, spn);
+    const responseData = await sendKerberosRequest(host, port, tgsReq, timeout);
+    const latencyMs = Date.now() - startTime;
+
+    if (!responseData) {
+      return new Response(JSON.stringify({
+        success: false, latencyMs, error: 'No response from KDC',
+      }), { headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const parsed = parseKerberosResponse(responseData);
+    const code = parsed.errorCode ?? -1;
+
+    let spnExists: boolean | null = null;
+    let note = '';
+
+    if (parsed.msgType === KRB_ERROR) {
+      if (code === 7) { // S_PRINCIPAL_UNKNOWN
+        spnExists = false;
+        note = 'SPN not found in directory';
+      } else if (code === 16) { // PADATA_TYPE_NOSUPP
+        spnExists = true;
+        note = 'SPN exists (TGS-REQ rejected: missing PA-TGS-REQ)';
+      } else if (code === 12 || code === 14) {
+        spnExists = true;
+        note = `SPN exists (policy/etype error: ${parsed.errorName})`;
+      } else {
+        spnExists = true;
+        note = `SPN likely exists (error: ${parsed.errorName ?? code})`;
+      }
+    } else if (parsed.msgType === 13) { // TGS-REP
+      spnExists = true;
+      note = 'TGS-REP received — SPN exists and issued ticket (unexpected without TGT)';
+    } else {
+      note = `Unexpected message type ${parsed.msgTypeName}`;
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, realm: realm.toUpperCase(), spn,
+      latencyMs,
+      spnExists,
+      note,
+      response: {
+        msgType: parsed.msgType,
+        msgTypeName: parsed.msgTypeName,
+        errorCode: parsed.errorCode,
+        errorName: parsed.errorName,
+        errorText: parsed.etext,
+        realm: parsed.realm,
+      },
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ─── POST /api/kerberos/connect ───────────────────────────────────────────────
+
 /**
  * Handle Kerberos KDC connection test
  */

@@ -1,656 +1,676 @@
-# NATS Protocol Implementation Plan
+# NATS — Neural Autonomic Transport System
 
-## Overview
+**Port:** 4222 (client), 6222 (cluster routing), 8222 (HTTP monitoring)
+**Transport:** TCP, text-based (newline-delimited `\r\n`)
+**Protocol Spec:** [NATS Protocol](https://docs.nats.io/reference/reference-protocols/nats-protocol)
+**Implementation:** `src/worker/nats.ts`
+**Routes:** `/api/nats/connect`, `/api/nats/publish`, `/api/nats/subscribe`, `/api/nats/request`, `/api/nats/jetstream-info`, `/api/nats/jetstream-stream`, `/api/nats/jetstream-publish`, `/api/nats/jetstream-pull`
 
-**Protocol:** NATS (Neural Autonomic Transport System)
-**Port:** 4222 (client), 6222 (cluster), 8222 (HTTP monitoring)
-**Specification:** [NATS Protocol](https://docs.nats.io/reference/reference-protocols/nats-protocol)
-**Complexity:** Low
-**Purpose:** Lightweight publish-subscribe messaging
+---
 
-NATS enables **ultra-fast messaging** - pub/sub, request/reply, and queue groups with a simple text-based protocol from the browser.
+## Auth Field Inconsistency — Read This First
 
-### Use Cases
-- Microservices communication
-- Real-time data streaming
-- IoT telemetry
-- Event-driven architectures
-- Service mesh data plane
-- Cloud-native applications
+The 8 endpoints split into two incompatible auth schemas:
 
-## Protocol Specification
+| Endpoint group | user/pass fields | token support |
+|---|---|---|
+| `/connect`, `/publish`, all `/jetstream-*` | `user` + `pass` | `token` ✓ |
+| `/subscribe`, `/request` | `username` + `password` | `token` ✗ |
 
-### Text-Based Protocol
+There is no normalization. Sending `user`/`pass` to `/subscribe` silently ignores them and connects unauthenticated. Sending `username`/`password` to `/publish` does the same.
 
-NATS uses newline-delimited text commands:
+---
 
-```
-CONNECT {json}\r\n
-PUB subject [reply-to] #bytes\r\n[payload]\r\n
-SUB subject [queue] sid\r\n
-UNSUB sid [max_msgs]\r\n
-MSG subject sid [reply-to] #bytes\r\n[payload]\r\n
-PING\r\n
-PONG\r\n
-+OK\r\n
--ERR 'error message'\r\n
-```
+## Wire Protocol
 
-### Connection Flow
+NATS is a text protocol. Every command ends with `\r\n`.
 
 ```
-Server → Client: INFO {...}\r\n
-Client → Server: CONNECT {...}\r\n
+Server → Client: INFO {json}\r\n
+Client → Server: CONNECT {json}\r\n
+Server → Client: +OK\r\n          (only when verbose:true)
+Client → Server: PUB subject [reply-to] #bytes\r\npayload\r\n
+Client → Server: SUB subject [queue] sid\r\n
+Server → Client: MSG subject sid [reply-to] #bytes\r\npayload\r\n
+Client ↔ Server: PING\r\n / PONG\r\n
+Server → Client: -ERR 'message'\r\n
+```
+
+HPUB (headers extension):
+```
+Client → Server: HPUB subject [reply-to] #header-bytes #total-bytes\r\n
+                 NATS/1.0\r\nHeader-Name: value\r\n\r\n
+                 payload\r\n
+```
+
+JetStream API access uses request-reply over `$JS.API.*` subjects.
+
+---
+
+## Endpoints
+
+### `GET|POST /api/nats/connect`
+
+Performs full handshake only. Does **not** publish or subscribe anything.
+
+**Request**
+
+```json
+{
+  "host":       "localhost",   // required
+  "port":       4222,          // default 4222
+  "user":       "admin",       // optional
+  "pass":       "secret",      // optional
+  "token":      "mytoken",     // optional, mutually exclusive with user/pass
+  "name":       "my-client",   // optional, client name in INFO
+  "timeout_ms": 5000           // optional, default varies
+}
+```
+
+**Wire exchange**
+
+```
+TCP connect
+Server → Client: INFO {json}\r\n
+Client → Server: CONNECT {"verbose":true,"pedantic":false,"tls_required":false,
+                           "name":"...", "lang":"javascript","version":"1.0.0",
+                           "protocol":1, [user+pass | auth_token]}\r\n
 Server → Client: +OK\r\n
-Client ↔ Server: Messages
+Client → Server: PING\r\n
+Server → Client: PONG\r\n
 ```
 
-### INFO Message (Server → Client)
+`verbose:true` is sent **only** in `/connect`. All other endpoints use `verbose:false` and do not wait for `+OK`.
+
+**Response**
 
 ```json
 {
-  "server_id": "...",
-  "version": "2.9.0",
-  "go": "go1.19",
-  "host": "0.0.0.0",
-  "port": 4222,
-  "max_payload": 1048576,
-  "proto": 1
+  "success":      true,
+  "host":         "localhost",
+  "port":         4222,
+  "serverInfo": {
+    "server_id":    "NABC123",
+    "server_name":  "nats-server",
+    "version":      "2.10.4",
+    "go":           "go1.21.5",
+    "host":         "0.0.0.0",
+    "port":         4222,
+    "max_payload":  1048576,
+    "proto":        1,
+    "headers":      true,
+    "auth_required": false,
+    "tls_available": false,
+    "connect_urls": ["10.0.0.1:4222"],
+    "nonce":        "abc123",
+    "cluster":      "my-cluster"
+  }
 }
 ```
 
-### CONNECT Message (Client → Server)
+Fields reflect what the server sends in its INFO line. `nonce` is present only on servers requiring token auth. `tls_available` indicates TLS capability; the implementation never upgrades to TLS regardless of this value.
+
+---
+
+### `POST /api/nats/publish`
+
+Connects (verbose:false), sends PUB, then sends PING to flush and verify connectivity.
+
+**Request**
 
 ```json
 {
-  "verbose": false,
-  "pedantic": false,
-  "tls_required": false,
-  "auth_token": "",
-  "user": "",
-  "pass": "",
-  "name": "my-client",
-  "lang": "javascript",
-  "version": "1.0.0",
-  "protocol": 1
+  "host":       "localhost",
+  "port":       4222,
+  "user":       "admin",       // auth: use user/pass/token (NOT username/password)
+  "pass":       "secret",
+  "token":      "mytoken",
+  "subject":    "orders.new",  // required
+  "payload":    "hello world", // required, string
+  "replyTo":    "_INBOX.abc",  // optional, sets reply-to on PUB line
+  "timeout_ms": 5000
 }
 ```
 
-## Worker Implementation
+**Wire exchange**
 
-```typescript
-// src/worker/protocols/nats/client.ts
+```
+CONNECT {"verbose":false,...}\r\n   ← no +OK read
+PUB orders.new [_INBOX.abc] 11\r\n
+hello world\r\n
+PING\r\n
+Server → Client: PONG\r\n
+```
 
-import { connect } from 'cloudflare:sockets';
+PONG after PING confirms the server received all prior data.
 
-export interface NatsConfig {
-  host: string;
-  port: number;
-  user?: string;
-  pass?: string;
-  token?: string;
-  name?: string;
+**Response**
+
+```json
+{
+  "success":      true,
+  "subject":      "orders.new",
+  "payloadBytes": 11,
+  "bytesSent":    42,
+  "serverInfo":   { "version": "2.10.4", ... }
 }
+```
 
-export interface Message {
-  subject: string;
-  data: Uint8Array;
-  reply?: string;
+`bytesSent` is total bytes written to the socket (CONNECT + PUB + PING frames combined).
+
+---
+
+### `POST /api/nats/subscribe`
+
+Connects, subscribes, collects messages for `timeout_ms`, then closes.
+
+**⚠ Auth fields:** uses `username`/`password` — **not** `user`/`pass`. No `token` support.
+
+**Request**
+
+```json
+{
+  "host":        "localhost",
+  "port":        4222,
+  "username":    "admin",        // NOTE: username (not user)
+  "password":    "secret",       // NOTE: password (not pass)
+  "subject":     "orders.*",     // required; wildcards * and > work
+  "queue_group": "workers",      // optional, enables queue subscription
+  "max_msgs":    5,              // default 5
+  "timeout_ms":  5000            // default 5000
 }
+```
 
-export interface Subscription {
-  sid: number;
-  subject: string;
-  callback: (msg: Message) => void;
-  queue?: string;
+**Wire exchange**
+
+```
+CONNECT {"verbose":false,...}\r\n
+SUB orders.* [workers] 1\r\n
+[collect MSG frames for timeout_ms]
+```
+
+The connection closes after `timeout_ms` regardless of whether `max_msgs` was reached.
+
+`queue_group` triggers: `SUB subject queue_group sid` — the NATS server delivers each message to exactly one subscriber in the group (load balancing).
+
+**Response**
+
+```json
+{
+  "success": true,
+  "subject": "orders.*",
+  "messages": [
+    {
+      "subject":      "orders.new",
+      "replyTo":      "_INBOX.xyz",
+      "payload":      "order data",
+      "payloadBytes": 10
+    }
+  ],
+  "messageCount": 1,
+  "serverInfo": { ... }
 }
+```
 
-export class NatsClient {
-  private socket: any;
-  private subscriptions = new Map<number, Subscription>();
-  private nextSid = 1;
-  private serverInfo: any;
+`replyTo` is present only when the publisher included a reply-to subject (request-reply pattern). `payload` is decoded as UTF-8 string.
 
-  constructor(private config: NatsConfig) {}
+---
 
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
+### `POST /api/nats/request`
 
-    // Read INFO from server
-    this.serverInfo = await this.readInfo();
+Pub/sub request-reply: publishes to `subject` with a generated inbox as reply-to, waits for exactly one MSG response.
 
-    // Send CONNECT
-    await this.sendConnect();
+**⚠ Auth fields:** uses `username`/`password` — **not** `user`/`pass`. No `token` support.
 
-    // Start reading messages
-    this.readLoop();
-  }
+**⚠ Typo:** response contains `responsed` field (misspelled — should be `responded`).
 
-  private async readInfo(): Promise<any> {
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
+**Request**
 
-    const line = new TextDecoder().decode(value).trim();
-
-    if (!line.startsWith('INFO ')) {
-      throw new Error('Expected INFO from server');
-    }
-
-    return JSON.parse(line.substring(5));
-  }
-
-  private async sendConnect(): Promise<void> {
-    const connectInfo: any = {
-      verbose: false,
-      pedantic: false,
-      tls_required: false,
-      name: this.config.name || 'nats-client',
-      lang: 'javascript',
-      version: '1.0.0',
-      protocol: 1,
-    };
-
-    if (this.config.token) {
-      connectInfo.auth_token = this.config.token;
-    } else if (this.config.user && this.config.pass) {
-      connectInfo.user = this.config.user;
-      connectInfo.pass = this.config.pass;
-    }
-
-    const command = `CONNECT ${JSON.stringify(connectInfo)}\r\n`;
-    await this.send(command);
-
-    // Wait for +OK
-    await this.waitForOk();
-  }
-
-  async publish(subject: string, data: string | Uint8Array, reply?: string): Promise<void> {
-    const payload = typeof data === 'string'
-      ? new TextEncoder().encode(data)
-      : data;
-
-    let command = `PUB ${subject} `;
-    if (reply) {
-      command += `${reply} `;
-    }
-    command += `${payload.length}\r\n`;
-
-    const encoder = new TextEncoder();
-    const header = encoder.encode(command);
-    const trailer = encoder.encode('\r\n');
-
-    const frame = new Uint8Array(header.length + payload.length + trailer.length);
-    frame.set(header);
-    frame.set(payload, header.length);
-    frame.set(trailer, header.length + payload.length);
-
-    await this.send(frame);
-  }
-
-  async subscribe(
-    subject: string,
-    callback: (msg: Message) => void,
-    opts?: { queue?: string }
-  ): Promise<number> {
-    const sid = this.nextSid++;
-
-    this.subscriptions.set(sid, {
-      sid,
-      subject,
-      callback,
-      queue: opts?.queue,
-    });
-
-    let command = `SUB ${subject} `;
-    if (opts?.queue) {
-      command += `${opts.queue} `;
-    }
-    command += `${sid}\r\n`;
-
-    await this.send(command);
-
-    return sid;
-  }
-
-  async unsubscribe(sid: number, maxMsgs?: number): Promise<void> {
-    let command = `UNSUB ${sid}`;
-    if (maxMsgs !== undefined) {
-      command += ` ${maxMsgs}`;
-    }
-    command += '\r\n';
-
-    await this.send(command);
-
-    if (maxMsgs === undefined) {
-      this.subscriptions.delete(sid);
-    }
-  }
-
-  async request(subject: string, data: string | Uint8Array, timeout: number = 5000): Promise<Message> {
-    return new Promise(async (resolve, reject) => {
-      const inbox = `_INBOX.${this.generateNuid()}`;
-
-      const timer = setTimeout(() => {
-        reject(new Error('Request timeout'));
-      }, timeout);
-
-      const sid = await this.subscribe(inbox, (msg) => {
-        clearTimeout(timer);
-        this.unsubscribe(sid);
-        resolve(msg);
-      });
-
-      await this.publish(subject, data, inbox);
-    });
-  }
-
-  private async send(data: string | Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-
-    if (typeof data === 'string') {
-      const encoder = new TextEncoder();
-      await writer.write(encoder.encode(data));
-    } else {
-      await writer.write(data);
-    }
-
-    writer.releaseLock();
-  }
-
-  private async readLoop(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process complete lines
-      while (true) {
-        const lineEnd = buffer.indexOf('\r\n');
-        if (lineEnd === -1) break;
-
-        const line = buffer.substring(0, lineEnd);
-        buffer = buffer.substring(lineEnd + 2);
-
-        await this.processLine(line, reader);
-      }
-    }
-  }
-
-  private async processLine(line: string, reader: any): Promise<void> {
-    const parts = line.split(' ');
-    const verb = parts[0];
-
-    switch (verb) {
-      case 'MSG': {
-        // MSG subject sid [reply-to] #bytes
-        const subject = parts[1];
-        const sid = parseInt(parts[2]);
-
-        let replyTo: string | undefined;
-        let bytes: number;
-
-        if (parts.length === 4) {
-          bytes = parseInt(parts[3]);
-        } else {
-          replyTo = parts[3];
-          bytes = parseInt(parts[4]);
-        }
-
-        // Read payload
-        const payload = await this.readExact(reader, bytes);
-
-        // Read trailing \r\n
-        await this.readExact(reader, 2);
-
-        // Deliver to subscription
-        const sub = this.subscriptions.get(sid);
-        if (sub) {
-          sub.callback({
-            subject,
-            data: payload,
-            reply: replyTo,
-          });
-        }
-
-        break;
-      }
-
-      case 'PING':
-        await this.send('PONG\r\n');
-        break;
-
-      case 'PONG':
-        // Ignore
-        break;
-
-      case '+OK':
-        // Ignore
-        break;
-
-      case '-ERR':
-        console.error('NATS error:', line);
-        break;
-
-      default:
-        console.warn('Unknown NATS command:', verb);
-    }
-  }
-
-  private async readExact(reader: any, length: number): Promise<Uint8Array> {
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = length - offset;
-      const toCopy = Math.min(remaining, value.length);
-      buffer.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    return buffer;
-  }
-
-  private async waitForOk(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-
-    const line = new TextDecoder().decode(value).trim();
-
-    if (!line.startsWith('+OK')) {
-      throw new Error(`Expected +OK, got: ${line}`);
-    }
-  }
-
-  private generateNuid(): string {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    let result = '';
-    for (let i = 0; i < 22; i++) {
-      result += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return result;
-  }
-
-  async flush(): Promise<void> {
-    // Send PING and wait for PONG
-    await this.send('PING\r\n');
-
-    return new Promise((resolve) => {
-      // Simplified - in real implementation, track PINGs
-      setTimeout(resolve, 100);
-    });
-  }
-
-  async close(): Promise<void> {
-    await this.socket.close();
-  }
+```json
+{
+  "host":       "localhost",
+  "port":       4222,
+  "username":   "admin",        // NOTE: username (not user)
+  "password":   "secret",
+  "subject":    "grpc.add",     // service subject
+  "payload":    "{\"a\":1}",    // request body
+  "timeout_ms": 5000
 }
+```
 
-// Request/Reply Pattern
+**Wire exchange**
 
-export class RequestReply {
-  constructor(private client: NatsClient) {}
+```
+CONNECT {"verbose":false,...}\r\n
+SUB _INBOX.<random> 1\r\n
+PUB grpc.add _INBOX.<random> 9\r\n
+{"a":1}\r\n
+PING\r\n
+Server → Client: PONG\r\n
+[wait for MSG _INBOX.<random> 1 ... within timeout_ms]
+```
 
-  async serve(subject: string, handler: (data: string) => Promise<string>): Promise<number> {
-    return await this.client.subscribe(subject, async (msg) => {
-      if (!msg.reply) return;
+The inbox is `_INBOX.` + `Math.random().toString(36).slice(2)` (short hex string).
 
-      try {
-        const response = await handler(new TextDecoder().decode(msg.data));
-        await this.client.publish(msg.reply, response);
-      } catch (error) {
-        await this.client.publish(msg.reply, JSON.stringify({ error: error.message }));
-      }
-    });
-  }
+**Response**
 
-  async request(subject: string, data: string, timeout?: number): Promise<string> {
-    const response = await this.client.request(subject, data, timeout);
-    return new TextDecoder().decode(response.data);
-  }
+```json
+{
+  "success":         true,
+  "subject":         "grpc.add",
+  "reply":           "_INBOX.abc123",
+  "requestPayload":  "{\"a\":1}",
+  "responsePayload": "{\"result\":42}",
+  "responsed":       true,
+  "serverInfo":      { ... }
 }
+```
 
-// Queue Groups Pattern
+`responsed` (with the typo) is `true` if a MSG was received within `timeout_ms`. If the timeout fires with no reply, the response has `success:false` and `responsed:false`.
 
-export class QueueGroup {
-  constructor(
-    private client: NatsClient,
-    private subject: string,
-    private queueName: string
-  ) {}
+---
 
-  async worker(handler: (data: string) => Promise<void>): Promise<number> {
-    return await this.client.subscribe(
-      this.subject,
-      async (msg) => {
-        const data = new TextDecoder().decode(msg.data);
-        await handler(data);
-      },
-      { queue: this.queueName }
-    );
-  }
+## JetStream Endpoints
 
-  async publish(data: string): Promise<void> {
-    await this.client.publish(this.subject, data);
+JetStream is the persistence layer built on NATS core. All JetStream endpoints share the `withNATSSession` helper which:
+
+1. Connects and reads INFO
+2. Sends CONNECT (verbose:false)
+3. Subscribes to a generated inbox (`_INBOX_JS_.<random>`) for API replies
+4. Provides `jsRequest(apiSubject, body)` which publishes to `$JS.API.<subject>` with the inbox as reply-to and reads the MSG reply
+
+All JetStream endpoints use `user`/`pass`/`token` (consistent with `/connect` and `/publish`).
+
+---
+
+### `POST /api/nats/jetstream-info`
+
+Returns JetStream server info and stream list.
+
+**Request**
+
+```json
+{
+  "host":       "localhost",
+  "port":       4222,
+  "user":       "admin",
+  "pass":       "secret",
+  "token":      "mytoken",
+  "timeout_ms": 10000
+}
+```
+
+**Response**
+
+```json
+{
+  "success": true,
+  "jetstream": {
+    "memory":    0,
+    "storage":   0,
+    "streams":   2,
+    "consumers": 3,
+    "limits": {
+      "max_memory_store": -1,
+      "max_file_store":   -1
+    },
+    "max_memory_store": -1,
+    "max_file_store":   -1
+  },
+  "streams": ["ORDERS", "EVENTS"],
+  "serverInfo": { ... }
+}
+```
+
+`jetstream` comes from `$JS.API.INFO`. `streams` is the `streams` array from `$JS.API.STREAM.NAMES`. Both API calls are fired in parallel via `Promise.allSettled`; a failure in either is surfaced as the field being `null` in the response.
+
+---
+
+### `POST /api/nats/jetstream-stream`
+
+Manage streams: list, info, create, delete.
+
+**Request**
+
+```json
+{
+  "host":        "localhost",
+  "port":        4222,
+  "user":        "admin",
+  "pass":        "secret",
+  "action":      "create",     // required: list | info | create | delete
+  "stream":      "ORDERS",     // required for info/create/delete
+  "subjects":    ["orders.>"], // required for create
+  "retention":   "limits",     // optional: limits (default) | interest | workqueue
+  "storage":     "file",       // optional: file (default) | memory
+  "max_msgs":    -1,           // optional, -1 = unlimited
+  "max_bytes":   -1,           // optional, -1 = unlimited
+  "max_age":     0,            // optional, ms; 0 = unlimited
+  "timeout_ms":  10000
+}
+```
+
+**⚠ `num_replicas` hardcoded:** CREATE always sends `num_replicas: 1`. There is no way to override this.
+
+**JetStream API calls by action:**
+
+| action | API subject |
+|--------|-------------|
+| `list` | `$JS.API.STREAM.NAMES` |
+| `info` | `$JS.API.STREAM.INFO.{stream}` |
+| `create` | `$JS.API.STREAM.CREATE.{stream}` |
+| `delete` | `$JS.API.STREAM.DELETE.{stream}` |
+
+**Response**
+
+```json
+{
+  "success": true,
+  "action":  "create",
+  "result": {
+    "config": {
+      "name":        "ORDERS",
+      "subjects":    ["orders.>"],
+      "retention":   "limits",
+      "storage":     "file",
+      "num_replicas": 1
+    },
+    "state": {
+      "messages": 0,
+      "bytes":    0,
+      "first_seq": 1,
+      "last_seq":  0
+    }
   }
 }
 ```
 
-## Web UI Design
+`result` is the raw JetStream API JSON response — field shape varies by action.
 
-```typescript
-// src/components/NatsClient.tsx
+---
 
-export function NatsClient() {
-  const [connected, setConnected] = useState(false);
-  const [subject, setSubject] = useState('test.subject');
-  const [message, setMessage] = useState('Hello, NATS!');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [subscriptions, setSubscriptions] = useState<number[]>([]);
+### `POST /api/nats/jetstream-publish`
 
-  const publish = async () => {
-    await fetch('/api/nats/publish', {
-      method: 'POST',
-      body: JSON.stringify({ subject, message }),
-    });
-  };
+Publish a message to a JetStream stream.
 
-  const subscribe = async () => {
-    const response = await fetch('/api/nats/subscribe', {
-      method: 'POST',
-      body: JSON.stringify({ subject }),
-    });
+**⚠ PubAck is broken:** The implementation publishes the message but then calls `$JS.API.STREAM.NAMES` as a dummy API call rather than reading the actual PubAck from the ack inbox. The `ack` field in the response contains STREAM.NAMES data, not the publish acknowledgment.
 
-    const { sid } = await response.json();
-    setSubscriptions([...subscriptions, sid]);
+**Request**
 
-    // Open WebSocket for receiving messages
-    const ws = new WebSocket(`/api/nats/messages?sid=${sid}`);
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      setMessages(prev => [...prev, msg]);
-    };
-  };
-
-  const request = async () => {
-    const response = await fetch('/api/nats/request', {
-      method: 'POST',
-      body: JSON.stringify({ subject, message }),
-    });
-
-    const reply = await response.json();
-    alert(`Reply: ${reply.data}`);
-  };
-
-  return (
-    <div className="nats-client">
-      <h2>NATS Messaging</h2>
-
-      <div className="publisher">
-        <h3>Publish</h3>
-        <input
-          type="text"
-          placeholder="Subject"
-          value={subject}
-          onChange={(e) => setSubject(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Message"
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-        />
-        <button onClick={publish}>Publish</button>
-        <button onClick={request}>Request (with reply)</button>
-      </div>
-
-      <div className="subscriber">
-        <h3>Subscribe</h3>
-        <button onClick={subscribe}>Subscribe to {subject}</button>
-
-        <div className="subscriptions">
-          <p>Active subscriptions: {subscriptions.length}</p>
-        </div>
-      </div>
-
-      <div className="messages">
-        <h3>Received Messages</h3>
-        {messages.map((msg, i) => (
-          <div key={i} className="message">
-            <strong>{msg.subject}</strong>: {new TextDecoder().decode(msg.data)}
-          </div>
-        ))}
-      </div>
-
-      <div className="examples">
-        <h3>Subject Patterns</h3>
-        <button onClick={() => setSubject('foo.bar')}>Simple</button>
-        <button onClick={() => setSubject('foo.*')}>Wildcard (*)</button>
-        <button onClick={() => setSubject('foo.>')}>Full Wildcard (&gt;)</button>
-      </div>
-    </div>
-  );
+```json
+{
+  "host":       "localhost",
+  "port":       4222,
+  "user":       "admin",
+  "pass":       "secret",
+  "subject":    "ORDERS.new",  // must match stream's subjects
+  "payload":    "order body",
+  "stream":     "ORDERS",
+  "msgId":      "order-001",   // optional: deduplication ID
+  "timeout_ms": 10000
 }
 ```
 
-## Security
+**Wire exchange without `msgId`:**
 
-### Authentication
-
-```typescript
-// Token authentication
-const client = new NatsClient({
-  host: 'nats.example.com',
-  port: 4222,
-  token: 'my-secret-token',
-});
-
-// Username/password
-const client = new NatsClient({
-  host: 'nats.example.com',
-  port: 4222,
-  user: 'myuser',
-  pass: 'mypass',
-});
+```
+PUB ORDERS.new _INBOX_JS_.<ack-inbox> 10\r\n
+order body\r\n
 ```
 
-### TLS
+**Wire exchange with `msgId` (HPUB):**
+
+```
+HPUB ORDERS.new _INBOX_JS_.<ack-inbox> 36 46\r\n
+NATS/1.0\r\nNats-Msg-Id: order-001\r\n\r\n
+order body\r\n
+```
+
+HPUB header format: first number is header-only bytes (including `NATS/1.0\r\n...` + double CRLF), second is total bytes (headers + payload).
+
+**Response**
+
+```json
+{
+  "success":   true,
+  "subject":   "ORDERS.new",
+  "stream":    "ORDERS",
+  "msgId":     "order-001",
+  "published": true,
+  "ack": {
+    "streams": ["ORDERS", "EVENTS"]
+  }
+}
+```
+
+**`ack` contains STREAM.NAMES output, not the PubAck.** A real PubAck from JetStream looks like `{"stream":"ORDERS","seq":42,"duplicate":false}`. To verify publication, use `/api/nats/jetstream-stream` with `action:info` and check the stream's `last_seq`.
+
+---
+
+### `POST /api/nats/jetstream-pull`
+
+Pull messages from a JetStream consumer.
+
+**⚠ Partial implementation:** Creates the consumer and sends the pull request, but the actual message retrieval is replaced by a fallback that returns stream info. Response always includes a `note` field explicitly flagging this limitation.
+
+**⚠ Durable name on ephemeral consumer:** The implementation sends `durable_name` in the consumer create request, making the consumer durable (persists across connections) even though the design intent is ephemeral.
+
+**Request**
+
+```json
+{
+  "host":           "localhost",
+  "port":           4222,
+  "user":           "admin",
+  "pass":           "secret",
+  "stream":         "ORDERS",
+  "consumer":       "my-consumer",   // durable name
+  "filter_subject": "ORDERS.new",    // optional
+  "batch_size":     1,               // optional, default 1
+  "timeout_ms":     10000
+}
+```
+
+**Wire exchange**
+
+```
+jsRequest("$JS.API.CONSUMER.CREATE.ORDERS.my-consumer", {
+  stream_name: "ORDERS",
+  config: {
+    durable_name: "my-consumer",
+    filter_subject: "ORDERS.new",
+    ack_policy: "explicit",
+    deliver_policy: "new"
+  }
+})
+→ consumer create response
+
+jsRequest("$JS.API.CONSUMER.MSG.NEXT.ORDERS.my-consumer", {
+  batch: 1,
+  no_wait: true
+})
+→ intended to deliver messages, but falls back to:
+
+jsRequest("$JS.API.STREAM.INFO.ORDERS", {})
+→ returns stream info instead of messages
+```
+
+**Response**
+
+```json
+{
+  "success":  true,
+  "stream":   "ORDERS",
+  "consumer": "my-consumer",
+  "messages": [],
+  "streamInfo": {
+    "config": { "name": "ORDERS", ... },
+    "state":  { "messages": 42, "bytes": 1234, ... }
+  },
+  "note": "Use a NATS client library in production for reliable message consumption"
+}
+```
+
+`messages` is always an empty array. Actual pulled messages never appear. Use `streamInfo.state` to verify messages exist and check sequence numbers.
+
+---
+
+## `withNATSSession` Helper
+
+All JetStream endpoints share this session wrapper:
+
+```
+connect TCP
+read INFO
+send CONNECT (verbose:false, no +OK)
+subscribe _INBOX_JS_.<random> → sid 1
+for each jsRequest(apiSubject, body):
+  PUB $JS.API.<apiSubject> _INBOX_JS_.<random> <len>\r\n<json>\r\n
+  PING\r\n
+  read until PONG (discard) and MSG (parse JSON from payload)
+  return parsed JSON
+close TCP
+```
+
+The inbox is reused across all `jsRequest` calls in a session. Each `jsRequest` sends PING after PUB and reads responses until it finds the PONG and the MSG reply.
+
+---
+
+## Known Limitations
+
+1. **Auth field split** — `/subscribe` and `/request` use `username`/`password`; all others use `user`/`pass`. No `token` support in `/subscribe` or `/request`.
+
+2. **JetStream publish ack broken** — `/jetstream-publish` returns `$JS.API.STREAM.NAMES` output in the `ack` field instead of the actual PubAck. Cannot confirm sequence number or detect duplicates via this endpoint.
+
+3. **JetStream pull returns stream info** — `/jetstream-pull` never delivers pulled messages. The `messages` array is always empty. `streamInfo` contains stream metadata only.
+
+4. **Durable consumer created as ephemeral intent** — `/jetstream-pull` creates consumers with `durable_name`, meaning the consumer persists on the server. Repeated calls with the same `consumer` name reuse the existing consumer rather than creating fresh ones. The server will return an error if consumer config changes between calls.
+
+5. **`responsed` typo** — `/request` response has field `responsed` (not `responded`).
+
+6. **No TLS** — connects plaintext only. Even if the server advertises `tls_available: true` in INFO, the implementation never upgrades.
+
+7. **Single-read connection** — each endpoint opens a new TCP connection. There is no connection pooling or long-lived session for core pub/sub.
+
+8. **No wildcard subscription in `/request`** — the inbox subject is a fixed string; the implementation subscribes `_INBOX.<random>` and expects the responder to address exactly that subject.
+
+9. **`verbose:true` only in `/connect`** — all other endpoints send `verbose:false` and do not wait for `+OK` after CONNECT. If CONNECT is rejected by the server (bad auth, `auth_required`), the subsequent PUB/SUB will receive `-ERR` which surfaces as a connection error.
+
+10. **No JetStream consumer ack** — there is no `/ack` endpoint. After pulling messages (if the pull implementation were fixed), messages would not be ACKed and would be redelivered.
+
+---
+
+## NATS Protocol Reference
+
+### CONNECT fields
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `verbose` | bool | `true` → server sends `+OK` after each command |
+| `pedantic` | bool | Strict subject validation |
+| `tls_required` | bool | Request TLS upgrade |
+| `user` | string | Username auth |
+| `pass` | string | Password auth |
+| `auth_token` | string | Token auth (mutually exclusive with user/pass) |
+| `name` | string | Client name reported in server logs |
+| `lang` | string | Client language (e.g., `javascript`) |
+| `version` | string | Client version |
+| `protocol` | int | Protocol version (1 for headers support) |
+| `headers` | bool | Enable NATS message headers |
+
+### INFO fields (server → client)
+
+| Field | Notes |
+|-------|-------|
+| `server_id` | Unique server identifier |
+| `version` | NATS server version |
+| `proto` | Protocol version (1 = supports headers) |
+| `max_payload` | Max bytes per message (default 1 MB) |
+| `auth_required` | If true, CONNECT must include credentials |
+| `tls_required` | If true, TLS upgrade is mandatory |
+| `nonce` | Present for NKey/token auth challenge |
+| `connect_urls` | Cluster route URLs for client reconnect |
+
+### Subject wildcards
+
+| Pattern | Matches | Does not match |
+|---------|---------|----------------|
+| `foo.*` | `foo.bar` | `foo.bar.baz` |
+| `foo.>` | `foo.bar`, `foo.bar.baz` | `bar.foo` |
+| `>` | everything | — |
+
+---
+
+## curl Examples
 
 ```bash
-# Enable TLS on NATS server
-nats-server --tls \
-  --tlscert=/path/to/cert.pem \
-  --tlskey=/path/to/key.pem
+# Handshake + server info
+curl -s -X POST https://portofcall.ross.gg/api/nats/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222}' | jq .serverInfo
+
+# Publish a message
+curl -s -X POST https://portofcall.ross.gg/api/nats/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"subject":"orders.new","payload":"{\"id\":1}"}' | jq .
+
+# Subscribe (collect 3 messages, 3 second window)
+curl -s -X POST https://portofcall.ross.gg/api/nats/subscribe \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"subject":"orders.*","max_msgs":3,"timeout_ms":3000}' | jq .messages
+
+# Queue subscription (load-balanced across multiple workers)
+curl -s -X POST https://portofcall.ross.gg/api/nats/subscribe \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"subject":"work.>","queue_group":"workers","max_msgs":5}' | jq .
+
+# Request-reply
+curl -s -X POST https://portofcall.ross.gg/api/nats/request \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"subject":"math.add","payload":"{\"a\":1,\"b\":2}"}' | jq .responsePayload
+
+# JetStream info
+curl -s -X POST https://portofcall.ross.gg/api/nats/jetstream-info \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222}' | jq '{streams:.streams,consumers:.jetstream.consumers}'
+
+# Create a stream
+curl -s -X POST https://portofcall.ross.gg/api/nats/jetstream-stream \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"action":"create","stream":"ORDERS","subjects":["orders.>"]}' | jq .result.config
+
+# Publish to JetStream (ack field is STREAM.NAMES, not PubAck — verify via stream info)
+curl -s -X POST https://portofcall.ross.gg/api/nats/jetstream-publish \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"subject":"orders.new","payload":"test","stream":"ORDERS"}' | jq .
+
+# Verify publish via stream info
+curl -s -X POST https://portofcall.ross.gg/api/nats/jetstream-stream \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":4222,"action":"info","stream":"ORDERS"}' | jq .result.state
 ```
 
-## Testing
+---
+
+## Local Testing
 
 ```bash
-# Docker NATS
-docker run -d \
-  -p 4222:4222 \
-  -p 6222:6222 \
-  -p 8222:8222 \
-  --name nats \
-  nats:latest
+# NATS server (plaintext, no auth)
+docker run -d -p 4222:4222 -p 8222:8222 nats:latest
 
-# Test with nats CLI
-nats pub test.subject "Hello World"
-nats sub test.subject
+# NATS server with JetStream
+docker run -d -p 4222:4222 -p 8222:8222 nats:latest -js
 
-# Monitor
-open http://localhost:8222
+# NATS server with auth
+docker run -d -p 4222:4222 nats:latest --user admin --pass secret
+
+# Monitor via HTTP
+curl http://localhost:8222/varz         # server info
+curl http://localhost:8222/subsz        # subscriptions
+curl http://localhost:8222/jsz          # JetStream info
+
+# nats CLI (brew install nats-io/nats-tools/nats)
+nats pub orders.new "hello" --server localhost:4222
+nats sub orders.* --server localhost:4222
+nats stream info ORDERS --server localhost:4222
 ```
-
-## Resources
-
-- **NATS Docs**: [Documentation](https://docs.nats.io/)
-- **Protocol Spec**: [NATS Protocol](https://docs.nats.io/reference/reference-protocols/nats-protocol)
-- **nats.js**: [JavaScript client](https://github.com/nats-io/nats.js)
-
-## Common Patterns
-
-### Pub/Sub
-```typescript
-await client.subscribe('news.sports', (msg) => {
-  console.log('Sport news:', msg.data);
-});
-
-await client.publish('news.sports', 'Team wins championship!');
-```
-
-### Request/Reply
-```typescript
-const rr = new RequestReply(client);
-
-// Server
-await rr.serve('math.add', async (data) => {
-  const { a, b } = JSON.parse(data);
-  return JSON.stringify({ result: a + b });
-});
-
-// Client
-const response = await rr.request('math.add', JSON.stringify({ a: 5, b: 3 }));
-```
-
-### Queue Groups
-```typescript
-const queue = new QueueGroup(client, 'work.tasks', 'workers');
-
-// Worker 1
-await queue.worker(async (data) => {
-  console.log('Worker 1 processing:', data);
-});
-
-// Worker 2
-await queue.worker(async (data) => {
-  console.log('Worker 2 processing:', data);
-});
-
-// Publisher
-await queue.publish('Task 1');
-```
-
-## Notes
-
-- **Extremely simple** text protocol
-- **Very fast** - millions of messages per second
-- **Lightweight** - minimal overhead
-- **Subject-based** addressing with wildcards
-- `*` matches one token: `foo.*` matches `foo.bar` but not `foo.bar.baz`
-- `>` matches multiple tokens: `foo.>` matches `foo.bar.baz`
-- **Queue groups** for load balancing
-- **Request/reply** with inbox subjects
-- No message persistence (use JetStream for persistence)
-- Perfect for **cloud-native** microservices

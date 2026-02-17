@@ -48,6 +48,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { createHash } from 'node:crypto';
 
 interface YMSGRequest {
   host: string;
@@ -377,5 +378,273 @@ export async function handleYMSGVersionDetect(request: Request): Promise<Respons
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+// YMSG key-value separator bytes
+const KV_SEP = '\xc0\x80';
+
+/**
+ * Build a YMSG key-value payload.
+ */
+function buildYMSGKV(pairs: [number, string][]): Buffer {
+  const parts: string[] = [];
+  for (const [k, v] of pairs) {
+    parts.push(k.toString(), KV_SEP, v, KV_SEP);
+  }
+  return Buffer.from(parts.join(''), 'binary');
+}
+
+/**
+ * Parse YMSG key-value payload into a Map.
+ */
+function parseYMSGKV(payload: Buffer): Map<number, string> {
+  const result = new Map<number, string>();
+  const sep = '\xc0\x80';
+  const text = payload.toString('binary');
+  const parts = text.split(sep);
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const key = parseInt(parts[i], 10);
+    if (!isNaN(key)) result.set(key, parts[i + 1]);
+  }
+  return result;
+}
+
+/**
+ * Send a YMSG AuthReq (service 0x4B) with username and read challenge response.
+ *
+ * POST /api/ymsg/auth
+ * Body: { host, port?, username, version?, timeout? }
+ */
+export async function handleYMSGAuth(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username?: string;
+      version?: number;
+      timeout?: number;
+    };
+    const { host, port = 5050, username = 'testuser', version = 16, timeout = 8000 } = body;
+
+    if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+
+    const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
+    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, tp]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Build AuthReq: service 0x4B, key 0 = Yahoo! ID, key 1 = "1"
+      const payload = buildYMSGKV([[0, username], [1, '1']]);
+      const header = buildYMSGHeader(version, 0, payload.length, YMSGService.AuthReq, 0, 0);
+      await writer.write(Buffer.concat([header, payload]));
+      writer.releaseLock();
+
+      // Read response
+      const chunks: Buffer[] = [];
+      let total = 0;
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && total < 1024) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((_, rej) =>
+            setTimeout(() => rej(new Error('timeout')), deadline - Date.now())),
+        ]).catch(() => ({ value: undefined as undefined, done: true as const }));
+        if (done || !value) break;
+        chunks.push(Buffer.from(value));
+        total += value.length;
+        if (total >= 20) break; // enough for header + some payload
+      }
+      reader.releaseLock();
+      socket.close();
+
+      const respBuf = Buffer.concat(chunks);
+      const respHdr = respBuf.length >= 20 ? parseYMSGHeader(respBuf) : null;
+      let challenge: string | undefined;
+      let authFields: Record<number, string> | undefined;
+
+      if (respHdr) {
+        const payloadEnd = Math.min(20 + respHdr.payloadLength, respBuf.length);
+        const respPayload = respBuf.subarray(20, payloadEnd);
+        const kvMap = parseYMSGKV(respPayload);
+        if (kvMap.size > 0) {
+          authFields = Object.fromEntries(kvMap) as Record<number, string>;
+          // Key 94 or 96 is typically the challenge token
+          challenge = kvMap.get(94) ?? kvMap.get(96);
+        }
+      }
+
+      return Response.json({
+        success: !!respHdr,
+        host,
+        port,
+        username,
+        ymsgVersion: respHdr?.version,
+        responseService: respHdr?.service,
+        sessionId: respHdr?.sessionId,
+        challenge,
+        authFields,
+      });
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
+  } catch (err) {
+    return Response.json({ success: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
+  }
+}
+
+/**
+ * Complete YMSG v16 login with MD5 challenge-response authentication.
+ *
+ * Full auth flow:
+ *   1. Send AuthReq (service 0x4B) with Yahoo ID → get challenge seed (key 94)
+ *   2. Compute: p = MD5(password) hexdigest
+ *              y_hash = MD5(seed + p) hexdigest   (key 94 in response)
+ *              c_hash = MD5(y_hash + seed) hexdigest (key 96 in response)
+ *   3. Send AuthResp (service 0x54) with Y hash + C hash
+ *   4. Read login result (service 0x01 = Login, or error)
+ *
+ * POST /api/ymsg/login
+ * Body: { host, port?, username, password, version?, timeout? }
+ */
+export async function handleYMSGLogin(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      version?: number;
+      timeout?: number;
+    };
+    const { host, port = 5050, username = 'testuser', password = '', version = 16, timeout = 12000 } = body;
+
+    if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+
+    const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
+    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, tp]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Step 1: Send AuthReq (service 0x4B)
+      const authReqPayload = buildYMSGKV([[0, username], [1, '1']]);
+      const authReqHeader = buildYMSGHeader(version, 0, authReqPayload.length, YMSGService.AuthReq, 0, 0);
+      await writer.write(Buffer.concat([authReqHeader, authReqPayload]));
+
+      // Read challenge response
+      const chunks: Buffer[] = [];
+      let totalRead = 0;
+      const challengeDeadline = Date.now() + 5000;
+      while (Date.now() < challengeDeadline && totalRead < 2048) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((_, rej) =>
+            setTimeout(() => rej(new Error('timeout')), challengeDeadline - Date.now())),
+        ]).catch(() => ({ value: undefined as undefined, done: true as const }));
+        if (done || !value) break;
+        chunks.push(Buffer.from(value));
+        totalRead += value.length;
+        if (totalRead >= 20) break;
+      }
+
+      const challengeBuf = Buffer.concat(chunks);
+      const challengeHdr = challengeBuf.length >= 20 ? parseYMSGHeader(challengeBuf) : null;
+      if (!challengeHdr) throw new Error('No valid YMSG auth challenge received');
+
+      const challengePayloadEnd = Math.min(20 + challengeHdr.payloadLength, challengeBuf.length);
+      const challengePayload = challengeBuf.subarray(20, challengePayloadEnd);
+      const challengeKV = parseYMSGKV(challengePayload);
+
+      // Extract challenge seed (key 94, fallback key 96)
+      const seed = challengeKV.get(94) ?? challengeKV.get(96);
+      if (!seed) throw new Error('No challenge seed in auth response (key 94/96 missing)');
+
+      const sessionId = challengeHdr.sessionId;
+
+      // Step 2: Compute MD5 auth hashes (YMSG v16 algorithm)
+      const p = createHash('md5').update(Buffer.from(password, 'utf8')).digest('hex');
+      const yHash = createHash('md5').update(Buffer.from(seed + p, 'binary')).digest('hex');
+      const cHash = createHash('md5').update(Buffer.from(yHash + seed, 'binary')).digest('hex');
+
+      // Step 3: Send AuthResp (service 0x54)
+      const authRespPayload = buildYMSGKV([
+        [0, username],          // Yahoo ID
+        [6, username],          // client context
+        [94, yHash],            // Y response hash
+        [96, cHash],            // C response hash
+        [1, '0'],               // status (idle)
+        [135, version.toString()], // client version
+      ]);
+      const authRespHeader = buildYMSGHeader(version, 0, authRespPayload.length, YMSGService.AuthResp, 0, sessionId);
+      await writer.write(Buffer.concat([authRespHeader, authRespPayload]));
+
+      // Step 4: Read login result
+      const resultChunks: Buffer[] = [];
+      let resultTotal = 0;
+      const resultDeadline = Date.now() + 6000;
+      while (Date.now() < resultDeadline && resultTotal < 4096) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((_, rej) =>
+            setTimeout(() => rej(new Error('timeout')), resultDeadline - Date.now())),
+        ]).catch(() => ({ value: undefined as undefined, done: true as const }));
+        if (done || !value) break;
+        resultChunks.push(Buffer.from(value));
+        resultTotal += value.length;
+        if (resultTotal >= 20) break;
+      }
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      const resultBuf = Buffer.concat(resultChunks);
+      const resultHdr = resultBuf.length >= 20 ? parseYMSGHeader(resultBuf) : null;
+      let loginSuccess = false;
+      let errorCode: number | undefined;
+      let loginFields: Record<number, string> | undefined;
+
+      if (resultHdr) {
+        // service 0x01 = Login success, status 0 = OK
+        loginSuccess = resultHdr.service === 0x01 && resultHdr.status === 0;
+        errorCode = resultHdr.status !== 0 ? resultHdr.status : undefined;
+        const resultPayloadEnd = Math.min(20 + resultHdr.payloadLength, resultBuf.length);
+        const resultPayload = resultBuf.subarray(20, resultPayloadEnd);
+        const resultKV = parseYMSGKV(resultPayload);
+        if (resultKV.size > 0) {
+          loginFields = Object.fromEntries(resultKV) as Record<number, string>;
+        }
+      }
+
+      return Response.json({
+        success: loginSuccess,
+        host,
+        port,
+        username,
+        challengeSeed: seed,
+        sessionId,
+        yHash,
+        cHash,
+        loginService: resultHdr?.service,
+        loginStatus: resultHdr?.status,
+        errorCode,
+        loginFields,
+        note: !resultHdr
+          ? 'No login result received — server may be offline or use a different auth version'
+          : undefined,
+      });
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
+  } catch (err) {
+    return Response.json({ success: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 }

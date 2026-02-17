@@ -37,7 +37,27 @@ const MOUNT_PROGRAM = 100005;
 
 // Procedure numbers
 const PROC_NULL = 0;
+const MOUNTPROC_MNT = 1;
 const MOUNTPROC_EXPORT = 5;
+
+// NFSv3 procedures
+const NFSPROC3_GETATTR = 1;
+const NFSPROC3_LOOKUP = 3;
+const NFSPROC3_READ = 6;
+const NFSPROC3_WRITE = 7;
+const NFSPROC3_READDIR = 16;
+const NFS3_FILE_SYNC = 2; // stable_how: write synchronously
+
+// NFSv3 file types
+const NF3_FILE_TYPES: Record<number, string> = {
+  1: 'REG',
+  2: 'DIR',
+  3: 'BLK',
+  4: 'CHR',
+  5: 'LNK',
+  6: 'SOCK',
+  7: 'FIFO',
+};
 
 // Accept stat names
 const ACCEPT_STAT_NAMES: Record<number, string> = {
@@ -259,6 +279,172 @@ function parseMountExports(data: Uint8Array): Array<{ path: string; groups: stri
 }
 
 /**
+ * Encode an XDR string (uint32 length + data + padding to 4-byte boundary)
+ */
+function xdrEncodeString(str: string): Uint8Array {
+  const encoded = new TextEncoder().encode(str);
+  const padded = Math.ceil(encoded.length / 4) * 4;
+  const result = new Uint8Array(4 + padded);
+  const view = new DataView(result.buffer);
+  view.setUint32(0, encoded.length);
+  result.set(encoded, 4);
+  return result;
+}
+
+/**
+ * Encode a file handle as XDR opaque data (uint32 length + bytes + padding)
+ */
+function xdrEncodeFileHandle(fh: Uint8Array): Uint8Array {
+  const padded = Math.ceil(fh.length / 4) * 4;
+  const result = new Uint8Array(4 + padded);
+  const view = new DataView(result.buffer);
+  view.setUint32(0, fh.length);
+  result.set(fh, 4);
+  return result;
+}
+/**
+ * Parse MOUNT MNT reply to get the root file handle
+ * XDR format: status(uint32) + fhandle(opaque, variable length in v3)
+ */
+function parseMountMntReply(data: Uint8Array): Uint8Array | null {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  let offset = 0;
+
+  if (data.length < 4) return null;
+  const status = view.getUint32(offset); offset += 4;
+  if (status !== 0) return null; // non-zero = error
+
+  // MNTv3: variable-length opaque file handle (uint32 len + bytes)
+  // MNTv1: fixed 32-byte file handle
+  if (offset + 4 > data.length) return null;
+
+  // Try variable-length first (v3)
+  const fhLen = view.getUint32(offset);
+  if (fhLen > 0 && fhLen <= 64 && offset + 4 + fhLen <= data.length) {
+    offset += 4;
+    return data.slice(offset, offset + fhLen);
+  }
+
+  // Fallback: fixed 32-byte handle (v1)
+  if (offset + 32 <= data.length) {
+    // The status was 0, next 32 bytes are the file handle (no length prefix in v1)
+    return data.slice(offset, offset + 32);
+  }
+
+  return null;
+}
+
+/**
+ * Read an XDR uint64 as two uint32s (high, low) — returns number (approx)
+ */
+function xdrReadUint64(view: DataView, offset: number): number {
+  const hi = view.getUint32(offset);
+  const lo = view.getUint32(offset + 4);
+  return hi * 0x100000000 + lo;
+}
+
+/**
+ * Parse NFSv3 fattr3 structure (starting at offset in data)
+ * Returns parsed attributes and next offset
+ */
+function parseFattr3(data: Uint8Array, offset: number): {
+  ftype: number;
+  ftypeName: string;
+  mode: number;
+  modeStr: string;
+  nlink: number;
+  uid: number;
+  gid: number;
+  size: number;
+  blocksize: number;
+  rdev: number;
+  blocks: number;
+  fsid: number;
+  fileid: number;
+  atime: number;
+  mtime: number;
+  ctime: number;
+  nextOffset: number;
+} | null {
+  // fattr3: ftype(4) mode(4) nlink(4) uid(4) gid(4) size(8) used(8) rdev(8)
+  //         fsid(8) fileid(8) atime(8) mtime(8) ctime(8) = 84 bytes minimum
+  if (offset + 84 > data.length) return null;
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
+  const ftype = view.getUint32(offset); offset += 4;
+  const mode = view.getUint32(offset); offset += 4;
+  const nlink = view.getUint32(offset); offset += 4;
+  const uid = view.getUint32(offset); offset += 4;
+  const gid = view.getUint32(offset); offset += 4;
+  const size = xdrReadUint64(view, offset); offset += 8;
+  offset += 8; // used (skip)
+  offset += 8; // rdev specdata1+specdata2 (skip)
+  const fsid = xdrReadUint64(view, offset); offset += 8;
+  const fileid = xdrReadUint64(view, offset); offset += 8;
+  // atime: seconds(4) + nseconds(4)
+  const atime = view.getUint32(offset); offset += 8;
+  const mtime = view.getUint32(offset); offset += 8;
+  const ctime = view.getUint32(offset); offset += 8;
+
+  // Build mode string like ls -l
+  const ftypeName = NF3_FILE_TYPES[ftype] || `UNKNOWN(${ftype})`;
+  const typeChar: Record<string, string> = {
+    REG: '-', DIR: 'd', BLK: 'b', CHR: 'c', LNK: 'l', SOCK: 's', FIFO: 'p',
+  };
+  const tc = typeChar[ftypeName] ?? '?';
+  const perms = ['---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx'];
+  const modeStr = tc +
+    perms[(mode >> 6) & 7] +
+    perms[(mode >> 3) & 7] +
+    perms[mode & 7];
+
+  return {
+    ftype,
+    ftypeName,
+    mode,
+    modeStr,
+    nlink,
+    uid,
+    gid,
+    size,
+    blocksize: 4096, // NFSv3 fattr3 doesn't include blocksize directly
+    rdev: 0,
+    blocks: 0,
+    fsid,
+    fileid,
+    atime,
+    mtime,
+    ctime,
+    nextOffset: offset,
+  };
+}
+
+/**
+ * Mount an export path and return the root file handle.
+ * Uses MOUNT protocol v3 (MNT procedure = 1) or falls back to v1.
+ */
+async function mountExportPath(
+  host: string,
+  mountPort: number,
+  exportPath: string,
+  timeout: number,
+): Promise<Uint8Array | null> {
+  const pathArg = xdrEncodeString(exportPath);
+
+  for (const ver of [3, 1]) {
+    const reply = await sendRpcCall(
+      host, mountPort, MOUNT_PROGRAM, ver, MOUNTPROC_MNT, pathArg, timeout,
+    );
+    if (reply && reply.accepted && reply.acceptStat === ACCEPT_SUCCESS && reply.data) {
+      const fh = parseMountMntReply(reply.data);
+      if (fh) return fh;
+    }
+  }
+  return null;
+}
+
+/**
  * Handle NFS probe - detect supported NFS versions via NULL calls
  */
 export async function handleNFSProbe(request: Request): Promise<Response> {
@@ -459,5 +645,672 @@ export async function handleNFSExports(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+/**
+ * Handle NFSv3 LOOKUP — resolve a filename within an exported directory.
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. NFSv3 LOOKUP(proc 3) with root file handle + filename → child file handle + attributes
+ *
+ * Request body: { host, port?, timeout?, exportPath, path }
+ * Response:     { fileHandle, type, mode, size, uid, gid, mtime, rtt }
+ */
+export async function handleNFSLookup(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      exportPath: string;
+      path: string;
+    };
+
+    const { host, port = 2049, timeout = 10000, exportPath, path } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!exportPath) {
+      return new Response(JSON.stringify({ success: false, error: 'exportPath is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!path) {
+      return new Response(JSON.stringify({ success: false, error: 'path is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+
+    // Step 1: MOUNT to get root file handle
+    const rootFH = await mountExportPath(host, port, exportPath, timeout);
+    if (!rootFH) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `MOUNT failed for export path: ${exportPath}`,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Step 2: NFSv3 LOOKUP (proc 3)
+    // diropargs3: { dir: nfs_fh3, name: filename3 }
+    // nfs_fh3 = XDR opaque<>: uint32 length + bytes (padded to 4-byte boundary)
+    // filename3 = XDR string: uint32 length + bytes (padded to 4-byte boundary)
+    const fhEncoded = xdrEncodeFileHandle(rootFH);
+    // Strip leading slash from path for the lookup filename
+    const filename = path.replace(/^\//, '');
+    const nameEncoded = xdrEncodeString(filename);
+    const lookupArgs = new Uint8Array(fhEncoded.length + nameEncoded.length);
+    lookupArgs.set(fhEncoded, 0);
+    lookupArgs.set(nameEncoded, fhEncoded.length);
+
+    const reply = await sendRpcCall(
+      host, port, NFS_PROGRAM, 3, NFSPROC3_LOOKUP, lookupArgs, timeout,
+    );
+
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: reply
+          ? `NFSv3 LOOKUP failed: ${reply.acceptStatName}`
+          : 'No reply from NFS server',
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Parse LOOKUP3res:
+    //   status(4) + [on success] object_fh(opaque<>) + obj_attributes(post_op_attr)
+    // post_op_attr: follows(4) + [if follows==1] fattr3(84 bytes)
+    const replyData = reply.data;
+    if (replyData.length < 4) {
+      return new Response(JSON.stringify({ success: false, error: 'LOOKUP reply too short', rtt }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const replyView = new DataView(replyData.buffer, replyData.byteOffset, replyData.byteLength);
+    let replyOff = 0;
+
+    const nfsStatus = replyView.getUint32(replyOff); replyOff += 4;
+    if (nfsStatus !== 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `NFSv3 LOOKUP error status: ${nfsStatus}`,
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Read object file handle (variable-length opaque)
+    if (replyOff + 4 > replyData.length) {
+      return new Response(JSON.stringify({ success: false, error: 'Truncated LOOKUP reply', rtt }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const objFhLen = replyView.getUint32(replyOff); replyOff += 4;
+    if (objFhLen > 64 || replyOff + objFhLen > replyData.length) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid file handle length', rtt }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const objFh = replyData.slice(replyOff, replyOff + objFhLen);
+    replyOff += objFhLen;
+    // Pad to 4-byte boundary
+    replyOff += (4 - (objFhLen % 4)) % 4;
+
+    // Read post_op_attr for the object
+    let attrs: ReturnType<typeof parseFattr3> | null = null;
+    if (replyOff + 4 <= replyData.length) {
+      const attrFollows = replyView.getUint32(replyOff); replyOff += 4;
+      if (attrFollows === 1) {
+        attrs = parseFattr3(replyData, replyOff);
+      }
+    }
+
+    const fileHandleHex = Array.from(objFh)
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      path,
+      fileHandle: fileHandleHex,
+      type: attrs?.ftypeName ?? null,
+      mode: attrs ? `0${attrs.mode.toString(8)}` : null,
+      size: attrs?.size ?? null,
+      uid: attrs?.uid ?? null,
+      gid: attrs?.gid ?? null,
+      mtime: attrs?.mtime ?? null,
+      rtt,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 GETATTR — retrieve file attributes for an exported root directory.
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. NFSv3 GETATTR (proc 1) with root file handle → fattr3 attributes
+ *
+ * Request body: { host, port?, timeout?, exportPath }
+ * Response:     { type, mode, modeStr, nlink, uid, gid, size, atime, mtime, ctime, rtt }
+ */
+export async function handleNFSGetAttr(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      exportPath: string;
+    };
+
+    const { host, port = 2049, timeout = 10000, exportPath } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!exportPath) {
+      return new Response(JSON.stringify({ success: false, error: 'exportPath is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+
+    // Step 1: MOUNT to get root file handle
+    const rootFH = await mountExportPath(host, port, exportPath, timeout);
+    if (!rootFH) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `MOUNT failed for export path: ${exportPath}`,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Step 2: NFSv3 GETATTR (proc 1)
+    // Args: nfs_fh3 — XDR opaque<>: uint32 length + bytes
+    const fhEncoded = xdrEncodeFileHandle(rootFH);
+
+    const reply = await sendRpcCall(
+      host, port, NFS_PROGRAM, 3, NFSPROC3_GETATTR, fhEncoded, timeout,
+    );
+
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: reply
+          ? `NFSv3 GETATTR failed: ${reply.acceptStatName}`
+          : 'No reply from NFS server',
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Parse GETATTR3res: status(4) + fattr3(84 bytes)
+    const replyData = reply.data;
+    if (replyData.length < 4) {
+      return new Response(JSON.stringify({ success: false, error: 'GETATTR reply too short', rtt }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const replyView2 = new DataView(replyData.buffer, replyData.byteOffset, replyData.byteLength);
+    const nfsStatus2 = replyView2.getUint32(0);
+    if (nfsStatus2 !== 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `NFSv3 GETATTR error status: ${nfsStatus2}`,
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const attrs = parseFattr3(replyData, 4);
+    if (!attrs) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Failed to parse NFSv3 fattr3 attributes (reply may be truncated)',
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      type: attrs.ftypeName,
+      mode: `0${attrs.mode.toString(8)}`,
+      modeStr: attrs.modeStr,
+      nlink: attrs.nlink,
+      uid: attrs.uid,
+      gid: attrs.gid,
+      size: attrs.size,
+      atime: attrs.atime,
+      mtime: attrs.mtime,
+      ctime: attrs.ctime,
+      rtt,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Build NFSv3 READ procedure arguments (XDR-encoded).
+ * READ3args: { file: nfs_fh3, offset: uint64, count: uint32 }
+ */
+function buildReadArgs(fh: Uint8Array, byteOffset: number, count: number): Uint8Array {
+  const fhEncoded = xdrEncodeFileHandle(fh);
+  const buf = new Uint8Array(fhEncoded.length + 12);
+  const view = new DataView(buf.buffer);
+  buf.set(fhEncoded, 0);
+  let pos = fhEncoded.length;
+  view.setUint32(pos, Math.floor(byteOffset / 0x100000000)); pos += 4;
+  view.setUint32(pos, byteOffset >>> 0); pos += 4;
+  view.setUint32(pos, count);
+  return buf;
+}
+
+/**
+ * Resolve a file path by chaining NFSv3 LOOKUP calls for each component.
+ * Returns the final file handle, or null on any failure.
+ */
+async function resolveNFSFilePath(
+  host: string,
+  port: number,
+  rootFH: Uint8Array,
+  filePath: string,
+  timeout: number,
+): Promise<Uint8Array | null> {
+  const parts = filePath.split('/').filter(p => p.length > 0);
+  let currentFH = rootFH;
+
+  for (const part of parts) {
+    const fhEncoded = xdrEncodeFileHandle(currentFH);
+    const nameEncoded = xdrEncodeString(part);
+    const args = new Uint8Array(fhEncoded.length + nameEncoded.length);
+    args.set(fhEncoded, 0);
+    args.set(nameEncoded, fhEncoded.length);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, NFSPROC3_LOOKUP, args, timeout);
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return null;
+    }
+
+    const data = reply.data;
+    if (data.length < 8) return null;
+    const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+    if (dv.getUint32(0) !== 0) return null;
+
+    const fhLen = dv.getUint32(4);
+    if (fhLen > 64 || 8 + fhLen > data.length) return null;
+    currentFH = data.slice(8, 8 + fhLen);
+  }
+
+  return currentFH;
+}
+
+/**
+ * Handle NFSv3 READ — mount an export, resolve a file path, and read its contents.
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. LOOKUP each path component → target file handle
+ *  3. NFSv3 READ (proc 6) → file data
+ *
+ * Request body: { host, port?, timeout?, exportPath, path, offset?, count? }
+ * Response:     { data, eof, bytesRead, encoding, rtt }
+ */
+export async function handleNFSRead(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      exportPath: string;
+      path: string;
+      offset?: number;
+      count?: number;
+    };
+
+    const { host, port = 2049, timeout = 10000, exportPath, path, offset = 0, count = 4096 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!exportPath) {
+      return new Response(JSON.stringify({ success: false, error: 'exportPath is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!path) {
+      return new Response(JSON.stringify({ success: false, error: 'path is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+
+    const rootFH = await mountExportPath(host, port, exportPath, timeout);
+    if (!rootFH) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `MOUNT failed for export path: ${exportPath}`,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const targetFH = await resolveNFSFilePath(host, port, rootFH, path, timeout);
+    if (!targetFH) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `LOOKUP failed for path: ${path}`,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const readArgs = buildReadArgs(targetFH, offset, Math.min(count, 65536));
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, NFSPROC3_READ, readArgs, timeout);
+
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: reply ? `NFSv3 READ failed: ${reply.acceptStatName}` : 'No reply from NFS server',
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Parse READ3res: status(4) + post_op_attr + count(4) + eof(4) + data_len(4) + data
+    const rd = reply.data;
+    if (rd.length < 4) {
+      return new Response(JSON.stringify({ success: false, error: 'READ reply too short', rtt }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const rdView = new DataView(rd.buffer, rd.byteOffset, rd.byteLength);
+    if (rdView.getUint32(0) !== 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `NFSv3 READ error status: ${rdView.getUint32(0)}`,
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    let rdOff = 4;
+    const attrFollows = rdView.getUint32(rdOff); rdOff += 4;
+    if (attrFollows === 1) rdOff += 84;
+
+    if (rdOff + 12 > rd.length) {
+      return new Response(JSON.stringify({ success: false, error: 'READ reply truncated', rtt }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const bytesRead = rdView.getUint32(rdOff); rdOff += 4;
+    const eof = rdView.getUint32(rdOff) !== 0; rdOff += 4;
+    const dataLen = rdView.getUint32(rdOff); rdOff += 4;
+    const fileData = rd.slice(rdOff, rdOff + dataLen);
+
+    let encoding: 'utf-8' | 'base64';
+    let dataStr: string;
+    try {
+      dataStr = new TextDecoder('utf-8', { fatal: true }).decode(fileData);
+      encoding = 'utf-8';
+    } catch {
+      dataStr = btoa(String.fromCharCode(...fileData));
+      encoding = 'base64';
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      path,
+      offset,
+      bytesRead,
+      eof,
+      encoding,
+      data: dataStr,
+      rtt,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 READDIR — list directory entries.
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. Optional: resolveNFSFilePath(path) → directory file handle
+ *  3. NFSv3 READDIR (proc 16) → linked list of { fileid, name }
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, path?, count? }
+ *   path  — sub-path within export (default: export root)
+ *   count — max reply size in bytes (default: 4096)
+ */
+export async function handleNFSReaddir(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; path?: string; count?: number;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath } = body;
+    const path = body.path ?? '';
+    const count = Math.min(Math.max(body.count ?? 4096, 512), 32768);
+
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!exportPath) return new Response(JSON.stringify({ success: false, error: 'exportPath is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for export path: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    const dirFH = await resolveNFSFilePath(host, port, rootFH, path, timeout);
+    if (!dirFH) return new Response(JSON.stringify({ success: false, error: `Path not found: ${path || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // READDIR args: dir(nfs_fh3) + cookie(uint64=0) + cookieverf(uint64=0) + count(uint32)
+    const fhEncoded = xdrEncodeFileHandle(dirFH);
+    const readdirArgs = new Uint8Array(fhEncoded.length + 8 + 8 + 4);
+    const argsView = new DataView(readdirArgs.buffer);
+    let argsOff = 0;
+    readdirArgs.set(fhEncoded, argsOff); argsOff += fhEncoded.length;
+    argsView.setUint32(argsOff, 0); argsOff += 4; // cookie hi
+    argsView.setUint32(argsOff, 0); argsOff += 4; // cookie lo
+    argsView.setUint32(argsOff, 0); argsOff += 4; // cookieverf hi
+    argsView.setUint32(argsOff, 0); argsOff += 4; // cookieverf lo
+    argsView.setUint32(argsOff, count);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, NFSPROC3_READDIR, readdirArgs, timeout);
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `READDIR failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const rd = reply.data;
+    const rdv = new DataView(rd.buffer, rd.byteOffset, rd.byteLength);
+    let rdOff = 0;
+
+    if (rd.length < 4) return new Response(JSON.stringify({ success: false, error: 'READDIR reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = rdv.getUint32(rdOff); rdOff += 4;
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 READDIR error status: ${nfsStatus}`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Skip dir_attributes (post_op_attr)
+    if (rdOff + 4 <= rd.length) { const af = rdv.getUint32(rdOff); rdOff += 4; if (af === 1) rdOff += 84; }
+    rdOff += 8; // skip cookieverf
+
+    const entries: Array<{ fileid: number; name: string }> = [];
+    let eof = false;
+    while (rdOff + 4 <= rd.length) {
+      const follows = rdv.getUint32(rdOff); rdOff += 4;
+      if (follows === 0) { if (rdOff + 4 <= rd.length) eof = rdv.getUint32(rdOff) !== 0; break; }
+      if (rdOff + 8 > rd.length) break;
+      const fileidHi = rdv.getUint32(rdOff); rdOff += 4;
+      const fileidLo = rdv.getUint32(rdOff); rdOff += 4;
+      const fileid = fileidHi * 0x100000000 + fileidLo;
+      if (rdOff + 4 > rd.length) break;
+      const nameLen = rdv.getUint32(rdOff); rdOff += 4;
+      if (nameLen > 256 || rdOff + nameLen > rd.length) break;
+      const name = new TextDecoder().decode(rd.slice(rdOff, rdOff + nameLen));
+      rdOff += nameLen + (4 - (nameLen % 4)) % 4;
+      rdOff += 8; // cookie uint64
+      entries.push({ fileid, name });
+    }
+
+    return new Response(JSON.stringify({ success: true, host, port, exportPath, path: path || '/', count: entries.length, eof, entries, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 WRITE — write data to a file.
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, path, data (base64), offset? }
+ *   data   — base64-encoded bytes to write
+ *   offset — byte offset to write at (default: 0)
+ * Note: Most NFS exports are read-only; the server will reject writes if not permitted.
+ */
+export async function handleNFSWrite(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; path: string; data: string; offset?: number;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath, path } = body;
+    const offset = Math.max(0, body.offset ?? 0);
+
+    if (!host || !exportPath || !path || !body.data) {
+      return new Response(JSON.stringify({ success: false, error: 'host, exportPath, path and data are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    let writeBytes: Uint8Array;
+    try {
+      const binary = atob(body.data);
+      writeBytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) writeBytes[i] = binary.charCodeAt(i);
+    } catch {
+      return new Response(JSON.stringify({ success: false, error: 'data must be valid base64' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (writeBytes.length > 65536) return new Response(JSON.stringify({ success: false, error: 'data too large (max 65536 bytes)' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    const fileFH = await resolveNFSFilePath(host, port, rootFH, path, timeout);
+    if (!fileFH) return new Response(JSON.stringify({ success: false, error: `File not found: ${path}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // WRITE args: file(nfs_fh3) + offset(uint64) + count(uint32) + stable(uint32) + data(opaque<>)
+    const fhEncoded = xdrEncodeFileHandle(fileFH);
+    const dataPadded = Math.ceil(writeBytes.length / 4) * 4;
+    const writeArgs = new Uint8Array(fhEncoded.length + 8 + 4 + 4 + 4 + dataPadded);
+    const av = new DataView(writeArgs.buffer);
+    let ao = 0;
+    writeArgs.set(fhEncoded, ao); ao += fhEncoded.length;
+    // offset uint64
+    av.setUint32(ao, Math.floor(offset / 0x100000000)); ao += 4;
+    av.setUint32(ao, offset >>> 0); ao += 4;
+    av.setUint32(ao, writeBytes.length); ao += 4; // count
+    av.setUint32(ao, NFS3_FILE_SYNC); ao += 4;    // stable = FILE_SYNC
+    av.setUint32(ao, writeBytes.length); ao += 4;  // data opaque length
+    writeArgs.set(writeBytes, ao);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, NFSPROC3_WRITE, writeArgs, timeout);
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `WRITE failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const wr = reply.data;
+    const wrv = new DataView(wr.buffer, wr.byteOffset, wr.byteLength);
+    let wrOff = 0;
+
+    if (wr.length < 4) return new Response(JSON.stringify({ success: false, error: 'WRITE reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = wrv.getUint32(wrOff); wrOff += 4;
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 WRITE error status: ${nfsStatus} (export may be read-only)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Skip wcc_data (pre_op_attr + post_op_attr)
+    if (wrOff + 4 <= wr.length) { const pf = wrv.getUint32(wrOff); wrOff += 4; if (pf === 1) wrOff += 24; }
+    if (wrOff + 4 <= wr.length) { const qf = wrv.getUint32(wrOff); wrOff += 4; if (qf === 1) wrOff += 84; }
+
+    let bytesWritten = writeBytes.length;
+    const stableNames = ['UNSTABLE', 'DATA_SYNC', 'FILE_SYNC'];
+    let committedStr = 'FILE_SYNC';
+    if (wrOff + 8 <= wr.length) {
+      bytesWritten = wrv.getUint32(wrOff); wrOff += 4;
+      const committed = wrv.getUint32(wrOff); wrOff += 4;
+      committedStr = stableNames[committed] ?? `UNKNOWN(${committed})`;
+    }
+
+    return new Response(JSON.stringify({ success: true, host, port, exportPath, path, offset, bytesWritten, committed: committedStr, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

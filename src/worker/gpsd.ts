@@ -441,3 +441,179 @@ export async function handleGPSDCommand(request: Request): Promise<Response> {
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+
+// === GPSD Watch Stream Handler ===
+
+interface GPSDWatchRequest {
+  host: string;
+  port?: number;
+  seconds?: number;
+  timeout?: number;
+}
+
+/**
+ * Handle GPSD watch stream -- enable JSON watch mode, collect messages for
+ * 'seconds' seconds (default 5, max 30), then disable and close.
+ *
+ * Sends:    ?WATCH={"enable":true,"json":true};
+ * Collects: newline-delimited JSON objects (TPV, SKY, ATT, WATCH, etc.)
+ * Then:     ?WATCH={"enable":false};
+ *
+ * POST body: { host, port?, seconds?, timeout? }
+ */
+export async function handleGPSDWatch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as GPSDWatchRequest;
+    const { host, port = 2947, timeout = 20000 } = body;
+    const seconds = Math.min(Math.max(body.seconds ?? 5, 1), 30);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const connTimeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    await Promise.race([socket.opened, connTimeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    const collectedObjects: Record<string, unknown>[] = [];
+    const rawLines: string[] = [];
+    let buffer = '';
+
+    // Parse all complete JSON lines from the current buffer
+    function drainBuffer(): void {
+      let newlineIdx = buffer.indexOf('\n');
+      while (newlineIdx >= 0) {
+        const line = buffer.substring(0, newlineIdx).trim();
+        buffer = buffer.substring(newlineIdx + 1);
+        if (line) {
+          rawLines.push(line);
+          try {
+            const obj = JSON.parse(line);
+            if (typeof obj === 'object' && obj !== null) {
+              collectedObjects.push(obj as Record<string, unknown>);
+            }
+          } catch {
+            // Not valid JSON, skip
+          }
+        }
+        newlineIdx = buffer.indexOf('\n');
+      }
+    }
+
+    try {
+      // Read the initial VERSION banner that gpsd sends on connect
+      const bannerDeadline = Date.now() + 3000;
+      while (Date.now() < bannerDeadline) {
+        const remaining = bannerDeadline - Date.now();
+        const t = new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('banner timeout')), Math.max(remaining, 0)),
+        );
+        try {
+          const { value, done } = await Promise.race([reader.read(), t]);
+          if (done || !value) break;
+          buffer += decoder.decode(value, { stream: true });
+          drainBuffer();
+          if (collectedObjects.some(o => (o as Record<string, unknown>).class === 'VERSION')) break;
+        } catch {
+          break;
+        }
+      }
+
+      // Enable JSON watch mode
+      await writer.write(encoder.encode('?WATCH={"enable":true,"json":true};\n'));
+
+      // Collect messages for 'seconds' seconds
+      const watchDeadline = Date.now() + seconds * 1000;
+      while (Date.now() < watchDeadline) {
+        const remaining = watchDeadline - Date.now();
+        if (remaining <= 0) break;
+        const t = new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('watch timeout')), remaining),
+        );
+        try {
+          const { value, done } = await Promise.race([reader.read(), t]);
+          if (done || !value) break;
+          buffer += decoder.decode(value, { stream: true });
+          drainBuffer();
+        } catch {
+          // Timeout or connection closed -- stop collecting
+          break;
+        }
+      }
+
+      // Disable watch mode
+      try {
+        await writer.write(encoder.encode('?WATCH={"enable":false};\n'));
+      } catch {
+        // Ignore write errors on shutdown
+      }
+    } finally {
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      socket.close();
+    }
+
+    const rtt = Date.now() - startTime;
+
+    // Separate VERSION banner from the watch stream results
+    const version = collectedObjects.find(o => (o as Record<string, unknown>).class === 'VERSION');
+    const messages = collectedObjects.filter(o => (o as Record<string, unknown>).class !== 'VERSION');
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      seconds,
+      version: version
+        ? {
+            release: (version as Record<string, unknown>).release,
+            proto_major: (version as Record<string, unknown>).proto_major,
+            proto_minor: (version as Record<string, unknown>).proto_minor,
+          }
+        : null,
+      messages,
+      messageCount: messages.length,
+      raw: rawLines,
+      rtt,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

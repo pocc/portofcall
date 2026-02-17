@@ -276,6 +276,281 @@ function parseSetupSuccess(data: Uint8Array): {
 }
 
 /**
+ * Build an X11 QueryTree request for a given window ID.
+ * Opcode 15. Request: CARD8 opcode(15), unused(1), CARD16 length=2, WINDOW window.
+ */
+function buildQueryTreeRequest(window: number): Uint8Array {
+  const buf = new Uint8Array(8);
+  const view = new DataView(buf.buffer);
+  buf[0] = 15;      // opcode QueryTree
+  buf[1] = 0;       // unused
+  view.setUint16(2, 2, true); // request length in 4-byte units
+  view.setUint32(4, window, true);
+  return buf;
+}
+
+/**
+ * Build an X11 GetProperty request.
+ * Opcode 20. Retrieves an arbitrary property from a window.
+ * delete=0, property=atom, type=AnyPropertyType(0), long-offset=0, long-length=128.
+ */
+function buildGetPropertyRequest(window: number, propertyAtom: number): Uint8Array {
+  const buf = new Uint8Array(24);
+  const view = new DataView(buf.buffer);
+  buf[0] = 20;       // opcode GetProperty
+  buf[1] = 0;        // delete = False
+  view.setUint16(2, 6, true);  // request length (24 bytes / 4)
+  view.setUint32(4, window, true);
+  view.setUint32(8, propertyAtom, true);
+  view.setUint32(12, 0, true); // type = AnyPropertyType
+  view.setUint32(16, 0, true); // long-offset
+  view.setUint32(20, 128, true); // long-length (up to 512 bytes of value)
+  return buf;
+}
+
+/**
+ * Build an X11 InternAtom request for a named atom.
+ * Opcode 16. only-if-exists=0 means create if needed.
+ */
+function buildInternAtomRequest(name: string): Uint8Array {
+  const nameBytes = new TextEncoder().encode(name);
+  const namePad = (4 - (nameBytes.length % 4)) % 4;
+  const totalLen = 8 + nameBytes.length + namePad;
+  const buf = new Uint8Array(totalLen);
+  const view = new DataView(buf.buffer);
+  buf[0] = 16;  // InternAtom opcode
+  buf[1] = 0;   // only-if-exists = False
+  view.setUint16(2, totalLen / 4, true);
+  view.setUint16(4, nameBytes.length, true);
+  view.setUint16(6, 0, true); // unused
+  buf.set(nameBytes, 8);
+  return buf;
+}
+
+/**
+ * Read an X11 reply (32 bytes header + variable data).
+ * X11 replies always start with 0x01 and have a 32-byte fixed header.
+ * Bytes 4-7 contain the additional data length in 4-byte units.
+ */
+async function readX11Reply(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<Uint8Array> {
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Reply timeout')), timeoutMs);
+  });
+
+  // Read the 32-byte reply header
+  const header = await readExact(reader, 32, timeoutPromise);
+
+  if (header[0] !== 1) {
+    // Error (0) or event (2+) — return as-is for caller to inspect
+    return header;
+  }
+
+  // Parse additional data length from bytes 4-7
+  const additionalLen = new DataView(header.buffer, header.byteOffset + 4, 4).getUint32(0, true) * 4;
+
+  if (additionalLen === 0) return header;
+  if (additionalLen > 65536) throw new Error('Reply too large');
+
+  const body = await readExact(reader, additionalLen, timeoutPromise);
+  const full = new Uint8Array(32 + additionalLen);
+  full.set(header, 0);
+  full.set(body, 32);
+  return full;
+}
+
+/**
+ * Handle X11 QueryTree — list child windows of the root window.
+ *
+ * Connects, completes the X11 setup handshake, then sends:
+ *   1. QueryTree on the root window → child window IDs
+ *   2. GetProperty(_NET_WM_NAME or WM_NAME) on up to 20 child windows
+ *
+ * POST /api/x11/query-tree
+ */
+export async function handleX11QueryTree(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as X11ConnectRequest & { maxWindows?: number };
+    const { host, display = 0, timeout = 15000 } = body;
+    const maxWindows = Math.min(body.maxWindows ?? 20, 50);
+    let { port } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!port) port = 6000 + display;
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      // --- X11 Setup ---
+      let authName: string | undefined;
+      let authData: Uint8Array | undefined;
+      if (body.authName) {
+        authName = body.authName;
+        if (body.authData) authData = hexToBytes(body.authData);
+      }
+      await writer.write(buildSetupRequest(authName, authData));
+
+      const header = await readExact(reader, 8, timeoutPromise);
+      const status = header[0];
+
+      if (status !== 1) {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: status === 0 ? 'X11 server rejected connection' : 'Authentication required',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const additionalDataLength = new DataView(header.buffer).getUint16(6, true) * 4;
+      const fullData = new Uint8Array(6 + additionalDataLength);
+      fullData.set(header.subarray(2), 0);
+      if (additionalDataLength > 0) {
+        const additionalData = await readExact(reader, additionalDataLength, timeoutPromise);
+        fullData.set(additionalData, 6);
+      }
+
+      const info = parseSetupSuccess(fullData);
+      const rootWindow = info.screens.length > 0 ? info.screens[0].rootWindow : 0;
+
+      if (!rootWindow) {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Could not determine root window ID',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // --- Intern _NET_WM_NAME atom (sequence 1) ---
+      // We'll use the pre-defined WM_NAME atom (atom 39) as fallback,
+      // but try to intern _NET_WM_NAME for UTF-8 titles.
+      const NET_WM_NAME = '_NET_WM_NAME';
+      await writer.write(buildInternAtomRequest(NET_WM_NAME));
+
+      // --- QueryTree on root window (sequence 2) ---
+      await writer.write(buildQueryTreeRequest(rootWindow));
+
+      // Read InternAtom reply
+      let netWmNameAtom = 0;
+      try {
+        const internReply = await readX11Reply(reader, 5000);
+        if (internReply[0] === 1) {
+          netWmNameAtom = new DataView(internReply.buffer, internReply.byteOffset + 8, 4).getUint32(0, true);
+        }
+      } catch { /* use WM_NAME fallback */ }
+
+      // Read QueryTree reply
+      let childWindows: number[] = [];
+      try {
+        const qtReply = await readX11Reply(reader, 8000);
+        if (qtReply[0] === 1 && qtReply.length >= 32) {
+          // QueryTree reply layout (after 32-byte header):
+          //   bytes 8-9: number of children (CARD16) — actually at reply offset 8
+          // Full reply: reply(1), unused(1), seq(2), length(4), root(4), parent(4), nChildren(2), unused(14), children(nChildren*4)
+          const nChildren = new DataView(qtReply.buffer, qtReply.byteOffset + 16, 2).getUint16(0, true);
+          const childBase = 32; // after 32-byte header
+          for (let i = 0; i < nChildren && i < maxWindows; i++) {
+            if (childBase + i * 4 + 4 <= qtReply.length) {
+              const wid = new DataView(qtReply.buffer, qtReply.byteOffset + childBase + i * 4, 4).getUint32(0, true);
+              childWindows.push(wid);
+            }
+          }
+        }
+      } catch { /* no children or error */ }
+
+      // --- Get window names for each child ---
+      const wmNameAtom = netWmNameAtom || 39; // 39 = WM_NAME predefined atom
+
+      // Send GetProperty requests for all children
+      for (const wid of childWindows) {
+        await writer.write(buildGetPropertyRequest(wid, wmNameAtom));
+      }
+
+      // Collect replies
+      const windowInfo: Array<{ id: string; name?: string }> = [];
+      for (const wid of childWindows) {
+        try {
+          const propReply = await readX11Reply(reader, 2000);
+          let name: string | undefined;
+          if (propReply[0] === 1 && propReply.length > 32) {
+            // GetProperty reply: bytes 16-19 = value length (in format-units)
+            const valueLen = new DataView(propReply.buffer, propReply.byteOffset + 16, 4).getUint32(0, true);
+            if (valueLen > 0 && valueLen < 1024) {
+              name = new TextDecoder('utf-8', { fatal: false })
+                .decode(propReply.subarray(32, 32 + valueLen))
+                .replace(/\0/g, '')
+                .trim() || undefined;
+            }
+          }
+          windowInfo.push({ id: `0x${wid.toString(16)}`, name });
+        } catch {
+          windowInfo.push({ id: `0x${wid.toString(16)}` });
+        }
+      }
+
+      const rtt = Date.now() - startTime;
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        display,
+        rootWindow: `0x${rootWindow.toString(16)}`,
+        vendor: info.vendor,
+        protocolVersion: `${info.protocolMajor}.${info.protocolMinor}`,
+        screens: info.screens.map((s, i) => ({
+          screen: i,
+          resolution: `${s.widthPixels}x${s.heightPixels}`,
+          rootDepth: s.rootDepth,
+        })),
+        childCount: childWindows.length,
+        windows: windowInfo,
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Handle X11 connection probe
  */
 export async function handleX11Connect(request: Request): Promise<Response> {

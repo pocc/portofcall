@@ -36,6 +36,16 @@ const Rversion = 101;
 const Tattach = 104;
 const Rattach = 105;
 const Rerror = 107;
+const Twalk = 110;
+const Rwalk = 111;
+const Topen = 112;
+const Ropen = 113;
+const Tread = 116;
+const Rread = 117;
+const Tclunk = 120;
+// const Rclunk = 121;
+const Tstat = 124;
+const Rstat = 125;
 
 // Default max message size
 const DEFAULT_MSIZE = 8192;
@@ -364,5 +374,502 @@ export async function handle9PConnect(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       },
     );
+  }
+}
+
+// ─── Additional message builders ────────────────────────────────────────────
+
+/** Twalk: navigate a path relative to fid, producing newFid */
+function buildTwalk(fid: number, newFid: number, pathComponents: string[]): Uint8Array {
+  const enc = new TextEncoder();
+  // Body: fid(4) + newFid(4) + nwname(2) + [wname strings...]
+  const nameBuffers = pathComponents.map(p => enc.encode(p));
+  const bodyLen = 4 + 4 + 2 + nameBuffers.reduce((s, b) => s + 2 + b.length, 0);
+  const body = new Uint8Array(bodyLen);
+  const view = new DataView(body.buffer);
+  let off = 0;
+  view.setUint32(off, fid, true); off += 4;
+  view.setUint32(off, newFid, true); off += 4;
+  view.setUint16(off, pathComponents.length, true); off += 2;
+  for (const nb of nameBuffers) {
+    view.setUint16(off, nb.length, true); off += 2;
+    body.set(nb, off); off += nb.length;
+  }
+  return body;
+}
+
+/** Topen: open a fid with mode (0=read, 1=write, 2=rdwr, 3=exec) */
+function buildTopen(fid: number, mode: number): Uint8Array {
+  const body = new Uint8Array(5);
+  const view = new DataView(body.buffer);
+  view.setUint32(0, fid, true);
+  body[4] = mode;
+  return body;
+}
+
+/** Tread: read count bytes at offset from fid */
+function buildTread(fid: number, offset: number, count: number): Uint8Array {
+  const body = new Uint8Array(16);
+  const view = new DataView(body.buffer);
+  view.setUint32(0, fid, true);
+  view.setUint32(4, offset, true);   // offset low 32 bits
+  view.setUint32(8, 0, true);        // offset high 32 bits
+  view.setUint32(12, count, true);
+  return body;
+}
+
+/** Tstat: query stat for fid */
+function buildTstat(fid: number): Uint8Array {
+  const body = new Uint8Array(4);
+  new DataView(body.buffer).setUint32(0, fid, true);
+  return body;
+}
+
+/** Tclunk: release fid */
+function buildTclunk(fid: number): Uint8Array {
+  const body = new Uint8Array(4);
+  new DataView(body.buffer).setUint32(0, fid, true);
+  return body;
+}
+
+interface Stat9P {
+  type: number;
+  dev: number;
+  qid: { type: number; version: number; path: string };
+  mode: number;
+  atime: number;
+  mtime: number;
+  length: string;
+  name: string;
+  uid: string;
+  gid: string;
+  muid: string;
+}
+
+/**
+ * Parse a 9P2000 stat structure from Rstat body.
+ * Rstat body: size(2) + stat bytes
+ * Stat: size(2)+type(2)+dev(4)+qid(13)+mode(4)+atime(4)+mtime(4)+length(8)+name+uid+gid+muid
+ */
+function parseStat(body: Uint8Array, offset: number): Stat9P | null {
+  if (offset + 2 > body.length) return null;
+  const view = new DataView(body.buffer, body.byteOffset);
+  // outer stat size word
+  offset += 2;
+  if (offset + 2 > body.length) return null;
+  const type = view.getUint16(offset, true); offset += 2;
+  if (offset + 4 > body.length) return null;
+  const dev = view.getUint32(offset, true); offset += 4;
+  const qid = parseQID(body, offset); offset += 13;
+  if (offset + 4 > body.length) return null;
+  const mode = view.getUint32(offset, true); offset += 4;
+  if (offset + 4 > body.length) return null;
+  const atime = view.getUint32(offset, true); offset += 4;
+  if (offset + 4 > body.length) return null;
+  const mtime = view.getUint32(offset, true); offset += 4;
+  // length is uint64LE
+  if (offset + 8 > body.length) return null;
+  const lenLo = view.getUint32(offset, true);
+  const lenHi = view.getUint32(offset + 4, true);
+  const length = lenHi ? `${lenHi * 2 ** 32 + lenLo}` : `${lenLo}`;
+  offset += 8;
+  const [name, ns] = parse9PString(body, offset); offset += ns;
+  const [uid, us] = parse9PString(body, offset); offset += us;
+  const [gid, gs] = parse9PString(body, offset); offset += gs;
+  const [muid] = parse9PString(body, offset);
+  return { type, dev, qid, mode, atime, mtime, length, name, uid, gid, muid };
+}
+
+/**
+ * Read from socket accumulating chunks until we have a complete 9P message.
+ * Returns the first complete message bytes.
+ */
+async function read9PMessage(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<Uint8Array> {
+  const deadline = Date.now() + timeoutMs;
+  let buf = new Uint8Array(0);
+
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
+      setTimeout(() => resolve({ value: undefined, done: true }), remaining),
+    );
+    const { value, done } = await Promise.race([reader.read(), timer]);
+    if (done || !value) break;
+
+    const next = new Uint8Array(buf.length + value.length);
+    next.set(buf); next.set(value, buf.length);
+    buf = next;
+
+    // Check if we have a complete message
+    if (buf.length >= 4) {
+      const size = new DataView(buf.buffer, buf.byteOffset).getUint32(0, true);
+      if (buf.length >= size) return buf.slice(0, size);
+    }
+  }
+  return buf;
+}
+
+/**
+ * Perform version + attach handshake, returns { reader, writer, rootFid, msize }
+ */
+async function ninePHandshake(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  timeoutMs: number,
+): Promise<{ rootFid: number; msize: number }> {
+  const timeLeft = () => Math.max(timeoutMs - 1000, 1000);
+
+  const tvBody = buildTversion(DEFAULT_MSIZE);
+  await writer.write(build9PMessage(Tversion, NOTAG, tvBody));
+  const rvData = await read9PMessage(reader, timeLeft());
+  const rv = parse9PMessage(rvData);
+  if (!rv || rv.type !== Rversion) throw new Error(`Expected Rversion, got type ${rv?.type}`);
+  const rvView = new DataView(rv.body.buffer, rv.body.byteOffset);
+  const msize = rvView.getUint32(0, true);
+
+  const rootFid = 1;
+  const taBody = buildTattach(rootFid, NOFID, 'anonymous', '');
+  await writer.write(build9PMessage(Tattach, 1, taBody));
+  const raData = await read9PMessage(reader, timeLeft());
+  const ra = parse9PMessage(raData);
+  if (!ra || (ra.type !== Rattach && ra.type !== Rerror)) {
+    throw new Error(`Expected Rattach, got type ${ra?.type}`);
+  }
+  if (ra.type === Rerror) {
+    const [errMsg] = parse9PString(ra.body, 0);
+    throw new Error(`Attach failed: ${errMsg}`);
+  }
+  return { rootFid, msize };
+}
+
+// ─── POST /api/9p/stat ───────────────────────────────────────────────────────
+
+/**
+ * Walk to a path and stat the target file or directory.
+ *
+ * POST /api/9p/stat
+ * Body: { host, port?, path?, timeout? }
+ *   path — slash-separated path e.g. "usr/local/bin" (default: "" = root)
+ *
+ * Flow: Tversion → Tattach (root fid=1) → Twalk (path, newFid=2) → Tstat → Tclunk
+ */
+export async function handle9PStat(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+
+  try {
+    const body = (await request.json()) as { host?: string; port?: number; path?: string; timeout?: number };
+    const host = (body.host ?? '').trim();
+    const port = body.port ?? 564;
+    const pathStr = (body.path ?? '').replace(/^\/+|\/+$/g, '');
+    const timeout = Math.min(body.timeout ?? 10000, 30000);
+
+    const err = validateInput(host, port);
+    if (err) return new Response(JSON.stringify({ success: false, error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      const { rootFid } = await ninePHandshake(reader, writer, timeout);
+
+      const pathComponents = pathStr ? pathStr.split('/').filter(Boolean) : [];
+      const targetFid = rootFid + 1;
+      let stat: Stat9P | null = null;
+
+      if (pathComponents.length === 0) {
+        // Stat the root directly
+        await writer.write(build9PMessage(Tstat, 2, buildTstat(rootFid)));
+        const rsData = await read9PMessage(reader, 5000);
+        const rs = parse9PMessage(rsData);
+        if (rs && rs.type === Rstat) stat = parseStat(rs.body, 0);
+      } else {
+        // Walk to path
+        await writer.write(build9PMessage(Twalk, 2, buildTwalk(rootFid, targetFid, pathComponents)));
+        const rwData = await read9PMessage(reader, 5000);
+        const rw = parse9PMessage(rwData);
+        if (!rw || rw.type !== Rwalk) {
+          if (rw?.type === Rerror) {
+            const [errMsg] = parse9PString(rw.body, 0);
+            throw new Error(`Walk failed: ${errMsg}`);
+          }
+          throw new Error(`Walk failed: unexpected type ${rw?.type}`);
+        }
+
+        await writer.write(build9PMessage(Tstat, 3, buildTstat(targetFid)));
+        const rsData = await read9PMessage(reader, 5000);
+        const rs = parse9PMessage(rsData);
+        if (rs && rs.type === Rstat) stat = parseStat(rs.body, 0);
+
+        // Clunk the new fid
+        try { await writer.write(build9PMessage(Tclunk, 4, buildTclunk(targetFid))); } catch { /* ignore */ }
+      }
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host, port,
+        path: pathStr || '/',
+        stat,
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ─── POST /api/9p/read ───────────────────────────────────────────────────────
+
+/**
+ * Walk to a file path, open it, and read its contents.
+ *
+ * POST /api/9p/read
+ * Body: { host, port?, path, offset?, count?, timeout? }
+ *   path   — slash-separated path to file (required)
+ *   offset — byte offset to start reading (default: 0)
+ *   count  — max bytes to read (default: 4096, max: 65536)
+ *
+ * Flow: Tversion → Tattach → Twalk → Topen → Tread → Tclunk
+ */
+export async function handle9PRead(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+
+  try {
+    const body = (await request.json()) as {
+      host?: string; port?: number; path?: string;
+      offset?: number; count?: number; timeout?: number;
+    };
+    const host = (body.host ?? '').trim();
+    const port = body.port ?? 564;
+    const pathStr = (body.path ?? '').replace(/^\/+|\/+$/g, '');
+    const readOffset = Math.max(0, body.offset ?? 0);
+    const readCount = Math.min(Math.max(1, body.count ?? 4096), 65536);
+    const timeout = Math.min(body.timeout ?? 15000, 30000);
+
+    const err = validateInput(host, port);
+    if (err) return new Response(JSON.stringify({ success: false, error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!pathStr) return new Response(JSON.stringify({ success: false, error: 'path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      const { rootFid } = await ninePHandshake(reader, writer, timeout);
+
+      const pathComponents = pathStr.split('/').filter(Boolean);
+      const fileFid = rootFid + 1;
+
+      // Walk to path
+      await writer.write(build9PMessage(Twalk, 2, buildTwalk(rootFid, fileFid, pathComponents)));
+      const rwData = await read9PMessage(reader, 5000);
+      const rw = parse9PMessage(rwData);
+      if (!rw || rw.type !== Rwalk) {
+        if (rw?.type === Rerror) {
+          const [errMsg] = parse9PString(rw.body, 0);
+          throw new Error(`Walk failed: ${errMsg}`);
+        }
+        throw new Error(`Walk failed: unexpected type ${rw?.type}`);
+      }
+
+      // Open the file (mode 0 = read)
+      await writer.write(build9PMessage(Topen, 3, buildTopen(fileFid, 0)));
+      const roData = await read9PMessage(reader, 5000);
+      const ro = parse9PMessage(roData);
+      if (!ro || ro.type !== Ropen) {
+        if (ro?.type === Rerror) {
+          const [errMsg] = parse9PString(ro.body, 0);
+          throw new Error(`Open failed: ${errMsg}`);
+        }
+        throw new Error(`Open failed: unexpected type ${ro?.type}`);
+      }
+
+      // Read the file
+      await writer.write(build9PMessage(Tread, 4, buildTread(fileFid, readOffset, readCount)));
+      const rrData = await read9PMessage(reader, 8000);
+      const rr = parse9PMessage(rrData);
+
+      let data: string | undefined;
+      let bytesRead = 0;
+      if (rr && rr.type === Rread && rr.body.length >= 4) {
+        const rrView = new DataView(rr.body.buffer, rr.body.byteOffset);
+        bytesRead = rrView.getUint32(0, true);
+        const dataBytes = rr.body.slice(4, 4 + bytesRead);
+        // Return as base64 for binary safety
+        data = btoa(String.fromCharCode(...dataBytes));
+      } else if (rr?.type === Rerror) {
+        const [errMsg] = parse9PString(rr.body, 0);
+        throw new Error(`Read failed: ${errMsg}`);
+      }
+
+      // Clunk the fid
+      try { await writer.write(build9PMessage(Tclunk, 5, buildTclunk(fileFid))); } catch { /* ignore */ }
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host, port,
+        path: '/' + pathStr,
+        offset: readOffset,
+        bytesRead,
+        data,
+        encoding: 'base64',
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ─── POST /api/9p/ls ─────────────────────────────────────────────────────────
+
+/**
+ * Walk to a directory and read its directory entries (stat records).
+ *
+ * POST /api/9p/ls
+ * Body: { host, port?, path?, timeout? }
+ *   path — directory path (default: "" = root)
+ *
+ * Flow: Tversion → Tattach → Twalk (if path) → Topen (mode 0) → Tread (dir) → Tclunk
+ *
+ * In 9P, reading a directory returns concatenated stat structures.
+ */
+export async function handle9PLs(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+
+  try {
+    const body = (await request.json()) as { host?: string; port?: number; path?: string; timeout?: number };
+    const host = (body.host ?? '').trim();
+    const port = body.port ?? 564;
+    const pathStr = (body.path ?? '').replace(/^\/+|\/+$/g, '');
+    const timeout = Math.min(body.timeout ?? 15000, 30000);
+
+    const err = validateInput(host, port);
+    if (err) return new Response(JSON.stringify({ success: false, error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      const { rootFid, msize } = await ninePHandshake(reader, writer, timeout);
+
+      const pathComponents = pathStr ? pathStr.split('/').filter(Boolean) : [];
+      let dirFid = rootFid;
+
+      if (pathComponents.length > 0) {
+        const newFid = rootFid + 1;
+        await writer.write(build9PMessage(Twalk, 2, buildTwalk(rootFid, newFid, pathComponents)));
+        const rwData = await read9PMessage(reader, 5000);
+        const rw = parse9PMessage(rwData);
+        if (!rw || rw.type !== Rwalk) {
+          if (rw?.type === Rerror) {
+            const [errMsg] = parse9PString(rw.body, 0);
+            throw new Error(`Walk failed: ${errMsg}`);
+          }
+          throw new Error(`Walk failed: unexpected type ${rw?.type}`);
+        }
+        dirFid = newFid;
+      }
+
+      // Open directory (mode 0 = read)
+      await writer.write(build9PMessage(Topen, 3, buildTopen(dirFid, 0)));
+      const roData = await read9PMessage(reader, 5000);
+      const ro = parse9PMessage(roData);
+      if (!ro || ro.type !== Ropen) {
+        if (ro?.type === Rerror) {
+          const [errMsg] = parse9PString(ro.body, 0);
+          throw new Error(`Open failed: ${errMsg}`);
+        }
+        throw new Error(`Open dir failed: unexpected type ${ro?.type}`);
+      }
+
+      // Read directory — request up to msize bytes
+      const dirReadCount = Math.min(msize - 11, 65525); // msize - header overhead
+      await writer.write(build9PMessage(Tread, 4, buildTread(dirFid, 0, dirReadCount)));
+      const rrData = await read9PMessage(reader, 8000);
+      const rr = parse9PMessage(rrData);
+
+      const entries: Stat9P[] = [];
+      if (rr && rr.type === Rread && rr.body.length >= 4) {
+        const rrView = new DataView(rr.body.buffer, rr.body.byteOffset);
+        const bytesRead = rrView.getUint32(0, true);
+        // Parse stat records from the data
+        let off = 4;
+        const dataEnd = 4 + bytesRead;
+        while (off + 2 < dataEnd) {
+          const statSize = new DataView(rr.body.buffer, rr.body.byteOffset + off).getUint16(0, true);
+          if (statSize < 2 || off + 2 + statSize > dataEnd) break;
+          const s = parseStat(rr.body, off);
+          if (s) entries.push(s);
+          off += 2 + statSize;
+        }
+      } else if (rr?.type === Rerror) {
+        const [errMsg] = parse9PString(rr.body, 0);
+        throw new Error(`Read dir failed: ${errMsg}`);
+      }
+
+      // Clunk the fid
+      try { await writer.write(build9PMessage(Tclunk, 5, buildTclunk(dirFid))); } catch { /* ignore */ }
+
+      reader.releaseLock();
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host, port,
+        path: '/' + pathStr,
+        count: entries.length,
+        entries,
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (err) {
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

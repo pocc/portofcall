@@ -1,711 +1,356 @@
-# XMPP Protocol Implementation Plan
+# XMPP Protocol — Port of Call Reference
 
-## Overview
+**RFC:** [6120](https://tools.ietf.org/html/rfc6120) (core), [6121](https://tools.ietf.org/html/rfc6121) (IM), [6122](https://tools.ietf.org/html/rfc6122) (addressing)
+**Default ports:** 5222 (c2s), 5269 (s2s), 5223 (legacy XMPPS)
+**Source:** `src/worker/xmpp.ts`
+**Tests:** `tests/xmpp.test.ts`
 
-**Protocol:** XMPP (Extensible Messaging and Presence Protocol) / Jabber
-**Port:** 5222 (client), 5269 (server-to-server), 5280 (BOSH HTTP)
-**RFC:** [RFC 6120](https://tools.ietf.org/html/rfc6120), [RFC 6121](https://tools.ietf.org/html/rfc6121), [RFC 6122](https://tools.ietf.org/html/rfc6122)
-**Complexity:** High
-**Purpose:** Instant messaging, presence, and real-time communication
+---
 
-XMPP enables **instant messaging and presence** - chat, group conversations, presence updates, and real-time notifications from the browser.
+## Endpoints
 
-### Use Cases
-- Instant messaging
-- Presence information
-- Multi-user chat (MUC)
-- Push notifications
-- IoT device communication
-- Gaming chat systems
+### Phases per endpoint
 
-## Protocol Specification
+The `phases` array tracks how far the handshake got. It's the fastest way to pinpoint a failure without reading raw XML.
 
-### XML Streaming Protocol
+| Phase | `/connect` | `/login` | `/roster` | `/message` |
+|---|---|---|---|---|
+| `stream_opened` | — | ✅ | ✅ | ✅ |
+| `sasl_plain_sent` | — | ✅ | ❌ | ❌ |
+| `authenticated` | — | ✅ | ✅ | ✅ |
+| `stream_restarted` | — | ✅ | ✅ | ✅ |
+| `resource_bound` | — | ✅ | ✅ | ✅ |
+| `session_established` | — | if offered | if offered | if offered |
+| `roster_received` | — | — | ✅ | — |
+| `message_sent` | — | — | — | ✅ |
 
-XMPP uses XML streams:
+> `/connect` returns no `phases` field. `/roster` and `/message` omit `sasl_plain_sent` even though the `<auth>` stanza is sent — if those endpoints fail at auth, the last phase will be `stream_opened`.
 
-```xml
-<?xml version='1.0'?>
-<stream:stream
-    to='jabber.org'
-    xmlns='jabber:client'
-    xmlns:stream='http://etherx.jabber.org/streams'
-    version='1.0'>
+---
+
+### `POST /api/xmpp/connect` — Stream probe (unauthenticated)
+
+Opens an XML stream, reads `<stream:features>`, and closes. No credentials required.
+
+**Request:**
+
+```json
+{
+  "host": "jabber.org",
+  "port": 5222,
+  "domain": "jabber.org",
+  "timeout": 10000
+}
 ```
 
-### Stanza Types
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | IP or hostname to connect to |
+| `port` | `5222` | TCP port |
+| `domain` | `host` | Value sent in `<stream:stream to='...'>`. Set this for virtual hosting where DNS host ≠ XMPP domain. |
+| `timeout` | `10000` | Total wall-clock timeout in ms |
 
-**Message:**
-```xml
-<message
-    from='juliet@example.com/balcony'
-    to='romeo@example.net'
-    type='chat'
-    xml:lang='en'>
-  <body>Wherefore art thou, Romeo?</body>
-</message>
+**Response (success):**
+
+```json
+{
+  "success": true,
+  "message": "XMPP server reachable",
+  "host": "jabber.org",
+  "port": 5222,
+  "domain": "jabber.org",
+  "streamId": "abc123",
+  "serverFrom": "jabber.org",
+  "xmppVersion": "1.0",
+  "tls": {
+    "available": true,
+    "required": false
+  },
+  "saslMechanisms": ["PLAIN", "SCRAM-SHA-1", "SCRAM-SHA-256"],
+  "compressionMethods": ["zlib"],
+  "features": ["starttls", "resource-binding", "session", "stream-management"],
+  "raw": "<stream:stream ...><stream:features>...</stream:features>"
+}
 ```
 
-**Presence:**
-```xml
-<presence from='juliet@example.com/balcony'>
-  <show>away</show>
-  <status>Be right back</status>
-  <priority>5</priority>
-</presence>
+**Key fields:**
+
+- `tls.available` — server advertises `urn:ietf:params:xml:ns:xmpp-tls` or `<starttls>`
+- `tls.required` — `<required/>` is present inside `<starttls>` block
+- `saslMechanisms` — from `<mechanism>` elements inside `<mechanisms>` block
+- `compressionMethods` — from `<method>` elements inside `<compression>` block
+- `raw` — **only returned by this endpoint** — first 2000 bytes of the server's raw response; use it to extract data the parser missed or to see exactly what the server sent before `</stream:features>`
+- `features` — derived from namespace URI presence in the features block:
+
+| Feature string | Detected by namespace / element |
+|---|---|
+| `starttls` | `urn:ietf:params:xml:ns:xmpp-tls` or `<starttls` |
+| `resource-binding` | `urn:ietf:params:xml:ns:xmpp-bind` or `<bind` |
+| `session` | `urn:ietf:params:xml:ns:xmpp-session` or `<session` |
+| `stream-management` | `urn:xmpp:sm:` (XEP-0198) |
+| `roster-versioning` | `rosterver` attribute or `urn:xmpp:features:rosterver` |
+| `client-state-indication` | `urn:xmpp:csi:` (XEP-0352) |
+| `message-carbons` | `urn:xmpp:carbons:` (XEP-0280) |
+
+**Note:** STARTTLS is *detected* but not *negotiated*. The connection probes plaintext stream features only, then closes. To test an XMPP-over-TLS (port 5223) server, use `port: 5223` — the worker will attempt a raw TCP connection but the TLS handshake will fail at the socket layer.
+
+---
+
+### `POST /api/xmpp/login` — SASL PLAIN authentication + resource binding
+
+Performs the full XMPP login sequence: stream open → SASL PLAIN → stream restart → resource bind → optional session.
+
+**Request:**
+
+```json
+{
+  "host": "jabber.org",
+  "port": 5222,
+  "username": "alice",
+  "password": "hunter2",
+  "timeout": 15000
+}
 ```
 
-**IQ (Info/Query):**
-```xml
-<iq from='juliet@example.com/balcony'
-    id='roster1'
-    type='get'>
-  <query xmlns='jabber:iq:roster'/>
-</iq>
+The domain for the stream and JID is derived from `host`. There is no separate `domain` parameter on auth endpoints.
+
+**Response (success):**
+
+```json
+{
+  "success": true,
+  "host": "jabber.org",
+  "port": 5222,
+  "jid": "alice@jabber.org/portofcall",
+  "domain": "jabber.org",
+  "phases": ["stream_opened", "sasl_plain_sent", "authenticated", "stream_restarted", "resource_bound", "session_established"],
+  "features": ["resource-binding", "stream-management"],
+  "saslMechanisms": ["PLAIN", "SCRAM-SHA-1"],
+  "message": "XMPP login successful"
+}
 ```
 
-### JID (Jabber Identifier)
+**Phases** (in order):
 
-Format: `localpart@domainpart/resourcepart`
-
-Examples:
-- `user@jabber.org` (bare JID)
-- `user@jabber.org/mobile` (full JID)
-- `room@conference.jabber.org` (MUC room)
-
-### Connection Flow
-
-```
-1. Client → Server: Open stream
-2. Server → Client: Stream features
-3. Client → Server: STARTTLS (optional)
-4. Client ↔ Server: TLS negotiation
-5. Client → Server: SASL authentication
-6. Server → Client: Success
-7. Client → Server: Bind resource
-8. Client → Server: Start session
-9. Client ↔ Server: Stanzas
-```
-
-### Message Types
-
-| Type | Description |
-|------|-------------|
-| chat | One-to-one chat |
-| groupchat | Multi-user chat |
-| headline | News/alerts |
-| normal | Email-like message |
-| error | Error message |
-
-### Presence Show Values
-
-| Value | Meaning |
+| Phase | Meaning |
 |-------|---------|
-| (none) | Available |
-| away | Temporarily away |
-| chat | Free for chat |
-| dnd | Do not disturb |
-| xa | Extended away |
+| `stream_opened` | First stream + features received |
+| `sasl_plain_sent` | `<auth mechanism='PLAIN'>` sent |
+| `authenticated` | `<success/>` received |
+| `stream_restarted` | Second stream opened post-auth |
+| `resource_bound` | `<bind>` IQ result received; full JID known |
+| `session_established` | `<session>` IQ sent and acknowledged (only if server advertises the feature; many RFC 6121-compliant servers omit it) |
 
-## Worker Implementation
+**Failure response:**
 
-```typescript
-// src/worker/protocols/xmpp/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface XMPPConfig {
-  host: string;
-  port?: number;
-  jid: string; // user@domain
-  password: string;
-  resource?: string;
+```json
+{
+  "success": false,
+  "phases": ["stream_opened", "sasl_plain_sent"],
+  "error": "SASL authentication failed: not-authorized"
 }
+```
 
-export interface XMPPMessage {
-  from: string;
-  to: string;
-  body: string;
-  type?: 'chat' | 'groupchat' | 'headline' | 'normal';
-  id?: string;
-}
+**Limitation:** Only SASL PLAIN is supported. If the server does not list PLAIN in its mechanisms (e.g., requires SCRAM-SHA-1 only), the endpoint returns immediately with an error listing the available mechanisms. DIGEST-MD5, SCRAM-SHA-*, GSSAPI, and EXTERNAL are not implemented.
 
-export interface XMPPPresence {
-  from: string;
-  show?: 'away' | 'chat' | 'dnd' | 'xa';
-  status?: string;
-  priority?: number;
-}
+**Public server caveat:** Most internet-facing XMPP servers (jabber.org, conversations.im, etc.) disable SASL PLAIN on unencrypted connections as a security policy. The `/connect` probe works against any server; auth endpoints (`/login`, `/roster`, `/message`) require either a server that allows PLAIN or a local test instance with TLS disabled.
 
-export class XMPPClient {
-  private socket: any;
-  private streamId?: string;
-  private authenticated = false;
-  private bound = false;
-  private fullJid?: string;
+---
 
-  constructor(private config: XMPPConfig) {}
+### `POST /api/xmpp/roster` — Authenticated roster (contact list) fetch
 
-  async connect(): Promise<void> {
-    const port = this.config.port || 5222;
-    this.socket = connect(`${this.config.host}:${port}`);
-    await this.socket.opened;
+Logs in via SASL PLAIN and issues a `jabber:iq:roster` GET request.
 
-    // Start reading XML stream
-    this.readLoop();
+**Request:** same fields as `/api/xmpp/login`, with `timeout` defaulting to `20000`.
 
-    // Open stream
-    await this.openStream();
-  }
+**Response (success):**
 
-  private async openStream(): Promise<void> {
-    const domain = this.config.jid.split('@')[1];
-
-    const stream = `<?xml version='1.0'?>\n` +
-      `<stream:stream to='${domain}' ` +
-      `xmlns='jabber:client' ` +
-      `xmlns:stream='http://etherx.jabber.org/streams' ` +
-      `version='1.0'>`;
-
-    await this.send(stream);
-  }
-
-  async authenticate(): Promise<void> {
-    // Wait for stream features
-    await this.waitForFeatures();
-
-    // SASL PLAIN authentication
-    const [username, domain] = this.config.jid.split('@');
-    const authString = `\0${username}\0${this.config.password}`;
-    const authBase64 = btoa(authString);
-
-    const auth = `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' ` +
-      `mechanism='PLAIN'>${authBase64}</auth>`;
-
-    await this.send(auth);
-
-    // Wait for success
-    await this.waitForSuccess();
-
-    this.authenticated = true;
-
-    // Restart stream after authentication
-    await this.openStream();
-    await this.waitForFeatures();
-  }
-
-  async bind(): Promise<void> {
-    const resource = this.config.resource || 'web';
-
-    const bindIq = `<iq type='set' id='bind_1'>` +
-      `<bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'>` +
-      `<resource>${resource}</resource>` +
-      `</bind>` +
-      `</iq>`;
-
-    await this.send(bindIq);
-
-    // Wait for bind result (contains full JID)
-    // This would be handled in readLoop
-    this.bound = true;
-  }
-
-  async startSession(): Promise<void> {
-    const sessionIq = `<iq type='set' id='session_1'>` +
-      `<session xmlns='urn:ietf:params:xml:ns:xmpp-session'/>` +
-      `</iq>`;
-
-    await this.send(sessionIq);
-  }
-
-  async sendMessage(to: string, body: string, type: string = 'chat'): Promise<void> {
-    const id = `msg_${Date.now()}`;
-
-    const message = `<message to='${to}' type='${type}' id='${id}'>` +
-      `<body>${this.escapeXml(body)}</body>` +
-      `</message>`;
-
-    await this.send(message);
-  }
-
-  async sendPresence(show?: string, status?: string, priority?: number): Promise<void> {
-    let presence = '<presence>';
-
-    if (show) {
-      presence += `<show>${show}</show>`;
-    }
-
-    if (status) {
-      presence += `<status>${this.escapeXml(status)}</status>`;
-    }
-
-    if (priority !== undefined) {
-      presence += `<priority>${priority}</priority>`;
-    }
-
-    presence += '</presence>';
-
-    await this.send(presence);
-  }
-
-  async getRoster(): Promise<void> {
-    const iq = `<iq type='get' id='roster_1'>` +
-      `<query xmlns='jabber:iq:roster'/>` +
-      `</iq>`;
-
-    await this.send(iq);
-  }
-
-  async addToRoster(jid: string, name?: string): Promise<void> {
-    const id = `roster_add_${Date.now()}`;
-
-    let item = `<item jid='${jid}'`;
-    if (name) {
-      item += ` name='${this.escapeXml(name)}'`;
-    }
-    item += '/>';
-
-    const iq = `<iq type='set' id='${id}'>` +
-      `<query xmlns='jabber:iq:roster'>` +
-      item +
-      `</query>` +
-      `</iq>`;
-
-    await this.send(iq);
-  }
-
-  async subscribe(jid: string): Promise<void> {
-    const presence = `<presence to='${jid}' type='subscribe'/>`;
-    await this.send(presence);
-  }
-
-  async joinRoom(room: string, nickname: string): Promise<void> {
-    const presence = `<presence to='${room}/${nickname}'>` +
-      `<x xmlns='http://jabber.org/protocol/muc'/>` +
-      `</presence>`;
-
-    await this.send(presence);
-  }
-
-  async sendRoomMessage(room: string, body: string): Promise<void> {
-    await this.sendMessage(room, body, 'groupchat');
-  }
-
-  private async send(data: string): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(data));
-    writer.releaseLock();
-  }
-
-  private async readLoop(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Parse XML stanzas
-      // Simplified - real implementation needs proper XML parser
-      if (buffer.includes('</stream:stream>')) {
-        break;
+```json
+{
+  "success": true,
+  "host": "jabber.org",
+  "port": 5222,
+  "jid": "alice@jabber.org/portofcall",
+  "phases": ["stream_opened", "authenticated", "stream_restarted", "resource_bound", "roster_received"],
+  "roster": {
+    "total": 3,
+    "contacts": [
+      {
+        "jid": "bob@jabber.org",
+        "name": "Bob",
+        "subscription": "both",
+        "groups": ["Friends"]
       }
-
-      // Process complete stanzas
-      buffer = this.processStanzas(buffer);
-    }
-  }
-
-  private processStanzas(buffer: string): string {
-    // Extract and process complete XML stanzas
-    // This is simplified - real implementation needs XML parser
-
-    if (buffer.includes('<message')) {
-      const match = buffer.match(/<message[^>]*>.*?<\/message>/s);
-      if (match) {
-        this.handleMessage(match[0]);
-        buffer = buffer.replace(match[0], '');
-      }
-    }
-
-    if (buffer.includes('<presence')) {
-      const match = buffer.match(/<presence[^>]*>.*?<\/presence>/s);
-      if (match) {
-        this.handlePresence(match[0]);
-        buffer = buffer.replace(match[0], '');
-      }
-    }
-
-    if (buffer.includes('<iq')) {
-      const match = buffer.match(/<iq[^>]*>.*?<\/iq>/s);
-      if (match) {
-        this.handleIQ(match[0]);
-        buffer = buffer.replace(match[0], '');
-      }
-    }
-
-    return buffer;
-  }
-
-  private handleMessage(xml: string): void {
-    // Parse message stanza
-    const fromMatch = xml.match(/from=['"]([^'"]+)['"]/);
-    const bodyMatch = xml.match(/<body>([^<]+)<\/body>/);
-
-    if (fromMatch && bodyMatch) {
-      console.log(`Message from ${fromMatch[1]}: ${bodyMatch[1]}`);
-    }
-  }
-
-  private handlePresence(xml: string): void {
-    // Parse presence stanza
-    const fromMatch = xml.match(/from=['"]([^'"]+)['"]/);
-    const showMatch = xml.match(/<show>([^<]+)<\/show>/);
-
-    if (fromMatch) {
-      const show = showMatch ? showMatch[1] : 'available';
-      console.log(`Presence from ${fromMatch[1]}: ${show}`);
-    }
-  }
-
-  private handleIQ(xml: string): void {
-    // Parse IQ stanza
-    console.log('IQ received:', xml);
-  }
-
-  private async waitForFeatures(): Promise<void> {
-    // Wait for stream features
-    // Simplified - real implementation tracks state
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  private async waitForSuccess(): Promise<void> {
-    // Wait for SASL success
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-
-  private escapeXml(text: string): string {
-    return text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
-  }
-
-  async close(): Promise<void> {
-    await this.send('</stream:stream>');
-
-    if (this.socket) {
-      await this.socket.close();
-    }
-  }
-}
-
-// BOSH (HTTP-based XMPP)
-
-export class XMPPBOSHClient {
-  private sessionId?: string;
-  private rid = Math.floor(Math.random() * 10000000);
-
-  constructor(
-    private boshUrl: string,
-    private jid: string,
-    private password: string
-  ) {}
-
-  async connect(): Promise<void> {
-    const domain = this.jid.split('@')[1];
-
-    const body = this.buildBody({
-      'xmlns:xmpp': 'urn:xmpp:xbosh',
-      'xmpp:version': '1.0',
-      'to': domain,
-      'wait': '60',
-      'hold': '1',
-    });
-
-    const response = await fetch(this.boshUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/xml' },
-      body,
-    });
-
-    const xml = await response.text();
-    this.sessionId = this.extractAttribute(xml, 'sid');
-  }
-
-  async sendMessage(to: string, body: string): Promise<void> {
-    const message = `<message to='${to}' type='chat'>` +
-      `<body>${body}</body>` +
-      `</message>`;
-
-    const boshBody = this.buildBody({}, message);
-
-    await fetch(this.boshUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/xml' },
-      body: boshBody,
-    });
-  }
-
-  private buildBody(attrs: Record<string, string>, content: string = ''): string {
-    this.rid++;
-
-    let body = `<body rid='${this.rid}' ` +
-      `xmlns='http://jabber.org/protocol/httpbind'`;
-
-    if (this.sessionId) {
-      body += ` sid='${this.sessionId}'`;
-    }
-
-    for (const [key, value] of Object.entries(attrs)) {
-      body += ` ${key}='${value}'`;
-    }
-
-    body += '>';
-    body += content;
-    body += '</body>';
-
-    return body;
-  }
-
-  private extractAttribute(xml: string, attr: string): string {
-    const match = xml.match(new RegExp(`${attr}=['"]([^'"]+)['"]`));
-    return match ? match[1] : '';
+    ]
   }
 }
 ```
 
-## Web UI Design
+**Roster contact fields:**
 
-```typescript
-// src/components/XMPPClient.tsx
+| Field | Notes |
+|-------|-------|
+| `jid` | Bare JID of contact |
+| `name` | Display name from `name` attribute, or `null` |
+| `subscription` | `none`, `from`, `to`, `both`, or `remove` (RFC 6121 §2.1.2.5) |
+| `groups` | Array of group names from `<group>` children within ~500 bytes of the `<item>` tag |
 
-export function XMPPClient() {
-  const [connected, setConnected] = useState(false);
-  const [jid, setJid] = useState('user@jabber.org');
-  const [password, setPassword] = useState('');
-  const [recipient, setRecipient] = useState('friend@jabber.org');
-  const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState<XMPPMessage[]>([]);
-  const [roster, setRoster] = useState<string[]>([]);
+**Gotcha:** Group parsing uses a bounded context window (500 bytes after each `<item>` tag) to avoid regex catastrophe on large rosters. Contacts with many group elements beyond this window may show truncated groups.
 
-  const connect = async () => {
-    await fetch('/api/xmpp/connect', {
-      method: 'POST',
-      body: JSON.stringify({ jid, password }),
-    });
+---
 
-    setConnected(true);
+### `POST /api/xmpp/message` — Send a chat message
 
-    // Load roster
-    loadRoster();
+Logs in via SASL PLAIN and sends a single `<message type='chat'>` stanza.
 
-    // Start listening for messages
-    startMessageListener();
-  };
+**Request:**
 
-  const loadRoster = async () => {
-    const response = await fetch('/api/xmpp/roster');
-    const data = await response.json();
-    setRoster(data);
-  };
-
-  const sendMessage = async () => {
-    await fetch('/api/xmpp/message', {
-      method: 'POST',
-      body: JSON.stringify({ to: recipient, body: message }),
-    });
-
-    setMessages([...messages, { from: jid, to: recipient, body: message }]);
-    setMessage('');
-  };
-
-  const setPresence = async (show: string, status: string) => {
-    await fetch('/api/xmpp/presence', {
-      method: 'POST',
-      body: JSON.stringify({ show, status }),
-    });
-  };
-
-  const startMessageListener = () => {
-    const ws = new WebSocket('/api/xmpp/messages');
-
-    ws.onmessage = (event) => {
-      const msg = JSON.parse(event.data);
-      setMessages(prev => [...prev, msg]);
-    };
-  };
-
-  return (
-    <div className="xmpp-client">
-      <h2>XMPP/Jabber Client</h2>
-
-      {!connected ? (
-        <div className="login">
-          <input
-            type="text"
-            placeholder="JID (user@jabber.org)"
-            value={jid}
-            onChange={(e) => setJid(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <>
-          <div className="sidebar">
-            <h3>Roster</h3>
-            <ul>
-              {roster.map(contact => (
-                <li
-                  key={contact}
-                  onClick={() => setRecipient(contact)}
-                  className={recipient === contact ? 'selected' : ''}
-                >
-                  👤 {contact}
-                </li>
-              ))}
-            </ul>
-
-            <h3>Presence</h3>
-            <select onChange={(e) => setPresence(e.target.value, 'Available')}>
-              <option value="">Available</option>
-              <option value="away">Away</option>
-              <option value="dnd">Do Not Disturb</option>
-              <option value="xa">Extended Away</option>
-            </select>
-          </div>
-
-          <div className="chat">
-            <h3>Chat with {recipient}</h3>
-
-            <div className="messages">
-              {messages
-                .filter(m => m.from === recipient || m.to === recipient)
-                .map((msg, i) => (
-                  <div key={i} className={`message ${msg.from === jid ? 'sent' : 'received'}`}>
-                    <strong>{msg.from === jid ? 'You' : msg.from}:</strong>
-                    <span>{msg.body}</span>
-                  </div>
-                ))}
-            </div>
-
-            <div className="input">
-              <input
-                type="text"
-                placeholder="Type a message..."
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-              />
-              <button onClick={sendMessage}>Send</button>
-            </div>
-          </div>
-        </>
-      )}
-    </div>
-  );
+```json
+{
+  "host": "jabber.org",
+  "port": 5222,
+  "username": "alice",
+  "password": "hunter2",
+  "recipient": "bob@jabber.org",
+  "message": "Hello from Port of Call",
+  "timeout": 20000
 }
 ```
 
-## Security
+| Field | Default | Notes |
+|-------|---------|-------|
+| `recipient` | **required** | Full or bare JID of recipient |
+| `message` | `"Hello from PortOfCall"` | Message body (XML-escaped automatically) |
 
-### STARTTLS
+**Response (success):**
 
-```xml
-<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>
+```json
+{
+  "success": true,
+  "jid": "alice@jabber.org/portofcall",
+  "phases": ["stream_opened", "authenticated", "stream_restarted", "resource_bound", "message_sent"],
+  "message": {
+    "to": "bob@jabber.org",
+    "body": "Hello from Port of Call",
+    "id": "poc_1708123456789"
+  },
+  "deliveryError": null
+}
 ```
 
-### SASL Authentication
+**Delivery error detection:** After sending the message stanza, the worker waits 2 seconds for a `<message>`, `<presence>`, or `<iq>` stanza that contains an `<error>` block. If one arrives, its inner XML is captured in `deliveryError`. This catches immediate server-side rejections (e.g., recipient not found, policy violations) but will *not* catch deferred delivery failures or errors from remote servers.
+
+**XML escaping:** The message body is escaped (`&`, `<`, `>`, `"`, `'`) before being placed in `<body>`. Recipient JID is not escaped — do not pass attacker-controlled JIDs without sanitization upstream.
+
+---
+
+## Implementation Notes
+
+### Buffer limits
+
+| Location | Limit | Behavior on overflow |
+|----------|-------|---------------------|
+| `readWithTimeout` (connect probe) | 8192 bytes | Returns partial buffer |
+| `readUntil` (login/roster/message) | 65536 bytes | Returns partial buffer |
+
+If a server sends an unusually large features block or roster before the termination pattern is seen, the buffer is returned as-is. Downstream parsing may be incomplete but won't hang.
+
+### Nested timeout architecture
+
+Each handler has two competing timeouts:
+1. An outer `Promise.race` against a `timeout`-ms wall-clock limit (default: 10–20 s depending on endpoint)
+2. An inner 5 s timeout per individual `readWithTimeout` / `readUntil` call
+
+The inner per-read timeout fires first if a specific step stalls (e.g., server sends stream header but delays features). The outer timeout catches cases where multiple steps each approach 5 s and total time exceeds the budget.
+
+### SASL PLAIN encoding
 
 ```
-Mechanisms: PLAIN, SCRAM-SHA-1, SCRAM-SHA-256, DIGEST-MD5
+base64("\0" + username + "\0" + password)
 ```
 
-### E2E Encryption
+This is sent without STARTTLS negotiation — the connection is plaintext TCP. Credentials are transmitted in cleartext. Only use against servers where you control the network path, or a local test instance.
 
-```
-OMEMO, OTR (Off-the-Record), PGP
-```
+### Resource name
 
-## Testing
+The resource is hardcoded to `portofcall` for all authenticated operations. The server may override this and return a different full JID in the `<jid>` bind response — the returned `jid` field reflects whatever the server assigned.
 
-### Public XMPP Servers
+### IQ stanza IDs
 
-- `jabber.org`
-- `xmpp.jp`
-- `conversations.im`
+All IQ stanza IDs are hardcoded: `bind1`, `sess1`, `roster1`. On error, these IDs will appear in server error stanzas and can be cross-referenced with the phase where the failure occurred.
 
-### ejabberd (Docker)
+---
+
+## Quick reference — curl
 
 ```bash
-# ejabberd XMPP server
-docker run -d \
-  -p 5222:5222 \
-  -p 5269:5269 \
-  -p 5280:5280 \
-  --name ejabberd \
-  ejabberd/ecs
+# Probe server features (no auth)
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"jabber.org","domain":"jabber.org"}' | jq .
 
-# Create user
-docker exec ejabberd ejabberdctl register user localhost password
+# Probe with virtual host (DNS host differs from XMPP domain)
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.5","port":5222,"domain":"chat.example.com"}' | jq .
+
+# Check which SASL mechanisms a server offers
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"jabber.org"}' | jq '.saslMechanisms'
+
+# Inspect raw server features response
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"jabber.org"}' | jq -r '.raw'
+
+# Full login test (use local server with PLAIN enabled)
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/login \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","username":"alice","password":"hunter2"}' | jq '.phases,.jid'
+
+# Fetch roster
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/roster \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","username":"alice","password":"hunter2"}' | jq '.roster'
+
+# Send message
+curl -s -X POST https://portofcall.ross.gg/api/xmpp/message \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","username":"alice","password":"hunter2","recipient":"bob@localhost","message":"test"}' | jq .
 ```
 
-### Prosody
+---
+
+## Local test servers
+
+Most internet-facing XMPP servers require SCRAM-SHA-1 or better and will reject SASL PLAIN on unencrypted connections. Use a local Docker instance for auth endpoint testing.
+
+**ejabberd** (disable TLS requirement: set `c2s_starttls: optional` in `ejabberd.yml`):
 
 ```bash
-# Prosody XMPP server
-docker run -d \
-  -p 5222:5222 \
-  -p 5269:5269 \
-  --name prosody \
-  prosody/prosody
+docker run -d -p 5222:5222 -p 5269:5269 --name ejabberd ejabberd/ecs
+docker exec ejabberd ejabberdctl register alice localhost password123
+docker exec ejabberd ejabberdctl register bob localhost password456
 ```
 
-## Resources
+**Prosody** (set `c2s_require_encryption = false` and `authentication = "internal_plain"` in `prosody.cfg.lua`):
 
-- **RFC 6120**: [XMPP Core](https://tools.ietf.org/html/rfc6120)
-- **RFC 6121**: [XMPP Instant Messaging](https://tools.ietf.org/html/rfc6121)
-- **XEPs**: [XMPP Extension Protocols](https://xmpp.org/extensions/)
-- **ejabberd**: [XMPP server](https://www.ejabberd.im/)
+```bash
+docker run -d -p 5222:5222 -p 5269:5269 --name prosody prosody/prosody
+docker exec prosody prosodyctl register alice localhost password123
+```
 
-## XEPs (Common Extensions)
+---
 
-| XEP | Title |
-|-----|-------|
-| 0045 | Multi-User Chat (MUC) |
-| 0054 | vcard-temp |
-| 0085 | Chat State Notifications |
-| 0092 | Software Version |
-| 0115 | Entity Capabilities |
-| 0163 | Personal Eventing Protocol (PEP) |
-| 0191 | Blocking Command |
-| 0198 | Stream Management |
-| 0280 | Message Carbons |
-| 0313 | Message Archive Management (MAM) |
-| 0363 | HTTP File Upload |
-| 0384 | OMEMO Encryption |
+## What is NOT implemented
 
-## Notes
-
-- **XML streaming** - verbose but extensible
-- **Decentralized** - like email, any server can connect
-- **Extensible** - many XEPs for features
-- **Real-time** - push-based, not polling
-- **Federation** - server-to-server communication
-- **Roster** - contact list management
-- **Presence** - availability status
-- **MUC** - group chat rooms
-- **BOSH** - HTTP binding for web clients
-- **WebSocket** support via RFC 7395
+- **STARTTLS negotiation** — TLS availability is detected from features, but the handshake is not performed
+- **SCRAM-SHA-1 / SCRAM-SHA-256** — Only SASL PLAIN is supported; most modern servers require SCRAM on unencrypted ports, making auth endpoints primarily useful with local test servers
+- **XMPP-over-TLS (port 5223)** — Direct TLS connections are not supported via Cloudflare Workers sockets
+- **Message receipt / read confirmations** (XEP-0184)
+- **Multi-User Chat** (XEP-0045)
+- **Roster push / presence subscription** — Subscribe/unsubscribe flows
+- **WebSocket transport** (RFC 7395)
+- **BOSH** (XEP-0206)
+- **Server-to-server (s2s)** — see `src/worker/xmpp-s2s.ts` for s2s probing

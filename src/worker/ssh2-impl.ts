@@ -7,6 +7,8 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const { pbkdf: bcryptPbkdf } = require('bcrypt-pbkdf') as { pbkdf: (pass: Uint8Array, passlen: number, salt: Uint8Array, saltlen: number, key: Uint8Array, keylen: number, rounds: number) => number };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -31,6 +33,9 @@ const MSG_CHANNEL_EOF = 96;
 const MSG_CHANNEL_CLOSE = 97;
 const MSG_CHANNEL_REQUEST = 98;
 const MSG_CHANNEL_SUCCESS = 99;
+const MSG_CHANNEL_FAILURE = 100;
+const MSG_GLOBAL_REQUEST = 80;
+const MSG_REQUEST_FAILURE = 82;
 const MSG_CHANNEL_WINDOW_ADJUST = 93;
 
 const enc = new TextEncoder();
@@ -229,33 +234,26 @@ async function deriveKey(K: Uint8Array, H: Uint8Array, label: string, sessionId:
 
 interface Ed25519Keys { pub: Uint8Array; priv: Uint8Array; }
 
-function parseOpenSshEd25519(pem: string): Ed25519Keys {
+async function parseOpenSshEd25519(pem: string, passphrase?: string): Promise<Ed25519Keys> {
   const b64 = pem.replace(/-----[^\n]+\n?/g, '').replace(/\s/g, '');
   const buf = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
   let off = 0;
 
-  // Magic: "openssh-key-v1\0" (15 chars + null)
+  // Magic: "openssh-key-v1\0" (14 chars + null = 15 bytes)
   const magic = enc.encode('openssh-key-v1');
   for (let i = 0; i < magic.length; i++) {
     if (buf[off + i] !== magic[i]) throw new Error('Not an OpenSSH private key');
   }
-  off += 15 + 1; // magic + null byte
+  off += magic.length + 1; // 14 chars + null byte
 
   // ciphername
   const [ciphernameB, off1] = readStr(buf, off); off = off1;
   const ciphername = dec.decode(ciphernameB);
-  if (ciphername !== 'none') {
-    throw new Error(
-      `This key is encrypted (cipher: ${ciphername}). ` +
-      `Web Crypto does not support the bcrypt KDF used by OpenSSH. ` +
-      `To use this key, export an unencrypted copy: ` +
-      `ssh-keygen -p -N "" -f <keyfile>  (removes passphrase in-place)`
-    );
-  }
 
-  // kdfname, kdfoptions
-  const [, off2] = readStr(buf, off); off = off2;
-  const [, off3] = readStr(buf, off); off = off3;
+  // kdfname + kdfoptions
+  const [kdfnameB, off2] = readStr(buf, off); off = off2;
+  const kdfname = dec.decode(kdfnameB);
+  const [kdfoptionsB, off3] = readStr(buf, off); off = off3;
 
   // num keys
   if (readU32(buf, off) !== 1) throw new Error('Only single-key OpenSSH files are supported');
@@ -264,13 +262,64 @@ function parseOpenSshEd25519(pem: string): Ed25519Keys {
   // public key blob (skip)
   const [, off4] = readStr(buf, off); off = off4;
 
-  // private key blob
-  const [privBlob] = readStr(buf, off);
-  let p = 0;
+  // private key blob (may be encrypted)
+  const [encPrivBlob] = readStr(buf, off);
+  let privBlob: Uint8Array;
 
+  if (ciphername === 'none') {
+    privBlob = encPrivBlob;
+  } else {
+    // Decrypt using bcrypt-pbkdf + AES-CTR
+    if (!passphrase) {
+      throw new Error(
+        `This key is passphrase-protected (cipher: ${ciphername}). ` +
+        `Enter your passphrase in the Passphrase field, or export an unencrypted copy: ` +
+        `ssh-keygen -p -N "" -f <keyfile>`
+      );
+    }
+    if (kdfname !== 'bcrypt') {
+      throw new Error(`Unsupported KDF "${kdfname}" — only bcrypt is supported`);
+    }
+    // Supported ciphers: aes256-ctr, aes256-cbc, aes192-ctr, aes128-ctr
+    const cipherMeta: Record<string, { keyLen: number; ivLen: number; mode: string }> = {
+      'aes256-ctr': { keyLen: 32, ivLen: 16, mode: 'AES-CTR' },
+      'aes256-cbc': { keyLen: 32, ivLen: 16, mode: 'AES-CBC' },
+      'aes192-ctr': { keyLen: 24, ivLen: 16, mode: 'AES-CTR' },
+      'aes128-ctr': { keyLen: 16, ivLen: 16, mode: 'AES-CTR' },
+    };
+    const cm = cipherMeta[ciphername];
+    if (!cm) throw new Error(`Unsupported cipher "${ciphername}"`);
+
+    // Parse kdfoptions: [4BE salt_len][salt][4BE rounds]
+    const saltLen = readU32(kdfoptionsB, 0);
+    const salt = kdfoptionsB.slice(4, 4 + saltLen);
+    const rounds = readU32(kdfoptionsB, 4 + saltLen);
+
+    // Derive key + IV via bcrypt_pbkdf
+    const passBytes = enc.encode(passphrase);
+    const derived = new Uint8Array(cm.keyLen + cm.ivLen);
+    const rc = bcryptPbkdf(passBytes, passBytes.length, salt, salt.length, derived, derived.length, rounds);
+    if (rc !== 0) throw new Error('bcrypt_pbkdf failed');
+
+    const keyBytes = derived.slice(0, cm.keyLen);
+    const ivBytes = derived.slice(cm.keyLen);
+
+    // Decrypt private blob with Web Crypto (ab() casts Uint8Array<ArrayBufferLike> → Uint8Array<ArrayBuffer>)
+    let decrypted: ArrayBuffer;
+    if (cm.mode === 'AES-CTR') {
+      const cryptoKey = await crypto.subtle.importKey('raw', ab(keyBytes), { name: 'AES-CTR' }, false, ['decrypt']);
+      decrypted = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: ab(ivBytes), length: 128 }, cryptoKey, ab(encPrivBlob));
+    } else {
+      const cryptoKey = await crypto.subtle.importKey('raw', ab(keyBytes), { name: 'AES-CBC' }, false, ['decrypt']);
+      decrypted = await crypto.subtle.decrypt({ name: 'AES-CBC', iv: ab(ivBytes) }, cryptoKey, ab(encPrivBlob));
+    }
+    privBlob = new Uint8Array(decrypted);
+  }
+
+  let p = 0;
   const check1 = readU32(privBlob, p); p += 4;
   const check2 = readU32(privBlob, p); p += 4;
-  if (check1 !== check2) throw new Error('OpenSSH key integrity check failed');
+  if (check1 !== check2) throw new Error('Wrong passphrase — OpenSSH key integrity check failed');
 
   const [keyTypeB, p2] = readStr(privBlob, p); p = p2;
   if (dec.decode(keyTypeB) !== 'ssh-ed25519') {
@@ -340,6 +389,7 @@ export interface SSHTerminalOptions {
   authMethod: 'password' | 'privateKey';
   password?: string;
   privateKey?: string;
+  passphrase?: string;
 }
 
 async function runSSHSession(
@@ -531,7 +581,7 @@ async function runSSHSession(
     ));
   } else if (opts.authMethod === 'privateKey' && opts.privateKey) {
     // Parse Ed25519 key
-    const { pub, priv } = parseOpenSshEd25519(opts.privateKey);
+    const { pub, priv } = await parseOpenSshEd25519(opts.privateKey, opts.passphrase);
 
     // Import signing key via JWK
     function b64url(b: Uint8Array): string {
@@ -638,9 +688,20 @@ async function runSSHSession(
     sshBytes(new Uint8Array(0)), // terminal modes (empty)
   ));
 
-  // Expect CHANNEL_SUCCESS
+  // Expect CHANNEL_SUCCESS — skip interstitial messages OpenSSH sends mid-setup
   {
-    const r = await readPayload();
+    let r: Uint8Array;
+    while (true) {
+      r = await readPayload();
+      if (r[0] === MSG_GLOBAL_REQUEST) {
+        // want_reply is the byte after the request-name string
+        const [, nameEnd] = readStr(r, 1);
+        if (r[nameEnd]) await sendPayload(new Uint8Array([MSG_REQUEST_FAILURE]));
+        continue;
+      }
+      if (r[0] === MSG_CHANNEL_WINDOW_ADJUST) { remoteWindow += readU32(r, 5); continue; }
+      break;
+    }
     if (r[0] !== MSG_CHANNEL_SUCCESS) throw new Error('PTY request failed');
   }
 
@@ -654,16 +715,27 @@ async function runSSHSession(
   ));
 
   {
-    const r = await readPayload();
-    if (r[0] !== MSG_CHANNEL_SUCCESS) throw new Error('Shell request failed');
+    let r: Uint8Array;
+    while (true) {
+      r = await readPayload();
+      if (r[0] === MSG_GLOBAL_REQUEST) {
+        const [, nameEnd] = readStr(r, 1);
+        if (r[nameEnd]) await sendPayload(new Uint8Array([MSG_REQUEST_FAILURE]));
+        continue;
+      }
+      if (r[0] === MSG_CHANNEL_WINDOW_ADJUST) { remoteWindow += readU32(r, 5); continue; }
+      break;
+    }
+    if (r[0] !== MSG_CHANNEL_SUCCESS) throw new Error(`Shell request failed (got ${r[0]})`);
   }
 
   // ── Step 10: I/O forwarding ───────────────────────────────────────────────────
 
-  ws.send(JSON.stringify({ type: 'connected' }));
-
-  let channelOpen = true;
+  let channelOpen = false; // set true only after 'connected' is sent
   let localWindowRemaining = localWindowSize;
+
+  ws.send(JSON.stringify({ type: 'connected' }));
+  channelOpen = true;
 
   // WebSocket → SSH: forward terminal input as channel data
   ws.addEventListener('message', async (event: MessageEvent) => {
@@ -707,7 +779,7 @@ async function runSSHSession(
           try {
             await sendPayload(cat(
               new Uint8Array([MSG_CHANNEL_WINDOW_ADJUST]),
-              u32(localChannel),
+              u32(remoteChannel),
               u32(refill),
             ));
             localWindowRemaining += refill;
@@ -726,6 +798,15 @@ async function runSSHSession(
       case MSG_CHANNEL_WINDOW_ADJUST:
         remoteWindow += readU32(p, 5);
         break;
+
+      case MSG_GLOBAL_REQUEST: {
+        // e.g. hostkeys-00@openssh.com — respond with failure if want_reply
+        const [, nameEnd] = readStr(p, 1);
+        if (p[nameEnd]) {
+          try { await sendPayload(new Uint8Array([MSG_REQUEST_FAILURE])); } catch { /* ignore */ }
+        }
+        break;
+      }
 
       case MSG_CHANNEL_EOF:
         // Half-close from server; wait for CLOSE
@@ -751,6 +832,275 @@ async function runSSHSession(
   }
 
   ws.send(JSON.stringify({ type: 'disconnected' }));
+}
+
+// ─── SSH Subsystem (SFTP and similar channel types) ──────────────────────────
+
+export interface SSHSubsystemIO {
+  /** Send raw bytes to the SSH subsystem channel. */
+  sendChannelData(data: Uint8Array): Promise<void>;
+  /** Read the next incoming channel data chunk. Returns null if channel closed. */
+  readChannelData(): Promise<Uint8Array | null>;
+  /** Close the SSH session cleanly. */
+  close(): Promise<void>;
+}
+
+/**
+ * Establish an SSH session and open a named subsystem channel (e.g. "sftp").
+ * Handles: version exchange, key exchange, encryption, auth, channel open + subsystem request.
+ */
+export async function openSSHSubsystem(
+  tcpSocket: { readable: ReadableStream<Uint8Array>; writable: WritableStream<Uint8Array>; close(): Promise<void> },
+  opts: SSHTerminalOptions,
+  subsystem: string,
+  isExec = false,
+): Promise<SSHSubsystemIO> {
+  const tcpReader = tcpSocket.readable.getReader();
+  const tcpWriter = tcpSocket.writable.getWriter();
+  const packetReader2 = new PacketReader();
+
+  let encrypted2 = false;
+  let c2sKey2: CryptoKey | null = null;
+  let s2cKey2: CryptoKey | null = null;
+  let c2sMac2: CryptoKey | null = null;
+  let s2cMac2: CryptoKey | null = null;
+  const c2sCounter2 = new Uint8Array(16);
+  const s2cCounter2 = new Uint8Array(16);
+  let c2sSeqno2 = 0;
+  let s2cSeqno2 = 0;
+
+  async function sendPayload2(payload: Uint8Array): Promise<void> {
+    if (!encrypted2 || !c2sKey2 || !c2sMac2) {
+      await tcpWriter.write(buildPacket(payload));
+    } else {
+      await tcpWriter.write(await buildEncPacket(payload, c2sSeqno2, c2sKey2, c2sMac2, c2sCounter2));
+    }
+    c2sSeqno2++;
+  }
+
+  async function readPayload2(): Promise<Uint8Array> {
+    if (!encrypted2 || !s2cKey2 || !s2cMac2) {
+      while (true) {
+        const p = packetReader2.readPlain();
+        if (p) { s2cSeqno2++; return p; }
+        const { done, value } = await tcpReader.read();
+        if (done) throw new Error('Connection closed');
+        if (value) packetReader2.feed(value);
+      }
+    } else {
+      while (true) {
+        const p = await packetReader2.readEncrypted(s2cKey2, s2cMac2, s2cCounter2, s2cSeqno2);
+        if (p) { s2cSeqno2++; return p; }
+        const { done, value } = await tcpReader.read();
+        if (done) throw new Error('Connection closed');
+        if (value) packetReader2.feed(value);
+      }
+    }
+  }
+
+  // Step 1: Version exchange
+  let serverVersion2 = '';
+  let accumBuf2 = new Uint8Array(0);
+  while (!serverVersion2) {
+    const { done, value } = await tcpReader.read();
+    if (done) throw new Error('Connection closed during version exchange');
+    accumBuf2 = cat(accumBuf2, value);
+    for (let i = 0; i < accumBuf2.length - 1; i++) {
+      if (accumBuf2[i] === 0x0d && accumBuf2[i + 1] === 0x0a) {
+        const line = dec.decode(accumBuf2.slice(0, i));
+        accumBuf2 = accumBuf2.slice(i + 2);
+        if (line.startsWith('SSH-')) { serverVersion2 = line; break; }
+        i = -1;
+      }
+    }
+  }
+  if (accumBuf2.length > 0) packetReader2.feed(accumBuf2);
+
+  const clientVersion2 = 'SSH-2.0-PortOfCall_1.0';
+  await tcpWriter.write(enc.encode(clientVersion2 + '\r\n'));
+
+  // Step 2: KEXINIT
+  const clientKexInitPayload2 = buildKexInit();
+  await sendPayload2(clientKexInitPayload2);
+  const serverKexInitPayload2 = await readPayload2();
+  if (serverKexInitPayload2[0] !== MSG_KEXINIT) throw new Error(`Expected KEXINIT, got ${serverKexInitPayload2[0]}`);
+
+  // Step 3: Key exchange (curve25519-sha256)
+  const kp2 = await crypto.subtle.generateKey({ name: 'X25519' }, true, ['deriveBits']) as CryptoKeyPair;
+  const clientPub2 = new Uint8Array(await crypto.subtle.exportKey('raw', kp2.publicKey));
+  await sendPayload2(cat(new Uint8Array([MSG_KEXECDH_INIT]), sshBytes(clientPub2)));
+  const kexReply2 = await readPayload2();
+  if (kexReply2[0] !== MSG_KEXECDH_REPLY) throw new Error(`Expected KEXECDH_REPLY, got ${kexReply2[0]}`);
+
+  let koff = 1;
+  const [hostKeyBlob2, koff1] = readStr(kexReply2, koff); koff = koff1;
+  const [serverPub2, koff2] = readStr(kexReply2, koff); koff = koff2; void koff;
+
+  const serverPubKey2 = await crypto.subtle.importKey('raw', ab(serverPub2), { name: 'X25519' }, false, []);
+  const sharedBits2 = await crypto.subtle.deriveBits({ name: 'X25519', public: serverPubKey2 }, kp2.privateKey, 256);
+  const sharedSecret2 = new Uint8Array(sharedBits2);
+  const H2 = await exchangeHash(clientVersion2, serverVersion2, clientKexInitPayload2, serverKexInitPayload2, hostKeyBlob2, clientPub2, serverPub2, sharedSecret2);
+  const sessionId2 = H2;
+
+  // Step 4: NEWKEYS
+  await sendPayload2(new Uint8Array([MSG_NEWKEYS]));
+  const nk2 = await readPayload2();
+  if (nk2[0] !== MSG_NEWKEYS) throw new Error('Expected NEWKEYS');
+
+  const [ivC2, ivS2, encC2, encS2, macC2, macS2] = await Promise.all([
+    deriveKey(sharedSecret2, H2, 'A', sessionId2, 16),
+    deriveKey(sharedSecret2, H2, 'B', sessionId2, 16),
+    deriveKey(sharedSecret2, H2, 'C', sessionId2, 16),
+    deriveKey(sharedSecret2, H2, 'D', sessionId2, 16),
+    deriveKey(sharedSecret2, H2, 'E', sessionId2, 32),
+    deriveKey(sharedSecret2, H2, 'F', sessionId2, 32),
+  ]);
+  c2sCounter2.set(ivC2);
+  s2cCounter2.set(ivS2);
+  c2sKey2 = await crypto.subtle.importKey('raw', ab(encC2), { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
+  s2cKey2 = await crypto.subtle.importKey('raw', ab(encS2), { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
+  c2sMac2 = await crypto.subtle.importKey('raw', ab(macC2), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  s2cMac2 = await crypto.subtle.importKey('raw', ab(macS2), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  encrypted2 = true;
+
+  // Step 5: Service request
+  await sendPayload2(cat(new Uint8Array([MSG_SERVICE_REQUEST]), sshStr('ssh-userauth')));
+  const svc2 = await readPayload2();
+  if (svc2[0] !== MSG_SERVICE_ACCEPT) throw new Error('Service request rejected');
+
+  // Step 6: Authentication
+  if (opts.authMethod === 'password' && opts.password) {
+    await sendPayload2(cat(
+      new Uint8Array([MSG_USERAUTH_REQUEST]),
+      sshStr(opts.username),
+      sshStr('ssh-connection'),
+      sshStr('password'),
+      new Uint8Array([0]),
+      sshStr(opts.password),
+    ));
+  } else if (opts.authMethod === 'privateKey' && opts.privateKey) {
+    const { pub: pub2, priv: priv2 } = await parseOpenSshEd25519(opts.privateKey, opts.passphrase);
+    const b64u = (b: Uint8Array) => btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    const sk2 = await crypto.subtle.importKey('jwk',
+      { kty: 'OKP', crv: 'Ed25519', d: b64u(priv2), x: b64u(pub2) },
+      { name: 'Ed25519' }, false, ['sign']);
+    const pkBlob2 = cat(sshStr('ssh-ed25519'), sshBytes(pub2));
+    const authMsg2 = cat(
+      sshBytes(sessionId2), new Uint8Array([MSG_USERAUTH_REQUEST]),
+      sshStr(opts.username), sshStr('ssh-connection'), sshStr('publickey'),
+      new Uint8Array([1]), sshStr('ssh-ed25519'), sshBytes(pkBlob2),
+    );
+    const sig2 = new Uint8Array(await crypto.subtle.sign('Ed25519', sk2, ab(authMsg2)));
+    await sendPayload2(cat(
+      new Uint8Array([MSG_USERAUTH_REQUEST]),
+      sshStr(opts.username), sshStr('ssh-connection'), sshStr('publickey'),
+      new Uint8Array([1]), sshStr('ssh-ed25519'), sshBytes(pkBlob2), sshBytes(cat(sshStr('ssh-ed25519'), sshBytes(sig2))),
+    ));
+  } else {
+    throw new Error('No credentials provided');
+  }
+
+  while (true) {
+    const ar = await readPayload2();
+    if (ar[0] === MSG_USERAUTH_SUCCESS) break;
+    if (ar[0] === MSG_USERAUTH_FAILURE) throw new Error('Authentication failed');
+    // Skip banners (MSG_USERAUTH_BANNER = 53) and other messages
+  }
+
+  // Step 7: Open session channel
+  const localCh = 0;
+  const localWin = 1 * 1024 * 1024;
+  const localMax = 32 * 1024;
+  await sendPayload2(cat(
+    new Uint8Array([MSG_CHANNEL_OPEN]), sshStr('session'),
+    u32(localCh), u32(localWin), u32(localMax),
+  ));
+
+  let remoteCh = 0;
+  let remoteWin = 0;
+  while (true) {
+    const p = await readPayload2();
+    if (p[0] === MSG_CHANNEL_OPEN_CONFIRMATION) {
+      remoteCh = readU32(p, 5);
+      remoteWin = readU32(p, 9);
+      break;
+    }
+    if (p[0] === MSG_CHANNEL_OPEN_FAILURE) {
+      const [rb] = readStr(p, 9);
+      throw new Error(`Channel open failed: ${dec.decode(rb)}`);
+    }
+  }
+
+  // Step 8: Request subsystem or exec channel
+  await sendPayload2(cat(
+    new Uint8Array([MSG_CHANNEL_REQUEST]), u32(remoteCh),
+    sshStr(isExec ? 'exec' : 'subsystem'), new Uint8Array([1]), sshStr(subsystem),
+  ));
+  while (true) {
+    const r = await readPayload2();
+    if (r[0] === MSG_GLOBAL_REQUEST) {
+      const [, ne] = readStr(r, 1);
+      if (r[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
+      continue;
+    }
+    if (r[0] === MSG_CHANNEL_WINDOW_ADJUST) { remoteWin += readU32(r, 5); continue; }
+    if (r[0] === MSG_CHANNEL_SUCCESS) break;
+    if (r[0] === MSG_CHANNEL_FAILURE) throw new Error(
+      isExec ? `Exec '${subsystem}' failed on this server` : `Subsystem '${subsystem}' not available on this server`
+    );
+  }
+
+  // ── Channel I/O ──────────────────────────────────────────────────────────────
+
+  let localWinRemaining = localWin;
+  let chClosed = false;
+
+  async function sendChannelData(data: Uint8Array): Promise<void> {
+    if (chClosed) throw new Error('Channel closed');
+    for (let off2 = 0; off2 < data.length; off2 += localMax) {
+      const chunk = data.slice(off2, off2 + localMax);
+      if (chunk.length > remoteWin) throw new Error('Remote window exhausted');
+      await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_DATA]), u32(remoteCh), sshBytes(chunk)));
+      remoteWin -= chunk.length;
+    }
+  }
+
+  async function readChannelData(): Promise<Uint8Array | null> {
+    while (true) {
+      const p = await readPayload2();
+      if (p[0] === MSG_CHANNEL_DATA) {
+        const [data] = readStr(p, 5);
+        localWinRemaining -= data.length;
+        if (localWinRemaining < 256 * 1024) {
+          const refill = 1 * 1024 * 1024;
+          try {
+            await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_WINDOW_ADJUST]), u32(remoteCh), u32(refill)));
+            localWinRemaining += refill;
+          } catch { /* ignore */ }
+        }
+        return data;
+      }
+      if (p[0] === MSG_CHANNEL_EOF || p[0] === MSG_CHANNEL_CLOSE) { chClosed = true; return null; }
+      if (p[0] === MSG_CHANNEL_WINDOW_ADJUST) { remoteWin += readU32(p, 5); continue; }
+      if (p[0] === MSG_GLOBAL_REQUEST) {
+        const [, ne] = readStr(p, 1);
+        if (p[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
+        continue;
+      }
+    }
+  }
+
+  async function close(): Promise<void> {
+    if (!chClosed) {
+      try { await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_CLOSE]), u32(remoteCh))); } catch { /* ignore */ }
+      chClosed = true;
+    }
+    try { tcpReader.releaseLock(); } catch { /* ignore */ }
+    try { tcpWriter.releaseLock(); } catch { /* ignore */ }
+    try { await tcpSocket.close(); } catch { /* ignore */ }
+  }
+
+  return { sendChannelData, readChannelData, close };
 }
 
 // ─── Public handler ───────────────────────────────────────────────────────────

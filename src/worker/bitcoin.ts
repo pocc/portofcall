@@ -456,6 +456,69 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
   }
 }
 
+// ─── Varint helpers ───────────────────────────────────────────────────────
+
+/**
+ * Read a Bitcoin variable-length integer from a DataView at the given offset.
+ * Returns { value, bytesRead }.
+ */
+function readVarint(view: DataView, offset: number): { value: number; bytesRead: number } {
+  const first = view.getUint8(offset);
+  if (first < 0xfd) {
+    return { value: first, bytesRead: 1 };
+  } else if (first === 0xfd) {
+    return { value: view.getUint16(offset + 1, true), bytesRead: 3 };
+  } else if (first === 0xfe) {
+    return { value: view.getUint32(offset + 1, true), bytesRead: 5 };
+  } else {
+    // 0xff — 8-byte varint; we read only the low 32 bits (enough for mempool counts)
+    return { value: view.getUint32(offset + 1, true), bytesRead: 9 };
+  }
+}
+
+/**
+ * Return the display-order hex txid (reversed bytes) for a 32-byte hash.
+ */
+function hashToHex(bytes: Uint8Array): string {
+  const reversed = new Uint8Array(bytes).reverse();
+  return Array.from(reversed).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Build a Bitcoin ping message with an 8-byte random nonce payload.
+ */
+async function buildPingMessage(network: string): Promise<{ msg: Uint8Array; nonce: Uint8Array }> {
+  const nonce = crypto.getRandomValues(new Uint8Array(8));
+  const checksum = await computeChecksum(nonce);
+  const msg = buildMessage(network, 'ping', nonce);
+  msg[20] = checksum[0];
+  msg[21] = checksum[1];
+  msg[22] = checksum[2];
+  msg[23] = checksum[3];
+  return { msg, nonce };
+}
+
+/**
+ * Parse a Bitcoin inv message payload.
+ * Each inventory item: 4-byte type (LE) + 32-byte hash.
+ * Returns array of { type, hash } where hash is the display-order hex txid.
+ */
+function parseInvPayload(payload: Uint8Array): Array<{ type: number; hash: string }> {
+  if (payload.length < 1) return [];
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const { value: count, bytesRead } = readVarint(view, 0);
+  const items: Array<{ type: number; hash: string }> = [];
+  let offset = bytesRead;
+  for (let i = 0; i < count; i++) {
+    if (offset + 36 > payload.length) break;
+    const type = view.getUint32(offset, true);
+    const hash = payload.slice(offset + 4, offset + 36);
+    items.push({ type, hash: hashToHex(hash) });
+    offset += 36;
+  }
+  return items;
+}
+
 /**
  * Handle Bitcoin getaddr request — connect and request peer addresses
  */
@@ -616,6 +679,267 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
       success: false,
       error: error instanceof Error ? error.message : 'Connection failed',
     }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// ─── Mempool types ────────────────────────────────────────────────────────
+
+interface BitcoinMempoolRequest {
+  host: string;
+  port?: number;
+  network?: string;
+  timeout?: number;
+}
+
+interface BitcoinMempoolResponse {
+  success: boolean;
+  host?: string;
+  port?: number;
+  network?: string;
+  mempoolTxCount?: number;
+  txIds?: string[];
+  pingRtt?: number;
+  rtt?: number;
+  error?: string;
+}
+
+/**
+ * Handle Bitcoin mempool query — perform the version handshake then request
+ * mempool inventory and measure ping latency.
+ *
+ * Steps after handshake:
+ *  1. Send `mempool` message (empty payload) — asks the peer to advertise
+ *     its mempool contents as `inv` messages.
+ *  2. Collect `inv` messages for up to 5 seconds, extracting MSG_TX (type 1)
+ *     entries; keep up to 20 txids.
+ *  3. Send a `ping` message with a random 8-byte nonce and measure how long
+ *     the peer takes to reply with a matching `pong`.
+ *
+ * Note: Many nodes ignore `mempool` requests unless the peer has negotiated
+ * the bloom filter service (BIP 37 / NODE_BLOOM).  We still attempt it and
+ * report whatever inventory we receive.
+ */
+export async function handleBitcoinMempool(request: Request): Promise<Response> {
+  try {
+    let options: Partial<BitcoinMempoolRequest>;
+
+    if (request.method === 'POST') {
+      options = await request.json() as Partial<BitcoinMempoolRequest>;
+    } else {
+      const url = new URL(request.url);
+      options = {
+        host: url.searchParams.get('host') || '',
+        port: parseInt(url.searchParams.get('port') || '8333'),
+        network: url.searchParams.get('network') || 'mainnet',
+        timeout: parseInt(url.searchParams.get('timeout') || '20000'),
+      };
+    }
+
+    if (!options.host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      } satisfies Partial<BitcoinMempoolResponse>), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = options.host;
+    const port = options.port || 8333;
+    const network = options.network || 'mainnet';
+    const timeoutMs = options.timeout || 20000;
+
+    if (!NETWORK_MAGIC[network]) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Unknown network: ${network}. Valid networks: ${Object.keys(NETWORK_MAGIC).join(', ')}`,
+      } satisfies Partial<BitcoinMempoolResponse>), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const magic = NETWORK_MAGIC[network];
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // ── Handshake ──────────────────────────────────────────────────────
+        const versionPayload = buildVersionPayload();
+        const versionChecksum = await computeChecksum(versionPayload);
+        const versionMsg = buildMessage(network, 'version', versionPayload);
+        versionMsg[20] = versionChecksum[0];
+        versionMsg[21] = versionChecksum[1];
+        versionMsg[22] = versionChecksum[2];
+        versionMsg[23] = versionChecksum[3];
+        await writer.write(versionMsg);
+
+        // Read server version
+        const serverVersionMsg = await readMessage(reader, magic, 10000);
+        if (!serverVersionMsg || serverVersionMsg.command !== 'version') {
+          throw new Error('Version handshake failed');
+        }
+
+        // Send verack
+        const verackPayload = new Uint8Array(0);
+        const verackChecksum = await computeChecksum(verackPayload);
+        const verackMsg = buildMessage(network, 'verack', verackPayload);
+        verackMsg[20] = verackChecksum[0];
+        verackMsg[21] = verackChecksum[1];
+        verackMsg[22] = verackChecksum[2];
+        verackMsg[23] = verackChecksum[3];
+        await writer.write(verackMsg);
+
+        // Drain until we see verack or another message from the peer
+        try {
+          await readMessage(reader, magic, 3000);
+        } catch {
+          // Timeout or no verack — proceed anyway
+        }
+
+        // ── Send mempool request ───────────────────────────────────────────
+        const mempoolPayload = new Uint8Array(0);
+        const mempoolChecksum = await computeChecksum(mempoolPayload);
+        const mempoolMsg = buildMessage(network, 'mempool', mempoolPayload);
+        mempoolMsg[20] = mempoolChecksum[0];
+        mempoolMsg[21] = mempoolChecksum[1];
+        mempoolMsg[22] = mempoolChecksum[2];
+        mempoolMsg[23] = mempoolChecksum[3];
+        await writer.write(mempoolMsg);
+
+        // ── Collect inv messages (MSG_TX = 1) ──────────────────────────────
+        const MSG_TX = 1;
+        const txIds: string[] = [];
+        let totalInvTxCount = 0;
+        const invDeadline = Date.now() + 5000;
+
+        while (txIds.length < 20) {
+          const remaining = invDeadline - Date.now();
+          if (remaining <= 0) break;
+
+          let invMsg: { command: string; payload: Uint8Array } | null;
+          try {
+            invMsg = await readMessage(reader, magic, remaining);
+          } catch {
+            break;
+          }
+
+          if (!invMsg) break;
+
+          if (invMsg.command === 'inv') {
+            const items = parseInvPayload(invMsg.payload);
+            for (const item of items) {
+              if (item.type === MSG_TX) {
+                totalInvTxCount++;
+                if (txIds.length < 20) {
+                  txIds.push(item.hash);
+                }
+              }
+            }
+          }
+          // Skip non-inv messages silently (ping, addr, etc.)
+        }
+
+        // ── Ping/pong RTT measurement ──────────────────────────────────────
+        const { msg: pingMsg, nonce: pingNonce } = await buildPingMessage(network);
+        const pingStart = Date.now();
+        await writer.write(pingMsg);
+
+        let pingRtt: number | undefined;
+        try {
+          const pongTimeoutMs = 5000;
+          while (true) {
+            const pongMsg = await readMessage(reader, magic, pongTimeoutMs);
+            if (!pongMsg) break;
+            if (pongMsg.command === 'pong' && pongMsg.payload.length === 8) {
+              let nonceMatch = true;
+              for (let i = 0; i < 8; i++) {
+                if (pongMsg.payload[i] !== pingNonce[i]) {
+                  nonceMatch = false;
+                  break;
+                }
+              }
+              if (nonceMatch) {
+                pingRtt = Date.now() - pingStart;
+                break;
+              }
+            }
+          }
+        } catch {
+          // Pong timeout — not fatal
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        const rtt = Date.now() - startTime;
+
+        return {
+          success: true,
+          host,
+          port,
+          network,
+          mempoolTxCount: totalInvTxCount,
+          txIds,
+          pingRtt,
+          rtt,
+        } satisfies BitcoinMempoolResponse;
+
+      } catch (error) {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        throw error;
+      }
+    })();
+
+    const mempoolTimeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, mempoolTimeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Connection timeout',
+      } satisfies Partial<BitcoinMempoolResponse>), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Connection failed',
+    } satisfies Partial<BitcoinMempoolResponse>), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

@@ -363,3 +363,121 @@ export async function handleNTPSync(request: Request): Promise<Response> {
   // In the future, could add multiple server queries for better accuracy
   return handleNTPQuery(request);
 }
+
+/**
+ * Handle NTP poll — send multiple requests and compute statistics
+ * POST /api/ntp/poll
+ * Body: { host, port?, count?, intervalMs?, timeout? }
+ *
+ * Returns min/max/avg offset, jitter (std dev of offsets), and all samples
+ */
+export async function handleNTPPoll(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as NTPRequest & { count?: number; intervalMs?: number };
+    const { host, port = 123, timeout = 10000 } = body;
+    const count = Math.min(Math.max(body.count ?? 4, 1), 10);
+    const intervalMs = Math.min(Math.max(body.intervalMs ?? 1000, 100), 5000);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const samples: Array<{ offset: number; rtt: number; stratum: number; timestamp: string }> = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < count; i++) {
+      if (i > 0) {
+        await new Promise(r => setTimeout(r, intervalMs));
+      }
+
+      try {
+        const requestPacket = createNTPRequest();
+        const t1 = Date.now();
+        const socket = connect(`${host}:${port}`);
+        const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+
+        await Promise.race([socket.opened, timeoutPromise]);
+        const writer = socket.writable.getWriter();
+        const reader = socket.readable.getReader();
+
+        await writer.write(requestPacket);
+
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const deadline = Date.now() + Math.min(timeout, 5000);
+
+        while (totalBytes < NTP_PACKET_SIZE) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          const t = new Promise<{ done: true; value: undefined }>(r => setTimeout(() => r({ done: true, value: undefined }), remaining));
+          const result = await Promise.race([reader.read(), t]);
+          if (result.done || !result.value) break;
+          chunks.push(result.value);
+          totalBytes += result.value.length;
+        }
+
+        const t4 = Date.now();
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+
+        if (totalBytes >= NTP_PACKET_SIZE) {
+          const combined = new Uint8Array(totalBytes);
+          let off = 0;
+          for (const c of chunks) { combined.set(c, off); off += c.length; }
+          const parsed = parseNTPResponse(combined, t1, t4);
+          samples.push({
+            offset: parsed.offset ?? 0,
+            rtt: parsed.delay ?? 0,
+            stratum: parsed.stratum ?? 0,
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          errors.push(`Sample ${i + 1}: insufficient data (${totalBytes} bytes)`);
+        }
+      } catch (err) {
+        errors.push(`Sample ${i + 1}: ${err instanceof Error ? err.message : 'error'}`);
+      }
+    }
+
+    if (samples.length === 0) {
+      return new Response(JSON.stringify({ success: false, host, port, errors, error: 'All samples failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const offsets = samples.map(s => s.offset);
+    const rtts = samples.map(s => s.rtt);
+    const avgOffset = offsets.reduce((a, b) => a + b, 0) / offsets.length;
+    const variance = offsets.reduce((a, b) => a + (b - avgOffset) ** 2, 0) / offsets.length;
+    const jitter = Math.sqrt(variance);
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port,
+      count: samples.length,
+      requested: count,
+      intervalMs,
+      offsetMs: {
+        min: Math.min(...offsets),
+        max: Math.max(...offsets),
+        avg: avgOffset,
+        jitter,
+      },
+      rttMs: {
+        min: Math.min(...rtts),
+        max: Math.max(...rtts),
+        avg: rtts.reduce((a, b) => a + b, 0) / rtts.length,
+      },
+      samples,
+      errors: errors.length > 0 ? errors : undefined,
+      message: `${samples.length}/${count} samples: avg offset ${avgOffset.toFixed(2)}ms, jitter ${jitter.toFixed(2)}ms`,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'NTP poll failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

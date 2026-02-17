@@ -149,3 +149,96 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
     });
   }
 }
+
+// Read all bytes until connection closes or timeout
+async function readAllBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    try {
+      const ct = new Promise<{ value: undefined; done: true }>(r => setTimeout(() => r({ value: undefined, done: true }), remaining));
+      const { value, done } = await Promise.race([reader.read(), ct]);
+      if (done || !value) break;
+      chunks.push(value);
+    } catch { break; }
+  }
+  if (chunks.length === 0) return new Uint8Array(0);
+  const total = chunks.reduce((s, c) => s + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+interface ActiveUser { username: string; tty: string; loginTime: string; idle?: string; }
+
+function parseUserLine(line: string): ActiveUser | null {
+  const parts = line.trim().split(/\s+/);
+  if (parts.length < 2) return null;
+  const [username, tty, ...rest] = parts;
+  if (!username || !tty) return null;
+  const last = rest[rest.length - 1] ?? '';
+  const isIdle = /^(\d+:\d+|\.|old)$/.test(last) && rest.length > 1;
+  const loginTime = isIdle ? rest.slice(0, -1).join(' ') : rest.join(' ');
+  const idle = isIdle ? last : undefined;
+  return { username, tty, loginTime: loginTime || '(unknown)', ...(idle ? { idle } : {}) };
+}
+
+/**
+ * Query Active Users service (RFC 866) and return structured per-user data.
+ * Request body: { host, port=11, timeout=10000 }
+ */
+export async function handleActiveUsersQuery(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; timeout?: number };
+    const { host, port = 11, timeout = 10000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const allBytes = await Promise.race([readAllBytes(reader, timeout - (Date.now() - startTime)), timeoutPromise]);
+      const latencyMs = Date.now() - startTime;
+      reader.releaseLock(); socket.close();
+      const raw = new TextDecoder().decode(allBytes);
+      const lines = raw.split(/\r?\n/);
+      const users: ActiveUser[] = lines.map(parseUserLine).filter((u): u is ActiveUser => u !== null);
+      return new Response(JSON.stringify({ success: true, users, rawCount: lines.filter(l => l.trim()).length, raw, latencyMs }), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) { socket.close(); throw err; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Query Active Users service and return the raw unparsed server output.
+ * Request body: { host, port=11, timeout=10000 }
+ */
+export async function handleActiveUsersRaw(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; timeout?: number };
+    const { host, port = 11, timeout = 10000 } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const allBytes = await Promise.race([readAllBytes(reader, timeout - (Date.now() - startTime)), timeoutPromise]);
+      const latencyMs = Date.now() - startTime;
+      reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({ success: true, raw: new TextDecoder().decode(allBytes), latencyMs }), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) { socket.close(); throw err; }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

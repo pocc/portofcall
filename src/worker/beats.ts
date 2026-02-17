@@ -283,6 +283,166 @@ export async function handleBeatsSend(request: Request): Promise<Response> {
   }
 }
 
+interface BeatsTLSResponse {
+  tls: boolean;
+  host: string;
+  port: number;
+  events?: number;
+  acked?: boolean;
+  sequenceAcked?: number;
+  rtt?: number;
+  error?: string;
+}
+
+/**
+ * Send events using the Beats/Lumberjack v2 protocol over TLS.
+ *
+ * Identical to handleBeatsSend but establishes a TLS connection using
+ * secureTransport: 'on' in the Cloudflare socket connect() call.
+ * Default port is 5045 (conventional TLS Beats port).
+ */
+export async function handleBeatsTLS(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      events: Array<Record<string, string>>;
+      windowSize?: number;
+    };
+
+    const {
+      host,
+      port = 5045,
+      timeout = 15000,
+      events,
+      windowSize = 1000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        tls: true,
+        host: '',
+        port,
+        error: 'Host is required',
+      } satisfies BeatsTLSResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!events || !Array.isArray(events) || events.length === 0) {
+      return new Response(JSON.stringify({
+        tls: true,
+        host,
+        port,
+        error: 'Events array is required and must not be empty',
+      } satisfies BeatsTLSResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        tls: true,
+        host,
+        port,
+        error: 'Port must be between 1 and 65535',
+      } satisfies BeatsTLSResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const start = Date.now();
+
+    // Connect with TLS enabled
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Send WINDOW frame
+      const windowFrame = encodeWindowFrame(windowSize);
+      await writer.write(windowFrame);
+
+      // Send JSON DATA frames for each event
+      let sequenceNumber = 1;
+      for (const event of events) {
+        const jsonFrame = encodeJsonFrame(sequenceNumber, event as Record<string, unknown>);
+        await writer.write(jsonFrame);
+        sequenceNumber++;
+      }
+
+      writer.releaseLock();
+
+      // Read ACK frame
+      const readTimeout = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('ACK timeout')), timeout);
+      });
+
+      const { value: ackData, done } = await Promise.race([
+        reader.read(),
+        readTimeout,
+      ]);
+
+      if (done || !ackData) {
+        throw new Error('No ACK received from server');
+      }
+
+      const acknowledgedSeq = parseAckFrame(ackData);
+
+      if (acknowledgedSeq === null) {
+        throw new Error('Invalid ACK frame received');
+      }
+
+      const rtt = Date.now() - start;
+
+      reader.releaseLock();
+      socket.close();
+
+      const expectedSeq = events.length;
+      const allAcknowledged = acknowledgedSeq >= expectedSeq;
+
+      return new Response(JSON.stringify({
+        tls: true,
+        host,
+        port,
+        events: events.length,
+        acked: allAcknowledged,
+        sequenceAcked: acknowledgedSeq,
+        rtt,
+      } satisfies BeatsTLSResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      tls: true,
+      host: '',
+      port: 5045,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies BeatsTLSResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /**
  * Test Beats connection by sending a ping-like event.
  */

@@ -1,261 +1,51 @@
-# Chrome DevTools Protocol (CDP) Implementation
+# Chrome DevTools Protocol (CDP) — Port of Call Reference
 
-## Overview
+**Spec:** [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)
+**Default port:** 9222
+**Source:** `src/worker/cdp.ts`
+**Tests:** `tests/cdp.test.ts`
 
-**Protocol:** Chrome DevTools Protocol (CDP)
-**Port:** 9222 (default remote debugging port)
-**Specification:** [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)
-**Complexity:** High
-**Purpose:** Remote browser debugging, automation, and inspection
+CDP is Chrome/Chromium's remote debugging and automation protocol. The Port of Call implementation covers both the HTTP discovery API (GET-only, raw TCP) and a bidirectional WebSocket tunnel to Chrome's CDP endpoint.
 
-CDP is the protocol used by Chrome/Chromium browsers for remote debugging. It provides programmatic access to browser internals, enabling automation, testing, performance monitoring, and inspection.
+---
 
-### Use Cases
-- Browser automation and testing (Puppeteer, Playwright, Selenium)
-- Remote debugging and inspection
-- Screenshot and PDF generation
-- Performance profiling and monitoring
-- Network traffic analysis
-- JavaScript execution and debugging
-- DOM manipulation and inspection
-- Mobile device debugging (via ADB)
+## Endpoints
 
-## Protocol Specification
+| Method | Path | Summary |
+|--------|------|---------|
+| `POST` | `/api/cdp/health` | Probe browser: GET /json/version + GET /json/list |
+| `POST` | `/api/cdp/query` | Arbitrary HTTP endpoint query (GET any path) |
+| `WebSocket` | `/api/cdp/tunnel` | Bidirectional WebSocket tunnel to Chrome CDP |
 
-### Architecture
+---
 
-CDP consists of two main components:
+## `POST /api/cdp/health` — Browser probe
 
-1. **HTTP JSON API** - Discovery and metadata endpoints
-2. **WebSocket JSON-RPC 2.0** - Bidirectional command/event protocol
-
-### Launching Chrome with Remote Debugging
-
-```bash
-# Chrome/Chromium
-chrome --remote-debugging-port=9222
-
-# Headless mode
-chrome --headless --remote-debugging-port=9222
-
-# Specific user data directory
-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-debug
-
-# Allow remote connections (DANGEROUS - use with caution)
-chrome --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
-```
-
-### HTTP JSON Endpoints
-
-#### `/json/version` - Browser Version Information
+Fetches `/json/version` (required) and `/json/list` (best-effort) using **two separate TCP connections**.
 
 **Request:**
-```http
-GET /json/version HTTP/1.1
-Host: localhost:9222
-```
 
-**Response:**
 ```json
 {
-  "Browser": "Chrome/120.0.6099.129",
-  "Protocol-Version": "1.3",
-  "User-Agent": "Mozilla/5.0 ...",
-  "V8-Version": "12.0.267.8",
-  "WebKit-Version": "537.36",
-  "webSocketDebuggerUrl": "ws://localhost:9222/devtools/browser/..."
-}
-```
-
-#### `/json/list` or `/json` - Available Targets
-
-**Request:**
-```http
-GET /json/list HTTP/1.1
-Host: localhost:9222
-```
-
-**Response:**
-```json
-[
-  {
-    "description": "",
-    "devtoolsFrontendUrl": "/devtools/inspector.html?ws=localhost:9222/devtools/page/...",
-    "id": "E4F8...",
-    "title": "Google",
-    "type": "page",
-    "url": "https://www.google.com/",
-    "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/..."
-  },
-  {
-    "description": "",
-    "id": "serviceWorker1",
-    "title": "Service Worker",
-    "type": "service_worker",
-    "url": "https://example.com/sw.js",
-    "webSocketDebuggerUrl": "ws://localhost:9222/devtools/page/..."
-  }
-]
-```
-
-**Target Types:**
-- `page` - Regular browser tab
-- `iframe` - Embedded frame
-- `worker` - Web Worker
-- `service_worker` - Service Worker
-- `other` - Extensions, background pages
-
-#### `/json/protocol` - Full Protocol Specification
-
-Returns the complete CDP specification with all domains, methods, and events.
-
-```http
-GET /json/protocol HTTP/1.1
-Host: localhost:9222
-```
-
-Response: Large JSON document (~5MB) with all CDP domains.
-
-#### `/json/new?{url}` - Open New Tab
-
-```http
-GET /json/new?https://example.com HTTP/1.1
-Host: localhost:9222
-```
-
-Response: Target info for the newly created tab.
-
-#### `/json/close/{targetId}` - Close Target
-
-```http
-GET /json/close/E4F8... HTTP/1.1
-Host: localhost:9222
-```
-
-#### `/json/activate/{targetId}` - Bring Tab to Front
-
-```http
-GET /json/activate/E4F8... HTTP/1.1
-Host: localhost:9222
-```
-
-### WebSocket JSON-RPC Protocol
-
-Connect to the WebSocket URL from `/json/version` or a target's `webSocketDebuggerUrl`.
-
-**Command Format:**
-```json
-{
-  "id": 1,
-  "method": "Page.navigate",
-  "params": {
-    "url": "https://example.com"
-  }
-}
-```
-
-**Response Format:**
-```json
-{
-  "id": 1,
-  "result": {
-    "frameId": "...",
-    "loaderId": "..."
-  }
-}
-```
-
-**Error Format:**
-```json
-{
-  "id": 1,
-  "error": {
-    "code": -32601,
-    "message": "Method not found"
-  }
-}
-```
-
-**Event Format:**
-```json
-{
-  "method": "Page.loadEventFired",
-  "params": {
-    "timestamp": 123456.789
-  }
-}
-```
-
-### CDP Domains
-
-Major CDP domains:
-
-| Domain | Purpose |
-|--------|---------|
-| **Page** | Page navigation, screenshots, lifecycle |
-| **DOM** | DOM tree inspection and manipulation |
-| **Runtime** | JavaScript execution and evaluation |
-| **Network** | Network traffic monitoring |
-| **Debugger** | JavaScript debugging (breakpoints, stepping) |
-| **Performance** | Performance metrics and profiling |
-| **Console** | Console message handling |
-| **Target** | Target (tab/worker) management |
-| **Browser** | Browser-level operations |
-| **Emulation** | Device emulation (viewport, user agent) |
-| **Input** | Mouse, keyboard, touch input simulation |
-| **Security** | Security state and certificate inspection |
-
-### Common Commands
-
-**Navigate to URL:**
-```json
-{"id": 1, "method": "Page.navigate", "params": {"url": "https://example.com"}}
-```
-
-**Take Screenshot:**
-```json
-{"id": 2, "method": "Page.captureScreenshot", "params": {"format": "png"}}
-```
-
-**Execute JavaScript:**
-```json
-{"id": 3, "method": "Runtime.evaluate", "params": {"expression": "document.title"}}
-```
-
-**Get DOM Tree:**
-```json
-{"id": 4, "method": "DOM.getDocument", "params": {}}
-```
-
-**Enable Network Monitoring:**
-```json
-{"id": 5, "method": "Network.enable", "params": {}}
-```
-
-## Implementation
-
-### Worker Endpoints
-
-#### 1. Health Check Endpoint
-
-**Path:** `/api/cdp/health`
-**Method:** `POST`
-
-Request:
-```json
-{
-  "host": "localhost",
+  "host": "chrome.internal.example.com",
   "port": 9222,
   "timeout": 10000
 }
 ```
 
-Response:
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | Hostname or IP. Returns 400 if missing. No format validation beyond "truthy". |
+| `port` | `9222` | No range validation — any integer accepted |
+| `timeout` | `10000` | Wall-clock timeout in ms, applied per TCP connection |
+
+**Response — success (HTTP 200):**
+
 ```json
 {
   "success": true,
   "statusCode": 200,
-  "latencyMs": 45,
+  "latencyMs": 42,
   "parsed": {
     "version": {
       "Browser": "Chrome/120.0.6099.129",
@@ -263,328 +53,299 @@ Response:
       "User-Agent": "Mozilla/5.0 ...",
       "V8-Version": "12.0.267.8",
       "WebKit-Version": "537.36",
-      "webSocketDebuggerUrl": "ws://localhost:9222/devtools/browser/..."
+      "webSocketDebuggerUrl": "ws://host:9222/devtools/browser/UUID"
     },
-    "targets": [...],
-    "targetCount": 3
+    "targets": [
+      {
+        "id": "E4F8...",
+        "type": "page",
+        "title": "Google",
+        "url": "https://www.google.com/",
+        "webSocketDebuggerUrl": "ws://host:9222/devtools/page/E4F8..."
+      }
+    ],
+    "targetCount": 1
   }
 }
 ```
 
-#### 2. Query Endpoint
+**Response — connection error (HTTP 500):**
 
-**Path:** `/api/cdp/query`
-**Method:** `POST`
-
-Request:
 ```json
 {
-  "host": "localhost",
+  "success": false,
+  "error": "Connection timeout",
+  "latencyMs": 10041
+}
+```
+
+**Response — Cloudflare-protected host (HTTP 403):**
+
+```json
+{
+  "success": false,
+  "error": "Host is behind Cloudflare: ...",
+  "isCloudflare": true
+}
+```
+
+**Response — missing host (HTTP 400):**
+
+```json
+{
+  "success": false,
+  "error": "Host is required"
+}
+```
+
+**Key behaviors:**
+- `success` is determined by `/json/version` status code (200–399 = `true`).
+- `/json/list` failure is **silently ignored** — if the second TCP connection fails, `targets` is `null` and `targetCount` is `0` with no `error` field set and `success` still `true`.
+- `latencyMs` is measured from request start to end, spanning both TCP connections.
+- Has Cloudflare detection; `/api/cdp/query` does **not**.
+
+---
+
+## `POST /api/cdp/query` — Arbitrary endpoint query
+
+Issues a single HTTP GET to any path on the CDP port.
+
+**Request:**
+
+```json
+{
+  "host": "chrome.internal.example.com",
   "port": 9222,
   "endpoint": "/json/list",
   "timeout": 10000
 }
 ```
 
-Response:
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | Returns 400 if missing |
+| `port` | `9222` | No range validation |
+| `endpoint` | `"/json/version"` | Leading `/` prepended if absent |
+| `timeout` | `10000` | ms |
+
+**Response — success (HTTP 200):**
+
 ```json
 {
   "success": true,
   "statusCode": 200,
-  "latencyMs": 25,
-  "body": "[{...}]",
-  "parsed": [...]
+  "body": "[{\"id\":\"E4F8...\",\"type\":\"page\",...}]",
+  "parsed": [{ "id": "E4F8...", "type": "page", ... }],
+  "latencyMs": 18
 }
 ```
 
-### Implementation Details
+**Response — error (HTTP 500):**
 
-The implementation in `src/worker/cdp.ts`:
-
-1. **Raw TCP Socket Connection** - Uses `cloudflare:sockets` API
-2. **HTTP/1.1 Request Construction** - Manually builds GET requests
-3. **Chunked Transfer Encoding** - Handles chunked responses
-4. **JSON Parsing** - Attempts to parse CDP JSON responses
-5. **Cloudflare Detection** - Prevents accessing Cloudflare-protected hosts
-
-#### 3. WebSocket Tunnel Endpoint
-
-**Path:** `/api/cdp/tunnel?host={host}&port={port}&targetId={targetId}`
-**Method:** WebSocket Upgrade
-
-Establishes a bidirectional WebSocket tunnel to Chrome's CDP endpoint.
-
-**Query Parameters:**
-- `host` - Chrome instance hostname (required)
-- `port` - CDP port (default: 9222)
-- `targetId` - Target ID from `/json/list` (optional, defaults to browser target)
-
-**Command Format (Client → CDP):**
 ```json
 {
-  "id": 1,
-  "method": "Runtime.evaluate",
-  "params": {
-    "expression": "document.title"
-  }
+  "success": false,
+  "error": "Connection timeout",
+  "statusCode": 0,
+  "latencyMs": 3041,
+  "body": ""
 }
 ```
 
-**Response Format (CDP → Client):**
+**Key behaviors:**
+- `body` is always the raw HTTP response body string (even on JSON parse failure).
+- `parsed` is `null` if `body` is not valid JSON.
+- **No Cloudflare detection** — unlike `/health`, this endpoint will attempt connections to Cloudflare-proxied hosts.
+- Endpoint normalization: `"json/version"` → `"/json/version"`.
+
+**Common CDP HTTP endpoints:**
+
+| Path | Returns |
+|------|---------|
+| `/json/version` | Browser version, V8/WebKit versions, `webSocketDebuggerUrl` |
+| `/json/list` or `/json` | Array of targets (pages, workers, extensions) |
+| `/json/protocol` | Full CDP spec JSON (~5MB — **truncated to 512KB**, see gotchas) |
+| `/json/new?{url}` | Opens a new tab, returns target info |
+| `/json/close/{targetId}` | Closes the specified target |
+| `/json/activate/{targetId}` | Brings target tab to front |
+
+---
+
+## `WebSocket /api/cdp/tunnel` — CDP WebSocket tunnel
+
+Establishes a bidirectional WebSocket tunnel between the client browser and Chrome's CDP endpoint. Requires `Upgrade: websocket` header; returns `426 Upgrade Required` otherwise.
+
+**Query parameters:**
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `host` | **required** | Returns 400 plain-text if missing |
+| `port` | `9222` | String, parsed as-is into the connect address |
+| `targetId` | none | If omitted, connects to `/devtools/browser` (browser-level target); if set, connects to `/devtools/page/{targetId}` |
+
+**Connection sequence:**
+
+1. Client opens WebSocket to `wss://portofcall.ross.gg/api/cdp/tunnel?host=...&port=9222&targetId=...`
+2. Worker opens raw TCP to `host:port`
+3. Worker sends WebSocket upgrade handshake to Chrome (random 16-byte `Sec-WebSocket-Key`)
+4. Worker reads HTTP headers until `\r\n\r\n`, checks for `101 Switching Protocols`
+5. On success, worker sends confirmation message to client:
+   ```json
+   { "type": "connected", "message": "CDP WebSocket tunnel established", "targetId": null }
+   ```
+6. Bidirectional proxying begins
+
+**Client → Chrome (sending CDP commands):**
+
+Client sends standard CDP JSON-RPC 2.0 text messages. The worker wraps each in a masked WebSocket frame (FIN=1, opcode=0x1) before forwarding.
+
 ```json
-{
-  "id": 1,
-  "result": {
-    "result": {
-      "type": "string",
-      "value": "Example Domain"
-    }
-  }
-}
+{ "id": 1, "method": "Runtime.evaluate", "params": { "expression": "document.title" } }
 ```
 
-**Event Format (CDP → Client):**
+**Chrome → Client (receiving results and events):**
+
+The worker parses WebSocket frames from Chrome (unmasked — server frames are not masked per RFC 6455), forwards text/binary payloads to the client.
+
 ```json
-{
-  "method": "Page.loadEventFired",
-  "params": {
-    "timestamp": 123456.789
-  }
-}
+{ "id": 1, "result": { "result": { "type": "string", "value": "Example Domain" } } }
 ```
 
-**Features:**
-- ✅ HTTP JSON API for discovery
-- ✅ WebSocket tunnel for CDP commands
-- ✅ Bidirectional JSON-RPC 2.0 messaging
-- ✅ CDP command execution (all domains)
-- ✅ CDP event subscription and handling
-- ✅ Automatic WebSocket framing and unmasking
-- ✅ Ping/pong frame handling for keep-alive
+```json
+{ "method": "Page.loadEventFired", "params": { "timestamp": 123456.789 } }
+```
 
-## Web UI
+**Control frame handling:**
+- Chrome sends Ping (opcode 0x9) → worker responds with masked Pong (opcode 0xA)
+- Chrome sends Close (opcode 0x8) → worker calls `server.close(1000, 'CDP connection closed')`
+- Client disconnects → worker closes TCP socket to Chrome
 
-### Component: CDPClient.tsx
+**Error handling:**
 
-Features:
-1. **Connection Form**
-   - Host input (default: localhost)
-   - Port input (default: 9222)
+If the Chrome connection fails (host unreachable, handshake fails, etc.), worker sends:
+```json
+{ "type": "error", "error": "WebSocket handshake failed" }
+```
+then closes the client WebSocket with code 1011.
 
-2. **Browser Discovery**
-   - Fetches browser version info
-   - Lists all available targets (tabs, workers, etc.)
-   - Shows WebSocket debugger URLs
-   - Displays browser metadata (Chrome version, V8, WebKit)
+---
 
-3. **Endpoint Query Interface**
-   - Endpoint path input
-   - Quick query buttons for common endpoints
+## Wire layer — sendHttpRequest()
 
-4. **Response Display**
-   - Pretty-printed JSON output
-   - HTTP status code and latency
-   - Error handling with detailed messages
+Both `/health` and `/query` use the same internal HTTP helper:
 
-### Quick Query Buttons
+- Connects via `cloudflare:sockets connect()`
+- Sends `GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n...`
+- Reads in a loop until `done` (EOF) or 512KB cap
+- Parses headers: status line → `statusCode`, headers lowercased into object
+- If `Transfer-Encoding: chunked` → runs `decodeChunked()`
+- Connection: close forces server to close after response (no keep-alive)
+- Single timeout promise races against all reads
 
-- `GET /json/version` - Browser version
-- `GET /json/list` - All targets
-- `GET /json` - Short list
-- `GET /json/protocol` - Full CDP spec (large!)
-- `GET /json/new` - Open new tab
+**`decodeChunked()`** parses hex chunk sizes. Stops on `chunkSize === 0` (terminal chunk) or `isNaN(chunkSize)` (malformed data). Chunk extensions (`;...`) before `\r\n` will break parsing since `parseInt` of `"a; ext=val"` returns `10` correctly, but non-hex extensions would return `NaN` and stop early.
 
-## Testing
+---
 
-### Local Testing
+## Gotchas
 
-1. **Launch Chrome with Remote Debugging:**
+**`/json/protocol` truncated to 512KB.** The endpoint returns ~5MB of JSON. The 512KB cap in `sendHttpRequest` cuts off the response mid-stream, resulting in invalid JSON. `parsed` will be `null` for this endpoint; `body` will be the truncated raw text.
+
+**`/health` makes two TCP connections.** The Cloudflare check fires once, but `/json/version` and `/json/list` each open separate TCP connections. If the host is behind a rate-limiter or the connection is flaky between the two calls, `/json/list` may silently fail while `/json/version` succeeds. You won't see an error — just `targets: null, targetCount: 0`.
+
+**No Cloudflare detection in `/query`.** Only `/health` and `/tunnel` call `checkIfCloudflare()`. You can probe Cloudflare-proxied hosts via `/query` and will get a generic connection error instead of the structured `{ isCloudflare: true }` response.
+
+**No port validation.** Neither endpoint validates the port range. Passing `port: 0` or `port: 99999` will attempt a TCP connection to those ports without error at the validation layer.
+
+**Tunnel path is always `/devtools/browser` or `/devtools/page/{targetId}`.** There is no support for `/devtools/worker/{targetId}` or other target types. Connect to workers and service workers by passing their ID as `targetId` — Chrome may still accept `/devtools/page/{id}` for them.
+
+**Tunnel sec-websocket-accept not validated.** The handshake check is only `response.includes('101 Switching Protocols')`. An incorrect or absent `Sec-WebSocket-Accept` header does not cause a failure.
+
+**CDP→Client read loop recreates reader on each iteration.** The tunnel's Chrome-to-client loop calls `cdpSocket!.readable.getReader()` inside `while (true)`, releasing and re-acquiring the lock each iteration. This is functionally correct in Cloudflare Workers (the stream is readable again after `releaseLock()`), but adds overhead and risks frame fragmentation — a WebSocket frame split across two reads will be partially dropped.
+
+**Pong frame length uses 16-bit extended length only.** `buildWebSocketPongFrame()` handles payloads ≤ 65535 bytes (126-byte case), but ping payloads are defined to be ≤125 bytes in RFC 6455, so in practice this is never an issue.
+
+---
+
+## Quick reference — curl
+
+```bash
+# Health probe (browser version + target list)
+curl -s -X POST https://portofcall.ross.gg/api/cdp/health \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"chrome.internal","port":9222}' | jq '{success,statusCode,latencyMs,version:.parsed.version.Browser,targetCount:.parsed.targetCount}'
+
+# List all targets (tabs, workers, extensions)
+curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"chrome.internal","port":9222,"endpoint":"/json/list"}' | jq '.parsed[] | {id,type,title,url}'
+
+# Open a new tab
+curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"chrome.internal","port":9222,"endpoint":"/json/new?https://example.com"}' | jq '.parsed.webSocketDebuggerUrl'
+
+# Get webSocketDebuggerUrl for tunneling
+curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"chrome.internal","port":9222,"endpoint":"/json/version"}' | jq '.parsed.webSocketDebuggerUrl'
+```
+
+**WebSocket tunnel (wscat):**
+
+```bash
+# Connect to browser-level target (no targetId)
+wscat -c 'wss://portofcall.ross.gg/api/cdp/tunnel?host=chrome.internal&port=9222'
+
+# Connect to specific page target
+wscat -c 'wss://portofcall.ross.gg/api/cdp/tunnel?host=chrome.internal&port=9222&targetId=E4F8...'
+
+# Once connected, send CDP commands as JSON:
+# > {"id":1,"method":"Runtime.evaluate","params":{"expression":"document.title"}}
+# < {"id":1,"result":{"result":{"type":"string","value":"Example Domain"}}}
+
+# Navigate a page
+# > {"id":2,"method":"Page.navigate","params":{"url":"https://example.com"}}
+
+# Take a screenshot (base64 PNG in result.data)
+# > {"id":3,"method":"Page.captureScreenshot","params":{"format":"png"}}
+
+# Execute JavaScript
+# > {"id":4,"method":"Runtime.evaluate","params":{"expression":"window.location.href","returnByValue":true}}
+```
+
+---
+
+## Local test setup
+
+**Launch Chrome with remote debugging:**
+
 ```bash
 # macOS
 /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
-  --remote-debugging-port=9222
+  --remote-debugging-port=9222 --headless
 
 # Linux
-google-chrome --remote-debugging-port=9222
+google-chrome --remote-debugging-port=9222 --headless
 
-# Windows
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
-```
-
-2. **Test HTTP Endpoints:**
-```bash
-# Version info
-curl http://localhost:9222/json/version
-
-# List targets
-curl http://localhost:9222/json/list
-
-# Open new tab
-curl http://localhost:9222/json/new?https://example.com
-```
-
-3. **Use Port of Call:**
-- Host: `localhost`
-- Port: `9222`
-- Click "Browser Discovery"
-
-### Docker Testing
-
-```bash
-# Chrome in Docker with remote debugging
-docker run -d \
-  -p 9222:9222 \
-  --name chrome-debug \
-  zenika/alpine-chrome:latest \
+# Docker (headless Chrome, allows remote connections)
+docker run -d -p 9222:9222 zenika/alpine-chrome:latest \
   --no-sandbox \
   --remote-debugging-address=0.0.0.0 \
   --remote-debugging-port=9222
-
-# Access at localhost:9222
 ```
 
-### Headless Chrome
+**Verify Chrome is responding:**
 
 ```bash
-# Headless mode (no UI)
-chrome --headless --remote-debugging-port=9222
-
-# With specific URL
-chrome --headless --remote-debugging-port=9222 https://example.com
+curl http://localhost:9222/json/version
 ```
 
-## Security Considerations
+---
 
-### 1. Local Access Only (Default)
+## What is NOT implemented
 
-By default, CDP listens on `localhost:9222` and is only accessible locally. This is SAFE.
-
-### 2. Remote Access (DANGEROUS!)
-
-Using `--remote-debugging-address=0.0.0.0` allows remote connections:
-- **Extreme Risk**: Full browser control
-- **No Authentication**: Anyone can connect
-- **Arbitrary Code Execution**: Via JavaScript evaluation
-- **File System Access**: Via Downloads/Uploads
-- **Network Access**: Via fetch/XHR
-
-**NEVER** expose CDP on public networks without a secure tunnel (SSH, VPN).
-
-### 3. SSRF Protection
-
-Port of Call validates:
-- Hostnames (blocks localhost, internal IPs)
-- Ports (validates range)
-- Timeouts (prevents hang)
-- Response size (512KB limit)
-
-### 4. Use Cases for Remote CDP
-
-**Acceptable:**
-- Docker containers on same host
-- Kubernetes pods in same cluster
-- SSH tunnels: `ssh -L 9222:localhost:9222 user@remote`
-- VPN-secured connections
-
-**Not Acceptable:**
-- Exposed to public internet
-- Unencrypted connections
-- Production environments
-
-## Tools Using CDP
-
-### Automation Libraries
-
-- **Puppeteer** (Node.js) - Official Chrome automation library
-- **Playwright** (Node.js, Python, C#, Java) - Cross-browser automation
-- **Selenium 4+** - Uses CDP for Chrome-specific features
-- **CDP4J** (Java) - Java CDP client
-
-### Debugging Tools
-
-- **Chrome DevTools** - Built-in browser developer tools
-- **VS Code Debugger** - Debugs via CDP
-- **WebStorm Debugger** - JetBrains IDE debugging
-- **Remote Debugging** - Mobile device debugging via ADB
-
-### Monitoring & Testing
-
-- **Lighthouse** - Performance auditing
-- **WebPageTest** - Performance testing
-- **Speedcurve** - Synthetic monitoring
-- **Checkly** - API & Browser monitoring
-
-## Resources
-
-- **Specification:** [chromedevtools.github.io/devtools-protocol](https://chromedevtools.github.io/devtools-protocol/)
-- **Puppeteer:** [pptr.dev](https://pptr.dev/)
-- **Playwright:** [playwright.dev](https://playwright.dev/)
-- **CDP Viewer:** [chrome-devtools-frontend.appspot.com](https://chrome-devtools-frontend.appspot.com/)
-- **GitHub:** [github.com/ChromeDevTools/devtools-protocol](https://github.com/ChromeDevTools/devtools-protocol)
-
-## Common Issues
-
-### "Connection Refused"
-
-Chrome not launched with `--remote-debugging-port=9222`. Launch Chrome with the flag.
-
-### "Empty Response"
-
-Chrome running but port mismatch. Check Chrome was launched with correct port.
-
-### "No Targets Available"
-
-Chrome launched but no tabs open. Open at least one tab or website.
-
-### "WebSocket Connection Failed"
-
-Port of Call implements HTTP only. WebSocket tunnel not yet implemented.
-
-## Port of Call Implementation Status
-
-✅ **Implemented:**
-- Browser version and metadata detection
-- Target enumeration (pages, workers, extensions)
-- Available targets listing
-- WebSocket debugger URL discovery
-- Protocol specification query
-- HTTP/1.1 over TCP implementation
-- **WebSocket tunnel for CDP commands**
-- **JavaScript evaluation (Runtime.evaluate)**
-- **DOM inspection (DOM.getDocument)**
-- **Screenshot capture (Page.captureScreenshot)**
-- **PDF generation (Page.printToPDF)**
-- **Page navigation (Page.navigate)**
-- **Network monitoring (Network.enable)**
-- **CDP event subscriptions**
-- **Bidirectional JSON-RPC 2.0**
-- Quick command buttons for common operations
-
-**Focus:** Full CDP functionality including discovery, command execution, and real-time event handling.
-
-## Example Use Cases
-
-### 1. Check Chrome Version
-```
-Endpoint: /json/version
-Result: Browser version, V8 version, WebKit version
-```
-
-### 2. List Open Tabs
-```
-Endpoint: /json/list
-Result: All pages, workers, and their URLs
-```
-
-### 3. Get WebSocket URL for Automation
-```
-Endpoint: /json/version
-Result: webSocketDebuggerUrl for connecting automation tools
-```
-
-### 4. Verify Remote Debugging is Enabled
-```
-Host: target-host
-Port: 9222
-Result: Confirms CDP is accessible and responding
-```
+- **POST or PUT requests** — `sendHttpRequest` is GET-only; `/json/new` and `/json/close` require GET with query params or path params, which work; but any future CDP HTTP API needing a body is unsupported
+- **Authentication** — Chrome's CDP has no built-in auth; if you proxy behind something that adds basic auth, the requests will fail (no `Authorization` header sent)
+- **TLS/HTTPS CDP endpoint** — `cloudflare:sockets connect()` used without TLS; only plain HTTP TCP connections
+- **WebSocket tunnel binary frame forwarding to Chrome** — only `buildWebSocketTextFrame()` exists; client binary messages would need to be sent as text frames, which Chrome will accept for JSON-RPC but may reject for binary CDP extensions
+- **Fragment reassembly** — multi-frame WebSocket messages (FIN=0 fragments) are not reassembled; each read is processed independently

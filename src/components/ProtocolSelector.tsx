@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
+import ChecklistTab from './ChecklistTab';
 
 type ProtocolStatus = 'active' | 'deprecated' | 'niche';
 type PopularityTier = 'ubiquitous' | 'common' | 'moderate' | 'rare' | 'niche';
@@ -85,7 +86,7 @@ const nonImplementableRFCs: RFCEntry[] = [
   { name: 'Syslog (UDP)', icon: '📝', rfc: '5424', year: 2009, description: 'Syslog Protocol over UDP - System logging', workersCompatible: false, reason: 'Traditional syslog uses UDP, Workers supports TCP variant', layer: 'L4/L7' },
 ];
 
-const protocols = [
+export const protocols = [
   { id: 'tcp' as const, name: 'Raw TCP', description: 'Raw TCP client — connect to any port, send text or hex bytes, inspect the response', port: 0, icon: '🔌', features: ['Banner grabbing', 'Protocol exploration', 'Hex + UTF-8 display', 'Protocol presets'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 1974 },
   { id: 'echo' as const, name: 'ECHO', description: 'ECHO Protocol (RFC 862) - The simplest TCP test protocol', port: 7, icon: '🔊', features: ['Network testing', 'Latency measurement', 'Connectivity verification'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1983 },
   { id: 'activeusers' as const, name: 'Active Users', description: 'Active Users Protocol (RFC 866) - Reports number of users logged into a system', port: 11, icon: '👥', features: ['System monitoring', 'User count query', 'Internet Standard'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 1983, rfc: '866' },
@@ -320,7 +321,7 @@ type SortOption = 'popularity' | 'year-asc' | 'year-desc' | 'port-asc' | 'port-d
 export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
   const { theme } = useTheme();
   const isRetro = theme === 'retro';
-  const [activeTab, setActiveTab] = useState<'protocols' | 'about' | 'rfcs'>('protocols');
+  const [activeTab, setActiveTab] = useState<'protocols' | 'about' | 'rfcs' | 'checklist'>('protocols');
   const [selectedCategory, setSelectedCategory] = useState<'all' | ProtocolCategory>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deprecated'>('all');
   const [sortBy, setSortBy] = useState<SortOption>('popularity');
@@ -457,6 +458,22 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
             {isRetro ? (activeTab === 'rfcs' ? '>> ' : '') : ''}
             RFCs
             {isRetro ? (activeTab === 'rfcs' ? ' <<' : '') : ''}
+          </button>
+          <button
+            onClick={() => setActiveTab('checklist')}
+            className={`px-6 py-3 font-semibold transition-all duration-200 ${
+              isRetro
+                ? `retro-button ${activeTab === 'checklist' ? 'retro-glow retro-text' : 'retro-text-amber'}`
+                : `rounded-lg ${
+                    activeTab === 'checklist'
+                      ? 'bg-blue-600 text-white shadow-lg'
+                      : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+                  }`
+            }`}
+          >
+            {isRetro ? (activeTab === 'checklist' ? '>> ' : '') : ''}
+            Checklist
+            {isRetro ? (activeTab === 'checklist' ? ' <<' : '') : ''}
           </button>
         </div>
       </div>
@@ -940,6 +957,9 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
           </div>
         );
       })()}
+
+      {/* Checklist Tab Content */}
+      {activeTab === 'checklist' && <ChecklistTab />}
     </div>
   );
 }

@@ -408,6 +408,126 @@ export async function handleJDWPProbe(request: Request): Promise<Response> {
 }
 
 /**
+ * List all threads in the JVM via JDWP VirtualMachine.AllThreads command
+ * Returns thread IDs + names (via ThreadReference.Name for up to 20 threads)
+ */
+export async function handleJDWPThreads(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as { host?: string; port?: number; timeout?: number; limit?: number };
+    if (!body.host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const host = body.host;
+    const port = body.port || 8000;
+    const timeout = body.timeout || 15000;
+    const limit = Math.min(body.limit ?? 20, 50);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Handshake
+      await writer.write(new TextEncoder().encode(JDWP_HANDSHAKE));
+      const handshakeResp = await readResponse(reader, 3000, 14);
+      if (new TextDecoder().decode(handshakeResp) !== JDWP_HANDSHAKE) {
+        throw new Error('JDWP handshake failed');
+      }
+
+      // IDSizes (CommandSet=1, Command=7) — need objectIDSize for thread IDs
+      await writer.write(buildCommand(1, 1, 7));
+      const idSizesReply = await readResponse(reader, 3000, 64);
+      const idSizesHeader = parseReplyHeader(idSizesReply);
+      const idSizes = (idSizesHeader?.isReply && idSizesHeader.errorCode === 0)
+        ? parseIDSizesReply(idSizesReply) : null;
+      const objectIDSize = idSizes?.objectIDSize ?? 8;
+
+      // AllThreads (CommandSet=1, Command=4)
+      await writer.write(buildCommand(2, 1, 4));
+      const allThreadsReply = await readResponse(reader, 5000, 65536);
+      const allThreadsHeader = parseReplyHeader(allThreadsReply);
+
+      if (!allThreadsHeader?.isReply || allThreadsHeader.errorCode !== 0) {
+        throw new Error(`AllThreads failed: ${errorCodeName(allThreadsHeader?.errorCode ?? 0)}`);
+      }
+
+      // Parse thread IDs: count(4) + count * objectID(objectIDSize)
+      const data = allThreadsReply;
+      const countOffset = HEADER_SIZE;
+      if (countOffset + 4 > data.length) throw new Error('AllThreads reply too short');
+      const threadCount = (data[countOffset] << 24) | (data[countOffset + 1] << 16) | (data[countOffset + 2] << 8) | data[countOffset + 3];
+
+      const threadIds: Uint8Array[] = [];
+      let off = countOffset + 4;
+      for (let i = 0; i < threadCount && i < limit; i++) {
+        if (off + objectIDSize > data.length) break;
+        threadIds.push(data.slice(off, off + objectIDSize));
+        off += objectIDSize;
+      }
+
+      // Get thread names via ThreadReference.Name (CommandSet=11, Command=1)
+      const threads: Array<{ id: string; name: string }> = [];
+      let cmdId = 3;
+      for (const tid of threadIds) {
+        try {
+          await writer.write(buildCommand(cmdId++, 11, 1, tid));
+          const nameReply = await readResponse(reader, 2000, 512);
+          const nameHeader = parseReplyHeader(nameReply);
+          if (nameHeader?.isReply && nameHeader.errorCode === 0) {
+            const nameStr = readJDWPString(nameReply, HEADER_SIZE);
+            threads.push({
+              id: Array.from(tid).map(b => b.toString(16).padStart(2, '0')).join(''),
+              name: nameStr?.value ?? '(unknown)',
+            });
+          }
+        } catch { /* skip individual thread failures */ }
+      }
+
+      const rtt = Date.now() - startTime;
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host, port, rtt,
+        threadCount,
+        objectIDSize,
+        threads,
+        securityWarning: 'WARNING: Exposed JDWP allows remote code execution on the JVM',
+        message: `${threadCount} threads in JVM, retrieved ${threads.length} names in ${rtt}ms`,
+      }), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'JDWP threads query failed' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
  * Query JDWP VM version info via handshake + VirtualMachine.Version command
  */
 export async function handleJDWPVersion(request: Request): Promise<Response> {

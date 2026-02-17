@@ -85,6 +85,20 @@ const SAFE_COMMANDS = new Set([
 ]);
 
 /**
+ * Escape a value for use in TeamSpeak ServerQuery commands
+ */
+function tsEscape(s: string): string {
+  return s
+    .replace(/\\/g, '\\\\')
+    .replace(/ /g, '\\s')
+    .replace(/\|/g, '\\p')
+    .replace(/\//g, '\\/')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+
+/**
  * Unescape TeamSpeak ServerQuery value
  */
 function tsUnescape(s: string): string {
@@ -526,5 +540,646 @@ export async function handleTeamSpeakCommand(request: Request): Promise<Response
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+// ─── Channel types ────────────────────────────────────────────────────────
+
+interface TSChannelRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  serverAdminToken?: string;
+  channelName?: string;
+  channelTopic?: string;
+}
+
+interface TSChannelEntry {
+  cid: string;
+  name: string;
+  topic: string;
+  clientsOnline: string;
+  maxClients: string;
+}
+
+interface TSChannelResponse {
+  success: boolean;
+  server: string;
+  channels?: TSChannelEntry[];
+  newChannelId?: string;
+  errorId?: number;
+  errorMsg?: string;
+  error?: string;
+}
+
+/**
+ * Handle TeamSpeak channel list and optional channel creation.
+ *
+ * Connects to the ServerQuery port, optionally authenticates with a server
+ * admin token, selects virtual server 1, retrieves the full channel list,
+ * and (if channelName is provided and a token was supplied) creates a new
+ * permanent channel.
+ *
+ * Request body:
+ *   { host, port?, timeout?, serverAdminToken?, channelName?, channelTopic? }
+ */
+export async function handleTeamSpeakChannel(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as TSChannelRequest;
+    const {
+      host,
+      port = DEFAULT_PORT,
+      timeout = 10000,
+      serverAdminToken,
+      channelName,
+      channelTopic,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: 'Host is required',
+      } satisfies TSChannelResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: 'Port must be between 1 and 65535',
+      } satisfies TSChannelResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: 'Invalid host format',
+      } satisfies TSChannelResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Build command list — login and virtual-server selection are done
+    // before the data commands so all subsequent responses are consistent.
+    const commands: string[] = [];
+
+    if (serverAdminToken) {
+      commands.push(`login serveradmin ${serverAdminToken}`);
+    }
+
+    // Select virtual server 1
+    commands.push('use sid=1');
+
+    // Get channel list with extended fields
+    commands.push('channellist -topic -flags -voice -limits');
+
+    // Optionally create a new permanent channel (admin token required)
+    let createChannelCmdIndex = -1;
+    if (channelName && serverAdminToken) {
+      let createCmd = `channelcreate channel_name=${tsEscape(channelName)} channel_flag_permanent=1`;
+      if (channelTopic) {
+        createCmd += ` channel_topic=${tsEscape(channelTopic)}`;
+      }
+      createChannelCmdIndex = commands.length;
+      commands.push(createCmd);
+    }
+
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Read banner
+      const banner = await readTSBanner(reader, timeout);
+      if (!banner.startsWith('TS3')) {
+        throw new Error(`Not a TeamSpeak server: ${banner.substring(0, 100)}`);
+      }
+
+      // Run all commands sequentially
+      const responses: string[] = [];
+      for (const cmd of commands) {
+        await writer.write(new TextEncoder().encode(`${cmd}\n`));
+        const resp = await readTSResponse(reader, timeout);
+        responses.push(resp);
+      }
+
+      // Quit
+      await writer.write(new TextEncoder().encode('quit\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Check for login errors (first response if token supplied)
+      let responseOffset = 0;
+      if (serverAdminToken) {
+        const loginResp = responses[responseOffset++];
+        const loginErrLine = loginResp.split('\n').find(l => l.startsWith('error'));
+        if (loginErrLine) {
+          const parsed = parseTSError(loginErrLine);
+          if (parsed && parsed.id !== 0) {
+            return new Response(JSON.stringify({
+              success: false,
+              server: `${host}:${port}`,
+              errorId: parsed.id,
+              errorMsg: parsed.msg,
+              error: `Login failed: ${parsed.msg}`,
+            } satisfies TSChannelResponse), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+        }
+      }
+
+      // use sid=1 response (skip — just check for hard error)
+      responseOffset++;
+
+      // channellist response
+      const channelListResp = responses[responseOffset++];
+      const channelLines = channelListResp.split('\n').filter(l => l.trim());
+
+      let channelListErrorId: number | undefined;
+      let channelListErrorMsg: string | undefined;
+      const channelDataLines: string[] = [];
+
+      for (const line of channelLines) {
+        const errParsed = parseTSError(line);
+        if (errParsed) {
+          channelListErrorId = errParsed.id;
+          channelListErrorMsg = errParsed.msg;
+        } else {
+          channelDataLines.push(line);
+        }
+      }
+
+      const channels: TSChannelEntry[] = [];
+      if (channelDataLines.length > 0) {
+        const rawItems = channelDataLines.join('\n');
+        // parseTSResponse splits on | to get per-channel items
+        const parsed = parseTSResponse(rawItems);
+        for (const item of parsed) {
+          const kv: Record<string, string> = {};
+          for (const pair of item) {
+            kv[pair.key] = pair.value;
+          }
+          channels.push({
+            cid: kv['cid'] || '',
+            name: kv['channel_name'] || '',
+            topic: kv['channel_topic'] || '',
+            clientsOnline: kv['total_clients'] || kv['channel_total_clients'] || '0',
+            maxClients: kv['channel_maxclients'] || '-1',
+          });
+        }
+      }
+
+      // Optional channelcreate response
+      let newChannelId: string | undefined;
+      if (createChannelCmdIndex >= 0 && responseOffset < responses.length) {
+        const createResp = responses[responseOffset++];
+        const createLines = createResp.split('\n').filter(l => l.trim());
+        for (const line of createLines) {
+          // Success response contains "cid=X" before the error line
+          if (line.startsWith('cid=') || line.includes(' cid=')) {
+            const cidMatch = line.match(/cid=(\d+)/);
+            if (cidMatch) {
+              newChannelId = cidMatch[1];
+            }
+          }
+        }
+      }
+
+      if (channelListErrorId !== undefined && channelListErrorId !== 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          server: `${host}:${port}`,
+          channels,
+          errorId: channelListErrorId,
+          errorMsg: channelListErrorMsg,
+          error: `channellist error ${channelListErrorId}: ${channelListErrorMsg}`,
+        } satisfies TSChannelResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        server: `${host}:${port}`,
+        channels,
+        newChannelId,
+        errorId: channelListErrorId,
+        errorMsg: channelListErrorMsg,
+      } satisfies TSChannelResponse), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies TSChannelResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+// ─── Text message / admin write commands ──────────────────────────────────
+
+interface TSMessageRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  serverAdminToken?: string;
+  /** targetmode: 1=client, 2=channel, 3=server */
+  targetmode?: 1 | 2 | 3;
+  /** target: clid for client, cid for channel, ignored for server (targetmode=3) */
+  target?: number;
+  message: string;
+}
+
+interface TSMessageResponse {
+  success: boolean;
+  server: string;
+  errorId?: number;
+  errorMsg?: string;
+  error?: string;
+}
+
+interface TSKickRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  serverAdminToken: string;
+  /** clid to kick */
+  clid: number;
+  /** reasonid: 4=channel, 5=server */
+  reasonid?: 4 | 5;
+  reasonmsg?: string;
+}
+
+interface TSBanRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  serverAdminToken: string;
+  /** Client ID to ban */
+  clid: number;
+  /** Ban duration in seconds; 0 = permanent */
+  time?: number;
+  banreason?: string;
+}
+
+interface TSBanResponse {
+  success: boolean;
+  server: string;
+  banid?: string;
+  errorId?: number;
+  errorMsg?: string;
+  error?: string;
+}
+
+/**
+ * Send a text message via TeamSpeak ServerQuery.
+ *
+ * Supports server-wide (targetmode=3), channel (targetmode=2), and
+ * direct client (targetmode=1) messages. Requires a server admin token
+ * for server and channel messages; client messages may work without one.
+ *
+ * POST /api/teamspeak/message
+ */
+export async function handleTeamSpeakMessage(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as TSMessageRequest;
+    const {
+      host,
+      port = DEFAULT_PORT,
+      timeout = 10000,
+      serverAdminToken,
+      targetmode = 3,
+      target = 0,
+      message,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Host is required' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!message) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Message is required' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Invalid host format' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const commands: string[] = [];
+    if (serverAdminToken) {
+      commands.push(`login serveradmin ${tsEscape(serverAdminToken)}`);
+    }
+    commands.push('use sid=1');
+    // sendtextmessage targetmode=<1|2|3> target=<id> msg=<text>
+    commands.push(`sendtextmessage targetmode=${targetmode} target=${target} msg=${tsEscape(message)}`);
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const banner = await readTSBanner(reader, timeout);
+      if (!banner.startsWith('TS3')) throw new Error(`Not a TeamSpeak server`);
+
+      const responses: string[] = [];
+      for (const cmd of commands) {
+        await writer.write(new TextEncoder().encode(`${cmd}\n`));
+        responses.push(await readTSResponse(reader, timeout));
+      }
+
+      await writer.write(new TextEncoder().encode('quit\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Check login error if token provided
+      let responseIdx = 0;
+      if (serverAdminToken) {
+        const loginErrLine = responses[responseIdx++].split('\n').find(l => l.startsWith('error'));
+        if (loginErrLine) {
+          const parsed = parseTSError(loginErrLine);
+          if (parsed && parsed.id !== 0) {
+            return new Response(JSON.stringify({
+              success: false,
+              server: `${host}:${port}`,
+              errorId: parsed.id,
+              errorMsg: parsed.msg,
+              error: `Login failed: ${parsed.msg}`,
+            } satisfies TSMessageResponse), { headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+      }
+
+      // Skip 'use sid=1' response
+      responseIdx++;
+
+      // Check sendtextmessage response
+      const msgResp = responses[responseIdx];
+      const errLine = msgResp.split('\n').find(l => l.startsWith('error'));
+      const parsed = errLine ? parseTSError(errLine) : null;
+      const success = !parsed || parsed.id === 0;
+
+      return new Response(JSON.stringify({
+        success,
+        server: `${host}:${port}`,
+        errorId: parsed?.id,
+        errorMsg: parsed?.msg,
+        error: parsed && parsed.id !== 0 ? `ServerQuery error ${parsed.id}: ${parsed.msg}` : undefined,
+      } satisfies TSMessageResponse), { headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies TSMessageResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Kick a client from the server or channel via TeamSpeak ServerQuery.
+ *
+ * POST /api/teamspeak/kick
+ */
+export async function handleTeamSpeakKick(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as TSKickRequest;
+    const {
+      host,
+      port = DEFAULT_PORT,
+      timeout = 10000,
+      serverAdminToken,
+      clid,
+      reasonid = 5,
+      reasonmsg,
+    } = body;
+
+    if (!host || !/^[a-zA-Z0-9._:-]+$/.test(host)) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Valid host is required' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!serverAdminToken) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'serverAdminToken is required' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!clid) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'clid is required' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    let kickCmd = `clientkick reasonid=${reasonid} clid=${clid}`;
+    if (reasonmsg) kickCmd += ` reasonmsg=${tsEscape(reasonmsg)}`;
+
+    const commands = [
+      `login serveradmin ${tsEscape(serverAdminToken)}`,
+      'use sid=1',
+      kickCmd,
+    ];
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const banner = await readTSBanner(reader, timeout);
+      if (!banner.startsWith('TS3')) throw new Error('Not a TeamSpeak server');
+
+      const responses: string[] = [];
+      for (const cmd of commands) {
+        await writer.write(new TextEncoder().encode(`${cmd}\n`));
+        responses.push(await readTSResponse(reader, timeout));
+      }
+      await writer.write(new TextEncoder().encode('quit\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Parse kick result
+      const kickResp = responses[2];
+      const errLine = kickResp.split('\n').find(l => l.startsWith('error'));
+      const parsed = errLine ? parseTSError(errLine) : null;
+      const success = !parsed || parsed.id === 0;
+
+      return new Response(JSON.stringify({
+        success,
+        server: `${host}:${port}`,
+        errorId: parsed?.id,
+        errorMsg: parsed?.msg,
+        error: parsed && parsed.id !== 0 ? `ServerQuery error ${parsed.id}: ${parsed.msg}` : undefined,
+      } satisfies TSMessageResponse), { headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies TSMessageResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Ban a client by client ID via TeamSpeak ServerQuery.
+ * Returns the ban ID on success.
+ *
+ * POST /api/teamspeak/ban
+ */
+export async function handleTeamSpeakBan(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as TSBanRequest;
+    const {
+      host,
+      port = DEFAULT_PORT,
+      timeout = 10000,
+      serverAdminToken,
+      clid,
+      time = 0,
+      banreason,
+    } = body;
+
+    if (!host || !/^[a-zA-Z0-9._:-]+$/.test(host)) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Valid host is required' } satisfies TSBanResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!serverAdminToken) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'serverAdminToken is required' } satisfies TSBanResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!clid) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'clid is required' } satisfies TSBanResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    let banCmd = `banclient clid=${clid} time=${time}`;
+    if (banreason) banCmd += ` banreason=${tsEscape(banreason)}`;
+
+    const commands = [
+      `login serveradmin ${tsEscape(serverAdminToken)}`,
+      'use sid=1',
+      banCmd,
+    ];
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      const banner = await readTSBanner(reader, timeout);
+      if (!banner.startsWith('TS3')) throw new Error('Not a TeamSpeak server');
+
+      const responses: string[] = [];
+      for (const cmd of commands) {
+        await writer.write(new TextEncoder().encode(`${cmd}\n`));
+        responses.push(await readTSResponse(reader, timeout));
+      }
+      await writer.write(new TextEncoder().encode('quit\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Parse ban result — success response contains 'banid=<N>'
+      const banResp = responses[2];
+      const lines = banResp.split('\n').filter(l => l.trim());
+      let banid: string | undefined;
+      let errorId: number | undefined;
+      let errorMsg: string | undefined;
+
+      for (const line of lines) {
+        const errParsed = parseTSError(line);
+        if (errParsed) {
+          errorId = errParsed.id;
+          errorMsg = errParsed.msg;
+        } else {
+          const m = line.match(/banid=(\d+)/);
+          if (m) banid = m[1];
+        }
+      }
+
+      const success = !errorId || errorId === 0;
+
+      return new Response(JSON.stringify({
+        success,
+        server: `${host}:${port}`,
+        banid,
+        errorId,
+        errorMsg,
+        error: errorId && errorId !== 0 ? `ServerQuery error ${errorId}: ${errorMsg}` : undefined,
+      } satisfies TSBanResponse), { headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      server: '',
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies TSBanResponse), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

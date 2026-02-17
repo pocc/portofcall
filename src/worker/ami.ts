@@ -545,3 +545,374 @@ export async function handleAMICommand(request: Request): Promise<Response> {
     );
   }
 }
+
+
+// ---------------------------------------------------------------------------
+// Write actions
+// ---------------------------------------------------------------------------
+
+interface AMIOriginateRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  channel: string;
+  context: string;
+  exten: string;
+  priority: string | number;
+  callerID?: string;
+  timeout?: number;
+}
+
+interface AMIHangupRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  channel: string;
+  timeout?: number;
+}
+
+interface AMICliCommandRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  command: string;
+  timeout?: number;
+}
+
+interface AMISendTextRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  channel: string;
+  message: string;
+  timeout?: number;
+}
+
+
+// ---------------------------------------------------------------------------
+// Write actions
+// ---------------------------------------------------------------------------
+
+interface AMIOriginateRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  channel: string;
+  context: string;
+  exten: string;
+  priority: string | number;
+  callerID?: string;
+  timeout?: number;
+}
+
+interface AMIHangupRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  channel: string;
+  timeout?: number;
+}
+
+interface AMICliCommandRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  command: string;
+  timeout?: number;
+}
+
+interface AMISendTextRequest {
+  host: string;
+  port?: number;
+  username: string;
+  secret: string;
+  channel: string;
+  message: string;
+  timeout?: number;
+}
+
+/**
+ * Helper: Login to AMI, run a callback, then logoff.
+ */
+async function withAMISession<T>(
+  host: string,
+  port: number,
+  username: string,
+  secret: string,
+  timeoutMs: number,
+  fn: (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    writer: WritableStreamDefaultWriter<Uint8Array>,
+    transcript: string[],
+  ) => Promise<T>,
+): Promise<T> {
+  if (!host) throw new Error('Host is required');
+  if (!username) throw new Error('Username is required');
+  if (!secret) throw new Error('Secret is required');
+  if (port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) throw new Error('Invalid host format');
+
+  const socket = connect(`${host}:${port}`);
+  const transcript: string[] = [];
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+  });
+
+  await Promise.race([socket.opened, timeoutPromise]);
+
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
+
+  try {
+    const bannerBlock = await readAMIBlock(reader, timeoutMs);
+    const banner = bannerBlock.trim();
+    transcript.push(`S: ${banner}`);
+
+    if (!banner.includes('Asterisk Call Manager')) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      throw new Error(`Not an AMI server: ${banner.substring(0, 100)}`);
+    }
+
+    transcript.push('C: Action: Login');
+    transcript.push(`C: Username: ${username}`);
+    transcript.push('C: Secret: ****');
+    await sendAMIAction(writer, 'Login', {
+      Username: username,
+      Secret: secret,
+      ActionID: 'login-1',
+    });
+
+    const loginBlock = await readAMIBlock(reader, timeoutMs);
+    const loginResponse = parseAMIBlock(loginBlock);
+    transcript.push(`S: Response: ${loginResponse['Response'] || 'Unknown'}`);
+    if (loginResponse['Message']) {
+      transcript.push(`S: Message: ${loginResponse['Message']}`);
+    }
+
+    if (loginResponse['Response'] !== 'Success') {
+      await sendAMIAction(writer, 'Logoff');
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      throw new Error(`Login failed: ${loginResponse['Message'] || 'Authentication rejected'}`);
+    }
+
+    const result = await fn(reader, writer, transcript);
+
+    transcript.push('C: Action: Logoff');
+    await sendAMIAction(writer, 'Logoff');
+    try {
+      const logoffBlock = await readAMIBlock(reader, 3000);
+      const logoffResponse = parseAMIBlock(logoffBlock);
+      transcript.push(`S: Response: ${logoffResponse['Response'] || 'OK'}`);
+    } catch {
+      // Server may close immediately
+    }
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    return result;
+  } catch (error) {
+    try { writer.releaseLock(); } catch { /* already released */ }
+    try { reader.releaseLock(); } catch { /* already released */ }
+    socket.close();
+    throw error;
+  }
+}
+
+/**
+ * Originate an outbound call via AMI Action: Originate.
+ * POST /api/ami/originate
+ */
+export async function handleAMIOriginate(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as AMIOriginateRequest;
+    const {
+      host,
+      port = DEFAULT_PORT,
+      username,
+      secret,
+      channel,
+      context,
+      exten,
+      priority,
+      callerID,
+      timeout = 15000,
+    } = body;
+
+    if (!channel) return new Response(JSON.stringify({ success: false, error: 'Channel is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!context) return new Response(JSON.stringify({ success: false, error: 'Context is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!exten) return new Response(JSON.stringify({ success: false, error: 'Exten is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (priority === undefined || priority === null || priority === '') return new Response(JSON.stringify({ success: false, error: 'Priority is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const start = Date.now();
+    const { response, transcript } = await withAMISession(
+      host, port, username, secret, timeout,
+      async (reader, writer, transcript) => {
+        const params: Record<string, string> = {
+          Channel: channel,
+          Context: context,
+          Exten: exten,
+          Priority: String(priority),
+          ActionID: 'originate-1',
+        };
+        if (callerID) params['CallerID'] = callerID;
+
+        transcript.push('C: Action: Originate');
+        for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
+        await sendAMIAction(writer, 'Originate', params);
+
+        const responseBlock = await readAMIBlock(reader, timeout);
+        const response = parseAMIBlock(responseBlock);
+        for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
+        return { response, transcript };
+      },
+    );
+
+    const rtt = Date.now() - start;
+    const success = response['Response'] === 'Success';
+    return new Response(JSON.stringify({ success, host, port, action: 'Originate', response, transcript, rtt, error: success ? undefined : `Originate failed: ${response['Message'] || response['Response']}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Hang up a channel via AMI Action: Hangup.
+ * POST /api/ami/hangup
+ */
+export async function handleAMIHangup(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as AMIHangupRequest;
+    const { host, port = DEFAULT_PORT, username, secret, channel, timeout = 15000 } = body;
+
+    if (!channel) return new Response(JSON.stringify({ success: false, error: 'Channel is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const start = Date.now();
+    const { response, transcript } = await withAMISession(
+      host, port, username, secret, timeout,
+      async (reader, writer, transcript) => {
+        const params: Record<string, string> = { Channel: channel, ActionID: 'hangup-1' };
+        transcript.push('C: Action: Hangup');
+        for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
+        await sendAMIAction(writer, 'Hangup', params);
+
+        const responseBlock = await readAMIBlock(reader, timeout);
+        const response = parseAMIBlock(responseBlock);
+        for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
+        return { response, transcript };
+      },
+    );
+
+    const rtt = Date.now() - start;
+    const success = response['Response'] === 'Success';
+    return new Response(JSON.stringify({ success, host, port, action: 'Hangup', response, transcript, rtt, error: success ? undefined : `Hangup failed: ${response['Message'] || response['Response']}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Run an Asterisk CLI command via AMI Action: Command.
+ * POST /api/ami/clicommand
+ */
+export async function handleAMICliCommand(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as AMICliCommandRequest;
+    const { host, port = DEFAULT_PORT, username, secret, command, timeout = 15000 } = body;
+
+    if (!command) return new Response(JSON.stringify({ success: false, error: 'Command is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const start = Date.now();
+    const { response, output, transcript } = await withAMISession(
+      host, port, username, secret, timeout,
+      async (reader, writer, transcript) => {
+        const params: Record<string, string> = { Command: command, ActionID: 'cmd-1' };
+        transcript.push('C: Action: Command');
+        for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
+        await sendAMIAction(writer, 'Command', params);
+
+        // Read until "--END COMMAND--" sentinel or error
+        const decoder = new TextDecoder();
+        let buffer = '';
+        const deadline = Date.now() + timeout;
+
+        while (true) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new Error('Read timeout waiting for command output');
+          const tmout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Read timeout')), remaining));
+          const { value, done } = await Promise.race([reader.read(), tmout]);
+          if (done) break;
+          if (value) {
+            buffer += decoder.decode(value, { stream: true });
+            if (buffer.includes('--END COMMAND--')) break;
+            if (buffer.includes('\r\n\r\n') && buffer.includes('Response: Error')) break;
+          }
+        }
+
+        const response = parseAMIBlock(buffer);
+        for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
+
+        const output: string[] = [];
+        for (const line of buffer.split('\r\n')) {
+          if (line.startsWith('Output: ')) output.push(line.substring('Output: '.length));
+        }
+        return { response, output, transcript };
+      },
+    );
+
+    const rtt = Date.now() - start;
+    const success = response['Response'] === 'Follows' || response['Response'] === 'Success';
+    return new Response(JSON.stringify({ success, host, port, action: 'Command', command, response, output, transcript, rtt, error: success ? undefined : `Command failed: ${response['Message'] || response['Response']}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Send a text message to a channel via AMI Action: SendText.
+ * POST /api/ami/sendtext
+ */
+export async function handleAMISendText(request: Request): Promise<Response> {
+  try {
+    const body = (await request.json()) as AMISendTextRequest;
+    const { host, port = DEFAULT_PORT, username, secret, channel, message, timeout = 15000 } = body;
+
+    if (!channel) return new Response(JSON.stringify({ success: false, error: 'Channel is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!message) return new Response(JSON.stringify({ success: false, error: 'Message is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const start = Date.now();
+    const { response, transcript } = await withAMISession(
+      host, port, username, secret, timeout,
+      async (reader, writer, transcript) => {
+        const params: Record<string, string> = { Channel: channel, Message: message, ActionID: 'sendtext-1' };
+        transcript.push('C: Action: SendText');
+        for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
+        await sendAMIAction(writer, 'SendText', params);
+
+        const responseBlock = await readAMIBlock(reader, timeout);
+        const response = parseAMIBlock(responseBlock);
+        for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
+        return { response, transcript };
+      },
+    );
+
+    const rtt = Date.now() - start;
+    const success = response['Response'] === 'Success';
+    return new Response(JSON.stringify({ success, host, port, action: 'SendText', response, transcript, rtt, error: success ? undefined : `SendText failed: ${response['Message'] || response['Response']}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

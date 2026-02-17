@@ -527,3 +527,125 @@ export async function handleIMAPSSelect(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Handle IMAPS interactive WebSocket session
+ * GET /api/imaps/session?host=...&port=...&username=...&password=...
+ *
+ * Connects over TLS, authenticates with LOGIN, then allows the browser
+ * to issue raw IMAP commands and receive responses.
+ *
+ * WebSocket message protocol:
+ *   Browser → Worker: JSON { type: 'command', command: string }
+ *   Worker → Browser: JSON { type: 'connected', greeting: string, capabilities: string }
+ *                          { type: 'response', tag: string, response: string, command: string }
+ *                          { type: 'error', message: string }
+ */
+export async function handleIMAPSSession(request: Request): Promise<Response> {
+  if (request.headers.get('Upgrade') !== 'websocket') {
+    return new Response('WebSocket upgrade required', { status: 426 });
+  }
+
+  const url = new URL(request.url);
+  const host = url.searchParams.get('host') || '';
+  const port = parseInt(url.searchParams.get('port') || '993');
+  const username = url.searchParams.get('username') || '';
+  const password = url.searchParams.get('password') || '';
+
+  if (!host || !username || !password) {
+    return new Response(JSON.stringify({ error: 'Missing host, username, or password' }), { status: 400 });
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+    }), { status: 403 });
+  }
+
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  server.accept();
+
+  (async () => {
+    try {
+      // Connect with TLS
+      const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      // Read server greeting
+      let greeting = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        greeting += new TextDecoder().decode(value);
+        if (greeting.includes('* OK')) break;
+      }
+
+      if (!greeting.includes('* OK')) {
+        server.send(JSON.stringify({ type: 'error', message: 'No IMAPS greeting received' }));
+        server.close();
+        return;
+      }
+
+      // LOGIN
+      const loginResp = await sendIMAPCommand(reader, writer, 'A001', `LOGIN ${username} ${password}`, 10000);
+      if (!loginResp.includes('A001 OK')) {
+        server.send(JSON.stringify({ type: 'error', message: 'Authentication failed: ' + loginResp.trim() }));
+        server.close();
+        return;
+      }
+
+      // Get CAPABILITY
+      const capResp = await sendIMAPCommand(reader, writer, 'A002', 'CAPABILITY', 5000);
+      const capLine = capResp.split('\r\n').find(l => l.startsWith('* CAPABILITY')) ?? '';
+
+      server.send(JSON.stringify({
+        type: 'connected',
+        greeting: greeting.trim(),
+        capabilities: capLine.replace('* CAPABILITY ', '').trim(),
+        host,
+        port,
+        username,
+        tls: true,
+      }));
+
+      // Auto-increment tag counter (start from A003 since A001/A002 used above)
+      let tagCounter = 3;
+
+      server.addEventListener('message', async (event) => {
+        try {
+          const msg = JSON.parse(event.data as string) as { type: string; command?: string };
+          if (msg.type === 'command' && msg.command) {
+            const tag = `A${String(tagCounter++).padStart(3, '0')}`;
+            const response = await sendIMAPCommand(reader, writer, tag, msg.command.trim(), 30000);
+            server.send(JSON.stringify({
+              type: 'response',
+              tag,
+              response,
+              command: msg.command.trim(),
+            }));
+          }
+        } catch (e) {
+          server.send(JSON.stringify({ type: 'error', message: String(e) }));
+        }
+      });
+
+      server.addEventListener('close', async () => {
+        try {
+          const tag = `A${String(tagCounter++).padStart(3, '0')}`;
+          await sendIMAPCommand(reader, writer, tag, 'LOGOUT', 3000);
+        } catch { /* ignore */ }
+        socket.close().catch(() => {});
+      });
+    } catch (e) {
+      server.send(JSON.stringify({ type: 'error', message: String(e) }));
+      server.close();
+    }
+  })();
+
+  return new Response(null, { status: 101, webSocket: client });
+}

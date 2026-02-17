@@ -1,462 +1,701 @@
-# FTP Protocol Implementation Plan
+# FTP / FTPS Protocol — Port of Call Reference
 
-## Overview
+**RFC:** [959](https://tools.ietf.org/html/rfc959) (FTP), [4217](https://tools.ietf.org/html/rfc4217) (FTPS)
+**Default ports:** 21 (FTP), 990 (FTPS implicit TLS)
+**Sources:** `src/worker/ftp.ts`, `src/worker/ftps.ts`
+**Tests:** `tests/ftp.test.ts`, `tests/ftps.test.ts`
 
-**Protocol:** FTP (File Transfer Protocol)
-**Port:** 21 (control), 20 (data in active mode)
-**RFC:** [RFC 959](https://tools.ietf.org/html/rfc959)
-**Complexity:** Medium-High
-**Purpose:** File transfer
+---
 
-FTP is a **classic file transfer protocol**. Despite being legacy, it's still widely used. A browser-based client enables file management, uploads, and downloads from any device.
+## Two implementations, very different APIs
 
-### Use Cases
-- Browse FTP servers
-- Upload/download files
-- Website file management
-- Legacy system integration
-- Educational - learn FTP protocol
+FTP and FTPS are not mirrors of each other. They differ in:
 
-## Protocol Specification
+| Feature | FTP (`/api/ftp/*`) | FTPS (`/api/ftps/*`) |
+|---------|---------------------|----------------------|
+| Transport | Plain TCP (`connect()`) | Implicit TLS (`secureTransport: 'on'`) |
+| Default port | `21` | `990` |
+| Data channels | Plain TCP | TLS-encrypted |
+| Connect probe | Requires credentials | No credentials needed |
+| Upload body | `multipart/form-data` | JSON with base64 `content` |
+| Download response | `application/octet-stream` binary | JSON with base64 `content` |
+| Rename params | `fromPath`, `toPath` | `from`, `to` |
+| List response key | `files` | `entries` |
+| List entry shape | `{name, size, type, modified}` | `{name, type, size?, permissions?, raw}` |
+| List path default | `/` | `.` |
+| Delete file | DELE only | DELE or RMD via `type: 'file'|'dir'` |
 
-### FTP Architecture
+Both use PASV (passive mode) exclusively. Active mode (PORT) is not supported.
 
-FTP uses **two connections**:
-1. **Control connection** (port 21) - Commands and responses
-2. **Data connection** (port 20 or dynamic) - File transfers
+---
 
-### Transfer Modes
+## FTP Endpoints
 
-**Active Mode**:
-- Client opens listening port
-- Server connects to client for data transfer
-- Problematic with firewalls/NAT
+### `GET|POST /api/ftp/connect` — Authenticate and get PWD
 
-**Passive Mode** (PASV):
-- Server opens listening port
-- Client connects to server for data transfer
-- Works better with firewalls
+**GET:**
+```
+GET /api/ftp/connect?host=ftp.example.com&port=21&username=alice&password=hunter2
+```
 
-### FTP Commands
+**POST:**
+```json
+{ "host": "ftp.example.com", "port": 21, "username": "alice", "password": "hunter2" }
+```
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| USER | Username | `USER alice` |
-| PASS | Password | `PASS secret` |
-| PWD | Print working directory | `PWD` |
-| CWD | Change directory | `CWD /pub` |
-| LIST | List files | `LIST` |
-| RETR | Retrieve file | `RETR file.txt` |
-| STOR | Store file | `STOR file.txt` |
-| DELE | Delete file | `DELE file.txt` |
-| MKD | Make directory | `MKD newdir` |
-| RMD | Remove directory | `RMD olddir` |
-| PASV | Passive mode | `PASV` |
-| TYPE | Transfer type | `TYPE I` (binary) |
-| QUIT | Disconnect | `QUIT` |
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `username` | **required** | Use `anonymous` for anonymous FTP |
+| `password` | **required** | For anonymous FTP, use an email address |
+| `port` | `21` | |
 
-### Response Codes
+**Wire sequence:**
+```
+Server → Client: 220 Welcome to FTP server
+Client → Server: USER alice
+Server → Client: 331 Password required
+Client → Server: PASS hunter2
+Server → Client: 230 Login successful
+Client → Server: TYPE I
+Server → Client: 200 Switching to Binary mode
+Client → Server: PWD
+Server → Client: 257 "/home/alice" is the current directory
+Client → Server: QUIT
+```
 
-| Code | Meaning |
-|------|---------|
-| 150 | File status okay |
-| 200 | Command okay |
-| 220 | Service ready |
-| 226 | Closing data connection |
-| 230 | User logged in |
-| 331 | Username okay, need password |
-| 425 | Can't open data connection |
-| 530 | Not logged in |
+`TYPE I` (binary mode) is always sent after login. There is no option for `TYPE A` (ASCII mode).
 
-## Worker Implementation
-
-### FTP Client
-
-```typescript
-// src/worker/protocols/ftp/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface FTPConfig {
-  host: string;
-  port: number;
-  username?: string;
-  password?: string;
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Connected successfully",
+  "currentDirectory": "/home/alice"
 }
+```
 
-export interface FTPFile {
-  name: string;
-  size: number;
-  type: 'file' | 'directory';
-  permissions: string;
-  modified: Date;
+**Failure:** If USER returns anything other than 331 (including 230 for no-password servers), or PASS returns anything other than 230, the error message includes the raw server response.
+
+---
+
+### `GET|POST /api/ftp/list` — List directory
+
+```json
+{ "host": "ftp.example.com", "port": 21, "username": "alice", "password": "hunter2", "path": "/" }
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `path` | `/` | If not `/`, CWD is sent before PASV |
+
+**Wire sequence:**
+
+```
+[auth + TYPE I]
+Client → Server: CWD /pub                   (skipped if path is /)
+Server → Client: 250 Directory successfully changed
+Client → Server: PASV
+Server → Client: 227 Entering Passive Mode (10,0,0,1,200,150)
+[open data socket to 10.0.0.1:51350]
+Client → Server: LIST
+Server → Client: 150 Here comes the directory listing
+[read data channel until closed]
+Server → Client: 226 Directory send OK
+```
+
+**Critical data channel timing:** The data socket is opened *before* sending LIST (not after the 150 response). Both the LIST send and `socket.opened` are awaited in parallel via `Promise.all`. This avoids a race where the server closes the data channel before the client connects. The 30 s data transfer timeout is separate from the control channel response timeout (10 s).
+
+**LIST parser limitations:** The response is split by newline and parsed with a 9-field whitespace split. Only Unix-style `ls -l` output is handled:
+
+```
+drwxr-xr-x 2 user group 4096 Jan 01 12:00 dirname
+```
+
+- Windows FTP servers (IIS, FileZilla) returning DOS-format `DIR` output (e.g., `01-01-24  12:00PM <DIR> dirname`) are parsed as `unknown` entries with `size: 0`.
+- The parser looks for 9+ fields; lines with fewer are skipped entirely.
+- `total N` summary lines are skipped.
+- `modified` is a three-token join: `Jan 01 12:00` — not ISO 8601.
+
+**Response:**
+```json
+{
+  "success": true,
+  "path": "/pub",
+  "files": [
+    { "name": "readme.txt", "size": 1234, "type": "file", "modified": "Jan 01 12:00" },
+    { "name": "docs", "size": 4096, "type": "directory", "modified": "Dec 15 2023" }
+  ]
 }
+```
 
-export class FTPClient {
-  private controlSocket: Socket;
-  private decoder = new TextDecoder();
-  private encoder = new TextEncoder();
+`type` is `"file"` for `-` permission prefix, `"directory"` for `d`. No symlink detection in the FTP parser (unlike FTPS).
 
-  constructor(private config: FTPConfig) {}
+---
 
-  async connect(): Promise<void> {
-    // Control connection
-    this.controlSocket = connect(`${this.config.host}:${this.config.port}`);
-    await this.controlSocket.opened;
+### `POST /api/ftp/upload` — Upload file
 
-    // Read greeting
-    await this.readResponse();
+**This is the only endpoint that uses `multipart/form-data`, not JSON.**
 
-    // Login
-    if (this.config.username) {
-      await this.send(`USER ${this.config.username}`);
-      await this.readResponse();
+```
+POST /api/ftp/upload
+Content-Type: multipart/form-data; boundary=...
 
-      if (this.config.password) {
-        await this.send(`PASS ${this.config.password}`);
-        await this.readResponse();
-      }
-    } else {
-      // Anonymous login
-      await this.send('USER anonymous');
-      await this.readResponse();
+--boundary
+Content-Disposition: form-data; name="host"
+ftp.example.com
+--boundary
+Content-Disposition: form-data; name="username"
+alice
+--boundary
+Content-Disposition: form-data; name="password"
+hunter2
+--boundary
+Content-Disposition: form-data; name="remotePath"
+/upload/myfile.txt
+--boundary
+Content-Disposition: form-data; name="file"; filename="myfile.txt"
+Content-Type: application/octet-stream
+[binary data]
+--boundary--
+```
 
-      await this.send('PASS anonymous@');
-      await this.readResponse();
-    }
+| Form field | Notes |
+|------------|-------|
+| `host` | Required |
+| `username` | Required |
+| `password` | Required |
+| `remotePath` | Required — full path including filename |
+| `port` | Optional, defaults to `21` |
+| `file` | Required — `File` object (blob with filename) |
 
-    // Binary mode
-    await this.send('TYPE I');
-    await this.readResponse();
-  }
+**Wire sequence:** `[auth + TYPE I]` → PASV → open data socket → STOR → write bytes → close data socket → read 226.
 
-  async pwd(): Promise<string> {
-    await this.send('PWD');
-    const response = await this.readResponse();
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Uploaded myfile.txt to /upload/myfile.txt",
+  "size": 45678
+}
+```
 
-    // Response: 257 "/path" is current directory
-    const match = response.match(/"([^"]+)"/);
-    return match ? match[1] : '/';
-  }
+---
 
-  async cwd(path: string): Promise<void> {
-    await this.send(`CWD ${path}`);
-    await this.readResponse();
-  }
+### `GET|POST /api/ftp/download` — Download file
 
-  async list(path: string = ''): Promise<FTPFile[]> {
-    // Enter passive mode
-    const { host, port } = await this.enterPassiveMode();
+**This is the only FTP endpoint that returns binary, not JSON.**
 
-    // Send LIST command
-    await this.send(`LIST ${path}`);
-    await this.readResponse(); // 150 Opening data connection
+```json
+{ "host": "ftp.example.com", "username": "alice", "password": "hunter2", "remotePath": "/pub/file.tar.gz" }
+```
 
-    // Open data connection
-    const dataSocket = connect(`${host}:${port}`);
-    await dataSocket.opened;
+| Field | Default | Notes |
+|-------|---------|-------|
+| `remotePath` | **required** | Full path to the remote file |
 
-    // Read file list
-    const reader = dataSocket.readable.getReader();
-    let buffer = '';
+**Response:** `200 application/octet-stream` with headers:
+```
+Content-Type: application/octet-stream
+Content-Disposition: attachment; filename="file.tar.gz"
+Content-Length: <bytes>
+```
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += this.decoder.decode(value, { stream: true });
-    }
+The filename in `Content-Disposition` is the last path component from `remotePath`. The 60 s data transfer timeout is longer than for LIST (30 s).
 
-    await dataSocket.close();
+On failure (RETR returns 4xx/5xx), returns JSON `{ "success": false, "error": "..." }` with HTTP 500.
 
-    // Read completion response
-    await this.readResponse(); // 226 Transfer complete
+---
 
-    // Parse list
-    return this.parseList(buffer);
-  }
+### `POST /api/ftp/delete` — Delete file
 
-  async retrieve(filename: string): Promise<Uint8Array> {
-    const { host, port } = await this.enterPassiveMode();
+```json
+{ "host": "ftp.example.com", "username": "alice", "password": "hunter2", "remotePath": "/pub/old.txt" }
+```
 
-    await this.send(`RETR ${filename}`);
-    await this.readResponse();
+Sends `DELE /pub/old.txt`. Expects 250. No directory deletion — use FTPS `/api/ftps/delete` with `type: 'dir'` for RMD.
 
-    // Open data connection
-    const dataSocket = connect(`${host}:${port}`);
-    await dataSocket.opened;
+**Response:**
+```json
+{ "success": true, "message": "Deleted /pub/old.txt" }
+```
 
-    // Read file data
-    const reader = dataSocket.readable.getReader();
-    const chunks: Uint8Array[] = [];
+---
 
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      chunks.push(value);
-    }
+### `POST /api/ftp/mkdir` — Create directory
 
-    await dataSocket.close();
-    await this.readResponse(); // 226 Transfer complete
+```json
+{ "host": "ftp.example.com", "username": "alice", "password": "hunter2", "dirPath": "/pub/newdir" }
+```
 
-    // Concatenate chunks
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
+Sends `MKD /pub/newdir`. Expects 257. No equivalent `rmdir` endpoint — use FTPS `/api/ftps/delete` with `type: 'dir'`.
 
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
+**Response:**
+```json
+{ "success": true, "message": "Created directory /pub/newdir" }
+```
 
-    return result;
-  }
+---
 
-  async store(filename: string, data: Uint8Array): Promise<void> {
-    const { host, port } = await this.enterPassiveMode();
+### `POST /api/ftp/rename` — Rename or move
 
-    await this.send(`STOR ${filename}`);
-    await this.readResponse();
+```json
+{
+  "host": "ftp.example.com",
+  "username": "alice",
+  "password": "hunter2",
+  "fromPath": "/pub/old.txt",
+  "toPath": "/pub/new.txt"
+}
+```
 
-    // Open data connection
-    const dataSocket = connect(`${host}:${port}`);
-    await dataSocket.opened;
+Sends RNFR then RNTO. Expects 350 after RNFR, 250 after RNTO. Works for both files and directories. Can move across directories on the same server.
 
-    // Send file data
-    const writer = dataSocket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
+**Response:**
+```json
+{ "success": true, "message": "Renamed /pub/old.txt to /pub/new.txt" }
+```
 
-    await dataSocket.close();
-    await this.readResponse(); // 226 Transfer complete
-  }
+---
 
-  async delete(filename: string): Promise<void> {
-    await this.send(`DELE ${filename}`);
-    await this.readResponse();
-  }
+## FTPS Endpoints
 
-  async mkdir(dirname: string): Promise<void> {
-    await this.send(`MKD ${dirname}`);
-    await this.readResponse();
-  }
+FTPS uses implicit TLS (TLS from the first byte, before any FTP command). The `connect()` call uses `{ secureTransport: 'on' }`. Data channels also use `{ secureTransport: 'on' }` — both control and data connections are encrypted.
 
-  async rmdir(dirname: string): Promise<void> {
-    await this.send(`RMD ${dirname}`);
-    await this.readResponse();
-  }
+### `POST /api/ftps/connect` — Server probe (no credentials needed)
 
-  private async enterPassiveMode(): Promise<{ host: string; port: number }> {
-    await this.send('PASV');
-    const response = await this.readResponse();
+Unlike the FTP connect endpoint, FTPS connect does **not** require credentials. It reads the 220 banner, sends FEAT and SYST, then quits.
 
-    // Response: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
-    const match = response.match(/\((\d+),(\d+),(\d+),(\d+),(\d+),(\d+)\)/);
+```json
+{ "host": "ftps.example.com", "port": 990, "timeout": 10000 }
+```
 
-    if (!match) throw new Error('Failed to parse PASV response');
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `port` | `990` | |
+| `timeout` | `10000` | Wall-clock timeout for the entire probe |
 
-    const host = `${match[1]}.${match[2]}.${match[3]}.${match[4]}`;
-    const port = parseInt(match[5]) * 256 + parseInt(match[6]);
-
-    return { host, port };
-  }
-
-  private parseList(data: string): FTPFile[] {
-    const files: FTPFile[] = [];
-    const lines = data.split('\n');
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-
-      // Parse Unix-style listing
-      // -rw-r--r-- 1 user group 1234 Jan 01 12:34 file.txt
-      const parts = line.split(/\s+/);
-
-      if (parts.length >= 9) {
-        const permissions = parts[0];
-        const size = parseInt(parts[4]);
-        const name = parts.slice(8).join(' ');
-
-        files.push({
-          name,
-          size,
-          type: permissions[0] === 'd' ? 'directory' : 'file',
-          permissions,
-          modified: new Date(), // Parse from parts[5-7]
-        });
-      }
-    }
-
-    return files;
-  }
-
-  private async send(command: string): Promise<void> {
-    const writer = this.controlSocket.writable.getWriter();
-    await writer.write(this.encoder.encode(command + '\r\n'));
-    writer.releaseLock();
-  }
-
-  private async readResponse(): Promise<string> {
-    const reader = this.controlSocket.readable.getReader();
-    let buffer = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += this.decoder.decode(value, { stream: true });
-
-      // FTP responses end with code + space + text
-      // Multi-line: code-text\r\ncode text\r\n
-      const lines = buffer.split('\r\n');
-      const lastLine = lines[lines.length - 2];
-
-      if (lastLine && /^\d{3} /.test(lastLine)) {
-        reader.releaseLock();
-        return buffer;
-      }
-    }
-
-    reader.releaseLock();
-    return buffer;
-  }
-
-  async quit(): Promise<void> {
-    await this.send('QUIT');
-    await this.readResponse();
-    await this.controlSocket.close();
+**Response:**
+```json
+{
+  "success": true,
+  "host": "ftps.example.com",
+  "port": 990,
+  "rtt": 145,
+  "connectTime": 98,
+  "encrypted": true,
+  "protocol": "FTPS (Implicit TLS)",
+  "banner": {
+    "code": 220,
+    "message": "ProFTPD 1.3.7 Server ready",
+    "raw": "220 ProFTPD 1.3.7 Server ready\r\n"
+  },
+  "systemType": "UNIX Type: L8",
+  "features": [
+    "MLST Type*;Size*;Modify*;Perm*;Unique*;",
+    "MLSD",
+    "AUTH TLS",
+    "PBSZ",
+    "PROT",
+    "UTF8",
+    "EPSV"
+  ],
+  "tlsFeatures": {
+    "authTls": true,
+    "pbsz": true,
+    "prot": true,
+    "utf8": true,
+    "mlst": true,
+    "epsv": true
   }
 }
 ```
 
-## Web UI Design
+`tlsFeatures` is derived by case-insensitive substring matching against the FEAT lines. `features` contains the raw FEAT lines (minus the `211-` and `211 End` wrapper).
 
-### FTP File Manager
+`rtt` = total elapsed time. `connectTime` = time until TLS socket was `opened`.
 
-```typescript
-// src/components/FTPClient.tsx
+FEAT returning 211 is required for `features` to be populated. If the server returns 500/502 (FEAT not supported), `features` and `tlsFeatures` are omitted.
 
-export function FTPClient() {
-  const [connected, setConnected] = useState(false);
-  const [currentPath, setCurrentPath] = useState('/');
-  const [files, setFiles] = useState<FTPFile[]>([]);
+---
 
-  const ws = useRef<WebSocket | null>(null);
+### `POST /api/ftps/login` — Authenticate and get CWD + system type
 
-  const loadDirectory = (path: string) => {
-    ws.current?.send(JSON.stringify({
-      type: 'list',
-      path,
-    }));
-  };
-
-  const downloadFile = (filename: string) => {
-    ws.current?.send(JSON.stringify({
-      type: 'retrieve',
-      filename,
-    }));
-  };
-
-  return (
-    <div className="ftp-client">
-      <div className="toolbar">
-        <button onClick={() => loadDirectory(currentPath)}>Refresh</button>
-        <span className="path">{currentPath}</span>
-      </div>
-
-      <table className="file-list">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Size</th>
-            <th>Modified</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {files.map(file => (
-            <tr key={file.name}>
-              <td>
-                {file.type === 'directory' ? '📁' : '📄'} {file.name}
-              </td>
-              <td>{file.size} bytes</td>
-              <td>{file.modified.toLocaleString()}</td>
-              <td>
-                {file.type === 'file' && (
-                  <button onClick={() => downloadFile(file.name)}>
-                    Download
-                  </button>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+```json
+{
+  "host": "ftps.example.com",
+  "port": 990,
+  "username": "alice",
+  "password": "hunter2",
+  "timeout": 15000
 }
 ```
 
-## Security
+Authenticates, sends PWD and SYST, then quits.
 
-### FTPS (FTP over TLS)
+**Response:**
+```json
+{
+  "success": true,
+  "host": "ftps.example.com",
+  "port": 990,
+  "cwd": "/home/alice",
+  "systemType": "UNIX Type: L8"
+}
+```
 
+`systemType` is omitted if SYST returns non-215. `cwd` is empty string if PWD returns non-257 (unusual).
+
+---
+
+### `POST /api/ftps/list` — List directory
+
+```json
+{
+  "host": "ftps.example.com",
+  "port": 990,
+  "username": "alice",
+  "password": "hunter2",
+  "path": ".",
+  "timeout": 15000
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `path` | `.` | Default is current directory, not `/` |
+
+CWD is skipped if `path` is `.`. Data channel is TLS-encrypted.
+
+**FTPS list parser** uses a regex that matches Unix `ls -l` output and additionally detects symlinks (`l` prefix):
+
+```
+/^([dlrwxstST\-]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(.+)$/
+```
+
+Entries that don't match fall through as `{ name: line, type: 'unknown', raw: line }`.
+
+**Response:**
+```json
+{
+  "success": true,
+  "path": ".",
+  "entries": [
+    {
+      "name": "readme.txt",
+      "type": "file",
+      "size": 1234,
+      "permissions": "-rw-r--r--",
+      "raw": "-rw-r--r-- 1 alice users 1234 Jan 01 12:00 readme.txt"
+    },
+    {
+      "name": "link -> /etc/passwd",
+      "type": "symlink",
+      "size": 4096,
+      "permissions": "lrwxrwxrwx",
+      "raw": "lrwxrwxrwx 1 alice users 4096 Jan 01 12:00 link -> /etc/passwd"
+    }
+  ],
+  "count": 2
+}
+```
+
+Note: `name` for symlinks includes the ` -> target` portion from the `ls -l` output — it is not parsed out.
+
+---
+
+### `POST /api/ftps/download` — Download file (returns base64 JSON)
+
+**Unlike FTP download, FTPS download returns JSON with base64-encoded content, not a binary body.**
+
+```json
+{
+  "host": "ftps.example.com",
+  "port": 990,
+  "username": "alice",
+  "password": "hunter2",
+  "path": "/pub/archive.tar.gz",
+  "timeout": 30000
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "path": "/pub/archive.tar.gz",
+  "size": 45678,
+  "content": "H4sIAAAAAAAA...",
+  "encoding": "base64"
+}
+```
+
+Base64 encoding is done via `btoa(String.fromCharCode(...))`. This works for binary data but is memory-inefficient for large files — the entire file is buffered in memory before encoding. Workers memory limits apply.
+
+---
+
+### `POST /api/ftps/upload` — Upload file (JSON with base64 content)
+
+**Unlike FTP upload, FTPS upload uses JSON body with base64-encoded content, not multipart/form-data.**
+
+```json
+{
+  "host": "ftps.example.com",
+  "port": 990,
+  "username": "alice",
+  "password": "hunter2",
+  "path": "/upload/myfile.txt",
+  "content": "SGVsbG8gV29ybGQ=",
+  "timeout": 30000
+}
+```
+
+Content is decoded from base64 via `atob()` then converted to bytes. Accepts 226 or 250 as a successful transfer complete response (some servers return 250).
+
+**Response:**
+```json
+{ "success": true, "path": "/upload/myfile.txt", "bytesUploaded": 11 }
+```
+
+---
+
+### `POST /api/ftps/delete` — Delete file or directory
+
+```json
+{
+  "host": "ftps.example.com",
+  "username": "alice",
+  "password": "hunter2",
+  "path": "/pub/old.txt",
+  "type": "file"
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `type` | `"file"` | `"file"` → DELE; `"dir"` → RMD |
+
+**Port default bug:** `handleFTPSDelete` defaults to `port = 21`, not `990`. Pass `port: 990` explicitly.
+
+**Response:**
+```json
+{ "success": true, "path": "/pub/old.txt", "type": "file", "message": "Remove successful." }
+```
+
+---
+
+### `POST /api/ftps/mkdir` — Create directory
+
+```json
+{ "host": "ftps.example.com", "username": "alice", "password": "hunter2", "path": "/pub/newdir" }
+```
+
+**Port default bug:** Defaults to `port = 21`. Pass `port: 990` explicitly.
+
+The `path` in the response is extracted from the 257 reply's quoted string (RFC 959 convention). If the server omits quotes, `path` echoes the input.
+
+**Response:**
+```json
+{ "success": true, "path": "/pub/newdir", "message": "/pub/newdir\" created" }
+```
+
+---
+
+### `POST /api/ftps/rename` — Rename or move
+
+```json
+{
+  "host": "ftps.example.com",
+  "username": "alice",
+  "password": "hunter2",
+  "from": "/pub/old.txt",
+  "to": "/pub/new.txt"
+}
+```
+
+**Note:** FTPS rename uses `from`/`to`; FTP rename uses `fromPath`/`toPath`.
+
+**Port default bug:** Defaults to `port = 21`. Pass `port: 990` explicitly.
+
+**Response:**
+```json
+{ "success": true, "from": "/pub/old.txt", "to": "/pub/new.txt", "message": "Rename successful." }
+```
+
+---
+
+## Implementation notes
+
+### Passive mode data socket timing
+
+Both FTP and FTPS open the data socket and send the data command (LIST/RETR/STOR) in parallel, then await both. This is required because some servers close the data port very quickly after PASV, and connecting *after* the command can result in a "connection refused" on the data port.
+
+FTP:
 ```typescript
-// Use port 990 for FTPS (implicit TLS)
-// Or use STARTTLS on port 21 (explicit TLS)
+const dataSocket = connect(`${host}:${port}`);
+const dataOpened = dataSocket.opened;
+await this.sendCommand('LIST');
+const [listResponse] = await Promise.all([this.readResponse(), dataOpened]);
 ```
 
-### Anonymous Access
-
+FTPS:
 ```typescript
-// Many FTP servers allow anonymous login
-const config = {
-  host: 'ftp.example.com',
-  port: 21,
-  username: 'anonymous',
-  password: 'user@example.com',
-};
+const dataSocket = session.openDataSocket(dataHost, dataPort);
+await session.sendCommand('LIST');
+const [listResp] = await Promise.all([session.readResponse(timeout), dataSocket.opened]);
 ```
 
-## Testing
+### Multi-line response parsing
 
-### Public FTP Servers
+**FTP (FTPClient.readResponse):** Appends chunks until the accumulated string ends with `\r\n` *and* the last line's 4th character is a space (single-line terminal line per RFC 959). This is fragile against servers that send responses where `\r\n` arrives split from the response code line.
 
+**FTPS (FTPSSession.readResponse):** Loops reading chunks until `isComplete()` returns true. `isComplete()` checks that the *last* line of the buffer matches `/^\d{3} /` (terminal line). Also has a `timedOut` flag that causes the loop to exit without a complete response — downstream code receives a partial buffer.
+
+### Response timeout (FTP)
+
+`readResponse` in the FTPClient defaults to a 10 s timeout. The data transfer loops for LIST and RETR/STOR use separate 30 s and 60 s timeouts respectively. There is no outer wall-clock timeout on FTP HTTP endpoints — only the inner per-read limits apply.
+
+### FTPS connect response completeness check
+
+The `readResponse` helper in `handleFTPSConnect` uses a different regex pattern than `FTPSSession.readResponse`:
+
+```javascript
+// handleFTPSConnect
+if (/^\d{3} .+\r?\n$/m.test(responseText)) break;
+if (/^\d{3}-.+\r?\n\d{3} .+\r?\n$/ms.test(responseText)) break;
 ```
-ftp.gnu.org (anonymous)
-ftp.debian.org (anonymous)
-```
 
-### Docker FTP Server
+This detects one-line and two-line patterns. For three-or-more-line multi-line responses, the loop continues reading until the per-read timeout resolves with `{ done: true }`. Long FEAT responses with many features may be truncated on slow connections.
+
+### No STARTTLS / Explicit TLS
+
+Explicit TLS (AUTH TLS / STARTTLS on port 21) is not implemented. The FTPS handler only does implicit TLS. If you need to test a server that requires `AUTH TLS`, the `/api/ftps/connect` FEAT response will show `AUTH TLS` in its features list, but no actual upgrade occurs.
+
+---
+
+## Cross-implementation comparison
+
+| Endpoint | FTP | FTPS |
+|----------|-----|------|
+| Connect (probe) | `GET\|POST /api/ftp/connect` — requires auth | `POST /api/ftps/connect` — no auth |
+| Login | *(same endpoint)* | `POST /api/ftps/login` — returns cwd + systemType |
+| List | `GET\|POST /api/ftp/list` | `POST /api/ftps/list` |
+| Download | `GET\|POST /api/ftp/download` → binary body | `POST /api/ftps/download` → JSON+base64 |
+| Upload | `POST /api/ftp/upload` → form-data | `POST /api/ftps/upload` → JSON+base64 |
+| Delete | `POST /api/ftp/delete` → DELE only | `POST /api/ftps/delete` → DELE or RMD |
+| Mkdir | `POST /api/ftp/mkdir` | `POST /api/ftps/mkdir` |
+| Rename | `POST /api/ftp/rename` (fromPath/toPath) | `POST /api/ftps/rename` (from/to) |
+| Rmdir | ❌ not available | ✅ via `type: 'dir'` in delete |
+
+---
+
+## What is NOT implemented
+
+| Feature | Notes |
+|---------|-------|
+| Active mode (PORT) | PASV only; firewalled servers requiring PORT will fail |
+| EPSV | No IPv6 data connections |
+| AUTH TLS / STARTTLS | No explicit FTPS; implicit FTPS only |
+| MLSD / MLST | Structured directory listing not exposed |
+| NLST | Bare filename list not exposed |
+| SIZE / MDTM | File size / modification time not exposed |
+| RETR partial (REST) | No resume download |
+| APPE | No append mode upload |
+| SITE commands | Server-specific commands not exposed |
+| Directory rmdir (FTP) | Use FTPS delete with `type: 'dir'` |
+| Anonymous FTP shortcut | Works: pass `username: 'anonymous'`, `password: 'guest@example.com'` |
+| DOS-format LIST | Only Unix `ls -l` output is parsed; Windows FTP servers return garbled results |
+
+---
+
+## curl quick reference
 
 ```bash
-docker run -d \
-  -p 21:21 \
-  -p 20:20 \
-  -p 21000-21010:21000-21010 \
-  -e FTP_USER=testuser \
-  -e FTP_PASS=testpass \
-  fauria/vsftpd
+# FTP: connect test
+curl -s "https://portofcall.ross.gg/api/ftp/connect?host=ftp.example.com&username=alice&password=hunter2" | jq .
+
+# FTP: list directory
+curl -s -X POST https://portofcall.ross.gg/api/ftp/list \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftp.example.com","username":"alice","password":"hunter2","path":"/pub"}' | jq '.files[].name'
+
+# FTP: upload (multipart/form-data)
+curl -s -X POST https://portofcall.ross.gg/api/ftp/upload \
+  -F host=ftp.example.com \
+  -F username=alice \
+  -F password=hunter2 \
+  -F remotePath=/upload/test.txt \
+  -F file=@local_file.txt | jq .
+
+# FTP: download binary
+curl -s "https://portofcall.ross.gg/api/ftp/download?host=ftp.example.com&username=alice&password=hunter2&remotePath=/pub/file.tar.gz" \
+  --output file.tar.gz
+
+# FTP: delete
+curl -s -X POST https://portofcall.ross.gg/api/ftp/delete \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftp.example.com","username":"alice","password":"hunter2","remotePath":"/pub/old.txt"}' | jq .
+
+# FTP: rename/move
+curl -s -X POST https://portofcall.ross.gg/api/ftp/rename \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftp.example.com","username":"alice","password":"hunter2","fromPath":"/pub/a.txt","toPath":"/pub/b.txt"}' | jq .
+
+# FTPS: server probe (no auth)
+curl -s -X POST https://portofcall.ross.gg/api/ftps/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftps.example.com"}' | jq '{rtt, systemType, tlsFeatures}'
+
+# FTPS: login
+curl -s -X POST https://portofcall.ross.gg/api/ftps/login \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftps.example.com","username":"alice","password":"hunter2"}' | jq .
+
+# FTPS: list
+curl -s -X POST https://portofcall.ross.gg/api/ftps/list \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftps.example.com","username":"alice","password":"hunter2","path":"/pub"}' | jq '.entries[] | {name,type,size}'
+
+# FTPS: download (returns base64)
+curl -s -X POST https://portofcall.ross.gg/api/ftps/download \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftps.example.com","username":"alice","password":"hunter2","path":"/pub/file.txt"}' | \
+  jq -r '.content' | base64 -d > file.txt
+
+# FTPS: upload (send base64)
+curl -s -X POST https://portofcall.ross.gg/api/ftps/upload \
+  -H 'Content-Type: application/json' \
+  -d "{\"host\":\"ftps.example.com\",\"username\":\"alice\",\"password\":\"hunter2\",\"path\":\"/upload/test.txt\",\"content\":\"$(base64 < local_file.txt)\"}" | jq .
+
+# FTPS: delete directory (port must be explicit due to default=21 bug)
+curl -s -X POST https://portofcall.ross.gg/api/ftps/delete \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"ftps.example.com","port":990,"username":"alice","password":"hunter2","path":"/old_dir","type":"dir"}' | jq .
 ```
 
-## Resources
+---
 
-- **RFC 959**: [FTP Protocol](https://tools.ietf.org/html/rfc959)
-- **RFC 2228**: [FTP Security Extensions (FTPS)](https://tools.ietf.org/html/rfc2228)
+## Local test servers
 
-## Next Steps
+**Pure-FTPd (plain FTP):**
+```bash
+docker run -d -p 21:21 -p 30000-30009:30000-30009 \
+  -e "PUBLICHOST=localhost" \
+  --name pure-ftpd stilliard/pure-ftpd
 
-1. Implement FTP client with passive mode
-2. Build file manager UI
-3. Add upload/download progress
-4. Support FTPS (FTP over TLS)
-5. Add resume capability
-6. Support active mode (if needed)
-7. Create bookmark manager
+# Create user
+docker exec pure-ftpd pure-pw useradd alice -u ftpuser -d /home/alice/ftp -m
+docker exec pure-ftpd pure-pw mkdb
+```
 
-## Notes
+**vsftpd (supports both FTP and FTPS):**
+```bash
+# Generate self-signed cert for FTPS
+openssl req -x509 -newkey rsa:2048 -keyout vsftpd.key -out vsftpd.crt -days 365 -nodes -subj '/CN=localhost'
 
-- **Passive mode** is essential for firewalls/NAT
-- FTP is **legacy** but still widely used
-- Consider **SFTP** (SSH-based) as modern alternative
-- **FTPS** (FTP+TLS) is more secure than plain FTP
-- Active mode requires opening ports on client side (challenging in browser)
+docker run -d -p 21:21 -p 990:990 -p 21000-21010:21000-21010 \
+  --name vsftpd fauria/vsftpd
+```
+
+**FileZilla Server** (Windows, for testing DOS-format LIST output — currently returns entries parsed as `unknown` by this implementation).

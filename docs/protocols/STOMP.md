@@ -1,789 +1,354 @@
-# STOMP Protocol Implementation Plan
+# STOMP — Power User Reference
 
-## Overview
+**Port:** 61613 | **Protocol:** STOMP 1.2 | **Deployed**
 
-**Protocol:** STOMP (Simple Text Oriented Messaging Protocol)
-**Port:** 61613 (TCP), 61614 (SSL/TLS), 15674 (RabbitMQ WebSocket)
-**Specification:** [STOMP 1.2](https://stomp.github.io/stomp-specification-1.2.html)
-**Complexity:** Low
-**Purpose:** Simple messaging protocol for message brokers
+Port of Call implements the STOMP text-frame protocol directly over TCP — no STOMP client library. All three endpoints open a fresh TCP connection, exchange text frames delimited by NULL bytes, and return JSON.
 
-STOMP enables **message broker communication** - publish/subscribe messaging, queue operations, and broker interactions with a simple text protocol from the browser.
+**Compatible brokers:** RabbitMQ, ActiveMQ, Apollo, Artemis. **No TLS** — plain TCP only. STOMP over WebSocket (port 15674) is not supported.
 
-### Use Cases
-- Message queue access
-- Pub/sub messaging
-- WebSocket messaging
-- Event-driven architectures
-- Real-time notifications
-- Microservices communication
+---
 
-## Protocol Specification
+## API Endpoints
 
-### Frame Format
+### `POST /api/stomp/connect` — Broker probe
 
-STOMP uses newline-delimited text frames:
+Sends a CONNECT frame and returns the broker's CONNECTED (or ERROR) response, then disconnects.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | Validated: `[a-zA-Z0-9.-]+` only |
+| `port` | number | `61613` | |
+| `username` | string | — | Sent as `login` header |
+| `password` | string | — | Sent as `passcode` header |
+| `vhost` | string | — | Sent as STOMP `host` header; defaults to `host` if omitted |
+| `timeout` | number (ms) | `10000` | |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "version": "1.2",
+  "server": "RabbitMQ/3.12.0",
+  "heartBeat": "0,0",
+  "sessionId": "session-abc123",
+  "headers": {
+    "version": "1.2",
+    "server": "RabbitMQ/3.12.0",
+    "heart-beat": "0,0",
+    "session": "session-abc123"
+  }
+}
+```
+
+`headers` contains the full CONNECTED frame header map. `heartBeat` is the broker's negotiated heart-beat value (always `"0,0"` since the client requests `0,0` in the CONNECT frame).
+
+**STOMP ERROR (200, success: false):**
+```json
+{
+  "success": false,
+  "error": "Bad CONNECT",
+  "headers": { "message": "Bad CONNECT", "content-type": "text/plain" }
+}
+```
+
+**Response accumulation:** The reader loops until a NULL byte (`\x00`) appears in any received chunk, or 16 KB is accumulated. The NULL byte check is on the most recently read chunk only — if the frame-terminating NULL arrives as a standalone TCP packet after the frame data, the loop will continue reading one more chunk and will capture it correctly. If 16 KB arrives without a NULL byte (unlikely in normal brokers), a "Response too large" error is thrown.
+
+**After reading CONNECTED:** A DISCONNECT frame with `receipt: disconnect-receipt` is sent (broker may not respond before the socket closes).
+
+---
+
+### `POST /api/stomp/send` — Send a message
+
+Authenticates, sends one message to a destination, waits for a RECEIPT frame, then disconnects.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `61613` | |
+| `username` | string | — | |
+| `password` | string | — | |
+| `vhost` | string | — | |
+| `destination` | string | required | Must match `/^\/[a-zA-Z0-9/_.-]+$/` |
+| `body` | string | required | Message payload (string only) |
+| `contentType` | string | `"text/plain"` | Sent as `content-type` header |
+| `headers` | object | `{}` | Additional STOMP headers merged into SEND frame |
+| `timeout` | number (ms) | `10000` | |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "destination": "/queue/orders",
+  "bodyLength": 42,
+  "receiptReceived": true,
+  "brokerVersion": "1.2",
+  "brokerServer": "RabbitMQ/3.12.0"
+}
+```
+
+**`receiptReceived: false` with `success: true`:** If the RECEIPT doesn't arrive before the timeout, the timeout catch block is silently swallowed. The response returns `success: true, receiptReceived: false` — the message may or may not have been delivered. This is expected behavior when sending to high-latency brokers; it is NOT a send failure.
+
+**`bodyLength` vs actual bytes:** `bodyLength` is `messageBody.length` — the JavaScript string character count. The `content-length` header sent to the broker is the UTF-8 byte count. For ASCII bodies these are equal; for multi-byte characters (emoji, CJK) `bodyLength` will be smaller than the actual content-length.
+
+**Destination validation:** Only applies to `/send`, not `/subscribe`. Must start with `/` and contain only `[a-zA-Z0-9/_.-]`. Destinations with `#`, `*`, spaces, or special characters are rejected with HTTP 400. RabbitMQ's exchange destinations (e.g. `/exchange/amq.topic/routing.key`) and ActiveMQ virtual topics (e.g. `VirtualTopic.>`) that use special characters will be rejected.
+
+**SEND frame headers:** The implementation always adds `receipt: send-receipt` to the SEND headers. If you pass `receipt` in your `headers` object, it will be merged (and your value takes precedence over the default since custom headers are spread after the initial headers — actually wait, let me check this). Looking at the code: `const sendHeaders = { destination, 'content-type': contentType, 'content-length': ..., receipt: 'send-receipt', ...customHeaders }` — custom headers are spread last, so they CAN override `receipt`, `destination`, and `content-type`.
+
+**DISCONNECT at end:** Sent without a `receipt` header. No wait for broker DISCONNECT acknowledgment.
+
+---
+
+### `POST /api/stomp/subscribe` — Consume messages
+
+Authenticates, subscribes to a destination, collects incoming MESSAGE frames up to `maxMessages`, then unsubscribes and disconnects.
+
+**Request:**
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `host` | string | required | |
+| `port` | number | `61613` | |
+| `username` | string | — | |
+| `password` | string | — | |
+| `vhost` | string | — | |
+| `destination` | string | required | No format validation (unlike `/send`) |
+| `maxMessages` | number | `10` | Capped at 50 |
+| `timeout` | number (ms) | `10000` | |
+
+**Success (200):**
+```json
+{
+  "success": true,
+  "destination": "/queue/orders",
+  "messageCount": 3,
+  "messages": [
+    {
+      "destination": "/queue/orders",
+      "body": "Order #1001 placed",
+      "headers": {
+        "message-id": "T_001",
+        "subscription": "sub-0",
+        "destination": "/queue/orders",
+        "content-type": "text/plain",
+        "content-length": "18"
+      }
+    }
+  ],
+  "brokerVersion": "1.2",
+  "brokerServer": "RabbitMQ/3.12.0"
+}
+```
+
+**Collection deadline:** Message collection stops at `min(timeout - 500ms, 8000ms)`. Even with `timeout: 60000`, collection stops after 8 seconds. This is a hardcoded cap in the implementation.
+
+**Subscription ID:** Hardcoded to `"sub-0"`. `ack` mode is `auto` — the broker automatically acks messages without waiting for an explicit ACK frame. No explicit ACK/NACK is sent.
+
+**No destination validation:** Unlike `/send`, `/subscribe` does not validate the destination format. Any string is sent as-is in the SUBSCRIBE frame.
+
+**Buffer carryover:** Any data received in the same TCP read as the CONNECTED frame (common with brokers that queue messages immediately after SUBSCRIBE) is preserved and parsed as MESSAGE frames before the next `reader.read()` call. This avoids a race condition where early messages would be lost.
+
+**Empty queue behavior:** If the queue is empty, the endpoint returns `success: true, messageCount: 0, messages: []` after the collect deadline expires.
+
+**UNSUBSCRIBE + DISCONNECT at end:** UNSUBSCRIBE is sent with the subscription ID `sub-0`. DISCONNECT includes `receipt: disc-1` but no wait for the RECEIPT.
+
+---
+
+## Frame Format
+
+STOMP uses a plain-text frame format:
 
 ```
-COMMAND
-header1:value1
-header2:value2
-
-Body^@
+COMMAND\n
+header1:value1\n
+header2:value2\n
+\n
+Body (optional)\0
 ```
 
-Where `^@` is the NULL byte (0x00).
+The frame terminator is a single NULL byte (`\x00`, `0x00`). Carriage returns (`\r`) are not stripped — the implementation splits on `\n` only, so `\r\n` line endings will leave `\r` on header values. Standard brokers use `\n` only.
 
-### Frame Structure
+**Header parsing:** `line.indexOf(':')` finds the first colon — header values containing colons (e.g. `content-type: application/json; charset=utf-8`) are parsed correctly. Header names are preserved as-is (not lowercased).
 
-1. **Command** - Action to perform
-2. **Headers** - Key-value pairs
-3. **Blank line** - Separates headers from body
-4. **Body** - Message content
-5. **NULL** - Frame terminator
+**Frame building (`buildFrame`):** Header values are written as-is with no escaping. STOMP 1.1+ requires that `\r`, `\n`, and `:` be escaped in header values (`\r`, `\n`, `\c`). The implementation does not escape these, so header values containing newlines or colons will produce malformed frames.
 
-### Client Commands
+---
 
-| Command | Description |
-|---------|-------------|
-| CONNECT | Connect to broker |
-| STOMP | Alternative to CONNECT (STOMP 1.1+) |
-| SEND | Send message |
-| SUBSCRIBE | Subscribe to destination |
-| UNSUBSCRIBE | Unsubscribe from destination |
-| BEGIN | Start transaction |
-| COMMIT | Commit transaction |
-| ABORT | Abort transaction |
-| ACK | Acknowledge message |
-| NACK | Negative acknowledge (STOMP 1.1+) |
-| DISCONNECT | Disconnect from broker |
+## STOMP Frame Reference
 
-### Server Frames
+| Command | Direction | Used by |
+|---|---|---|
+| `CONNECT` | Client→Broker | `/connect`, `/send`, `/subscribe` |
+| `SEND` | Client→Broker | `/send` |
+| `SUBSCRIBE` | Client→Broker | `/subscribe` |
+| `UNSUBSCRIBE` | Client→Broker | `/subscribe` |
+| `DISCONNECT` | Client→Broker | All endpoints |
+| `CONNECTED` | Broker→Client | All endpoints |
+| `MESSAGE` | Broker→Client | `/subscribe` |
+| `RECEIPT` | Broker→Client | `/send` |
+| `ERROR` | Broker→Client | All endpoints (on failure) |
 
-| Frame | Description |
-|-------|-------------|
-| CONNECTED | Connection successful |
-| MESSAGE | Message delivery |
-| RECEIPT | Receipt confirmation |
-| ERROR | Error occurred |
-
-### Example: Connect
+### CONNECT Frame (sent by all endpoints)
 
 ```
 CONNECT
-accept-version:1.2
-host:broker.example.com
-login:guest
-passcode:guest
+accept-version:1.0,1.1,1.2
+host:<vhost or host>
+heart-beat:0,0
+login:<username>         ← only if username provided
+passcode:<password>      ← only if password provided
 
-^@
+\0
 ```
 
-### Example: Subscribe
-
-```
-SUBSCRIBE
-id:sub-0
-destination:/queue/test
-ack:client
-
-^@
-```
-
-### Example: Send Message
+### SEND Frame
 
 ```
 SEND
-destination:/queue/test
-content-type:text/plain
+destination:<destination>
+content-type:<contentType>
+content-length:<utf8 byte count>
+receipt:send-receipt
+[custom headers...]
 
-Hello, STOMP!^@
+<body>\0
 ```
 
-### Example: Message Receipt
+---
 
-```
-MESSAGE
-subscription:sub-0
-message-id:123
-destination:/queue/test
-content-type:text/plain
-content-length:13
+## Known Limitations
 
-Hello, STOMP!^@
-```
+**No TLS.** Plain TCP only. STOMP over SSL/TLS (port 61614 on RabbitMQ) will fail.
 
-## Worker Implementation
+**No WebSocket STOMP.** RabbitMQ's WebSocket STOMP plugin (port 15674) requires an HTTP Upgrade — not supported.
 
-```typescript
-// src/worker/protocols/stomp/client.ts
+**Collection capped at 8 seconds.** The `min(timeout - 500ms, 8000ms)` formula means even large timeouts won't extend message collection beyond 8s. High-throughput queues will always be truncated at 50 messages regardless of rate.
 
-import { connect } from 'cloudflare:sockets';
+**No ACK/NACK control.** All subscriptions use `ack: auto`. Messages are auto-acknowledged and cannot be rejected or requeued via this API.
 
-export interface STOMPConfig {
-  host: string;
-  port?: number;
-  username?: string;
-  password?: string;
-  vhost?: string;
-}
+**No transaction support.** BEGIN/COMMIT/ROLLBACK are not implemented.
 
-export interface STOMPMessage {
-  command: string;
-  headers: Record<string, string>;
-  body: string;
-}
+**Header values not escaped.** Header values with embedded newlines or colons will produce malformed frames — not detected or rejected by the implementation.
 
-export interface Subscription {
-  id: string;
-  destination: string;
-  callback: (message: STOMPMessage) => void;
-}
+**Destination regex excludes some valid destinations.** `/send` rejects destinations containing `*`, `#`, `>`, spaces, or `@`. RabbitMQ topic wildcards (`#`, `*`), ActiveMQ wildcard subscriptions (`>`, `*`), and some exchange routing keys will fail the client-side validation.
 
-export class STOMPClient {
-  private socket: any;
-  private connected = false;
-  private subscriptions = new Map<string, Subscription>();
-  private nextSubId = 0;
+**`bodyLength` is character count, not byte count.** For non-ASCII bodies, `bodyLength` in the response will be smaller than the actual bytes transmitted.
 
-  constructor(private config: STOMPConfig) {}
+**Host validation excludes underscores and IPv6.** The host regex `/^[a-zA-Z0-9.-]+$/` rejects hostnames with underscores (common in internal DNS) and IPv6 literals (contain `:`). Use IP or a hostname without underscores.
 
-  async connect(): Promise<void> {
-    const port = this.config.port || 61613;
-    this.socket = connect(`${this.config.host}:${port}`);
-    await this.socket.opened;
+---
 
-    // Start reading frames
-    this.readLoop();
-
-    // Send CONNECT frame
-    const connectFrame: STOMPMessage = {
-      command: 'CONNECT',
-      headers: {
-        'accept-version': '1.2',
-        'host': this.config.vhost || this.config.host,
-      },
-      body: '',
-    };
-
-    if (this.config.username && this.config.password) {
-      connectFrame.headers['login'] = this.config.username;
-      connectFrame.headers['passcode'] = this.config.password;
-    }
-
-    await this.sendFrame(connectFrame);
-
-    // Wait for CONNECTED
-    await this.waitForConnected();
-  }
-
-  async send(destination: string, body: string, headers: Record<string, string> = {}): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'SEND',
-      headers: {
-        destination,
-        'content-type': 'text/plain',
-        'content-length': String(body.length),
-        ...headers,
-      },
-      body,
-    };
-
-    await this.sendFrame(frame);
-  }
-
-  async subscribe(
-    destination: string,
-    callback: (message: STOMPMessage) => void,
-    options: { ack?: 'auto' | 'client' | 'client-individual' } = {}
-  ): Promise<string> {
-    const id = `sub-${this.nextSubId++}`;
-
-    const frame: STOMPMessage = {
-      command: 'SUBSCRIBE',
-      headers: {
-        id,
-        destination,
-        ack: options.ack || 'auto',
-      },
-      body: '',
-    };
-
-    this.subscriptions.set(id, { id, destination, callback });
-
-    await this.sendFrame(frame);
-
-    return id;
-  }
-
-  async unsubscribe(id: string): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'UNSUBSCRIBE',
-      headers: { id },
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-    this.subscriptions.delete(id);
-  }
-
-  async ack(messageId: string, subscription: string): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'ACK',
-      headers: {
-        id: messageId,
-        subscription,
-      },
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-  }
-
-  async nack(messageId: string, subscription: string): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'NACK',
-      headers: {
-        id: messageId,
-        subscription,
-      },
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-  }
-
-  async begin(transaction: string): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'BEGIN',
-      headers: { transaction },
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-  }
-
-  async commit(transaction: string): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'COMMIT',
-      headers: { transaction },
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-  }
-
-  async abort(transaction: string): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'ABORT',
-      headers: { transaction },
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-  }
-
-  private async sendFrame(frame: STOMPMessage): Promise<void> {
-    let message = frame.command + '\n';
-
-    for (const [key, value] of Object.entries(frame.headers)) {
-      message += `${key}:${value}\n`;
-    }
-
-    message += '\n';
-    message += frame.body;
-    message += '\x00'; // NULL terminator
-
-    const writer = this.socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(message));
-    writer.releaseLock();
-  }
-
-  private async readLoop(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process complete frames (terminated by NULL)
-      while (buffer.includes('\x00')) {
-        const nullIndex = buffer.indexOf('\x00');
-        const frameText = buffer.substring(0, nullIndex);
-        buffer = buffer.substring(nullIndex + 1);
-
-        const frame = this.parseFrame(frameText);
-        this.handleFrame(frame);
-      }
-    }
-  }
-
-  private parseFrame(text: string): STOMPMessage {
-    const lines = text.split('\n');
-    const command = lines[0];
-
-    const headers: Record<string, string> = {};
-    let bodyStartIndex = 1;
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i];
-
-      if (line === '') {
-        bodyStartIndex = i + 1;
-        break;
-      }
-
-      const colonIndex = line.indexOf(':');
-      if (colonIndex > 0) {
-        const key = line.substring(0, colonIndex);
-        const value = line.substring(colonIndex + 1);
-        headers[key] = value;
-      }
-    }
-
-    const body = lines.slice(bodyStartIndex).join('\n');
-
-    return { command, headers, body };
-  }
-
-  private handleFrame(frame: STOMPMessage): void {
-    switch (frame.command) {
-      case 'CONNECTED':
-        this.connected = true;
-        console.log('STOMP connected');
-        break;
-
-      case 'MESSAGE':
-        this.handleMessage(frame);
-        break;
-
-      case 'RECEIPT':
-        console.log('Receipt:', frame.headers['receipt-id']);
-        break;
-
-      case 'ERROR':
-        console.error('STOMP error:', frame.body);
-        break;
-    }
-  }
-
-  private handleMessage(frame: STOMPMessage): void {
-    const subscriptionId = frame.headers['subscription'];
-    const subscription = this.subscriptions.get(subscriptionId);
-
-    if (subscription) {
-      subscription.callback(frame);
-    }
-  }
-
-  private async waitForConnected(): Promise<void> {
-    return new Promise((resolve) => {
-      const checkInterval = setInterval(() => {
-        if (this.connected) {
-          clearInterval(checkInterval);
-          resolve();
-        }
-      }, 10);
-    });
-  }
-
-  async disconnect(): Promise<void> {
-    const frame: STOMPMessage = {
-      command: 'DISCONNECT',
-      headers: {},
-      body: '',
-    };
-
-    await this.sendFrame(frame);
-
-    if (this.socket) {
-      await this.socket.close();
-    }
-  }
-}
-
-// WebSocket STOMP Client (common in browsers)
-
-export class WebSocketSTOMPClient {
-  private ws?: WebSocket;
-  private connected = false;
-  private subscriptions = new Map<string, Subscription>();
-  private nextSubId = 0;
-
-  constructor(private url: string) {}
-
-  async connect(username?: string, password?: string): Promise<void> {
-    this.ws = new WebSocket(this.url);
-
-    return new Promise((resolve, reject) => {
-      this.ws!.onopen = () => {
-        const connectFrame = this.buildFrame('CONNECT', {
-          'accept-version': '1.2',
-          'heart-beat': '0,0',
-          ...(username && password ? { login: username, passcode: password } : {}),
-        });
-
-        this.ws!.send(connectFrame);
-      };
-
-      this.ws!.onmessage = (event) => {
-        const frame = this.parseFrame(event.data);
-
-        if (frame.command === 'CONNECTED') {
-          this.connected = true;
-          resolve();
-        } else {
-          this.handleFrame(frame);
-        }
-      };
-
-      this.ws!.onerror = reject;
-    });
-  }
-
-  send(destination: string, body: string, headers: Record<string, string> = {}): void {
-    const frame = this.buildFrame('SEND', {
-      destination,
-      'content-type': 'text/plain',
-      ...headers,
-    }, body);
-
-    this.ws!.send(frame);
-  }
-
-  subscribe(destination: string, callback: (message: STOMPMessage) => void): string {
-    const id = `sub-${this.nextSubId++}`;
-
-    const frame = this.buildFrame('SUBSCRIBE', {
-      id,
-      destination,
-      ack: 'auto',
-    });
-
-    this.subscriptions.set(id, { id, destination, callback });
-    this.ws!.send(frame);
-
-    return id;
-  }
-
-  unsubscribe(id: string): void {
-    const frame = this.buildFrame('UNSUBSCRIBE', { id });
-    this.ws!.send(frame);
-    this.subscriptions.delete(id);
-  }
-
-  private buildFrame(command: string, headers: Record<string, string>, body: string = ''): string {
-    let frame = command + '\n';
-
-    for (const [key, value] of Object.entries(headers)) {
-      frame += `${key}:${value}\n`;
-    }
-
-    frame += '\n';
-    frame += body;
-    frame += '\x00';
-
-    return frame;
-  }
-
-  private parseFrame(text: string): STOMPMessage {
-    const lines = text.split('\n');
-    const command = lines[0];
-
-    const headers: Record<string, string> = {};
-    let bodyStartIndex = 1;
-
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i];
-
-      if (line === '') {
-        bodyStartIndex = i + 1;
-        break;
-      }
-
-      const colonIndex = line.indexOf(':');
-      if (colonIndex > 0) {
-        const key = line.substring(0, colonIndex);
-        const value = line.substring(colonIndex + 1);
-        headers[key] = value;
-      }
-    }
-
-    const body = lines.slice(bodyStartIndex).join('\n').replace(/\x00$/, '');
-
-    return { command, headers, body };
-  }
-
-  private handleFrame(frame: STOMPMessage): void {
-    if (frame.command === 'MESSAGE') {
-      const subscriptionId = frame.headers['subscription'];
-      const subscription = this.subscriptions.get(subscriptionId);
-
-      if (subscription) {
-        subscription.callback(frame);
-      }
-    }
-  }
-
-  disconnect(): void {
-    const frame = this.buildFrame('DISCONNECT', {});
-    this.ws!.send(frame);
-    this.ws!.close();
-  }
-}
-```
-
-## Web UI Design
-
-```typescript
-// src/components/STOMPClient.tsx
-
-export function STOMPClient() {
-  const [connected, setConnected] = useState(false);
-  const [destination, setDestination] = useState('/queue/test');
-  const [message, setMessage] = useState('');
-  const [messages, setMessages] = useState<STOMPMessage[]>([]);
-  const [subscriptionId, setSubscriptionId] = useState<string>('');
-
-  const client = useRef<WebSocketSTOMPClient>();
-
-  const connect = async () => {
-    client.current = new WebSocketSTOMPClient('ws://localhost:15674/ws');
-
-    await client.current.connect('guest', 'guest');
-    setConnected(true);
-  };
-
-  const subscribe = () => {
-    if (!client.current) return;
-
-    const id = client.current.subscribe(destination, (msg) => {
-      setMessages(prev => [...prev, msg]);
-    });
-
-    setSubscriptionId(id);
-  };
-
-  const send = () => {
-    if (!client.current) return;
-
-    client.current.send(destination, message);
-    setMessage('');
-  };
-
-  const unsubscribe = () => {
-    if (!client.current || !subscriptionId) return;
-
-    client.current.unsubscribe(subscriptionId);
-    setSubscriptionId('');
-  };
-
-  const disconnect = () => {
-    if (!client.current) return;
-
-    client.current.disconnect();
-    setConnected(false);
-  };
-
-  return (
-    <div className="stomp-client">
-      <h2>STOMP Messaging Client</h2>
-
-      {!connected ? (
-        <button onClick={connect}>Connect to Broker</button>
-      ) : (
-        <>
-          <div className="controls">
-            <input
-              type="text"
-              placeholder="Destination (/queue/name or /topic/name)"
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-            />
-            {!subscriptionId ? (
-              <button onClick={subscribe}>Subscribe</button>
-            ) : (
-              <button onClick={unsubscribe}>Unsubscribe</button>
-            )}
-          </div>
-
-          <div className="send">
-            <input
-              type="text"
-              placeholder="Message"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && send()}
-            />
-            <button onClick={send}>Send</button>
-          </div>
-
-          <div className="messages">
-            <h3>Received Messages</h3>
-            {messages.map((msg, i) => (
-              <div key={i} className="message">
-                <div className="header">
-                  <strong>From:</strong> {msg.headers['destination']}
-                </div>
-                <div className="body">{msg.body}</div>
-              </div>
-            ))}
-          </div>
-
-          <button onClick={disconnect}>Disconnect</button>
-        </>
-      )}
-
-      <div className="info">
-        <h3>About STOMP</h3>
-        <ul>
-          <li>Simple Text Oriented Messaging Protocol</li>
-          <li>Works with RabbitMQ, ActiveMQ, Apollo, etc.</li>
-          <li>Text-based, easy to debug</li>
-          <li>Supports queues and topics (pub/sub)</li>
-          <li>WebSocket support for browsers</li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-```
-
-## Security
-
-### Authentication
-
-```
-CONNECT
-login:username
-passcode:password
-```
-
-### TLS/SSL
-
-```
-Port: 61614 (STOMP over TLS)
-Or use wss:// for WebSocket STOMP
-```
-
-## Testing
-
-### RabbitMQ with STOMP
+## curl Examples
 
 ```bash
-# RabbitMQ with STOMP plugin
-docker run -d \
-  -p 5672:5672 \
-  -p 15672:15672 \
-  -p 61613:61613 \
-  -p 15674:15674 \
-  --name rabbitmq \
+# Probe: detect broker version and server
+curl -s -X POST https://portofcall.ross.gg/api/stomp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"rabbitmq.example.com","username":"guest","password":"guest"}' \
+  | jq '{version, server: .server}'
+
+# Probe anonymous (no-auth broker)
+curl -s -X POST https://portofcall.ross.gg/api/stomp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"activemq.example.com","port":61613}' \
+  | jq '.version'
+
+# Send plain text message to a queue
+curl -s -X POST https://portofcall.ross.gg/api/stomp/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "rabbitmq.example.com",
+    "username": "guest",
+    "password": "guest",
+    "destination": "/queue/orders",
+    "body": "Order #1001: 2x Widget"
+  }' | jq '{receiptReceived, bodyLength}'
+
+# Send JSON message
+curl -s -X POST https://portofcall.ross.gg/api/stomp/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "rabbitmq.example.com",
+    "username": "guest",
+    "password": "guest",
+    "destination": "/queue/events",
+    "body": "{\"type\":\"order\",\"id\":1001}",
+    "contentType": "application/json"
+  }' | jq '.receiptReceived'
+
+# Send with custom STOMP headers
+curl -s -X POST https://portofcall.ross.gg/api/stomp/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "rabbitmq.example.com",
+    "username": "guest",
+    "password": "guest",
+    "destination": "/queue/jobs",
+    "body": "process-user-42",
+    "headers": {
+      "priority": "9",
+      "expires": "60000",
+      "persistent": "true"
+    }
+  }' | jq .
+
+# Consume up to 5 messages from a queue
+curl -s -X POST https://portofcall.ross.gg/api/stomp/subscribe \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "rabbitmq.example.com",
+    "username": "guest",
+    "password": "guest",
+    "destination": "/queue/orders",
+    "maxMessages": 5
+  }' | jq '.messages[] | {body: .body, dest: .destination}'
+
+# RabbitMQ vhost (non-default vhost requires vhost field)
+curl -s -X POST https://portofcall.ross.gg/api/stomp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "rabbitmq.example.com",
+    "username": "myapp",
+    "password": "secret",
+    "vhost": "/production"
+  }' | jq .
+```
+
+---
+
+## Local Testing
+
+```bash
+# RabbitMQ with STOMP plugin (default vhost, guest/guest)
+docker run -d --name rabbit-stomp \
+  -p 61613:61613 -p 5672:5672 -p 15672:15672 \
+  -e RABBITMQ_DEFAULT_USER=guest \
+  -e RABBITMQ_DEFAULT_PASS=guest \
   rabbitmq:3-management
+# Enable STOMP plugin (may need a moment for management API to start)
+docker exec rabbit-stomp rabbitmq-plugins enable rabbitmq_stomp
 
-# Enable STOMP plugins
-docker exec rabbitmq rabbitmq-plugins enable rabbitmq_stomp
-docker exec rabbitmq rabbitmq-plugins enable rabbitmq_web_stomp
+# ActiveMQ Classic (STOMP enabled by default on 61613)
+docker run -d --name activemq \
+  -p 61613:61613 -p 8161:8161 \
+  apache/activemq-classic:latest
 
-# Management UI
-open http://localhost:15672
-# Login: guest/guest
+# Artemis (STOMP on 61613 by default)
+docker run -d --name artemis \
+  -p 61613:61613 -p 8161:8161 \
+  -e ARTEMIS_USER=admin \
+  -e ARTEMIS_PASSWORD=admin \
+  apache/activemq-artemis:latest-alpine
 ```
 
-### ActiveMQ
-
-```bash
-# ActiveMQ with STOMP
-docker run -d \
-  -p 61613:61613 \
-  -p 8161:8161 \
-  --name activemq \
-  rmohr/activemq
-
-# Web console
-open http://localhost:8161
-# Login: admin/admin
-```
-
-### Test with Telnet
-
-```bash
-# Connect
-telnet localhost 61613
-
-# Send frames
-CONNECT
-accept-version:1.2
-host:/
-
-^@
-
-SEND
-destination:/queue/test
-content-type:text/plain
-
-Hello STOMP!^@
-```
+---
 
 ## Resources
 
-- **STOMP Specification**: [stomp.github.io](https://stomp.github.io/)
-- **RabbitMQ STOMP**: [RabbitMQ Documentation](https://www.rabbitmq.com/stomp.html)
-- **ActiveMQ**: [Apache ActiveMQ](https://activemq.apache.org/)
-
-## Common Headers
-
-| Header | Description |
-|--------|-------------|
-| destination | Queue or topic name |
-| content-type | Message content type |
-| content-length | Body length in bytes |
-| receipt | Request receipt confirmation |
-| transaction | Transaction ID |
-| ack | Acknowledgment mode |
-| id | Subscription ID |
-| message-id | Unique message ID |
-
-## Destination Types
-
-### Queues (Point-to-Point)
-
-```
-/queue/myqueue
-```
-
-- One consumer receives each message
-- Load balancing across consumers
-
-### Topics (Publish/Subscribe)
-
-```
-/topic/mytopic
-```
-
-- All subscribers receive messages
-- Broadcast pattern
-
-## Acknowledgment Modes
-
-| Mode | Description |
-|------|-------------|
-| auto | Automatic (default) |
-| client | Manual per subscription |
-| client-individual | Manual per message |
-
-## Notes
-
-- **Text-based** - easy to debug and understand
-- **Simple** - minimal protocol overhead
-- **Broker-agnostic** - works with many message brokers
-- **WebSocket support** - perfect for browsers
-- **Reliable** - supports transactions and acknowledgments
-- **Flexible** - queues and topics
-- **Heartbeats** - keep-alive mechanism
-- **Receipts** - confirmation of command processing
-- Alternative to **AMQP** (simpler, less features)
+- [STOMP 1.2 specification](https://stomp.github.io/stomp-specification-1.2.html)
+- [RabbitMQ STOMP plugin](https://www.rabbitmq.com/stomp.html)
+- [ActiveMQ STOMP documentation](https://activemq.apache.org/stomp)
+- [Artemis STOMP documentation](https://activemq.apache.org/components/artemis/documentation/latest/stomp.html)

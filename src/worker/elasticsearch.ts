@@ -349,3 +349,442 @@ export async function handleElasticsearchQuery(request: Request): Promise<Respon
     });
   }
 }
+
+
+/**
+ * Handle Elasticsearch HTTPS query request.
+ * Same as handleElasticsearchQuery but uses https:// URL for TLS connections.
+ * Used for Elastic Cloud, port 443, or any ES cluster with TLS enabled.
+ *
+ * POST /api/elasticsearch/https
+ * Body: { host, port?, path?, method?, body?, username?, password?, timeout? }
+ */
+export async function handleElasticsearchHTTPS(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as ElasticsearchRequest;
+    const {
+      host,
+      port = 9200,
+      path = '/',
+      method = 'GET',
+      body: queryBody,
+      username,
+      password,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
+    const upperMethod = method.toUpperCase();
+    if (!allowedMethods.includes(upperMethod)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Invalid HTTP method: ${method}. Allowed: ${allowedMethods.join(', ')}`,
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    const url = `https://${host}:${port}${normalizedPath}`;
+
+    const fetchHeaders: Record<string, string> = {
+      'Accept': 'application/json',
+      'User-Agent': 'PortOfCall/1.0',
+    };
+
+    if (username && password) {
+      fetchHeaders['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+    }
+
+    if (queryBody) {
+      fetchHeaders['Content-Type'] = 'application/json';
+    }
+
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    let fetchResponse: Response;
+    try {
+      fetchResponse = await fetch(url, {
+        method: upperMethod,
+        headers: fetchHeaders,
+        body: queryBody || undefined,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const latencyMs = Date.now() - start;
+    const responseText = await fetchResponse.text();
+
+    let parsed;
+    try {
+      parsed = JSON.parse(responseText);
+    } catch {
+      parsed = null;
+    }
+
+    const responseHeaders: Record<string, string> = {};
+    fetchResponse.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
+
+    const result: ElasticsearchResponse = {
+      success: fetchResponse.status >= 200 && fetchResponse.status < 400,
+      statusCode: fetchResponse.status,
+      headers: responseHeaders,
+      body: responseText,
+      parsed,
+      latencyMs,
+    };
+
+    return new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'HTTPS query failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+interface ElasticsearchIndexRequest {
+  host: string;
+  port?: number;
+  index: string;
+  id?: string;
+  doc: unknown;
+  username?: string;
+  password?: string;
+  https?: boolean;
+  timeout?: number;
+}
+
+/**
+ * Index a document into Elasticsearch.
+ * PUT /{index}/_doc/{id}  (with id)
+ * POST /{index}/_doc      (without id, auto-generates id)
+ *
+ * POST /api/elasticsearch/index
+ * Body: { host, port?, index, id?, doc, username?, password?, https?, timeout? }
+ */
+export async function handleElasticsearchIndex(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as ElasticsearchIndexRequest;
+    const {
+      host,
+      port = 9200,
+      index,
+      id,
+      doc,
+      username,
+      password,
+      https = false,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!index) {
+      return new Response(JSON.stringify({ success: false, error: 'Index is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (doc === undefined || doc === null) {
+      return new Response(JSON.stringify({ success: false, error: 'doc is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const docPath = id ? `/${index}/_doc/${encodeURIComponent(id)}` : `/${index}/_doc`;
+    const httpMethod = id ? 'PUT' : 'POST';
+    const docBody = JSON.stringify(doc);
+
+    if (https) {
+      const url = `https://${host}:${port}${docPath}`;
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'PortOfCall/1.0',
+      };
+      if (username && password) {
+        headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const start = Date.now();
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(url, { method: httpMethod, headers, body: docBody, signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const latencyMs = Date.now() - start;
+      const responseText = await fetchResponse.text();
+      let parsed;
+      try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+      return new Response(JSON.stringify({
+        success: fetchResponse.status >= 200 && fetchResponse.status < 400,
+        statusCode: fetchResponse.status,
+        body: responseText,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } else {
+      const authHeader = buildAuthHeader(username, password);
+      const start = Date.now();
+      const result = await sendHttpRequest(host, port, httpMethod, docPath, docBody, authHeader, timeout);
+      const latencyMs = Date.now() - start;
+      let parsed;
+      try { parsed = JSON.parse(result.body); } catch { parsed = null; }
+      return new Response(JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        statusCode: result.statusCode,
+        body: result.body,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Index failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+interface ElasticsearchDeleteDocRequest {
+  host: string;
+  port?: number;
+  index: string;
+  id: string;
+  username?: string;
+  password?: string;
+  https?: boolean;
+  timeout?: number;
+}
+
+/**
+ * Delete a document from Elasticsearch.
+ * DELETE /{index}/_doc/{id}
+ *
+ * DELETE /api/elasticsearch/document
+ * Body: { host, port?, index, id, username?, password?, https?, timeout? }
+ */
+export async function handleElasticsearchDelete(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as ElasticsearchDeleteDocRequest;
+    const {
+      host,
+      port = 9200,
+      index,
+      id,
+      username,
+      password,
+      https = false,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!index) {
+      return new Response(JSON.stringify({ success: false, error: 'Index is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!id) {
+      return new Response(JSON.stringify({ success: false, error: 'Document id is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const docPath = `/${index}/_doc/${encodeURIComponent(id)}`;
+
+    if (https) {
+      const url = `https://${host}:${port}${docPath}`;
+      const headers: Record<string, string> = {
+        'Accept': 'application/json',
+        'User-Agent': 'PortOfCall/1.0',
+      };
+      if (username && password) {
+        headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const start = Date.now();
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(url, { method: 'DELETE', headers, signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const latencyMs = Date.now() - start;
+      const responseText = await fetchResponse.text();
+      let parsed;
+      try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+      return new Response(JSON.stringify({
+        success: fetchResponse.status >= 200 && fetchResponse.status < 400,
+        statusCode: fetchResponse.status,
+        body: responseText,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } else {
+      const authHeader = buildAuthHeader(username, password);
+      const start = Date.now();
+      const result = await sendHttpRequest(host, port, 'DELETE', docPath, undefined, authHeader, timeout);
+      const latencyMs = Date.now() - start;
+      let parsed;
+      try { parsed = JSON.parse(result.body); } catch { parsed = null; }
+      return new Response(JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        statusCode: result.statusCode,
+        body: result.body,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Delete failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+interface ElasticsearchCreateIndexRequest {
+  host: string;
+  port?: number;
+  index: string;
+  username?: string;
+  password?: string;
+  https?: boolean;
+  shards?: number;
+  replicas?: number;
+  timeout?: number;
+}
+
+/**
+ * Create an Elasticsearch index with optional shard/replica settings.
+ * PUT /{index}  with body { settings: { number_of_shards, number_of_replicas } }
+ *
+ * PUT /api/elasticsearch/create-index
+ * Body: { host, port?, index, username?, password?, https?, shards?, replicas?, timeout? }
+ */
+export async function handleElasticsearchCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as ElasticsearchCreateIndexRequest;
+    const {
+      host,
+      port = 9200,
+      index,
+      username,
+      password,
+      https = false,
+      shards = 1,
+      replicas = 1,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!index) {
+      return new Response(JSON.stringify({ success: false, error: 'Index name is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const indexPath = `/${encodeURIComponent(index)}`;
+    const settingsBody = JSON.stringify({
+      settings: {
+        number_of_shards: shards,
+        number_of_replicas: replicas,
+      },
+    });
+
+    if (https) {
+      const url = `https://${host}:${port}${indexPath}`;
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'User-Agent': 'PortOfCall/1.0',
+      };
+      if (username && password) {
+        headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      const start = Date.now();
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(url, { method: 'PUT', headers, body: settingsBody, signal: controller.signal });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const latencyMs = Date.now() - start;
+      const responseText = await fetchResponse.text();
+      let parsed;
+      try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+      return new Response(JSON.stringify({
+        success: fetchResponse.status >= 200 && fetchResponse.status < 400,
+        statusCode: fetchResponse.status,
+        index,
+        shards,
+        replicas,
+        body: responseText,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } else {
+      const authHeader = buildAuthHeader(username, password);
+      const start = Date.now();
+      const result = await sendHttpRequest(host, port, 'PUT', indexPath, settingsBody, authHeader, timeout);
+      const latencyMs = Date.now() - start;
+      let parsed;
+      try { parsed = JSON.parse(result.body); } catch { parsed = null; }
+      return new Response(JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        statusCode: result.statusCode,
+        index,
+        shards,
+        replicas,
+        body: result.body,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Create index failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

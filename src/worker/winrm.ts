@@ -409,6 +409,403 @@ export async function handleWinRMIdentify(request: Request): Promise<Response> {
 }
 
 /**
+ * Generate a simple UUID v4 for WSMan MessageID headers
+ */
+function generateUuid(): string {
+  const hex = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+  return `${hex()}${hex()}-${hex()}-4${hex().slice(1)}-${(Math.floor(Math.random() * 4) + 8).toString(16)}${hex().slice(1)}-${hex()}${hex()}${hex()}`;
+}
+
+/**
+ * Build a WSMan Create Shell SOAP envelope
+ */
+function buildCreateShellEnvelope(host: string, port: number, uuid: string): string {
+  return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell" xmlns:cfg="http://schemas.microsoft.com/wbem/wsman/1/config">
+  <s:Header>
+    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsa:Action>http://schemas.xmlsoap.org/ws/2004/09/transfer/Create</wsa:Action>
+    <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
+    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
+    <wsman:OptionSet><wsman:Option Name="WINRS_NOPROFILE">TRUE</wsman:Option><wsman:Option Name="WINRS_CODEPAGE">437</wsman:Option></wsman:OptionSet>
+  </s:Header>
+  <s:Body><rsp:Shell><rsp:InputStreams>stdin</rsp:InputStreams><rsp:OutputStreams>stdout stderr</rsp:OutputStreams></rsp:Shell></s:Body>
+</s:Envelope>`;
+}
+
+/**
+ * Build a WSMan Execute Command SOAP envelope
+ */
+function buildCommandEnvelope(host: string, port: number, shellId: string, command: string, args: string[], uuid: string): string {
+  const argsXml = args.map(a => `<rsp:Arguments>${a}</rsp:Arguments>`).join('');
+  return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
+  <s:Header>
+    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command</wsa:Action>
+    <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
+    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+    <wsman:OptionSet><wsman:Option Name="WINRS_CONSOLEMODE_STDIN">TRUE</wsman:Option><wsman:Option Name="WINRS_SKIP_CMD_SHELL">FALSE</wsman:Option></wsman:OptionSet>
+  </s:Header>
+  <s:Body><rsp:CommandLine><rsp:Command>${command}</rsp:Command>${argsXml}</rsp:CommandLine></s:Body>
+</s:Envelope>`;
+}
+
+/**
+ * Build a WSMan Receive (read output) SOAP envelope
+ */
+function buildReceiveEnvelope(host: string, port: number, shellId: string, commandId: string, uuid: string): string {
+  return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
+  <s:Header>
+    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Receive</wsa:Action>
+    <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
+    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+  </s:Header>
+  <s:Body><rsp:Receive><rsp:DesiredStream CommandId="${commandId}">stdout stderr</rsp:DesiredStream></rsp:Receive></s:Body>
+</s:Envelope>`;
+}
+
+/**
+ * Build a WSMan Signal (terminate command) SOAP envelope
+ */
+function buildSignalEnvelope(host: string, port: number, shellId: string, commandId: string, uuid: string): string {
+  return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
+  <s:Header>
+    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Signal</wsa:Action>
+    <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
+    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+  </s:Header>
+  <s:Body><rsp:Signal CommandId="${commandId}"><rsp:Code>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/ctrl_c</rsp:Code></rsp:Signal></s:Body>
+</s:Envelope>`;
+}
+
+/**
+ * Build a WSMan Delete Shell SOAP envelope
+ */
+function buildDeleteShellEnvelope(host: string, port: number, shellId: string, uuid: string): string {
+  return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">
+  <s:Header>
+    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
+    <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
+    <wsa:Action>http://schemas.xmlsoap.org/ws/2004/09/transfer/Delete</wsa:Action>
+    <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
+    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+  </s:Header>
+  <s:Body/>
+</s:Envelope>`;
+}
+
+/**
+ * Perform a WinRM HTTP request with Basic auth using fetch()
+ */
+async function winrmFetch(
+  host: string,
+  port: number,
+  envelope: string,
+  username: string,
+  password: string,
+  timeout: number,
+): Promise<{ statusCode: number; body: string }> {
+  const credentials = btoa(`${username}:${password}`);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(`http://${host}:${port}/wsman`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/soap+xml;charset=UTF-8',
+        'Authorization': `Basic ${credentials}`,
+        'User-Agent': 'PortOfCall/1.0',
+      },
+      body: envelope,
+      signal: controller.signal,
+    });
+
+    const body = await response.text();
+    return { statusCode: response.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Decode base64 output streams from WSMan Receive response
+ */
+function decodeReceiveStreams(xml: string): { stdout: string; stderr: string; done: boolean; exitCode: number } {
+  let stdout = '';
+  let stderr = '';
+
+  // Extract all stdout stream segments (base64 encoded)
+  const stdoutPattern = /<rsp:Stream[^>]*Name="stdout"[^>]*>([^<]*)<\/rsp:Stream>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = stdoutPattern.exec(xml)) !== null) {
+    if (match[1].trim()) {
+      try {
+        stdout += atob(match[1].trim());
+      } catch {
+        stdout += match[1].trim();
+      }
+    }
+  }
+
+  // Extract all stderr stream segments
+  const stderrPattern = /<rsp:Stream[^>]*Name="stderr"[^>]*>([^<]*)<\/rsp:Stream>/gi;
+  while ((match = stderrPattern.exec(xml)) !== null) {
+    if (match[1].trim()) {
+      try {
+        stderr += atob(match[1].trim());
+      } catch {
+        stderr += match[1].trim();
+      }
+    }
+  }
+
+  // Check for CommandState Done
+  const doneMatch = xml.match(/<rsp:CommandState[^>]*State="http:\/\/schemas\.microsoft\.com\/wbem\/wsman\/1\/windows\/shell\/CommandState\/Done"/i);
+  const done = !!doneMatch;
+
+  // Parse exit code
+  let exitCode = 0;
+  const exitMatch = xml.match(/<rsp:ExitCode>(\d+)<\/rsp:ExitCode>/i);
+  if (exitMatch) {
+    exitCode = parseInt(exitMatch[1], 10);
+  }
+
+  return { stdout, stderr, done, exitCode };
+}
+
+/**
+ * Handle WinRM command execution
+ * POST /api/winrm/exec
+ *
+ * Performs a 4-step WSMan flow:
+ *   1. Create shell
+ *   2. Execute command
+ *   3. Receive output (loop until Done)
+ *   4. Signal terminate + Delete shell
+ */
+export async function handleWinRMExec(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let body: {
+    host: string;
+    port?: number;
+    timeout?: number;
+    username: string;
+    password: string;
+    command: string;
+    args?: string[];
+  };
+
+  try {
+    body = await request.json() as typeof body;
+  } catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 5985, timeout = 30000, username, password, command, args = [] } = body;
+
+  if (!host) {
+    return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!username || !password) {
+    return new Response(JSON.stringify({ success: false, error: 'Username and password are required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (!command) {
+    return new Response(JSON.stringify({ success: false, error: 'Command is required' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const startTime = Date.now();
+  let shellId = '';
+  let commandId = '';
+
+  try {
+    // Step 1: Create shell
+    const createEnvelope = buildCreateShellEnvelope(host, port, generateUuid());
+    const createResp = await winrmFetch(host, port, createEnvelope, username, password, timeout);
+
+    if (createResp.statusCode === 401) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Authentication failed (401 Unauthorized)',
+        statusCode: 401,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (createResp.statusCode !== 200) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Create shell failed with HTTP ${createResp.statusCode}`,
+        statusCode: createResp.statusCode,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Parse ShellId from response
+    const shellIdMatch = createResp.body.match(/<rsp:ShellId>([^<]+)<\/rsp:ShellId>/i);
+    if (!shellIdMatch) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Failed to parse ShellId from Create response',
+        rawResponse: createResp.body.substring(0, 500),
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    shellId = shellIdMatch[1].trim();
+
+    // Step 2: Execute command
+    const commandEnvelope = buildCommandEnvelope(host, port, shellId, command, args, generateUuid());
+    const commandResp = await winrmFetch(host, port, commandEnvelope, username, password, timeout);
+
+    if (commandResp.statusCode !== 200) {
+      return new Response(JSON.stringify({
+        success: false,
+        shellId,
+        error: `Command execution failed with HTTP ${commandResp.statusCode}`,
+        statusCode: commandResp.statusCode,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Parse CommandId from response
+    const cmdIdMatch = commandResp.body.match(/<rsp:CommandId>([^<]+)<\/rsp:CommandId>/i);
+    if (!cmdIdMatch) {
+      return new Response(JSON.stringify({
+        success: false,
+        shellId,
+        error: 'Failed to parse CommandId from Execute response',
+        rawResponse: commandResp.body.substring(0, 500),
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    commandId = cmdIdMatch[1].trim();
+
+    // Step 3: Receive output (loop until CommandState Done or timeout)
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    let done = false;
+    const receiveDeadline = startTime + timeout - 2000; // leave 2s for cleanup
+
+    while (!done && Date.now() < receiveDeadline) {
+      const receiveEnvelope = buildReceiveEnvelope(host, port, shellId, commandId, generateUuid());
+      const receiveResp = await winrmFetch(host, port, receiveEnvelope, username, password, Math.max(5000, receiveDeadline - Date.now()));
+
+      if (receiveResp.statusCode !== 200) {
+        break;
+      }
+
+      const decoded = decodeReceiveStreams(receiveResp.body);
+      stdout += decoded.stdout;
+      stderr += decoded.stderr;
+      exitCode = decoded.exitCode;
+      done = decoded.done;
+    }
+
+    const rtt = Date.now() - startTime;
+
+    // Step 4: Signal terminate + Delete shell (best effort, ignore errors)
+    try {
+      const signalEnvelope = buildSignalEnvelope(host, port, shellId, commandId, generateUuid());
+      await winrmFetch(host, port, signalEnvelope, username, password, 5000);
+    } catch { /* ignore */ }
+
+    try {
+      const deleteEnvelope = buildDeleteShellEnvelope(host, port, shellId, generateUuid());
+      await winrmFetch(host, port, deleteEnvelope, username, password, 5000);
+    } catch { /* ignore */ }
+
+    return new Response(JSON.stringify({
+      success: true,
+      shellId,
+      commandId,
+      stdout,
+      stderr,
+      exitCode,
+      rtt,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (err) {
+    // Best-effort cleanup if we have a shellId
+    if (shellId) {
+      try {
+        if (commandId) {
+          const signalEnvelope = buildSignalEnvelope(host, port, shellId, commandId, generateUuid());
+          await winrmFetch(host, port, signalEnvelope, username, password, 3000);
+        }
+        const deleteEnvelope = buildDeleteShellEnvelope(host, port, shellId, generateUuid());
+        await winrmFetch(host, port, deleteEnvelope, username, password, 3000);
+      } catch { /* ignore */ }
+    }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: err instanceof Error ? err.message : 'Command execution failed',
+      rtt: Date.now() - startTime,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
  * Handle WinRM auth probe (just checks auth methods without SOAP)
  * POST /api/winrm/auth
  */

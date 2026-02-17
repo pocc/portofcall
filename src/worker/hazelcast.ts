@@ -45,6 +45,15 @@ const MSG_AUTHENTICATION = 0x000C8;
 const MSG_PING           = 0x00000;
 const MSG_MAP_SIZE       = 0x00130;
 const MSG_MAP_GET        = 0x00134;
+const MSG_MAP_PUT        = 0x00138;
+const MSG_MAP_REMOVE     = 0x0013C;
+const MSG_QUEUE_OFFER    = 0x030200;
+const MSG_QUEUE_POLL     = 0x030400;
+const MSG_QUEUE_SIZE     = 0x030800;
+const MSG_TOPIC_PUBLISH  = 0x040100;
+const MSG_SET_ADD        = 0x060100;
+const MSG_SET_CONTAINS   = 0x060200;
+const MSG_SET_REMOVE     = 0x060300;
 
 // Authentication status
 const AUTH_STATUS_AUTHENTICATED        = 0;
@@ -66,6 +75,35 @@ interface HazelcastRequest {
 interface HazelcastMapRequest extends HazelcastRequest {
   mapName: string;
   key: string;
+}
+
+interface HazelcastMapSetRequest extends HazelcastMapRequest {
+  value: string;
+  ttl?: number;
+}
+
+interface HazelcastMapDeleteRequest extends HazelcastMapRequest {}
+
+interface HazelcastMapSetResponse {
+  success: boolean;
+  mapName?: string;
+  key?: string;
+  set?: boolean;
+  previousValue?: string | null;
+  error?: string;
+  isCloudflare?: boolean;
+  rtt?: number;
+}
+
+interface HazelcastMapDeleteResponse {
+  success: boolean;
+  mapName?: string;
+  key?: string;
+  deleted?: boolean;
+  removedValue?: string | null;
+  error?: string;
+  isCloudflare?: boolean;
+  rtt?: number;
 }
 
 interface HazelcastResponse {
@@ -594,3 +632,728 @@ function mapError(msg: string): Response {
     status: 400, headers: { 'Content-Type': 'application/json' },
   });
 }
+
+// ---- MAP_PUT / MAP_REMOVE helpers --------------------------------------------
+
+interface HazelcastMapSetRequest extends HazelcastRequest {
+  mapName: string;
+  key: string;
+  value: string;
+  ttl?: number;
+}
+
+interface HazelcastMapDeleteRequest extends HazelcastRequest {
+  mapName: string;
+  key: string;
+}
+
+interface HazelcastMapSetResponse {
+  success: boolean;
+  mapName?: string;
+  key?: string;
+  set?: boolean;
+  previousValue?: string | null;
+  error?: string;
+  isCloudflare?: boolean;
+  rtt?: number;
+}
+
+interface HazelcastMapDeleteResponse {
+  success: boolean;
+  mapName?: string;
+  key?: string;
+  deleted?: boolean;
+  removedValue?: string | null;
+  error?: string;
+  isCloudflare?: boolean;
+  rtt?: number;
+}
+
+/**
+ * Build MAP_PUT frame.
+ * Payload: mapName(string) + key(string) + value(string) + threadId(int64 LE) + ttl(int64 LE)
+ * All strings are length-prefixed (uint32 LE + bytes). threadId=1, ttl in ms (0=no expiry).
+ */
+function buildMapPutFrame(
+  mapName: string,
+  key: string,
+  value: string,
+  ttl: number,
+  correlationId: bigint,
+): Uint8Array {
+  const enc = new TextEncoder();
+  const mn = enc.encode(mapName);
+  const ky = enc.encode(key);
+  const vl = enc.encode(value);
+  const payloadLen = (4 + mn.length) + (4 + ky.length) + (4 + vl.length) + 8 + 8;
+  const payload = new Uint8Array(payloadLen);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setUint32(off, mn.length, true); off += 4;
+  payload.set(mn, off);                 off += mn.length;
+  view.setUint32(off, ky.length, true); off += 4;
+  payload.set(ky, off);                 off += ky.length;
+  view.setUint32(off, vl.length, true); off += 4;
+  payload.set(vl, off);                 off += vl.length;
+  view.setBigInt64(off, BigInt(1), true);       off += 8; // threadId = 1
+  view.setBigInt64(off, BigInt(ttl), true);               // ttl in ms
+  return buildFrame(MSG_MAP_PUT, correlationId, -1, payload);
+}
+
+/**
+ * Build MAP_REMOVE frame.
+ * Payload: mapName(string) + key(string) + threadId(int64 LE)
+ */
+function buildMapRemoveFrame(
+  mapName: string,
+  key: string,
+  correlationId: bigint,
+): Uint8Array {
+  const enc = new TextEncoder();
+  const mn = enc.encode(mapName);
+  const ky = enc.encode(key);
+  const payloadLen = (4 + mn.length) + (4 + ky.length) + 8;
+  const payload = new Uint8Array(payloadLen);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setUint32(off, mn.length, true); off += 4;
+  payload.set(mn, off);                 off += mn.length;
+  view.setUint32(off, ky.length, true); off += 4;
+  payload.set(ky, off);                 off += ky.length;
+  view.setBigInt64(off, BigInt(1), true); // threadId = 1
+  return buildFrame(MSG_MAP_REMOVE, correlationId, -1, payload);
+}
+
+/**
+ * Decode a Hazelcast value payload into a string (or null if empty).
+ * Values are length-prefixed byte arrays: uint32 LE length + bytes.
+ */
+function decodeValuePayload(payload: Uint8Array): string | null {
+  if (payload.length === 0) return null;
+  if (payload.length < 4) {
+    return Array.from(payload).map(b => b.toString(16).padStart(2, '0')).join(' ');
+  }
+  const valLen = new DataView(payload.buffer, payload.byteOffset).getUint32(0, true);
+  if (valLen === 0) return null;
+  if (valLen > 0 && payload.length >= 4 + valLen) {
+    return new TextDecoder().decode(payload.slice(4, 4 + valLen));
+  }
+  return Array.from(payload.slice(0, Math.min(64, payload.length)))
+    .map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
+
+// ---- exported handlers -------------------------------------------------------
+
+/**
+ * POST /api/hazelcast/map-set
+ *
+ * Authenticates with Hazelcast and puts a key/value pair into a named IMap.
+ * Optionally sets a TTL in milliseconds.
+ *
+ * Body: { host, port?, username?, password?, clusterName?, timeout?,
+ *         mapName, key, value, ttl? }
+ * Response: { mapName, key, set, previousValue, rtt }
+ */
+export async function handleHazelcastMapSet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let body: HazelcastMapSetRequest;
+  try { body = await request.json() as HazelcastMapSetRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const {
+    host,
+    port = 5701,
+    username = '',
+    password = '',
+    clusterName = 'dev',
+    timeout = 12000,
+    mapName,
+    key,
+    value,
+    ttl = 0,
+  } = body;
+
+  if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (!mapName) return new Response(JSON.stringify({ success: false, error: 'mapName is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (!key) return new Response(JSON.stringify({ success: false, error: 'key is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (value === undefined || value === null) return new Response(JSON.stringify({ success: false, error: 'value is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const result: HazelcastMapSetResponse = { success: false, mapName, key };
+  const startTime = Date.now();
+
+  try {
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    try {
+      // Step 1: Authenticate
+      await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
+      const authResp = await readFrame(reader, Math.min(timeout, 6000));
+
+      if (authResp.length >= FRAME_HEADER_SIZE) {
+        const authParsed = parseAuthResponse(framePayload(authResp));
+        if (authParsed.status !== AUTH_STATUS_AUTHENTICATED) {
+          result.error = `Authentication failed: ${authParsed.statusLabel}`;
+          return new Response(JSON.stringify(result), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // Step 2: MAP_PUT
+      await writer.write(buildMapPutFrame(mapName, key, value, ttl, BigInt(2)));
+      const putResp = await readFrame(reader, Math.min(timeout, 5000));
+
+      result.rtt = Date.now() - startTime;
+
+      if (putResp.length >= FRAME_HEADER_SIZE) {
+        const putPayload = framePayload(putResp);
+        // MAP_PUT returns the previous value (or empty payload if key didn't exist)
+        result.previousValue = decodeValuePayload(putPayload);
+        result.set = true;
+        result.success = true;
+      } else {
+        result.error = 'No MAP_PUT response received';
+      }
+
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+
+    socket.close();
+
+  } catch (err) {
+    result.rtt = Date.now() - startTime;
+    result.error = err instanceof Error ? err.message : 'Operation failed';
+  }
+
+  return new Response(JSON.stringify(result), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/**
+ * POST /api/hazelcast/map-delete
+ *
+ * Authenticates with Hazelcast and removes a key from a named IMap.
+ *
+ * Body: { host, port?, username?, password?, clusterName?, timeout?,
+ *         mapName, key }
+ * Response: { mapName, key, deleted, removedValue, rtt }
+ */
+export async function handleHazelcastMapDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  let body: HazelcastMapDeleteRequest;
+  try { body = await request.json() as HazelcastMapDeleteRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const {
+    host,
+    port = 5701,
+    username = '',
+    password = '',
+    clusterName = 'dev',
+    timeout = 12000,
+    mapName,
+    key,
+  } = body;
+
+  if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (!mapName) return new Response(JSON.stringify({ success: false, error: 'mapName is required' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (!key) return new Response(JSON.stringify({ success: false, error: 'key is required' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const result: HazelcastMapDeleteResponse = { success: false, mapName, key };
+  const startTime = Date.now();
+
+  try {
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    try {
+      // Step 1: Authenticate
+      await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
+      const authResp = await readFrame(reader, Math.min(timeout, 6000));
+
+      if (authResp.length >= FRAME_HEADER_SIZE) {
+        const authParsed = parseAuthResponse(framePayload(authResp));
+        if (authParsed.status !== AUTH_STATUS_AUTHENTICATED) {
+          result.error = `Authentication failed: ${authParsed.statusLabel}`;
+          return new Response(JSON.stringify(result), {
+            status: 200, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // Step 2: MAP_REMOVE
+      await writer.write(buildMapRemoveFrame(mapName, key, BigInt(2)));
+      const removeResp = await readFrame(reader, Math.min(timeout, 5000));
+
+      result.rtt = Date.now() - startTime;
+
+      if (removeResp.length >= FRAME_HEADER_SIZE) {
+        const removePayload = framePayload(removeResp);
+        // MAP_REMOVE returns the removed value (or empty payload if key didn't exist)
+        result.removedValue = decodeValuePayload(removePayload);
+        result.deleted = true;
+        result.success = true;
+      } else {
+        result.error = 'No MAP_REMOVE response received';
+      }
+
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+
+    socket.close();
+
+  } catch (err) {
+    result.rtt = Date.now() - startTime;
+    result.error = err instanceof Error ? err.message : 'Operation failed';
+  }
+
+  return new Response(JSON.stringify(result), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+// ---- queue helpers -----------------------------------------------------------
+
+function buildQueueOfferFrame(queueName: string, value: string, timeoutMs: bigint, correlationId: bigint): Uint8Array {
+  const enc = new TextEncoder();
+  const qn = enc.encode(queueName);
+  const vl = enc.encode(value);
+  // Payload: queueName(string) + value(string) + timeoutMs(int64 LE)
+  const payload = new Uint8Array((4 + qn.length) + (4 + vl.length) + 8);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setUint32(off, qn.length, true); off += 4; payload.set(qn, off); off += qn.length;
+  view.setUint32(off, vl.length, true); off += 4; payload.set(vl, off); off += vl.length;
+  view.setBigInt64(off, timeoutMs, true);
+  return buildFrame(MSG_QUEUE_OFFER, correlationId, -1, payload);
+}
+
+function buildQueuePollFrame(queueName: string, timeoutMs: bigint, correlationId: bigint): Uint8Array {
+  const enc = new TextEncoder().encode(queueName);
+  const payload = new Uint8Array((4 + enc.length) + 8);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setUint32(off, enc.length, true); off += 4; payload.set(enc, off); off += enc.length;
+  view.setBigInt64(off, timeoutMs, true);
+  return buildFrame(MSG_QUEUE_POLL, correlationId, -1, payload);
+}
+
+function buildSetFrame(msgType: number, setName: string, value: string, correlationId: bigint): Uint8Array {
+  const enc = new TextEncoder();
+  const sn = enc.encode(setName);
+  const vl = enc.encode(value);
+  const payload = new Uint8Array((4 + sn.length) + (4 + vl.length));
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setUint32(off, sn.length, true); off += 4; payload.set(sn, off); off += sn.length;
+  view.setUint32(off, vl.length, true); off += 4; payload.set(vl, off);
+  return buildFrame(msgType, correlationId, -1, payload);
+}
+
+// ---- queue handler -----------------------------------------------------------
+
+/**
+ * Offer a value to a Hazelcast distributed queue (IQueue.offer)
+ *
+ * POST /api/hazelcast/queue-offer
+ * Body: { host, port?, username?, password?, clusterName?, timeout?, queueName, value, offerTimeoutMs? }
+ */
+export async function handleHazelcastQueueOffer(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  interface HazelcastQueueRequest extends HazelcastRequest {
+    queueName: string;
+    value: string;
+    offerTimeoutMs?: number;
+  }
+
+  let body: HazelcastQueueRequest;
+  try { body = await request.json() as HazelcastQueueRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, queueName, value, offerTimeoutMs = 5000 } = body;
+  if (!host || !queueName || value === undefined) {
+    return new Response(JSON.stringify({ success: false, error: 'host, queueName, and value are required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const result: { success: boolean; queueName?: string; value?: string; offered?: boolean; sizeBefore?: number; sizeAfter?: number; error?: string; rtt?: number } = {
+    success: false, queueName, value,
+  };
+  const startTime = Date.now();
+
+  try {
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout))]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    try {
+      await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
+      const authResp = await readFrame(reader, Math.min(timeout, 6000));
+      if (authResp.length >= FRAME_HEADER_SIZE) {
+        const parsed = parseAuthResponse(framePayload(authResp));
+        if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
+          result.error = `Authentication failed: ${parsed.statusLabel}`;
+          return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+
+      // Get queue size before offer
+      await writer.write(buildQueueSizeFrame(queueName, BigInt(2)));
+      const sizeResp = await readFrame(reader, 4000);
+      if (sizeResp.length >= FRAME_HEADER_SIZE + 4) {
+        const sp = framePayload(sizeResp);
+        if (sp.length >= 4) result.sizeBefore = new DataView(sp.buffer, sp.byteOffset).getInt32(0, true);
+      }
+
+      await writer.write(buildQueueOfferFrame(queueName, value, BigInt(offerTimeoutMs), BigInt(3)));
+      const offerResp = await readFrame(reader, Math.min(timeout, 6000));
+      // QUEUE_OFFER response payload: boolean (1 byte) indicating success
+      const payload = framePayload(offerResp);
+      result.offered = payload.length > 0 && payload[0] !== 0;
+      result.success = true;
+
+      // Get queue size after offer
+      await writer.write(buildQueueSizeFrame(queueName, BigInt(4)));
+      const sizeResp2 = await readFrame(reader, 4000);
+      if (sizeResp2.length >= FRAME_HEADER_SIZE + 4) {
+        const sp2 = framePayload(sizeResp2);
+        if (sp2.length >= 4) result.sizeAfter = new DataView(sp2.buffer, sp2.byteOffset).getInt32(0, true);
+      }
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+    socket.close();
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : 'Queue offer failed';
+  }
+
+  result.rtt = Date.now() - startTime;
+  return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
+/**
+ * Poll a value from a Hazelcast distributed queue (IQueue.poll)
+ *
+ * POST /api/hazelcast/queue-poll
+ * Body: { host, port?, username?, password?, clusterName?, timeout?, queueName, pollTimeoutMs? }
+ */
+export async function handleHazelcastQueuePoll(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  interface HazelcastQueuePollRequest extends HazelcastRequest {
+    queueName: string;
+    pollTimeoutMs?: number;
+  }
+
+  let body: HazelcastQueuePollRequest;
+  try { body = await request.json() as HazelcastQueuePollRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, queueName, pollTimeoutMs = 1000 } = body;
+  if (!host || !queueName) {
+    return new Response(JSON.stringify({ success: false, error: 'host and queueName are required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const result: { success: boolean; queueName?: string; value?: string | null; error?: string; rtt?: number } = {
+    success: false, queueName,
+  };
+  const startTime = Date.now();
+
+  try {
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout))]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    try {
+      await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
+      const authResp = await readFrame(reader, Math.min(timeout, 6000));
+      if (authResp.length >= FRAME_HEADER_SIZE) {
+        const parsed = parseAuthResponse(framePayload(authResp));
+        if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
+          result.error = `Authentication failed: ${parsed.statusLabel}`;
+          return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+
+      await writer.write(buildQueuePollFrame(queueName, BigInt(pollTimeoutMs), BigInt(2)));
+      const pollResp = await readFrame(reader, Math.min(timeout + pollTimeoutMs, 15000));
+      const payload = framePayload(pollResp);
+      if (payload.length === 0) {
+        result.value = null; // queue was empty
+      } else if (payload.length >= 4) {
+        const valLen = new DataView(payload.buffer, payload.byteOffset).getUint32(0, true);
+        result.value = valLen > 0 && payload.length >= 4 + valLen
+          ? new TextDecoder().decode(payload.slice(4, 4 + valLen))
+          : null;
+      }
+      result.success = true;
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+    socket.close();
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : 'Queue poll failed';
+  }
+
+  result.rtt = Date.now() - startTime;
+  return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
+/**
+ * Add/contains/remove on a Hazelcast distributed ISet
+ *
+ * POST /api/hazelcast/set-add       — add a value to the set
+ * POST /api/hazelcast/set-contains  — check if value is in the set
+ * POST /api/hazelcast/set-remove    — remove a value from the set
+ * Body: { host, port?, username?, password?, clusterName?, timeout?, setName, value }
+ */
+async function handleHazelcastSetOp(
+  request: Request,
+  msgType: number,
+  opName: string,
+): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  interface HazelcastSetRequest extends HazelcastRequest {
+    setName: string;
+    value: string;
+  }
+
+  let body: HazelcastSetRequest;
+  try { body = await request.json() as HazelcastSetRequest; }
+  catch {
+    return new Response(JSON.stringify({ success: false, error: 'Invalid JSON body' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, setName, value } = body;
+  if (!host || !setName || value === undefined) {
+    return new Response(JSON.stringify({ success: false, error: 'host, setName, and value are required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const result: { success: boolean; setName?: string; value?: string; result?: boolean; operation?: string; error?: string; rtt?: number } = {
+    success: false, setName, value, operation: opName,
+  };
+  const startTime = Date.now();
+
+  try {
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout))]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    try {
+      await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
+      const authResp = await readFrame(reader, Math.min(timeout, 6000));
+      if (authResp.length >= FRAME_HEADER_SIZE) {
+        const parsed = parseAuthResponse(framePayload(authResp));
+        if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
+          result.error = `Authentication failed: ${parsed.statusLabel}`;
+          return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+
+      await writer.write(buildSetFrame(msgType, setName, value, BigInt(2)));
+      const opResp = await readFrame(reader, Math.min(timeout, 6000));
+      const payload = framePayload(opResp);
+      // Response is a boolean (1 byte)
+      result.result = payload.length > 0 && payload[0] !== 0;
+      result.success = true;
+    } finally {
+      reader.releaseLock();
+      writer.releaseLock();
+    }
+    socket.close();
+  } catch (err) {
+    result.error = err instanceof Error ? err.message : `Set ${opName} failed`;
+  }
+
+  result.rtt = Date.now() - startTime;
+  return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
+export async function handleHazelcastSetAdd(request: Request): Promise<Response> {
+  return handleHazelcastSetOp(request, MSG_SET_ADD, 'add');
+}
+
+export async function handleHazelcastSetContains(request: Request): Promise<Response> {
+  return handleHazelcastSetOp(request, MSG_SET_CONTAINS, 'contains');
+}
+
+export async function handleHazelcastSetRemove(request: Request): Promise<Response> {
+  return handleHazelcastSetOp(request, MSG_SET_REMOVE, 'remove');
+}
+
+
+// ---- Topic helpers + handler ------------------------------------------
+
+
+/** Build QUEUE_SIZE frame: name(string) */
+function buildQueueSizeFrame(name: string, cid: bigint): Uint8Array {
+  const nm = new TextEncoder().encode(name);
+  const payload = new Uint8Array(4 + nm.length);
+  new DataView(payload.buffer).setUint32(0, nm.length, true);
+  payload.set(nm, 4);
+  return buildFrame(MSG_QUEUE_SIZE, cid, -1, payload);
+}
+
+/** Build TOPIC_PUBLISH frame: name(string) + message(string) */
+function buildTopicPublishFrame(name: string, message: string, cid: bigint): Uint8Array {
+  const enc = new TextEncoder();
+  const nm = enc.encode(name);
+  const mg = enc.encode(message);
+  const len = (4 + nm.length) + (4 + mg.length);
+  const payload = new Uint8Array(len);
+  const view = new DataView(payload.buffer);
+  let off = 0;
+  view.setUint32(off, nm.length, true); off += 4;
+  payload.set(nm, off);                 off += nm.length;
+  view.setUint32(off, mg.length, true); off += 4;
+  payload.set(mg, off);
+  return buildFrame(MSG_TOPIC_PUBLISH, cid, -1, payload);
+}
+
+
+interface HzSession {
+  socket: ReturnType<typeof connect>;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+}
+
+async function hazelcastConnect(
+  host: string, port: number,
+  username: string, password: string,
+  clusterName: string, timeout: number,
+): Promise<{ session: HzSession } | { error: string }> {
+  const socket = connect(`${host}:${port}`);
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+  ]);
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+  await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
+  const authResp = await readFrame(reader, Math.min(timeout, 6000));
+  if (authResp.length >= FRAME_HEADER_SIZE) {
+    const parsed = parseAuthResponse(framePayload(authResp));
+    if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
+      reader.releaseLock(); writer.releaseLock(); socket.close();
+      return { error: `Authentication failed: ${parsed.statusLabel}` };
+    }
+  }
+  return { session: { socket, writer, reader } };
+}
+
+export async function handleHazelcastTopicPublish(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  interface TopicPublishReq extends HazelcastRequest { topicName: string; message: string; }
+  let body: TopicPublishReq;
+  try { body = await request.json() as TopicPublishReq; }
+  catch { return new Response(JSON.stringify({ success: false, error: 'Invalid JSON' }), { status: 400, headers: { 'Content-Type': 'application/json' } }); }
+
+  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, topicName, message } = body;
+  if (!host || !topicName || message === undefined || message === null) {
+    return new Response(JSON.stringify({ success: false, error: 'host, topicName, and message are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+  const startTime = Date.now();
+  const result: Record<string, unknown> = { success: false, topicName, message };
+  try {
+    const conn = await hazelcastConnect(host, port, username, password, clusterName, timeout);
+    if ('error' in conn) { result.error = conn.error; return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } }); }
+    const { socket, writer, reader } = conn.session;
+    try {
+      await writer.write(buildTopicPublishFrame(topicName, message, BigInt(2)));
+      const pubResp = await readFrame(reader, Math.min(timeout, 6000));
+      result.success = pubResp.length >= FRAME_HEADER_SIZE;
+      if (!result.success) result.error = 'No ack received';
+    } finally { reader.releaseLock(); writer.releaseLock(); }
+    socket.close();
+  } catch (err) { result.error = err instanceof Error ? err.message : 'Operation failed'; }
+  result.rtt = Date.now() - startTime;
+  return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+

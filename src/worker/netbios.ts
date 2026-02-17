@@ -356,6 +356,479 @@ export async function handleNetBIOSConnect(request: Request): Promise<Response> 
   }
 }
 
+// SMB1 dialect list for NEGOTIATE
+const SMB_DIALECTS = [
+  'PC NETWORK PROGRAM 1.0',
+  'LANMAN1.0',
+  'Windows for Workgroups 3.1a',
+  'LM1.2X002',
+  'LANMAN2.1',
+  'NT LM 0.12',
+];
+
+// SMB1 security mode flags
+const SMB_SECURITY_MODE_USER_LEVEL = 0x01;
+const SMB_SECURITY_MODE_CHALLENGE_RESPONSE = 0x02;
+const SMB_SECURITY_MODE_SECURITY_SIGNATURES = 0x08;
+
+/**
+ * Build a NetBIOS Session Request packet (type 0x81) using the wildcard name *SMBSERVER.
+ * Used to initiate a NetBIOS session before sending SMB traffic.
+ */
+function buildSMBSessionRequest(): Uint8Array {
+  const called = encodeNetBIOSName('*SMBSERVER', 0x20);
+  const calling = encodeNetBIOSName('PORTOFCALL', 0x00);
+  const dataLen = called.length + calling.length;
+  const pkt = new Uint8Array(4 + dataLen);
+  pkt[0] = SESSION_REQUEST;
+  pkt[1] = 0x00;
+  pkt[2] = (dataLen >> 8) & 0xff;
+  pkt[3] = dataLen & 0xff;
+  pkt.set(called, 4);
+  pkt.set(calling, 4 + called.length);
+  return pkt;
+}
+
+/**
+ * Build an SMB1 NEGOTIATE REQUEST message wrapped in a NetBIOS Session Message header.
+ * Offers all standard dialects so we can detect the server's highest supported version.
+ */
+function buildSMB1NegotiateRequest(): Uint8Array {
+  // Encode the dialect list: each dialect = 0x02 + null-terminated string
+  const dialectBytes: number[] = [];
+  for (const d of SMB_DIALECTS) {
+    dialectBytes.push(0x02);
+    for (let i = 0; i < d.length; i++) dialectBytes.push(d.charCodeAt(i));
+    dialectBytes.push(0x00);
+  }
+  const dialectBuf = new Uint8Array(dialectBytes);
+
+  // SMB1 header: 32 bytes
+  // [4] SMB magic 0xff 'S' 'M' 'B'
+  // [1] Command = 0x72 (Negotiate)
+  // [4] Status/Error = 0
+  // [1] Flags = 0x18
+  // [2] Flags2 = 0xc043 (unicode, long names, NT status, ext sec)
+  // [12] padding zeros
+  // [2] TID = 0xffff
+  // [2] PID = 0x0001
+  // [2] UID = 0x0000
+  // [2] MID = 0x0001
+
+  const smbHeader = new Uint8Array(32);
+  smbHeader[0] = 0xff; smbHeader[1] = 0x53; smbHeader[2] = 0x4d; smbHeader[3] = 0x42; // \xffSMB
+  smbHeader[4] = 0x72;  // SMB_COM_NEGOTIATE
+  // status bytes 5-8: zero
+  smbHeader[9] = 0x18;  // Flags: CASE_INSENSITIVE | CANONICALIZED_PATHS
+  smbHeader[10] = 0x43; smbHeader[11] = 0xc0; // Flags2 LE: UNICODE | LONG_NAMES | NT_STATUS | EXTENDED_SECURITY
+  // pid_high (2 bytes) + security_features (8 bytes) + reserved (2 bytes): zeros at 12-23
+  smbHeader[24] = 0xff; smbHeader[25] = 0xff; // TID = 0xffff
+  smbHeader[26] = 0x01; smbHeader[27] = 0x00; // PID = 1
+  smbHeader[28] = 0x00; smbHeader[29] = 0x00; // UID = 0
+  smbHeader[30] = 0x01; smbHeader[31] = 0x00; // MID = 1
+
+  // SMB1 NEGOTIATE request parameter block:
+  //   WordCount = 0
+  //   ByteCount (2 bytes LE) = dialectBuf.length
+  //   dialect data
+  const paramBlock = new Uint8Array(1 + 2 + dialectBuf.length);
+  paramBlock[0] = 0; // WordCount = 0
+  paramBlock[1] = dialectBuf.length & 0xff;
+  paramBlock[2] = (dialectBuf.length >> 8) & 0xff;
+  paramBlock.set(dialectBuf, 3);
+
+  const smbBody = new Uint8Array(smbHeader.length + paramBlock.length);
+  smbBody.set(smbHeader, 0);
+  smbBody.set(paramBlock, smbHeader.length);
+
+  // Wrap in NetBIOS Session Message (type 0x00)
+  const nbPkt = new Uint8Array(4 + smbBody.length);
+  nbPkt[0] = SESSION_MESSAGE;
+  nbPkt[1] = 0x00;
+  nbPkt[2] = (smbBody.length >> 8) & 0xff;
+  nbPkt[3] = smbBody.length & 0xff;
+  nbPkt.set(smbBody, 4);
+
+  return nbPkt;
+}
+
+/**
+ * Parse the SMB1 NEGOTIATE RESPONSE from the NetBIOS session data payload.
+ * Extracts: dialect index, security mode, server time, capabilities, server GUID,
+ * domain name, server name.
+ */
+function parseSMB1NegotiateResponse(data: Uint8Array): {
+  isSMB: boolean;
+  dialect: string | null;
+  dialectIndex: number | null;
+  securityMode: number | null;
+  securityModeDescription: string | null;
+  capabilities: number | null;
+  serverTime: string | null;
+  serverTimezone: number | null;
+  serverGuid: string | null;
+  domainName: string | null;
+  serverName: string | null;
+} {
+  const empty = {
+    isSMB: false,
+    dialect: null,
+    dialectIndex: null,
+    securityMode: null,
+    securityModeDescription: null,
+    capabilities: null,
+    serverTime: null,
+    serverTimezone: null,
+    serverGuid: null,
+    domainName: null,
+    serverName: null,
+  };
+
+  // Check for NetBIOS Session Message header (type 0x00)
+  if (data.length < 4) return empty;
+  if (data[0] !== SESSION_MESSAGE) return empty;
+
+  const msgLen = (data[2] << 8) | data[3];
+  if (data.length < 4 + msgLen || msgLen < 32) return empty;
+
+  // SMB data starts at offset 4
+  const smb = data.slice(4, 4 + msgLen);
+
+  // Check SMB magic: ff 53 4d 42
+  if (smb[0] !== 0xff || smb[1] !== 0x53 || smb[2] !== 0x4d || smb[3] !== 0x42) return empty;
+
+  const cmd = smb[4];
+  if (cmd !== 0x72) return { ...empty, isSMB: true }; // Not a NEGOTIATE response
+
+  const wordCount = smb[32];
+  const view = new DataView(smb.buffer, smb.byteOffset);
+
+  // SMB1 NT LM 0.12 NEGOTIATE response WordCount = 17
+  if (wordCount < 1) {
+    return { ...empty, isSMB: true, dialect: 'none (no dialects accepted)', dialectIndex: -1 };
+  }
+
+  const dialectIndex = view.getUint16(33, true);
+
+  if (wordCount < 17) {
+    // Older dialect response — less info available
+    const dialectName = dialectIndex < SMB_DIALECTS.length ? SMB_DIALECTS[dialectIndex] : `dialect ${dialectIndex}`;
+    return {
+      isSMB: true,
+      dialect: dialectName,
+      dialectIndex,
+      securityMode: null,
+      securityModeDescription: null,
+      capabilities: null,
+      serverTime: null,
+      serverTimezone: null,
+      serverGuid: null,
+      domainName: null,
+      serverName: null,
+    };
+  }
+
+  // NT LM 0.12 response offsets (all LE):
+  // Word 0 (offset 33): DialectIndex
+  // Word 1 (offset 35): SecurityMode
+  // Word 2 (offset 37): MaxMpxCount
+  // Word 3 (offset 39): MaxNumberVcs
+  // DWord 4 (offset 41): MaxBufferSize
+  // DWord 6 (offset 45): MaxRawSize
+  // DWord 8 (offset 49): SessionKey
+  // DWord 10 (offset 53): Capabilities
+  // QWord 12 (offset 57): SystemTime (FILETIME)
+  // Word 16 (offset 65): ServerTimeZone
+  // Byte 17 (offset 67): EncryptionKeyLength
+  const securityMode = smb[35];
+  const capabilities = view.getUint32(53, true);
+
+  // Server time: Windows FILETIME (100-nanosecond intervals since Jan 1, 1601)
+  const timeLo = view.getUint32(57, true);
+  const timeHi = view.getUint32(61, true);
+  let serverTime: string | null = null;
+  if (timeLo !== 0 || timeHi !== 0) {
+    // Convert FILETIME to Unix epoch
+    const fileTimeMs = (timeHi * 4294967296 + timeLo) / 10000 - 11644473600000;
+    try {
+      serverTime = new Date(fileTimeMs).toISOString();
+    } catch {
+      serverTime = null;
+    }
+  }
+
+  const serverTimezone = view.getInt16(65, true); // Minutes from UTC
+
+  // Security mode description
+  const smFlags: string[] = [];
+  if (securityMode & SMB_SECURITY_MODE_USER_LEVEL) smFlags.push('User-Level Auth');
+  if (securityMode & SMB_SECURITY_MODE_CHALLENGE_RESPONSE) smFlags.push('Challenge/Response');
+  if (securityMode & SMB_SECURITY_MODE_SECURITY_SIGNATURES) smFlags.push('SMB Signing');
+  const securityModeDescription = smFlags.length > 0 ? smFlags.join(', ') : 'Share-Level Auth';
+
+  const dialectName = dialectIndex < SMB_DIALECTS.length ? SMB_DIALECTS[dialectIndex] : `dialect ${dialectIndex}`;
+
+  // Byte count and variable data start after parameters
+  // WordCount=17 means 34 bytes of parameter words after WordCount byte
+  // ByteCount at offset 32 + 1 + 34 = 67, but EncryptionKeyLength is at 67
+  const encKeyLen = smb[67];
+  // ByteCount at offset 68-69
+  if (smb.length < 70) {
+    return {
+      isSMB: true,
+      dialect: dialectName,
+      dialectIndex,
+      securityMode,
+      securityModeDescription,
+      capabilities,
+      serverTime,
+      serverTimezone,
+      serverGuid: null,
+      domainName: null,
+      serverName: null,
+    };
+  }
+
+  const byteCount = view.getUint16(68, true);
+  let varOffset = 70; // start of variable data
+
+  // If extended security is negotiated (capabilities & 0x80000000), server GUID (16 bytes) comes first
+  let serverGuid: string | null = null;
+  let domainName: string | null = null;
+  let serverName: string | null = null;
+  const extendedSecurity = (capabilities & 0x80000000) !== 0;
+
+  if (extendedSecurity && varOffset + 16 <= smb.length) {
+    // Server GUID
+    const guidBytes = smb.slice(varOffset, varOffset + 16);
+    serverGuid = Array.from(guidBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    serverGuid = `${serverGuid.slice(0,8)}-${serverGuid.slice(8,12)}-${serverGuid.slice(12,16)}-${serverGuid.slice(16,20)}-${serverGuid.slice(20)}`;
+    varOffset += 16;
+  } else if (!extendedSecurity && encKeyLen > 0) {
+    // Skip encryption key
+    varOffset += encKeyLen;
+  }
+
+  // Remaining bytes are domain name + server name as null-terminated Unicode strings
+  if (varOffset < smb.length && byteCount > 0) {
+    const varData = smb.slice(varOffset, varOffset + byteCount);
+    // Find first null unicode terminator (0x00 0x00)
+    let domEnd = 0;
+    while (domEnd + 1 < varData.length) {
+      if (varData[domEnd] === 0 && varData[domEnd + 1] === 0) break;
+      domEnd += 2;
+    }
+    if (domEnd > 0) {
+      domainName = new TextDecoder('utf-16le').decode(varData.slice(0, domEnd)).trim();
+    }
+    // Server name follows the null terminator
+    const srvStart = domEnd + 2;
+    let srvEnd = srvStart;
+    while (srvEnd + 1 < varData.length) {
+      if (varData[srvEnd] === 0 && varData[srvEnd + 1] === 0) break;
+      srvEnd += 2;
+    }
+    if (srvEnd > srvStart) {
+      serverName = new TextDecoder('utf-16le').decode(varData.slice(srvStart, srvEnd)).trim();
+    }
+  }
+
+  return {
+    isSMB: true,
+    dialect: dialectName,
+    dialectIndex,
+    securityMode,
+    securityModeDescription,
+    capabilities,
+    serverTime,
+    serverTimezone,
+    serverGuid,
+    domainName,
+    serverName,
+  };
+}
+
+/**
+ * Handle NetBIOS/SMB1 negotiate query over TCP 139.
+ * Establishes a NetBIOS session then sends an SMB1 NEGOTIATE REQUEST to fingerprint
+ * the server: dialect, security mode, server name, domain, server time, capabilities.
+ */
+export async function handleNetBIOSNameQuery(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+    };
+
+    const { host, port = 139, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Step 1: Send NetBIOS Session Request
+        const sessionReq = buildSMBSessionRequest();
+        await writer.write(sessionReq);
+
+        // Read NetBIOS Session Response
+        const sessionResp = await readSessionPacket(reader, 5000);
+
+        if (sessionResp.type === NEGATIVE_RESPONSE) {
+          const errCode = sessionResp.data.length > 0 ? sessionResp.data[0] : 0xff;
+          throw new Error(`NetBIOS session rejected: ${NEGATIVE_REASONS[errCode] || `error 0x${errCode.toString(16)}`}`);
+        }
+
+        if (sessionResp.type !== POSITIVE_RESPONSE) {
+          throw new Error(`Unexpected NetBIOS session response: 0x${sessionResp.type.toString(16)}`);
+        }
+
+        // Step 2: Send SMB1 NEGOTIATE REQUEST
+        const smbNeg = buildSMB1NegotiateRequest();
+        await writer.write(smbNeg);
+
+        // Read the SMB response (wrapped in NetBIOS session message)
+        const smbResp = await readSessionPacket(reader, 5000);
+
+        const rtt = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        if (smbResp.type !== SESSION_MESSAGE) {
+          return {
+            success: true,
+            host,
+            port,
+            rtt,
+            sessionEstablished: true,
+            isSMB: false,
+            message: `NetBIOS session OK but unexpected message type 0x${smbResp.type.toString(16)}`,
+          };
+        }
+
+        // Reconstruct full packet for SMB parsing (need type byte + flags + length prefix)
+        const fullPkt = new Uint8Array(4 + smbResp.data.length);
+        fullPkt[0] = smbResp.type;
+        fullPkt[1] = smbResp.flags;
+        fullPkt[2] = (smbResp.data.length >> 8) & 0xff;
+        fullPkt[3] = smbResp.data.length & 0xff;
+        fullPkt.set(smbResp.data, 4);
+
+        const negResult = parseSMB1NegotiateResponse(fullPkt);
+
+        // Build capability description
+        const capFlags: string[] = [];
+        if (negResult.capabilities !== null) {
+          const c = negResult.capabilities;
+          if (c & 0x0001) capFlags.push('Raw Mode');
+          if (c & 0x0002) capFlags.push('MPX Mode');
+          if (c & 0x0004) capFlags.push('Unicode');
+          if (c & 0x0008) capFlags.push('Large Files');
+          if (c & 0x0010) capFlags.push('NT SMBs');
+          if (c & 0x0020) capFlags.push('RPC Remote APIs');
+          if (c & 0x0040) capFlags.push('NT Status Codes');
+          if (c & 0x0080) capFlags.push('Level II Oplocks');
+          if (c & 0x0100) capFlags.push('Lock and Read');
+          if (c & 0x0200) capFlags.push('NT Find');
+          if (c & 0x1000) capFlags.push('DFS');
+          if (c & 0x4000) capFlags.push('Large ReadX');
+          if (c & 0x8000) capFlags.push('Large WriteX');
+          if (c & 0x80000000) capFlags.push('Extended Security');
+        }
+
+        return {
+          success: true,
+          host,
+          port,
+          rtt,
+          sessionEstablished: true,
+          isSMB: negResult.isSMB,
+          dialect: negResult.dialect,
+          dialectIndex: negResult.dialectIndex,
+          securityMode: negResult.securityMode !== null ? `0x${negResult.securityMode.toString(16).padStart(2, '0')}` : null,
+          securityModeDescription: negResult.securityModeDescription,
+          capabilities: negResult.capabilities !== null ? `0x${negResult.capabilities.toString(16).padStart(8, '0')}` : null,
+          capabilityFlags: capFlags.length > 0 ? capFlags : null,
+          serverTime: negResult.serverTime,
+          serverTimezone: negResult.serverTimezone !== null ? `UTC${negResult.serverTimezone >= 0 ? '+' : ''}${-negResult.serverTimezone / 60}` : null,
+          serverGuid: negResult.serverGuid,
+          domainName: negResult.domainName,
+          serverName: negResult.serverName,
+          message: negResult.isSMB
+            ? `SMB1 negotiate OK: ${negResult.dialect || 'unknown dialect'} (${rtt}ms)`
+            : `NetBIOS session OK but no SMB response (${rtt}ms)`,
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (err) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: err instanceof Error ? err.message : 'Connection timeout',
+      }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /**
  * Handle NetBIOS service probe
  * Tests multiple well-known NetBIOS suffixes to discover services

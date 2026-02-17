@@ -48,6 +48,8 @@ const PART_TYPE = 0x0004;
 const PART_TYPE_INSTANCE = 0x0005;
 const PART_VALUES = 0x0006;
 const PART_INTERVAL = 0x0007;
+const PART_TIME_HR     = 0x0008;
+const PART_INTERVAL_HR = 0x0009;
 
 // Value type constants
 const VALUE_GAUGE = 1;
@@ -413,6 +415,394 @@ export async function handleCollectdSend(request: Request): Promise<Response> {
     } catch (error) {
       socket.close();
       throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+
+// ─── collectd Put (clean public interface for sending a single metric) ────────
+
+interface CollectdPutRequest {
+  host: string;
+  port?: number;
+  metricHost?: string;
+  plugin?: string;
+  pluginInstance?: string;
+  type?: string;
+  typeInstance?: string;
+  value?: number;
+  timeout?: number;
+}
+
+/**
+ * Send a single gauge metric to a collectd server using the binary protocol.
+ *
+ * POST /api/collectd/put
+ * Body: {
+ *   host, port?,
+ *   metricHost?, plugin?, pluginInstance?,
+ *   type?, typeInstance?, value?, timeout?
+ * }
+ *
+ * Connects via TCP to port 25826 (collectd uses UDP by default, but also
+ * accepts TCP connections with the network plugin), builds a binary TLV
+ * ValueList packet, and writes it to the socket.
+ *
+ * Returns the hex-encoded packet along with connection result.
+ */
+export async function handleCollectdPut(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as CollectdPutRequest;
+    const {
+      host,
+      port = 25826,
+      metricHost = 'cloudflare-worker',
+      plugin = 'test',
+      pluginInstance = '',
+      type = 'gauge',
+      typeInstance = 'value',
+      value = 42.0,
+      timeout = 5000,
+    } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+
+      const timestamp = Math.floor(Date.now() / 1000);
+      const interval = 10;
+      const packet = buildValueList(
+        metricHost,
+        plugin,
+        pluginInstance,
+        type,
+        typeInstance,
+        [value],
+        [VALUE_GAUGE],
+        timestamp,
+        interval,
+      );
+
+      await writer.write(packet);
+      const latencyMs = Date.now() - startTime;
+
+      // Convert packet bytes to hex string for diagnostics
+      const packetHex = Array.from(packet).map(b => b.toString(16).padStart(2, '0')).join('');
+
+      writer.releaseLock();
+      socket.close();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          packet: packetHex,
+          bytesSent: packet.length,
+          latencyMs,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+// ─── Value type names (used by /receive) ─────────────────────────────────────
+
+const VALUE_TYPE_NAMES: Record<number, string> = {
+  0: 'COUNTER',
+  1: 'GAUGE',
+  2: 'DERIVE',
+  3: 'ABSOLUTE',
+};
+
+interface CollectdMetric {
+  host: string;
+  plugin: string;
+  pluginInstance: string;
+  type: string;
+  typeInstance: string;
+  timestamp: number;
+  interval: number;
+  values: Array<{ type: string; value: number }>;
+}
+
+/**
+ * Decode a collectd binary payload into an array of metric records.
+ * Each network packet may embed multiple ValueList parts. State (host/plugin/type)
+ * accumulates across consecutive parts just like the collectd C source does.
+ */
+function decodeBinaryPacket(data: Uint8Array): CollectdMetric[] {
+  const metrics: CollectdMetric[] = [];
+  let offset = 0;
+
+  let host = '';
+  let plugin = '';
+  let pluginInstance = '';
+  let metricType = '';
+  let typeInstance = '';
+  let timestamp = 0;
+  let metricInterval = 0;
+
+  const dec = new TextDecoder();
+
+  while (offset + 4 <= data.length) {
+    const view = new DataView(data.buffer, data.byteOffset + offset);
+    const partType = view.getUint16(0, false);
+    const partLen  = view.getUint16(2, false);
+
+    if (partLen < 4 || offset + partLen > data.length) break;
+
+    const bodyStart = data.byteOffset + offset + 4;
+    const bodyLen   = partLen - 4;
+
+    // String parts
+    if (
+      partType === PART_HOST || partType === PART_PLUGIN ||
+      partType === PART_PLUGIN_INSTANCE || partType === PART_TYPE ||
+      partType === PART_TYPE_INSTANCE
+    ) {
+      const str = dec.decode(data.slice(offset + 4, offset + partLen));
+      if (partType === PART_HOST)            host = str;
+      else if (partType === PART_PLUGIN)     plugin = str;
+      else if (partType === PART_PLUGIN_INSTANCE) pluginInstance = str;
+      else if (partType === PART_TYPE)       metricType = str;
+      else if (partType === PART_TYPE_INSTANCE)   typeInstance = str;
+    }
+
+    // Timestamp (seconds, uint64 BE)
+    else if (partType === PART_TIME && bodyLen >= 8) {
+      const v = new DataView(data.buffer, bodyStart, bodyLen);
+      timestamp = Number(v.getBigUint64(0, false));
+    }
+
+    // Timestamp (high-res, 2^-30 s units, uint64 BE)
+    else if (partType === PART_TIME_HR && bodyLen >= 8) {
+      const v = new DataView(data.buffer, bodyStart, bodyLen);
+      timestamp = Number(v.getBigUint64(0, false)) / (1 << 30);
+    }
+
+    // Interval (seconds, uint64 BE)
+    else if (partType === PART_INTERVAL && bodyLen >= 8) {
+      const v = new DataView(data.buffer, bodyStart, bodyLen);
+      metricInterval = Number(v.getBigUint64(0, false));
+    }
+
+    // Interval (high-res)
+    else if (partType === PART_INTERVAL_HR && bodyLen >= 8) {
+      const v = new DataView(data.buffer, bodyStart, bodyLen);
+      metricInterval = Number(v.getBigUint64(0, false)) / (1 << 30);
+    }
+
+    // Values part — emits one metric record
+    else if (partType === PART_VALUES && bodyLen >= 2) {
+      const v = new DataView(data.buffer, bodyStart, bodyLen);
+      const numValues = v.getUint16(0, false);
+      const typeCodesOff = 2;
+      const valuesOff    = typeCodesOff + numValues;
+
+      if (bodyLen >= valuesOff + numValues * 8) {
+        const values: Array<{ type: string; value: number }> = [];
+        for (let i = 0; i < numValues; i++) {
+          const vtCode = v.getUint8(typeCodesOff + i);
+          const vtName = VALUE_TYPE_NAMES[vtCode] ?? `UNKNOWN(${vtCode})`;
+          const val    = v.getFloat64(valuesOff + i * 8, false);
+          values.push({ type: vtName, value: val });
+        }
+        metrics.push({
+          host, plugin, pluginInstance,
+          type: metricType, typeInstance,
+          timestamp: Math.round(timestamp),
+          interval: Math.round(metricInterval),
+          values,
+        });
+      }
+    }
+
+    offset += partLen;
+  }
+
+  return metrics;
+}
+
+interface CollectdReceiveRequest {
+  host: string;
+  port?: number;
+  durationMs?: number;
+  timeout?: number;
+  maxMetrics?: number;
+}
+
+/**
+ * Receive metrics pushed by a collectd server in server-mode.
+ *
+ * collectd's network plugin (server mode) forwards every locally collected
+ * ValueList to all connected TCP clients. This endpoint connects, accumulates
+ * data for up to `durationMs` milliseconds, and decodes every binary-protocol
+ * metric packet into structured JSON — giving full read-back of whatever
+ * plugins the remote collectd is running (cpu, memory, df, interface, etc.).
+ *
+ * POST /api/collectd/receive
+ * Body: {
+ *   host, port?,
+ *   durationMs?  — collection window in ms (default 5000, max 15000)
+ *   maxMetrics?  — stop early once this many metrics are decoded (default 200)
+ *   timeout?     — TCP connect timeout (default 10000)
+ * }
+ */
+export async function handleCollectdReceive(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as CollectdReceiveRequest;
+    const {
+      host,
+      port        = 25826,
+      durationMs  = 5000,
+      timeout     = 10000,
+      maxMetrics  = 200,
+    } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const clampedDuration = Math.min(Math.max(durationMs, 500), 15000);
+    const clampedMax      = Math.min(Math.max(maxMetrics, 1), 500);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const connectTimeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`);
+
+    try {
+      const startTime = Date.now();
+      await Promise.race([socket.opened, connectTimeout]);
+      const tcpLatency = Date.now() - startTime;
+
+      const reader          = socket.readable.getReader();
+      const allMetrics: CollectdMetric[] = [];
+      let bytesReceived     = 0;
+      let packetsDecoded    = 0;
+      const collectDeadline = Date.now() + clampedDuration;
+
+      while (allMetrics.length < clampedMax && Date.now() < collectDeadline) {
+        const remaining = collectDeadline - Date.now();
+        if (remaining <= 0) break;
+
+        const readTimer = new Promise<{ done: true; value: undefined }>((resolve) =>
+          setTimeout(() => resolve({ done: true, value: undefined }), remaining),
+        );
+
+        const { value, done } = await Promise.race([reader.read(), readTimer]);
+        if (done || !value) break;
+
+        bytesReceived += value.length;
+        const decoded = decodeBinaryPacket(value);
+        if (decoded.length > 0) {
+          packetsDecoded++;
+          for (const m of decoded) {
+            allMetrics.push(m);
+            if (allMetrics.length >= clampedMax) break;
+          }
+        }
+      }
+
+      reader.releaseLock();
+      socket.close();
+
+      const elapsed     = Date.now() - startTime - tcpLatency;
+      const pluginsSeen = [...new Set(allMetrics.map(m => m.plugin))].sort();
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          tcpLatency,
+          collectionMs: elapsed,
+          bytesReceived,
+          packetsDecoded,
+          metricsReceived: allMetrics.length,
+          pluginsSeen,
+          metrics: allMetrics,
+          note: allMetrics.length === 0
+            ? 'No metrics received. Ensure collectd network plugin is in server mode with TCP on this port.'
+            : `Received ${allMetrics.length} metric(s) from plugin(s): ${pluginsSeen.join(', ')}.`,
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (err) {
+      socket.close();
+      throw err;
     }
   } catch (error) {
     return new Response(

@@ -15,9 +15,14 @@ export interface IRCConnectionOptions {
   realname?: string;
   password?: string;
   channels?: string[];
+  /** SASL PLAIN credentials (for modern networks like Libera.Chat) */
+  saslUsername?: string;
+  saslPassword?: string;
 }
 
 export interface IRCMessage {
+  /** IRCv3 message tags (present when server sends @key=value;... prefix) */
+  tags?: Record<string, string>;
   prefix?: string;
   command: string;
   params: string[];
@@ -25,10 +30,39 @@ export interface IRCMessage {
 }
 
 /**
- * Parse a single IRC message line into structured data
- * Format: [:prefix] command params \r\n
+ * Parse a single IRC message line into structured data.
+ * Supports IRCv3 message tags (@key=value;key2=value2 prefix).
+ * Format: [@tags] [:prefix] command params \r\n
  */
-export function parseIRCMessage(line: string): IRCMessage {
+export function parseIRCMessage(rawLine: string): IRCMessage {
+  let line = rawLine;
+  let tags: Record<string, string> | undefined;
+
+  // IRCv3 message tags: @key=value;key2 :prefix COMMAND params
+  if (line[0] === '@') {
+    const spacePos = line.indexOf(' ');
+    if (spacePos !== -1) {
+      tags = {};
+      for (const pair of line.substring(1, spacePos).split(';')) {
+        if (!pair) continue;
+        const eqPos = pair.indexOf('=');
+        if (eqPos === -1) {
+          tags[pair] = '';
+        } else {
+          // IRCv3 tag value escaping: \: → ; \s → space \\ → \ \r → CR \n → LF
+          tags[pair.substring(0, eqPos)] = pair.substring(eqPos + 1)
+            .replace(/\\:/g, ';')
+            .replace(/\\s/g, ' ')
+            .replace(/\\\\/g, '\x00')  // temp-escape backslash
+            .replace(/\\r/g, '\r')
+            .replace(/\\n/g, '\n')
+            .replace(/\x00/g, '\\');
+        }
+      }
+      line = line.substring(spacePos + 1);
+    }
+  }
+
   let prefix: string | undefined;
   const params: string[] = [];
   let pos = 0;
@@ -37,7 +71,7 @@ export function parseIRCMessage(line: string): IRCMessage {
   if (line[0] === ':') {
     const spacePos = line.indexOf(' ', 1);
     if (spacePos === -1) {
-      return { command: line.substring(1), params: [], timestamp: Date.now() };
+      return { tags, command: line.substring(1), params: [], timestamp: Date.now() };
     }
     prefix = line.substring(1, spacePos);
     pos = spacePos + 1;
@@ -48,7 +82,7 @@ export function parseIRCMessage(line: string): IRCMessage {
   const cmdSpacePos = line.indexOf(' ', pos);
   if (cmdSpacePos === -1) {
     command = line.substring(pos);
-    return { prefix, command, params, timestamp: Date.now() };
+    return { tags, prefix, command, params, timestamp: Date.now() };
   }
   command = line.substring(pos, cmdSpacePos);
   pos = cmdSpacePos + 1;
@@ -71,7 +105,7 @@ export function parseIRCMessage(line: string): IRCMessage {
     pos = nextSpace + 1;
   }
 
-  return { prefix, command, params, timestamp: Date.now() };
+  return { tags, prefix, command, params, timestamp: Date.now() };
 }
 
 /**
@@ -276,6 +310,8 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
     const realname = url.searchParams.get('realname') || nickname || '';
     const password = url.searchParams.get('password') || '';
     const channels = url.searchParams.get('channels')?.split(',').filter(Boolean) || [];
+    const saslUsername = url.searchParams.get('saslUsername') || '';
+    const saslPassword = url.searchParams.get('saslPassword') || '';
 
     if (!host) {
       return new Response(
@@ -336,17 +372,20 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
           })
         );
 
-        // Send IRC registration
+        // Send IRC registration — CAP LS first for IRCv3 negotiation
         const regWriter = socket.writable.getWriter();
         if (password) {
           await regWriter.write(encoder.encode(`PASS ${password}\r\n`));
         }
+        await regWriter.write(encoder.encode('CAP LS 302\r\n'));
         await regWriter.write(encoder.encode(`NICK ${nickname}\r\n`));
         await regWriter.write(encoder.encode(`USER ${username} 0 * :${realname}\r\n`));
         regWriter.releaseLock();
 
         // Track registration state
         let registered = false;
+        // SASL state machine
+        let saslState: 'idle' | 'cap_req' | 'authenticate' | 'credentials' | 'done' | 'no_sasl' = 'idle';
 
         // Handle WebSocket messages from browser -> IRC server
         server.addEventListener('message', async (event) => {
@@ -403,6 +442,38 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
                   break;
                 case 'whois':
                   await cmdWriter.write(encoder.encode(`WHOIS ${cmd.nickname}\r\n`));
+                  break;
+                case 'notice':
+                  await cmdWriter.write(encoder.encode(`NOTICE ${cmd.target} :${cmd.message}\r\n`));
+                  break;
+                case 'kick':
+                  await cmdWriter.write(encoder.encode(`KICK ${cmd.channel} ${cmd.user}${cmd.reason ? ' :' + cmd.reason : ''}\r\n`));
+                  break;
+                case 'mode':
+                  await cmdWriter.write(encoder.encode(`MODE ${cmd.target} ${cmd.mode}${cmd.params ? ' ' + cmd.params : ''}\r\n`));
+                  break;
+                case 'invite':
+                  await cmdWriter.write(encoder.encode(`INVITE ${cmd.nick} ${cmd.channel}\r\n`));
+                  break;
+                case 'away':
+                  await cmdWriter.write(encoder.encode(cmd.message ? `AWAY :${cmd.message}\r\n` : `AWAY\r\n`));
+                  break;
+                case 'ctcp':
+                  // CTCP: PRIVMSG target :\x01COMMAND [args]\x01
+                  // Most common: ACTION (/me), VERSION, PING
+                  await cmdWriter.write(encoder.encode(`PRIVMSG ${cmd.target} :\x01${cmd.ctcp}${cmd.args ? ' ' + cmd.args : ''}\x01\r\n`));
+                  break;
+                case 'ctcp-reply':
+                  // CTCP reply uses NOTICE
+                  await cmdWriter.write(encoder.encode(`NOTICE ${cmd.target} :\x01${cmd.ctcp}${cmd.args ? ' ' + cmd.args : ''}\x01\r\n`));
+                  break;
+                case 'cap':
+                  // Raw CAP subcommand (LS, REQ, END, etc.)
+                  await cmdWriter.write(encoder.encode(`CAP ${cmd.subcommand}${cmd.params ? ' :' + cmd.params : ''}\r\n`));
+                  break;
+                case 'userhost':
+                  // USERHOST nick1 nick2 ... (up to 5)
+                  await cmdWriter.write(encoder.encode(`USERHOST ${(cmd.nicks as string[]).slice(0, 5).join(' ')}\r\n`));
                   break;
               }
 
@@ -466,6 +537,71 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
                   encoder.encode(`PONG ${msg.params[0] || ''}\r\n`)
                 );
                 pongWriter.releaseLock();
+              }
+
+              // IRCv3 CAP negotiation
+              if (msg.command === 'CAP') {
+                const subCmd = msg.params[1];
+                if (subCmd === 'LS') {
+                  const capsStr = msg.params[msg.params.length - 1];
+                  const availCaps = capsStr.split(' ').filter(Boolean);
+                  server.send(JSON.stringify({ type: 'irc-caps', caps: availCaps }));
+                  const hasSasl = availCaps.some(c => c === 'sasl' || c.startsWith('sasl='));
+                  if (saslUsername && saslPassword && hasSasl) {
+                    const w = socket.writable.getWriter();
+                    await w.write(encoder.encode('CAP REQ :sasl\r\n'));
+                    w.releaseLock();
+                    saslState = 'cap_req';
+                  } else {
+                    const w = socket.writable.getWriter();
+                    await w.write(encoder.encode('CAP END\r\n'));
+                    w.releaseLock();
+                    saslState = 'no_sasl';
+                  }
+                } else if (subCmd === 'ACK') {
+                  const ackedCaps = msg.params[msg.params.length - 1].trim().split(' ').filter(Boolean);
+                  server.send(JSON.stringify({ type: 'irc-cap-ack', caps: ackedCaps }));
+                  if (ackedCaps.some(c => c === 'sasl') && saslState === 'cap_req') {
+                    const w = socket.writable.getWriter();
+                    await w.write(encoder.encode('AUTHENTICATE PLAIN\r\n'));
+                    w.releaseLock();
+                    saslState = 'authenticate';
+                  } else {
+                    const w = socket.writable.getWriter();
+                    await w.write(encoder.encode('CAP END\r\n'));
+                    w.releaseLock();
+                    saslState = 'no_sasl';
+                  }
+                } else if (subCmd === 'NAK') {
+                  server.send(JSON.stringify({ type: 'irc-cap-nak', caps: msg.params[msg.params.length - 1] }));
+                  const w = socket.writable.getWriter();
+                  await w.write(encoder.encode('CAP END\r\n'));
+                  w.releaseLock();
+                  saslState = 'no_sasl';
+                }
+              }
+
+              // SASL PLAIN authentication
+              if (msg.command === 'AUTHENTICATE' && msg.params[0] === '+' && saslState === 'authenticate') {
+                // base64(user\0user\0pass) — account name = login name
+                const creds = btoa(`${saslUsername}\0${saslUsername}\0${saslPassword}`);
+                const w = socket.writable.getWriter();
+                await w.write(encoder.encode(`AUTHENTICATE ${creds}\r\n`));
+                w.releaseLock();
+                saslState = 'credentials';
+              }
+              // 903 = SASL success
+              if (msg.command === '903') {
+                server.send(JSON.stringify({ type: 'irc-sasl-success', message: msg.params[msg.params.length - 1] }));
+                const w = socket.writable.getWriter();
+                await w.write(encoder.encode('CAP END\r\n'));
+                w.releaseLock();
+                saslState = 'done';
+              }
+              // 904/905/906/907 = SASL failure
+              if (['904', '905', '906', '907'].includes(msg.command)) {
+                server.send(JSON.stringify({ type: 'irc-sasl-failed', code: msg.command, message: msg.params[msg.params.length - 1] }));
+                server.close();
               }
 
               // Auto-join channels after registration

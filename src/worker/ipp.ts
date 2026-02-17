@@ -401,3 +401,225 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Build an IPP Print-Job request payload (operation 0x0002).
+ *
+ * Encodes mandatory operation attributes (charset, language, printer-uri,
+ * job-name) plus the document data.  The document is sent as the body
+ * immediately after the end-of-attributes tag.
+ */
+function buildPrintJobRequest(
+  printerUri: string,
+  documentData: string,
+  mimeType: string,
+  jobName: string,
+  requestId: number = 2,
+): Uint8Array {
+  const enc = new TextEncoder();
+  const parts: number[] = [];
+
+  // Version: IPP/1.1
+  parts.push(0x01, 0x01);
+  // Operation: Print-Job (0x0002)
+  parts.push(0x00, 0x02);
+  // Request ID
+  parts.push((requestId >> 24) & 0xFF, (requestId >> 16) & 0xFF, (requestId >> 8) & 0xFF, requestId & 0xFF);
+
+  const pushAttr = (tag: number, name: string, value: string) => {
+    parts.push(tag);
+    const n = enc.encode(name);
+    parts.push((n.length >> 8) & 0xFF, n.length & 0xFF);
+    for (const b of n) parts.push(b);
+    const v = enc.encode(value);
+    parts.push((v.length >> 8) & 0xFF, v.length & 0xFF);
+    for (const b of v) parts.push(b);
+  };
+
+  // Operation attributes group
+  parts.push(0x01);
+  pushAttr(0x47, 'attributes-charset', 'utf-8');
+  pushAttr(0x48, 'attributes-natural-language', 'en');
+  pushAttr(0x45, 'printer-uri', printerUri);
+  pushAttr(0x42, 'job-name', jobName);
+  pushAttr(0x49, 'document-format', mimeType);
+
+  // End of attributes
+  parts.push(0x03);
+
+  // Document data appended directly after the IPP header
+  const docBytes = enc.encode(documentData);
+  const ippHeader = new Uint8Array(parts);
+  const combined = new Uint8Array(ippHeader.length + docBytes.length);
+  combined.set(ippHeader);
+  combined.set(docBytes, ippHeader.length);
+  return combined;
+}
+
+/**
+ * Submit a Print-Job (IPP operation 0x0002) to a CUPS/IPP printer.
+ *
+ * The caller supplies the document as a plain string.  Supported MIME types:
+ *   - text/plain (default)
+ *   - application/postscript
+ *   - application/pdf (pass base64-encoded bytes as data)
+ *   - application/octet-stream
+ */
+export async function handleIPPPrintJob(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      printerUri?: string;
+      data: string;
+      mimeType?: string;
+      jobName?: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 631,
+      data,
+      mimeType = 'text/plain',
+      jobName = 'portofcall-job',
+      timeout = 30000,
+    } = body;
+    const printerUri = body.printerUri || `ipp://${host}:${port}/ipp/print`;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!data) {
+      return new Response(JSON.stringify({ success: false, error: 'data is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const ippPayload = buildPrintJobRequest(printerUri, data, mimeType, jobName);
+
+    const httpRequest =
+      `POST /ipp/print HTTP/1.1\r\n` +
+      `Host: ${host}:${port}\r\n` +
+      `Content-Type: application/ipp\r\n` +
+      `Content-Length: ${ippPayload.length}\r\n` +
+      `Connection: close\r\n` +
+      `\r\n`;
+
+    const httpBytes = new TextEncoder().encode(httpRequest);
+    const fullRequest = new Uint8Array(httpBytes.length + ippPayload.length);
+    fullRequest.set(httpBytes);
+    fullRequest.set(ippPayload, httpBytes.length);
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(fullRequest);
+
+      // Read response
+      const chunks: Uint8Array[] = [];
+      let totalLength = 0;
+
+      while (totalLength < 64 * 1024) {
+        const readResult = await Promise.race([reader.read(), timeoutPromise]);
+        if (readResult.done || !readResult.value) break;
+        chunks.push(readResult.value);
+        totalLength += readResult.value.length;
+
+        const combined = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.length; }
+        const text = new TextDecoder().decode(combined);
+        if (text.includes('\r\n\r\n')) {
+          const headerEnd = text.indexOf('\r\n\r\n');
+          const headers = text.substring(0, headerEnd);
+          const contentLengthMatch = headers.match(/Content-Length:\s*(\d+)/i);
+          if (contentLengthMatch) {
+            const contentLength = parseInt(contentLengthMatch[1]);
+            if (totalLength >= headerEnd + 4 + contentLength) break;
+          } else if (chunks.length > 3) break;
+        }
+      }
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      const rtt = Date.now() - startTime;
+
+      const fullResponse = new Uint8Array(totalLength);
+      let off = 0;
+      for (const chunk of chunks) { fullResponse.set(chunk, off); off += chunk.length; }
+
+      const responseText = new TextDecoder().decode(fullResponse);
+      const headerEnd = responseText.indexOf('\r\n\r\n');
+      if (headerEnd === -1) throw new Error('Invalid HTTP response from IPP server');
+
+      const httpHeaders = responseText.substring(0, headerEnd);
+      const statusLine = httpHeaders.split('\r\n')[0];
+      const bodyStart = headerEnd + 4;
+      const bodyBytes = fullResponse.slice(new TextEncoder().encode(responseText.substring(0, bodyStart)).length);
+
+      let jobId: number | undefined;
+      let statusCode: number | undefined;
+      let statusMessage: string | undefined;
+
+      if (bodyBytes.length >= 8) {
+        try {
+          const parsed = parseIPPResponse(bodyBytes);
+          statusCode = parsed.statusCode;
+          statusMessage = IPP_STATUS_CODES[parsed.statusCode] || `0x${parsed.statusCode.toString(16).padStart(4, '0')}`;
+          const jobIdAttr = parsed.attributes.find(a => a.name === 'job-id');
+          if (jobIdAttr) jobId = parseInt(jobIdAttr.value);
+        } catch { /* ignore parse errors */ }
+      }
+
+      const success = statusCode !== undefined ? statusCode < 0x0400 : statusLine.includes(' 200 ');
+
+      return new Response(JSON.stringify({
+        success,
+        host,
+        port,
+        printerUri,
+        jobName,
+        mimeType,
+        bytesSent: data.length,
+        rtt,
+        jobId,
+        statusCode,
+        statusMessage,
+        rawHttpStatus: statusLine,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+      host: '',
+      port: 0,
+      rtt: 0,
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

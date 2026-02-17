@@ -340,6 +340,175 @@ export async function handleNRPEQuery(request: Request): Promise<Response> {
 }
 
 /**
+ * Handle NRPE query over TLS — same as handleNRPEQuery but uses secureTransport: 'on'.
+ *
+ * Most production NRPE deployments require SSL/TLS (the default). Use this handler
+ * when the NRPE daemon is configured with ssl=yes (the upstream default).
+ */
+export async function handleNRPETLS(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = await request.json() as NRPEQueryRequest;
+    const {
+      host,
+      port = 5666,
+      command = '_NRPE_CHECK',
+      version = NRPE_PACKET_VERSION_2,
+      timeout = 10000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (version !== NRPE_PACKET_VERSION_2 && version !== NRPE_PACKET_VERSION_3) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Protocol version must be 2 or 3',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+
+    // Use secureTransport: 'on' for TLS — the key difference from handleNRPEQuery
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Build and send NRPE query packet (same format as plain-text)
+      const queryPacket = buildNRPEQuery(command, version);
+      await writer.write(queryPacket);
+
+      // Read response (fixed 1036 bytes)
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+
+      while (totalBytes < NRPE_V2_PACKET_LEN) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          timeoutPromise,
+        ]);
+
+        if (done || !value) break;
+
+        chunks.push(value);
+        totalBytes += value.length;
+      }
+
+      const rtt = Date.now() - startTime;
+
+      // Combine chunks
+      const responseData = new Uint8Array(totalBytes);
+      let offset = 0;
+      for (const chunk of chunks) {
+        responseData.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (totalBytes === 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          host,
+          port,
+          command,
+          tls: true,
+          error: 'No response received from NRPE daemon over TLS',
+          rtt,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const parsed = parseNRPEResponse(responseData);
+
+      const result: NRPEQueryResponse & { tls: boolean } = {
+        success: true,
+        tls: true,
+        host,
+        port,
+        command,
+        protocolVersion: parsed.version,
+        resultCode: parsed.resultCode,
+        resultCodeName: RESULT_CODES[parsed.resultCode] || `UNKNOWN(${parsed.resultCode})`,
+        output: parsed.output,
+        rtt,
+      };
+
+      if (!parsed.valid) {
+        result.error = 'Response CRC32 mismatch or unexpected packet type — response may be corrupted';
+      }
+
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
  * Handle NRPE version check — convenience endpoint for _NRPE_CHECK command.
  */
 export async function handleNRPEVersion(request: Request): Promise<Response> {

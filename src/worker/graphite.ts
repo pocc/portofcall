@@ -153,3 +153,94 @@ export async function handleGraphiteSend(request: Request): Promise<Response> {
     });
   }
 }
+
+
+// Graphite HTTP query API
+
+export async function handleGraphiteQuery(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const target = url.searchParams.get('target');
+    const from = url.searchParams.get('from') || '-1h';
+    const until = url.searchParams.get('until') || 'now';
+    const format = url.searchParams.get('format') || 'json';
+    const renderPort = parseInt(url.searchParams.get('renderPort') || '80', 10);
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!target) return new Response(JSON.stringify({ success: false, error: 'Missing target' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const params = new URLSearchParams({ target, from, until, format });
+    const fetchUrl = 'http://' + host + ':' + String(renderPort) + '/render?' + params.toString();
+    const start = Date.now();
+    const resp = await fetch(fetchUrl, { headers: { Accept: 'application/json' } });
+    const latencyMs = Date.now() - start;
+    if (!resp.ok) {
+      const text = await resp.text();
+      return new Response(JSON.stringify({ success: false, error: 'Graphite returned ' + String(resp.status) + ': ' + text.substring(0, 256), statusCode: resp.status, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const data = await resp.json() as Array<{ target: string; datapoints: Array<[number | null, number]> }>;
+    return new Response(JSON.stringify({ success: true, host, renderPort, target, from, until, seriesCount: data.length, series: data, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Query failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Find metrics matching a query pattern.
+ * GET /api/graphite/find
+ */
+export async function handleGraphiteFind(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const query = url.searchParams.get('query');
+    const renderPort = parseInt(url.searchParams.get('renderPort') || '80', 10);
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!query) return new Response(JSON.stringify({ success: false, error: 'Missing query' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const params = new URLSearchParams({ query, format: 'json' });
+    const fetchUrl = 'http://' + host + ':' + String(renderPort) + '/metrics/find?' + params.toString();
+    const start = Date.now();
+    const resp = await fetch(fetchUrl, { headers: { Accept: 'application/json' } });
+    const latencyMs = Date.now() - start;
+    if (!resp.ok) {
+      const text = await resp.text();
+      return new Response(JSON.stringify({ success: false, error: 'Graphite find returned ' + String(resp.status) + ': ' + text.substring(0, 256), statusCode: resp.status, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    const data = await resp.json() as Array<{ id: string; text: string; leaf: number; expandable: number }>;
+    return new Response(JSON.stringify({ success: true, host, renderPort, query, count: data.length, metrics: data, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Find failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Check if the Graphite web interface is reachable.
+ * GET /api/graphite/info
+ */
+export async function handleGraphiteInfo(request: Request): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const renderPort = parseInt(url.searchParams.get('renderPort') || '80', 10);
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const start = Date.now();
+    let rootStatus = 0;
+    let rootBody = '';
+    try {
+      const resp = await fetch('http://' + host + ':' + String(renderPort) + '/');
+      rootStatus = resp.status;
+      rootBody = (await resp.text()).substring(0, 512);
+    } catch (e) { rootBody = e instanceof Error ? e.message : 'Connection failed'; }
+    let renderStatus = 0;
+    let renderHealthy = false;
+    try {
+      const resp = await fetch('http://' + host + ':' + String(renderPort) + '/render?format=json&target=test&from=-1min');
+      renderStatus = resp.status;
+      renderHealthy = resp.status === 200 || resp.status === 400;
+    } catch { renderHealthy = false; }
+    const latencyMs = Date.now() - start;
+    const isUp = rootStatus >= 200 && rootStatus < 500;
+    return new Response(JSON.stringify({ success: isUp, host, renderPort, rootStatus, rootBodyPreview: rootBody, renderStatus, renderHealthy, latencyMs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Info check failed' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

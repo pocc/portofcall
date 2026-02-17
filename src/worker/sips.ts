@@ -74,6 +74,9 @@ interface SipsResponse {
   callId?: string;
   rtt?: number;
   error?: string;
+  requiresAuth?: boolean;
+  message?: string;
+  raw?: string;
 }
 
 /**
@@ -418,6 +421,129 @@ export async function handleSipsOptions(request: Request): Promise<Response> {
 /**
  * Send a SIPS REGISTER request.
  */
+/**
+ * Handle SIPS INVITE — initiate a secure SIP session and observe server response
+ */
+export async function handleSipsInvite(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as SipsRequest & { to?: string };
+    const { host, port = 5061, fromUri, timeout = 15000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, host: '', port, error: 'Host is required' } satisfies SipsResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (!fromUri) {
+      return new Response(JSON.stringify({ success: false, host, port, error: 'fromUri is required' } satisfies SipsResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const callId = generateCallId();
+    const branch = generateBranch();
+    const fromTag = generateTag();
+    const toUri = body.toUri || `sips:${host}`;
+
+    // Minimal SDP offer for audio
+    const sdp = [
+      'v=0',
+      `o=portofcall 0 0 IN IP4 0.0.0.0`,
+      's=Port of Call probe',
+      'c=IN IP4 0.0.0.0',
+      't=0 0',
+      'm=audio 0 RTP/AVP 0',
+      'a=sendrecv',
+    ].join('\r\n') + '\r\n';
+    const sdpBytes = new TextEncoder().encode(sdp).length;
+
+    const inviteLines = [
+      `INVITE ${toUri} SIP/2.0`,
+      `Via: SIP/2.0/TLS ${host}:${port};branch=${branch}`,
+      `From: <${fromUri}>;tag=${fromTag}`,
+      `To: <${toUri}>`,
+      `Call-ID: ${callId}`,
+      `CSeq: 1 INVITE`,
+      `Max-Forwards: 70`,
+      `Contact: <${fromUri}>`,
+      `Content-Type: application/sdp`,
+      `Content-Length: ${sdpBytes}`,
+      '',
+      sdp,
+    ].join('\r\n');
+
+    const start = Date.now();
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(new TextEncoder().encode(inviteLines));
+
+      const chunks: Uint8Array[] = [];
+      let totalBytes = 0;
+      let responseText = '';
+      let finalCode = 0;
+
+      const readTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Response timeout')), timeout));
+
+      try {
+        while (finalCode < 200) {
+          const { value, done } = await Promise.race([reader.read(), readTimeout]);
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            totalBytes += value.length;
+            if (totalBytes > 16384) break;
+            responseText = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => Array.from(c))));
+            for (const line of responseText.split('\r\n')) {
+              const m = line.match(/^SIP\/2\.0 (\d+)/);
+              if (m && parseInt(m[1]) >= 200) { finalCode = parseInt(m[1]); break; }
+            }
+          }
+        }
+      } catch { /* timeout */ }
+
+      const rtt = Date.now() - start;
+      const parsed = parseSipsResponse(responseText);
+
+      // Send CANCEL to clean up
+      try {
+        const cancel = encodeSipsRequest({ method: 'CANCEL', requestUri: toUri, fromUri, toUri, callId, branch, fromTag, localAddress: `${host}:${port}` });
+        await writer.write(new TextEncoder().encode(cancel));
+      } catch { /* ignore */ }
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      const statusCode = parsed?.statusCode ?? 0;
+      const statusText = parsed?.statusText ?? '';
+      return new Response(JSON.stringify({
+        success: statusCode > 0,
+        host, port,
+        statusCode,
+        statusText,
+        requiresAuth: statusCode === 401 || statusCode === 407,
+        rtt,
+        message: statusCode > 0 ? `INVITE ${statusCode} ${statusText} in ${rtt}ms` : `INVITE sent, no valid response in ${rtt}ms`,
+        raw: responseText.substring(0, 2000),
+      } satisfies SipsResponse), { headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, host: '', port: 5061, error: error instanceof Error ? error.message : 'Unknown error' } satisfies SipsResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle SIPS REGISTER probe - test registration and auth requirements
+ */
 export async function handleSipsRegister(request: Request): Promise<Response> {
   try {
     const body = await request.json() as SipsRequest;
@@ -585,6 +711,264 @@ export async function handleSipsRegister(request: Request): Promise<Response> {
       socket.close();
       throw error;
     }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      host: '',
+      port: 5061,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies SipsResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/** Compact MD5 (RFC 1321) — returns hex digest string */
+function md5(input: string): string {
+  const msg = new TextEncoder().encode(input);
+  const len = msg.length;
+  const s = [
+    7,12,17,22,7,12,17,22,7,12,17,22,7,12,17,22,
+    5, 9,14,20,5, 9,14,20,5, 9,14,20,5, 9,14,20,
+    4,11,16,23,4,11,16,23,4,11,16,23,4,11,16,23,
+    6,10,15,21,6,10,15,21,6,10,15,21,6,10,15,21,
+  ];
+  const K = [
+    0xd76aa478,0xe8c7b756,0x242070db,0xc1bdceee,0xf57c0faf,0x4787c62a,0xa8304613,0xfd469501,
+    0x698098d8,0x8b44f7af,0xffff5bb1,0x895cd7be,0x6b901122,0xfd987193,0xa679438e,0x49b40821,
+    0xf61e2562,0xc040b340,0x265e5a51,0xe9b6c7aa,0xd62f105d,0x02441453,0xd8a1e681,0xe7d3fbc8,
+    0x21e1cde6,0xc33707d6,0xf4d50d87,0x455a14ed,0xa9e3e905,0xfcefa3f8,0x676f02d9,0x8d2a4c8a,
+    0xfffa3942,0x8771f681,0x6d9d6122,0xfde5380c,0xa4beea44,0x4bdecfa9,0xf6bb4b60,0xbebfbc70,
+    0x289b7ec6,0xeaa127fa,0xd4ef3085,0x04881d05,0xd9d4d039,0xe6db99e5,0x1fa27cf8,0xc4ac5665,
+    0xf4292244,0x432aff97,0xab9423a7,0xfc93a039,0x655b59c3,0x8f0ccc92,0xffeff47d,0x85845dd1,
+    0x6fa87e4f,0xfe2ce6e0,0xa3014314,0x4e0811a1,0xf7537e82,0xbd3af235,0x2ad7d2bb,0xeb86d391,
+  ];
+  const padLen = (len % 64 < 56) ? (56 - len % 64) : (120 - len % 64);
+  const padded = new Uint8Array(len + padLen + 8);
+  padded.set(msg);
+  padded[len] = 0x80;
+  const dv = new DataView(padded.buffer);
+  dv.setUint32(len + padLen, (len * 8) >>> 0, true);
+  dv.setUint32(len + padLen + 4, Math.floor(len * 8 / 0x100000000), true);
+  let a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+  for (let i = 0; i < padded.length; i += 64) {
+    const M = new Uint32Array(16);
+    for (let j = 0; j < 16; j++) M[j] = dv.getUint32(i + j * 4, true);
+    let A = a0, B = b0, C = c0, D = d0;
+    for (let j = 0; j < 64; j++) {
+      let F: number, g: number;
+      if (j < 16)      { F = (B & C) | (~B & D); g = j; }
+      else if (j < 32) { F = (D & B) | (~D & C); g = (5 * j + 1) % 16; }
+      else if (j < 48) { F = B ^ C ^ D;           g = (3 * j + 5) % 16; }
+      else             { F = C ^ (B | ~D);         g = (7 * j) % 16; }
+      F = (F + A + K[j] + M[g]) >>> 0;
+      A = D; D = C; C = B;
+      B = (B + ((F << s[j]) | (F >>> (32 - s[j])))) >>> 0;
+    }
+    a0 = (a0 + A) >>> 0; b0 = (b0 + B) >>> 0;
+    c0 = (c0 + C) >>> 0; d0 = (d0 + D) >>> 0;
+  }
+  const out = new Uint8Array(16);
+  const odv = new DataView(out.buffer);
+  odv.setUint32(0, a0, true); odv.setUint32(4, b0, true);
+  odv.setUint32(8, c0, true); odv.setUint32(12, d0, true);
+  return Array.from(out).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Read bytes from a TLS socket reader until we have a complete SIP response header block */
+async function readSipsResponseText(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number
+): Promise<string> {
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  const deadline = Date.now() + timeoutMs;
+
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    const timeoutP = new Promise<{ value: undefined; done: true }>(resolve =>
+      setTimeout(() => resolve({ value: undefined, done: true }), remaining)
+    );
+    const { value, done } = await Promise.race([reader.read(), timeoutP]);
+    if (done || !value) break;
+    chunks.push(value);
+    totalBytes += value.length;
+    const text = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => Array.from(c))));
+    if (text.includes('\r\n\r\n')) break;
+    if (totalBytes > 16384) break;
+  }
+
+  const combined = new Uint8Array(totalBytes);
+  let off = 0;
+  for (const c of chunks) { combined.set(c, off); off += c.length; }
+  return new TextDecoder().decode(combined);
+}
+
+/**
+ * POST {host, port?, username, password, domain?, timeout?}
+ *
+ * Performs SIP Digest Authentication (RFC 2617) over TLS (SIPS):
+ * 1. Send REGISTER with no credentials → server returns 401 with WWW-Authenticate: Digest
+ * 2. Parse realm, nonce, algorithm, qop from challenge
+ * 3. Compute HA1=MD5(user:realm:pass), HA2=MD5("REGISTER":uri), response=MD5(HA1:nonce[:nc:cnonce:qop]:HA2)
+ * 4. Send authenticated REGISTER with Authorization header
+ * 5. Return final status + auth result
+ */
+export async function handleSipsDigestAuth(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username: string;
+      password: string;
+      domain?: string;
+      timeout?: number;
+    };
+
+    const { host, port = 5061, username, password, timeout = 15000 } = body;
+    const sipDomain = body.domain || host;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!username || password === undefined) {
+      return new Response(JSON.stringify({ success: false, error: 'username and password are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const registerUri = `sips:${sipDomain}`;
+    const digestUri = `sip:${sipDomain}`;
+    const callId = generateCallId();
+    const branch1 = generateBranch();
+    const fromTag = generateTag();
+    const fromUri = `sips:${username}@${sipDomain}`;
+
+    // Step 1: initial REGISTER with no credentials to get 401 challenge
+    const reg1 = [
+      `REGISTER ${registerUri} SIP/2.0`,
+      `Via: SIP/2.0/TLS portofcall.invalid:5061;branch=${branch1}`,
+      `Max-Forwards: 70`,
+      `From: <${fromUri}>;tag=${fromTag}`,
+      `To: <${fromUri}>`,
+      `Call-ID: ${callId}`,
+      `CSeq: 1 REGISTER`,
+      `Contact: <${fromUri}>`,
+      `Expires: 60`,
+      `User-Agent: PortOfCall/1.0`,
+      `Content-Length: 0`,
+      '', '',
+    ].join('\r\n');
+
+    // Connect via TLS
+    const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+    const connectTimeout = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Connection timeout')), timeout));
+    await Promise.race([socket.opened, connectTimeout]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    await writer.write(new TextEncoder().encode(reg1));
+    const raw1 = await readSipsResponseText(reader, timeout);
+    const parsed1 = parseSipsResponse(raw1);
+
+    if (!parsed1) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: 'No valid SIPS response to initial REGISTER',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (parsed1.statusCode === 200) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({
+        success: true, authenticated: true, noAuthRequired: true,
+        host, port, statusCode: 200, statusText: parsed1.statusText,
+        rtt: Date.now() - startTime,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const wwwAuth = parsed1.headers['www-authenticate'] || parsed1.headers['WWW-Authenticate']
+                 || parsed1.headers['proxy-authenticate'] || parsed1.headers['Proxy-Authenticate'];
+
+    if ((parsed1.statusCode !== 401 && parsed1.statusCode !== 407) || !wwwAuth) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: `Expected 401/407 challenge, got ${parsed1.statusCode} ${parsed1.statusText}`,
+        statusCode: parsed1.statusCode, rtt: Date.now() - startTime,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Parse digest challenge
+    const realm = (wwwAuth.match(/realm="([^"]+)"/i) ?? [])[1] ?? sipDomain;
+    const nonce = (wwwAuth.match(/nonce="([^"]+)"/i) ?? [])[1] ?? '';
+    const algorithm = ((wwwAuth.match(/algorithm=([^\s,]+)/i) ?? [])[1] ?? 'MD5').toUpperCase();
+    const qopOffered = (wwwAuth.match(/qop="([^"]+)"/i) ?? [])[1] ?? '';
+    const useQop = qopOffered.split(',').map((q: string) => q.trim()).includes('auth') ? 'auth' : '';
+
+    // RFC 2617 digest computation
+    const ha1 = md5(`${username}:${realm}:${password}`);
+    const ha2 = md5(`REGISTER:${digestUri}`);
+    const nc = '00000001';
+    const cnonce = Math.random().toString(36).substring(2, 10);
+    const digestResp = useQop === 'auth'
+      ? md5(`${ha1}:${nonce}:${nc}:${cnonce}:auth:${ha2}`)
+      : md5(`${ha1}:${nonce}:${ha2}`);
+
+    // Step 2: authenticated REGISTER
+    const branch2 = generateBranch();
+    const authHeaderName = parsed1.statusCode === 407 ? 'Proxy-Authorization' : 'Authorization';
+    let authVal = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
+    if (useQop === 'auth') authVal += `, qop=auth, nc=${nc}, cnonce="${cnonce}"`;
+
+    const reg2 = [
+      `REGISTER ${registerUri} SIP/2.0`,
+      `Via: SIP/2.0/TLS portofcall.invalid:5061;branch=${branch2}`,
+      `Max-Forwards: 70`,
+      `From: <${fromUri}>;tag=${fromTag}`,
+      `To: <${fromUri}>`,
+      `Call-ID: ${callId}`,
+      `CSeq: 2 REGISTER`,
+      `Contact: <${fromUri}>`,
+      `Expires: 60`,
+      `${authHeaderName}: ${authVal}`,
+      `User-Agent: PortOfCall/1.0`,
+      `Content-Length: 0`,
+      '', '',
+    ].join('\r\n');
+
+    await writer.write(new TextEncoder().encode(reg2));
+    const raw2 = await readSipsResponseText(reader, timeout);
+    const parsed2 = parseSipsResponse(raw2);
+
+    writer.releaseLock(); reader.releaseLock(); socket.close();
+
+    const rtt = Date.now() - startTime;
+    const finalCode = parsed2?.statusCode ?? 0;
+
+    return new Response(JSON.stringify({
+      success: finalCode > 0,
+      authenticated: finalCode === 200,
+      host,
+      port,
+      statusCode: finalCode,
+      statusText: parsed2?.statusText ?? '',
+      challengeCode: parsed1.statusCode,
+      realm,
+      nonce: nonce.substring(0, 16) + (nonce.length > 16 ? '...' : ''),
+      algorithm,
+      qop: useQop || null,
+      rtt,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
   } catch (error) {
     return new Response(JSON.stringify({

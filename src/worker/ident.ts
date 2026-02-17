@@ -37,11 +37,11 @@ interface IdentResponse {
   serverPort: number;
   clientPort: number;
   responseType?: 'USERID' | 'ERROR';
-  operatingSystem?: string;
+  os?: string;
   userId?: string;
   errorType?: string;
-  rawResponse?: string;
-  rtt: number;
+  raw?: string;
+  latencyMs: number;
   error?: string;
 }
 
@@ -183,7 +183,6 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
       }
 
       const rawResponse = new TextDecoder().decode(responseBytes);
-      const rtt = Date.now() - startTime;
 
       // Parse the response
       const parsed = parseIdentResponse(rawResponse);
@@ -199,12 +198,12 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
         serverPort: parsed.serverPort,
         clientPort: parsed.clientPort,
         responseType: parsed.responseType,
-        rawResponse: rawResponse.trim(),
-        rtt,
+        raw: rawResponse.trim(),
+        latencyMs: Date.now() - startTime,
       };
 
       if (parsed.responseType === 'USERID') {
-        response.operatingSystem = parsed.operatingSystem;
+        response.os = parsed.operatingSystem;
         response.userId = parsed.userId;
       } else {
         response.errorType = parsed.errorType;
@@ -227,7 +226,7 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
       host: '',
       serverPort: 0,
       clientPort: 0,
-      rtt: 0
+      latencyMs: 0
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' }

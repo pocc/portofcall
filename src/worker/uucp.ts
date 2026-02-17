@@ -175,3 +175,101 @@ export async function handleUUCPProbe(request: Request): Promise<Response> {
     );
   }
 }
+
+/**
+ * Perform UUCP handshake detection over TCP (port 540).
+ * Detects raw UUCP (DLE+S markers) vs login-gated service.
+ * Request body: { host, port=540, timeout=10000 }
+ */
+export async function handleUUCPHandshake(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as { host: string; port?: number; timeout?: number };
+    const { host, port = 540, timeout = 10000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, banner: '', loginRequired: false, latencyMs: 0, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, banner: '', loginRequired: false, latencyMs: 0, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const start = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        // Send UUCP wakeup
+        await writer.write(new Uint8Array([0x0d, 0x00]));
+
+        // Read initial banner (3s)
+        const readTimeout = new Promise<{ value: undefined; done: true }>(r => setTimeout(() => r({ value: undefined, done: true }), 3000));
+        const { value, done } = await Promise.race([reader.read(), readTimeout]);
+        const latencyMs = Date.now() - start;
+        const rawBytes = (!done && value) ? value : new Uint8Array(0);
+        const rawText = new TextDecoder('utf-8', { fatal: false }).decode(rawBytes);
+        const displayBanner = rawText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, c => `<0x${c.charCodeAt(0).toString(16).padStart(2,'0')}>`);
+
+        let remoteSite: string | undefined;
+        let loginRequired = false;
+        let protocolVersion: string | undefined;
+        let exchangeResult: string | undefined;
+
+        if (rawBytes.length > 0 && rawBytes[0] === 0x10 && rawBytes[1] === 0x53) {
+          // Raw UUCP DLE+S here-is message
+          const nullIdx = rawText.indexOf('\0');
+          const field = nullIdx > 1 ? rawText.slice(2, nullIdx) : rawText.slice(2);
+          remoteSite = field.replace(/^here-?/, '') || field;
+          protocolVersion = 'UUCP-g';
+          await writer.write(new Uint8Array([0x10]));
+          await writer.write(new TextEncoder().encode('Sprobe\0'));
+          const ackTimeout = new Promise<{ value: undefined; done: true }>(r => setTimeout(() => r({ value: undefined, done: true }), 2000));
+          const ack = await Promise.race([reader.read(), ackTimeout]);
+          if (!ack.done && ack.value?.length) {
+            exchangeResult = new TextDecoder('utf-8', { fatal: false }).decode(ack.value).replace(/\0/g, ' ').trim();
+          }
+        } else if (/login:/i.test(rawText) || /password:/i.test(rawText)) {
+          loginRequired = true;
+          await writer.write(new TextEncoder().encode('uucp\n'));
+          const respTimeout = new Promise<{ value: undefined; done: true }>(r => setTimeout(() => r({ value: undefined, done: true }), 2000));
+          const resp = await Promise.race([reader.read(), respTimeout]);
+          if (!resp.done && resp.value?.length) {
+            exchangeResult = new TextDecoder('utf-8', { fatal: false }).decode(resp.value).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
+          }
+        }
+
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+
+        return {
+          success: true,
+          banner: (exchangeResult ? `${displayBanner} → ${exchangeResult}` : displayBanner) || '(no banner)',
+          loginRequired, latencyMs,
+          ...(remoteSite ? { remoteSite } : {}),
+          ...(protocolVersion ? { protocolVersion } : {}),
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close(); throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, banner: '', loginRequired: false, latencyMs: 0,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

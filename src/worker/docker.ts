@@ -378,3 +378,672 @@ export async function handleDockerQuery(request: Request): Promise<Response> {
     });
   }
 }
+
+
+/**
+ * Handle Docker TLS daemon query.
+ * Same as handleDockerQuery but uses https:// URL (port 2376 by default).
+ * Docker TLS daemon requires mutual TLS in production, but this tests connectivity.
+ *
+ * POST /api/docker/tls
+ * Body: { host, port?, path?, method?, body?, timeout? }
+ */
+export async function handleDockerTLS(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as DockerQueryRequest;
+    const {
+      host,
+      port = 2376,
+      path = '/version',
+      method = 'GET',
+      body: queryBody,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
+    const upperMethod = method.toUpperCase();
+    if (!allowedMethods.includes(upperMethod)) {
+      return new Response(JSON.stringify({ success: false, error: `Invalid HTTP method: ${method}` }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    const url = `https://${host}:${port}${normalizedPath}`;
+
+    const fetchHeaders: Record<string, string> = {
+      'Accept': 'application/json',
+      'User-Agent': 'PortOfCall/1.0',
+    };
+    if (queryBody) {
+      fetchHeaders['Content-Type'] = 'application/json';
+    }
+
+    const start = Date.now();
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    let fetchResponse: Response;
+    try {
+      fetchResponse = await fetch(url, {
+        method: upperMethod,
+        headers: fetchHeaders,
+        body: queryBody || undefined,
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const latencyMs = Date.now() - start;
+    const responseText = await fetchResponse.text();
+
+    let parsed;
+    try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+
+    const responseHeaders: Record<string, string> = {};
+    fetchResponse.headers.forEach((value, key) => { responseHeaders[key] = value; });
+
+    const response: DockerResponse = {
+      success: fetchResponse.status >= 200 && fetchResponse.status < 400,
+      statusCode: fetchResponse.status,
+      headers: responseHeaders,
+      body: responseText,
+      parsed,
+      latencyMs,
+    };
+
+    return new Response(JSON.stringify(response), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'TLS query failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+interface DockerContainerCreateRequest extends DockerRequest {
+  image: string;
+  name?: string;
+  cmd?: string[];
+  env?: string[];
+  https?: boolean;
+}
+
+/**
+ * Create a Docker container.
+ * POST /containers/create
+ * Returns container ID.
+ *
+ * POST /api/docker/container/create
+ * Body: { host, port?, image, name?, cmd?, env?, https?, timeout? }
+ */
+export async function handleDockerContainerCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as DockerContainerCreateRequest;
+    const {
+      host,
+      port,
+      image,
+      name,
+      cmd,
+      env,
+      https = false,
+      timeout = 15000,
+    } = body;
+
+    const effectivePort = port ?? (https ? 2376 : 2375);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!image) {
+      return new Response(JSON.stringify({ success: false, error: 'Image is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const containerConfig: Record<string, unknown> = { Image: image };
+    if (cmd && cmd.length > 0) containerConfig['Cmd'] = cmd;
+    if (env && env.length > 0) containerConfig['Env'] = env;
+
+    const bodyStr = JSON.stringify(containerConfig);
+    const pathStr = name
+      ? `/containers/create?name=${encodeURIComponent(name)}`
+      : '/containers/create';
+
+    const start = Date.now();
+
+    if (https) {
+      const url = `https://${host}:${effectivePort}${pathStr}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'PortOfCall/1.0' },
+          body: bodyStr,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const latencyMs = Date.now() - start;
+      const responseText = await fetchResponse.text();
+      let parsed;
+      try { parsed = JSON.parse(responseText); } catch { parsed = null; }
+      const containerId = (parsed as { Id?: string })?.Id;
+      return new Response(JSON.stringify({
+        success: fetchResponse.status >= 200 && fetchResponse.status < 400,
+        statusCode: fetchResponse.status,
+        containerId: containerId || null,
+        body: responseText,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } else {
+      const result = await sendHttpRequest(host, effectivePort, 'POST', pathStr, bodyStr, timeout);
+      const latencyMs = Date.now() - start;
+      let parsed;
+      try { parsed = JSON.parse(result.body); } catch { parsed = null; }
+      const containerId = (parsed as { Id?: string })?.Id;
+      return new Response(JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        statusCode: result.statusCode,
+        containerId: containerId || null,
+        body: result.body,
+        parsed,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Container create failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+interface DockerContainerStartRequest extends DockerRequest {
+  containerId: string;
+  https?: boolean;
+}
+
+/**
+ * Start a Docker container.
+ * POST /containers/{id}/start
+ *
+ * POST /api/docker/container/start
+ * Body: { host, port?, containerId, https?, timeout? }
+ */
+export async function handleDockerContainerStart(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as DockerContainerStartRequest;
+    const {
+      host,
+      port,
+      containerId,
+      https = false,
+      timeout = 15000,
+    } = body;
+
+    const effectivePort = port ?? (https ? 2376 : 2375);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!containerId) {
+      return new Response(JSON.stringify({ success: false, error: 'containerId is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const pathStr = `/containers/${encodeURIComponent(containerId)}/start`;
+    const start = Date.now();
+
+    if (https) {
+      const url = `https://${host}:${effectivePort}${pathStr}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'PortOfCall/1.0' },
+          body: '{}',
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      const latencyMs = Date.now() - start;
+      const responseText = await fetchResponse.text();
+      // 204 No Content = started successfully, 304 = already started
+      const success = fetchResponse.status === 204 || fetchResponse.status === 304;
+      return new Response(JSON.stringify({
+        success,
+        statusCode: fetchResponse.status,
+        started: fetchResponse.status === 204,
+        alreadyRunning: fetchResponse.status === 304,
+        body: responseText || null,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } else {
+      const result = await sendHttpRequest(host, effectivePort, 'POST', pathStr, '{}', timeout);
+      const latencyMs = Date.now() - start;
+      const success = result.statusCode === 204 || result.statusCode === 304;
+      return new Response(JSON.stringify({
+        success,
+        statusCode: result.statusCode,
+        started: result.statusCode === 204,
+        alreadyRunning: result.statusCode === 304,
+        body: result.body || null,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Container start failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+interface DockerContainerLogsRequest extends DockerRequest {
+  containerId: string;
+  tail?: number;
+  https?: boolean;
+}
+
+/**
+ * Parse Docker log multiplexing format.
+ * Each log frame: [stream_type(1B)][zeros(3B)][size(4B BE)][data(size bytes)]
+ * stream_type: 1=stdout, 2=stderr
+ */
+function parseDockerLogs(data: Uint8Array): { stdout: string[]; stderr: string[]; combined: string[] } {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const combined: string[] = [];
+  const decoder = new TextDecoder();
+  let offset = 0;
+
+  while (offset + 8 <= data.length) {
+    const streamType = data[offset];
+    // bytes 1-3 are padding zeros
+    const size =
+      (data[offset + 4] << 24) |
+      (data[offset + 5] << 16) |
+      (data[offset + 6] << 8) |
+      data[offset + 7];
+
+    offset += 8;
+    if (size < 0 || offset + size > data.length) break;
+
+    const line = decoder.decode(data.slice(offset, offset + size)).trimEnd();
+    offset += size;
+
+    if (streamType === 1) {
+      stdout.push(line);
+      combined.push(`[stdout] ${line}`);
+    } else if (streamType === 2) {
+      stderr.push(line);
+      combined.push(`[stderr] ${line}`);
+    } else {
+      combined.push(line);
+    }
+  }
+
+  return { stdout, stderr, combined };
+}
+
+/**
+ * Fetch Docker container logs.
+ * GET /containers/{id}/logs?stdout=true&stderr=true&tail={N}
+ * Parses the Docker log multiplexing format (8-byte header per frame).
+ *
+ * GET /api/docker/container/logs
+ * Query/Body: { host, port?, containerId, tail?, https?, timeout? }
+ */
+export async function handleDockerContainerLogs(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as DockerContainerLogsRequest;
+    const {
+      host,
+      port,
+      containerId,
+      tail = 100,
+      https = false,
+      timeout = 15000,
+    } = body;
+
+    const effectivePort = port ?? (https ? 2376 : 2375);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!containerId) {
+      return new Response(JSON.stringify({ success: false, error: 'containerId is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const pathStr = `/containers/${encodeURIComponent(containerId)}/logs?stdout=true&stderr=true&tail=${tail}`;
+    const start = Date.now();
+
+    let rawBytes: Uint8Array;
+    let statusCode: number;
+
+    if (https) {
+      const url = `https://${host}:${effectivePort}${pathStr}`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(url, {
+          method: 'GET',
+          headers: { 'Accept': 'application/octet-stream', 'User-Agent': 'PortOfCall/1.0' },
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+      statusCode = fetchResponse.status;
+      const arrayBuffer = await fetchResponse.arrayBuffer();
+      rawBytes = new Uint8Array(arrayBuffer);
+    } else {
+      // Use TCP socket to get raw bytes for log demultiplexing
+      const socket = connect(`${host}:${effectivePort}`);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout')), timeout),
+      );
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const encoder = new TextEncoder();
+      const httpReq =
+        `GET ${pathStr} HTTP/1.1\r\n` +
+        `Host: ${host}:${effectivePort}\r\n` +
+        `Accept: application/octet-stream\r\n` +
+        `Connection: close\r\n` +
+        `User-Agent: PortOfCall/1.0\r\n` +
+        `\r\n`;
+      await writer.write(encoder.encode(httpReq));
+      writer.releaseLock();
+
+      const reader = socket.readable.getReader();
+      const chunks: Uint8Array[] = [];
+      let totalLen = 0;
+      while (totalLen < 1048576) {
+        const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+        if (done) break;
+        if (value) { chunks.push(value); totalLen += value.length; }
+      }
+      reader.releaseLock();
+      socket.close();
+
+      // Combine all chunks
+      const combined = new Uint8Array(totalLen);
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+
+      // Find HTTP header boundary
+      const headerEndIdx = findHeaderEnd(combined);
+      if (headerEndIdx === -1) throw new Error('Invalid HTTP response from Docker');
+
+      // Extract status code from first line
+      const headerStr = new TextDecoder().decode(combined.slice(0, headerEndIdx));
+      const statusMatch = headerStr.match(/HTTP\/[\d.]+ (\d+)/);
+      statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+
+      rawBytes = combined.slice(headerEndIdx + 4);
+
+      // Handle chunked transfer encoding if needed
+      if (headerStr.toLowerCase().includes('transfer-encoding: chunked')) {
+        rawBytes = decodeChunkedBytes(rawBytes);
+      }
+    }
+
+    const latencyMs = Date.now() - start;
+
+    if (statusCode < 200 || statusCode >= 400) {
+      return new Response(JSON.stringify({
+        success: false,
+        statusCode,
+        error: `Docker returned HTTP ${statusCode}`,
+        latencyMs,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const logs = parseDockerLogs(rawBytes);
+
+    return new Response(JSON.stringify({
+      success: true,
+      statusCode,
+      containerId,
+      tail,
+      stdout: logs.stdout,
+      stderr: logs.stderr,
+      combined: logs.combined,
+      lineCount: logs.combined.length,
+      latencyMs,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Container logs failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/** Find the byte offset of \r\n\r\n in a Uint8Array. Returns offset after the separator. */
+function findHeaderEnd(data: Uint8Array): number {
+  for (let i = 0; i < data.length - 3; i++) {
+    if (data[i] === 0x0d && data[i+1] === 0x0a && data[i+2] === 0x0d && data[i+3] === 0x0a) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Decode HTTP chunked transfer encoding from raw bytes. */
+function decodeChunkedBytes(data: Uint8Array): Uint8Array {
+  const decoder = new TextDecoder();
+  const chunks: Uint8Array[] = [];
+  let offset = 0;
+
+  while (offset < data.length) {
+    // Find end of chunk size line
+    let lineEnd = offset;
+    while (lineEnd < data.length - 1 && !(data[lineEnd] === 0x0d && data[lineEnd+1] === 0x0a)) {
+      lineEnd++;
+    }
+    if (lineEnd >= data.length - 1) break;
+
+    const sizeStr = decoder.decode(data.slice(offset, lineEnd)).trim();
+    const chunkSize = parseInt(sizeStr, 16);
+    if (isNaN(chunkSize) || chunkSize === 0) break;
+
+    offset = lineEnd + 2;
+    if (offset + chunkSize > data.length) {
+      chunks.push(data.slice(offset));
+      break;
+    }
+    chunks.push(data.slice(offset, offset + chunkSize));
+    offset += chunkSize + 2; // skip trailing \r\n
+  }
+
+  const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);
+  const result = new Uint8Array(totalLen);
+  let off = 0;
+  for (const c of chunks) { result.set(c, off); off += c.length; }
+  return result;
+}
+
+interface DockerExecRequest extends DockerRequest {
+  containerId: string;
+  cmd: string[];
+  https?: boolean;
+}
+
+/**
+ * Execute a command in a running Docker container.
+ * Step 1: POST /containers/{id}/exec  — create exec instance
+ * Step 2: POST /exec/{id}/start       — start exec and collect output
+ *
+ * POST /api/docker/exec
+ * Body: { host, port?, containerId, cmd, https?, timeout? }
+ */
+export async function handleDockerExec(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as DockerExecRequest;
+    const {
+      host,
+      port,
+      containerId,
+      cmd,
+      https = false,
+      timeout = 30000,
+    } = body;
+
+    const effectivePort = port ?? (https ? 2376 : 2375);
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!containerId) {
+      return new Response(JSON.stringify({ success: false, error: 'containerId is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!cmd || cmd.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'cmd is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const start = Date.now();
+
+    // Step 1: Create exec instance
+    const execCreateBody = JSON.stringify({
+      AttachStdout: true,
+      AttachStderr: true,
+      Cmd: cmd,
+    });
+    const execCreatePath = `/containers/${encodeURIComponent(containerId)}/exec`;
+
+    let execId: string;
+
+    if (https) {
+      const controller1 = new AbortController();
+      const t1 = setTimeout(() => controller1.abort(), timeout);
+      let r1: Response;
+      try {
+        r1 = await fetch(`https://${host}:${effectivePort}${execCreatePath}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json', 'User-Agent': 'PortOfCall/1.0' },
+          body: execCreateBody,
+          signal: controller1.signal,
+        });
+      } finally {
+        clearTimeout(t1);
+      }
+      if (r1.status !== 201) {
+        const errText = await r1.text();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Exec create failed with status ${r1.status}: ${errText}`,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      const execCreateResult = await r1.json() as { Id?: string };
+      execId = execCreateResult.Id ?? '';
+    } else {
+      const r1 = await sendHttpRequest(host, effectivePort, 'POST', execCreatePath, execCreateBody, timeout);
+      if (r1.statusCode !== 201) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Exec create failed with status ${r1.statusCode}: ${r1.body}`,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      let parsed1: { Id?: string };
+      try { parsed1 = JSON.parse(r1.body) as { Id?: string }; } catch { parsed1 = {}; }
+      execId = parsed1.Id ?? '';
+    }
+
+    if (!execId) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Docker did not return an exec ID',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Step 2: Start exec and collect output
+    const execStartBody = JSON.stringify({ Detach: false, Tty: false });
+    const execStartPath = `/exec/${encodeURIComponent(execId)}/start`;
+
+    let rawBytes: Uint8Array;
+    let startStatusCode: number;
+
+    if (https) {
+      const controller2 = new AbortController();
+      const t2 = setTimeout(() => controller2.abort(), timeout);
+      let r2: Response;
+      try {
+        r2 = await fetch(`https://${host}:${effectivePort}${execStartPath}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/octet-stream', 'User-Agent': 'PortOfCall/1.0' },
+          body: execStartBody,
+          signal: controller2.signal,
+        });
+      } finally {
+        clearTimeout(t2);
+      }
+      startStatusCode = r2.status;
+      const ab = await r2.arrayBuffer();
+      rawBytes = new Uint8Array(ab);
+    } else {
+      const r2 = await sendHttpRequest(host, effectivePort, 'POST', execStartPath, execStartBody, timeout);
+      startStatusCode = r2.statusCode;
+      rawBytes = new TextEncoder().encode(r2.body);
+    }
+
+    const latencyMs = Date.now() - start;
+    const logs = parseDockerLogs(rawBytes);
+
+    return new Response(JSON.stringify({
+      success: startStatusCode === 200 || startStatusCode === 204,
+      statusCode: startStatusCode,
+      execId,
+      containerId,
+      cmd,
+      stdout: logs.stdout,
+      stderr: logs.stderr,
+      combined: logs.combined,
+      latencyMs,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Exec failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

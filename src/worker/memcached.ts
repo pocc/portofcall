@@ -189,7 +189,7 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
         const parts = trimmed.split(/\s+/);
         const cmd = parts[0].toLowerCase();
 
-        const storageCommands = ['set', 'add', 'replace', 'append', 'prepend', 'cas'];
+        const storageCommands = ['set', 'add', 'replace', 'append', 'prepend'];
 
         if (storageCommands.includes(cmd)) {
           // Storage command format: <cmd> <key> <flags> <exptime> <bytes> [noreply]\r\n<data>\r\n
@@ -209,6 +209,25 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
           const dataBytes = encoder.encode(dataValue);
 
           const header = `${cmd} ${key} ${flags} ${exptime} ${dataBytes.length}\r\n`;
+          await writer.write(encoder.encode(header));
+          await writer.write(encoder.encode(dataValue + '\r\n'));
+        } else if (cmd === 'cas') {
+          // CAS (Check-And-Set) format: cas <key> <flags> <exptime> <cas_unique> <value>
+          // The cas_unique token comes from a prior 'gets' response VALUE header.
+          if (parts.length < 6) {
+            throw new Error(
+              `CAS format: cas <key> <flags> <exptime> <cas_unique> <value>\n` +
+              `Example: cas mykey 0 3600 12345 hello world\n` +
+              `Get the cas_unique from a 'gets' command response.`
+            );
+          }
+          const key = parts[1];
+          const flags = parts[2];
+          const exptime = parts[3];
+          const casUnique = parts[4];
+          const dataValue = parts.slice(5).join(' ');
+          const dataBytes = encoder.encode(dataValue);
+          const header = `cas ${key} ${flags} ${exptime} ${casUnique} ${dataBytes.length}\r\n`;
           await writer.write(encoder.encode(header));
           await writer.write(encoder.encode(dataValue + '\r\n'));
         } else {
@@ -307,7 +326,7 @@ export async function handleMemcachedSession(request: Request): Promise<Response
             const trimmed = msg.command.trim();
             const parts = trimmed.split(/\s+/);
             const cmd = parts[0].toLowerCase();
-            const storageCommands = ['set', 'add', 'replace', 'append', 'prepend', 'cas'];
+            const storageCommands = ['set', 'add', 'replace', 'append', 'prepend'];
 
             if (storageCommands.includes(cmd)) {
               if (parts.length < 5) {
@@ -323,6 +342,23 @@ export async function handleMemcachedSession(request: Request): Promise<Response
               const dataValue = parts.slice(4).join(' ');
               const dataBytes = encoder.encode(dataValue);
               const header = `${cmd} ${key} ${flags} ${exptime} ${dataBytes.length}\r\n`;
+              await writer.write(encoder.encode(header));
+              await writer.write(encoder.encode(dataValue + '\r\n'));
+            } else if (cmd === 'cas') {
+              if (parts.length < 6) {
+                server.send(JSON.stringify({
+                  type: 'error',
+                  message: 'CAS format: cas <key> <flags> <exptime> <cas_unique> <value>',
+                }));
+                return;
+              }
+              const key = parts[1];
+              const flags = parts[2];
+              const exptime = parts[3];
+              const casUnique = parts[4];
+              const dataValue = parts.slice(5).join(' ');
+              const dataBytes = encoder.encode(dataValue);
+              const header = `cas ${key} ${flags} ${exptime} ${casUnique} ${dataBytes.length}\r\n`;
               await writer.write(encoder.encode(header));
               await writer.write(encoder.encode(dataValue + '\r\n'));
             } else {
@@ -359,10 +395,11 @@ export async function handleMemcachedSession(request: Request): Promise<Response
  */
 export async function handleMemcachedStats(request: Request): Promise<Response> {
   try {
-    const { host, port = 11211, timeout = 10000 } = await request.json<{
+    const { host, port = 11211, timeout = 10000, subcommand = '' } = await request.json<{
       host: string;
       port?: number;
       timeout?: number;
+      subcommand?: string;
     }>();
 
     if (!host) {
@@ -370,6 +407,13 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const allowed = ['', 'items', 'slabs', 'sizes', 'conns', 'reset'];
+    if (!allowed.includes(subcommand)) {
+      return new Response(JSON.stringify({
+        error: `Invalid subcommand. Allowed: ${allowed.filter(Boolean).join(', ')}`,
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -392,7 +436,8 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
       const writer = socket.writable.getWriter();
 
       try {
-        await writer.write(encoder.encode('stats\r\n'));
+        const statsCmd = subcommand ? `stats ${subcommand}\r\n` : 'stats\r\n';
+        await writer.write(encoder.encode(statsCmd));
         const response = await readMemcachedResponse(reader, 5000);
 
         // Parse STAT lines into key-value pairs
@@ -413,6 +458,7 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
           success: true,
           host,
           port,
+          subcommand: subcommand || 'general',
           stats,
           raw: response.trimEnd(),
         };
@@ -434,6 +480,126 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Stats retrieval failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Parse VALUE blocks from a Memcached multi-get (get/gets) response.
+ * Handles both plain VALUE (flags bytes) and VALUE+CAS (flags bytes casUnique).
+ */
+function parseValueBlocks(raw: string): Array<{
+  key: string;
+  flags: number;
+  bytes: number;
+  value: string;
+  cas?: string;
+}> {
+  const items: Array<{ key: string; flags: number; bytes: number; value: string; cas?: string }> = [];
+  const lines = raw.split('\r\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.startsWith('VALUE ')) {
+      // VALUE <key> <flags> <bytes> [<cas_unique>]
+      const parts = line.substring(6).split(' ');
+      const key = parts[0];
+      const flags = parseInt(parts[1], 10);
+      const bytes = parseInt(parts[2], 10);
+      const cas = parts[3]; // only present in 'gets' responses
+      i++;
+      const value = lines[i] ?? '';
+      items.push({ key, flags, bytes, value, ...(cas !== undefined ? { cas } : {}) });
+    }
+    i++;
+  }
+  return items;
+}
+
+/**
+ * Handle Memcached multi-get with CAS token (gets command)
+ * POST /api/memcached/gets
+ *
+ * Returns structured VALUE objects including CAS unique tokens for use with CAS writes.
+ */
+export async function handleMemcachedGets(request: Request): Promise<Response> {
+  try {
+    const { host, port = 11211, keys, timeout = 10000 } = await request.json<{
+      host: string;
+      port?: number;
+      keys: string[];
+      timeout?: number;
+    }>();
+
+    if (!host || !keys || keys.length === 0) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: host and keys (non-empty array)',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (keys.length > 100) {
+      return new Response(JSON.stringify({ error: 'keys array may not exceed 100 entries' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // 'gets' returns the same VALUE header as 'get' but appends the CAS unique token
+        const getsCmd = `gets ${keys.join(' ')}\r\n`;
+        await writer.write(encoder.encode(getsCmd));
+        const response = await readMemcachedResponse(reader, timeout);
+        await socket.close();
+
+        const items = parseValueBlocks(response);
+        const found = items.map(i => i.key);
+        const missing = keys.filter(k => !found.includes(k));
+
+        return {
+          success: true,
+          host,
+          port,
+          requested: keys.length,
+          found: items.length,
+          missing,
+          items,
+        };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Gets failed',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

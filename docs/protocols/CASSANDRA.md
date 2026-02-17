@@ -1,673 +1,431 @@
-# Cassandra Protocol Implementation Plan
+# Cassandra CQL Native Protocol — Port of Call Reference
+
+**RFC / Spec:** [CQL Native Protocol v4](https://github.com/apache/cassandra/blob/trunk/doc/native_protocol_v4.spec)
+**Default port:** 9042
+**Source:** `src/worker/cassandra.ts`
+**Tests:** `tests/cassandra.test.ts`
+
+---
 
 ## Overview
 
-**Protocol:** Cassandra CQL Binary Protocol (Native Protocol)
-**Port:** 9042 (native), 9160 (Thrift - deprecated)
-**Specification:** [DataStax CQL Binary Protocol](https://github.com/apache/cassandra/blob/trunk/doc/native_protocol_v5.spec)
-**Complexity:** High
-**Purpose:** Distributed NoSQL database queries
+Port of Call implements the Cassandra CQL Binary Protocol v4 from scratch over a plain TCP socket. No Cassandra driver, no connection pooling. Each HTTP request opens a new connection, handshakes, executes its operation, and closes.
 
-Cassandra enables **querying distributed NoSQL data** - execute CQL queries, manage keyspaces, and access wide-column data from the browser.
+---
 
-### Use Cases
-- IoT time-series data storage
-- Event logging and analytics
-- User profile management
-- Product catalogs
-- Distributed data access
-- Multi-datacenter replication
+## Frame format
 
-## Protocol Specification
-
-### Frame Format
+All communication uses 9-byte frames:
 
 ```
- 0         8        16        24        32         40
- +---------+---------+---------+---------+---------+
- | version |  flags  | stream  | opcode  |
- +---------+---------+---------+---------+---------+
- |                length                 |
- +---------+---------+---------+---------+
- |                                       |
- .            ...  body ...              .
- .                                       .
- +----------------------------------------
+ 0         1         2    3    4         5    6    7    8
+ +---------+---------+----+----+---------+----+----+----+----+
+ | version | flags   |   stream (BE)     |opcode|    length (BE)   |
+ +---------+---------+----+----+---------+----+----+----+----+
+ | body bytes (length bytes follow)                              |
 ```
 
-### Frame Header
-- **Version**: Protocol version (0x04 = v4, 0x05 = v5)
-- **Flags**: Compression, tracing, etc.
-- **Stream**: Request/response correlation (0-32767)
-- **Opcode**: Message type
-- **Length**: Body length in bytes
-
-### Opcodes (Client → Server)
-
-| Opcode | Name | Description |
-|--------|------|-------------|
-| 0x01 | STARTUP | Initialize connection |
-| 0x05 | OPTIONS | Get supported options |
-| 0x07 | QUERY | Execute CQL query |
-| 0x09 | PREPARE | Prepare statement |
-| 0x0A | EXECUTE | Execute prepared statement |
-| 0x0B | REGISTER | Register for events |
-| 0x0D | BATCH | Batch operations |
-
-### Opcodes (Server → Client)
-
-| Opcode | Name | Description |
-|--------|------|-------------|
-| 0x00 | ERROR | Error response |
-| 0x02 | READY | Connection ready |
-| 0x06 | SUPPORTED | Supported options |
-| 0x08 | RESULT | Query result |
-| 0x0C | EVENT | Server event |
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/cassandra/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface CassandraConfig {
-  host: string;
-  port: number;
-  keyspace?: string;
-  username?: string;
-  password?: string;
-}
-
-export interface QueryResult {
-  rows: any[];
-  columns: ColumnMetadata[];
-  rowCount: number;
-}
-
-export interface ColumnMetadata {
-  keyspace: string;
-  table: string;
-  name: string;
-  type: string;
-}
-
-export class CassandraClient {
-  private socket: any;
-  private streamId = 0;
-  private pendingRequests = new Map<number, {
-    resolve: (value: any) => void;
-    reject: (error: any) => void;
-  }>();
-
-  constructor(private config: CassandraConfig) {}
-
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
-
-    // Start reading responses
-    this.readLoop();
-
-    // Send STARTUP
-    await this.sendStartup();
-
-    // Authenticate if needed
-    if (this.config.username && this.config.password) {
-      await this.authenticate();
-    }
-  }
-
-  private async sendStartup(): Promise<void> {
-    const body = this.encodeStringMap({
-      CQL_VERSION: '3.0.0',
-    });
-
-    await this.sendFrame(0x01, body); // STARTUP opcode
-    await this.waitForReady();
-  }
-
-  private async authenticate(): Promise<void> {
-    // SASL authentication
-    const credentials = `\0${this.config.username}\0${this.config.password}`;
-    const body = this.encodeBytes(new TextEncoder().encode(credentials));
-
-    await this.sendFrame(0x0B, body); // AUTH_RESPONSE
-  }
-
-  async query(cql: string, consistency: number = 0x0001): Promise<QueryResult> {
-    const body = new Uint8Array(1024);
-    const view = new DataView(body.buffer);
-    let offset = 0;
-
-    // Write long string (CQL)
-    view.setUint32(offset, cql.length);
-    offset += 4;
-    new TextEncoder().encodeInto(cql, new Uint8Array(body.buffer, offset));
-    offset += cql.length;
-
-    // Write consistency
-    view.setUint16(offset, consistency);
-    offset += 2;
-
-    // Write flags (no values)
-    view.setUint8(offset, 0x00);
-    offset += 1;
-
-    const frame = body.slice(0, offset);
-    const response = await this.sendFrame(0x07, frame); // QUERY opcode
-
-    return this.parseResult(response);
-  }
-
-  async prepare(cql: string): Promise<string> {
-    const body = this.encodeLongString(cql);
-    const response = await this.sendFrame(0x09, body); // PREPARE
-
-    // Extract prepared statement ID
-    return this.parseShortBytes(response, 0);
-  }
-
-  async execute(
-    statementId: string,
-    values: any[],
-    consistency: number = 0x0001
-  ): Promise<QueryResult> {
-    const body = new Uint8Array(1024);
-    const view = new DataView(body.buffer);
-    let offset = 0;
-
-    // Write statement ID
-    const idBytes = this.hexToBytes(statementId);
-    view.setUint16(offset, idBytes.length);
-    offset += 2;
-    body.set(idBytes, offset);
-    offset += idBytes.length;
-
-    // Write consistency
-    view.setUint16(offset, consistency);
-    offset += 2;
-
-    // Write flags (with values)
-    view.setUint8(offset, 0x01);
-    offset += 1;
-
-    // Write values count
-    view.setUint16(offset, values.length);
-    offset += 2;
-
-    // Write each value
-    for (const value of values) {
-      const encoded = this.encodeValue(value);
-      view.setUint32(offset, encoded.length);
-      offset += 4;
-      body.set(encoded, offset);
-      offset += encoded.length;
-    }
-
-    const frame = body.slice(0, offset);
-    const response = await this.sendFrame(0x0A, frame); // EXECUTE
-
-    return this.parseResult(response);
-  }
-
-  private async sendFrame(opcode: number, body: Uint8Array): Promise<Uint8Array> {
-    const streamId = this.streamId++;
-    if (this.streamId > 32767) this.streamId = 0;
-
-    const header = new Uint8Array(9);
-    const view = new DataView(header.buffer);
-
-    view.setUint8(0, 0x04); // Version 4
-    view.setUint8(1, 0x00); // Flags
-    view.setUint16(2, streamId); // Stream
-    view.setUint8(4, opcode);
-    view.setUint32(5, body.length);
-
-    const frame = new Uint8Array(header.length + body.length);
-    frame.set(header);
-    frame.set(body, header.length);
-
-    const writer = this.socket.writable.getWriter();
-    await writer.write(frame);
-    writer.releaseLock();
-
-    // Return promise that resolves when response arrives
-    return new Promise((resolve, reject) => {
-      this.pendingRequests.set(streamId, { resolve, reject });
-    });
-  }
-
-  private async readLoop(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-
-    while (true) {
-      // Read header (9 bytes)
-      const headerData = await this.readExact(reader, 9);
-      const header = new DataView(headerData.buffer);
-
-      const version = header.getUint8(0);
-      const flags = header.getUint8(1);
-      const stream = header.getUint16(2);
-      const opcode = header.getUint8(4);
-      const length = header.getUint32(5);
-
-      // Read body
-      const body = await this.readExact(reader, length);
-
-      // Resolve pending request
-      const pending = this.pendingRequests.get(stream);
-      if (pending) {
-        this.pendingRequests.delete(stream);
-        pending.resolve(body);
-      }
-    }
-  }
-
-  private async readExact(reader: any, length: number): Promise<Uint8Array> {
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = length - offset;
-      const toCopy = Math.min(remaining, value.length);
-      buffer.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    return buffer;
-  }
-
-  private parseResult(body: Uint8Array): QueryResult {
-    const view = new DataView(body.buffer);
-    const resultKind = view.getUint32(0);
-
-    if (resultKind === 0x0002) { // ROWS
-      return this.parseRows(body, 4);
-    }
-
-    return { rows: [], columns: [], rowCount: 0 };
-  }
-
-  private parseRows(body: Uint8Array, offset: number): QueryResult {
-    const view = new DataView(body.buffer);
-
-    // Read metadata
-    const flags = view.getUint32(offset);
-    offset += 4;
-
-    const columnCount = view.getUint32(offset);
-    offset += 4;
-
-    const rowCount = view.getUint32(offset);
-    offset += 4;
-
-    // Parse column metadata
-    const columns: ColumnMetadata[] = [];
-    for (let i = 0; i < columnCount; i++) {
-      // Parse keyspace, table, name, type
-      const keyspace = this.parseString(body, offset);
-      offset += 2 + keyspace.length;
-
-      const table = this.parseString(body, offset);
-      offset += 2 + table.length;
-
-      const name = this.parseString(body, offset);
-      offset += 2 + name.length;
-
-      const type = view.getUint16(offset);
-      offset += 2;
-
-      columns.push({
-        keyspace,
-        table,
-        name,
-        type: this.getTypeName(type),
-      });
-    }
-
-    // Parse rows
-    const rows: any[] = [];
-    for (let i = 0; i < rowCount; i++) {
-      const row: any = {};
-
-      for (let j = 0; j < columnCount; j++) {
-        const valueLength = view.getInt32(offset);
-        offset += 4;
-
-        if (valueLength >= 0) {
-          const value = body.slice(offset, offset + valueLength);
-          row[columns[j].name] = this.decodeValue(value, columns[j].type);
-          offset += valueLength;
-        } else {
-          row[columns[j].name] = null;
-        }
-      }
-
-      rows.push(row);
-    }
-
-    return { rows, columns, rowCount };
-  }
-
-  private encodeValue(value: any): Uint8Array {
-    if (value === null) return new Uint8Array(0);
-    if (typeof value === 'string') {
-      return new TextEncoder().encode(value);
-    }
-    // Add more type encodings as needed
-    return new Uint8Array(0);
-  }
-
-  private decodeValue(bytes: Uint8Array, type: string): any {
-    if (bytes.length === 0) return null;
-
-    switch (type) {
-      case 'varchar':
-      case 'text':
-        return new TextDecoder().decode(bytes);
-      case 'int':
-        return new DataView(bytes.buffer).getInt32(0);
-      case 'bigint':
-        return new DataView(bytes.buffer).getBigInt64(0);
-      default:
-        return bytes;
-    }
-  }
-
-  private getTypeName(typeId: number): string {
-    const types: Record<number, string> = {
-      0x0001: 'ascii',
-      0x0002: 'bigint',
-      0x0003: 'blob',
-      0x0004: 'boolean',
-      0x0009: 'int',
-      0x000D: 'varchar',
-      0x000E: 'timestamp',
-      0x0020: 'list',
-    };
-    return types[typeId] || 'unknown';
-  }
-
-  private encodeStringMap(map: Record<string, string>): Uint8Array {
-    const entries = Object.entries(map);
-    const encoder = new TextEncoder();
-
-    let totalLength = 2; // count
-    const encoded: Array<{ key: Uint8Array; value: Uint8Array }> = [];
-
-    for (const [key, value] of entries) {
-      const keyBytes = encoder.encode(key);
-      const valueBytes = encoder.encode(value);
-      encoded.push({ key: keyBytes, value: valueBytes });
-      totalLength += 2 + keyBytes.length + 2 + valueBytes.length;
-    }
-
-    const buffer = new Uint8Array(totalLength);
-    const view = new DataView(buffer.buffer);
-    let offset = 0;
-
-    view.setUint16(offset, entries.length);
-    offset += 2;
-
-    for (const { key, value } of encoded) {
-      view.setUint16(offset, key.length);
-      offset += 2;
-      buffer.set(key, offset);
-      offset += key.length;
-
-      view.setUint16(offset, value.length);
-      offset += 2;
-      buffer.set(value, offset);
-      offset += value.length;
-    }
-
-    return buffer;
-  }
-
-  private encodeLongString(str: string): Uint8Array {
-    const bytes = new TextEncoder().encode(str);
-    const buffer = new Uint8Array(4 + bytes.length);
-    new DataView(buffer.buffer).setUint32(0, bytes.length);
-    buffer.set(bytes, 4);
-    return buffer;
-  }
-
-  private parseString(data: Uint8Array, offset: number): string {
-    const view = new DataView(data.buffer);
-    const length = view.getUint16(offset);
-    const bytes = data.slice(offset + 2, offset + 2 + length);
-    return new TextDecoder().decode(bytes);
-  }
-
-  private parseShortBytes(data: Uint8Array, offset: number): string {
-    const view = new DataView(data.buffer);
-    const length = view.getUint16(offset);
-    const bytes = data.slice(offset + 2, offset + 2 + length);
-    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  private hexToBytes(hex: string): Uint8Array {
-    const bytes = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < bytes.length; i++) {
-      bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-    }
-    return bytes;
-  }
-
-  private waitForReady(): Promise<void> {
-    return new Promise((resolve) => {
-      // Wait for READY opcode (0x02)
-      setTimeout(resolve, 100);
-    });
-  }
-
-  async close(): Promise<void> {
-    await this.socket.close();
-  }
+| Byte | Field | Notes |
+|------|-------|-------|
+| 0 | `version` | Client→Server: `0x04` (v4). Server→Client: `0x84` (bit 7 set indicates response). |
+| 1 | `flags` | `0x00` always — no compression, no tracing, no custom payload. |
+| 2–3 | `stream` | Big-endian signed int16. Hardcoded per operation (see below). |
+| 4 | `opcode` | Operation type. |
+| 5–8 | `length` | Big-endian int32. Body length in bytes. |
+
+**Stream IDs used by this implementation:**
+
+| Operation | Stream ID |
+|-----------|-----------|
+| OPTIONS | `0` |
+| STARTUP | `0` |
+| AUTH_RESPONSE | `2` |
+| QUERY | `3` |
+| PREPARE | `3` |
+| EXECUTE | `4` |
+
+Stream IDs are hardcoded. No response multiplexing — one request/response at a time per connection.
+
+**Opcode reference:**
+
+| Opcode | Name | Direction |
+|--------|------|-----------|
+| `0x00` | ERROR | Server→Client |
+| `0x01` | STARTUP | Client→Server |
+| `0x02` | READY | Server→Client |
+| `0x03` | AUTHENTICATE | Server→Client |
+| `0x05` | OPTIONS | Client→Server |
+| `0x06` | SUPPORTED | Server→Client |
+| `0x07` | QUERY | Client→Server |
+| `0x08` | RESULT | Server→Client |
+| `0x09` | PREPARE | Client→Server |
+| `0x0A` | EXECUTE | Client→Server |
+| `0x0F` | AUTH_RESPONSE | Client→Server |
+| `0x10` | AUTH_SUCCESS | Server→Client |
+
+BATCH (0x0D), REGISTER (0x0B), EVENT (0x0C), AUTH_CHALLENGE (0x0E) are received but not handled as distinct response types.
+
+---
+
+## Connection handshake sequence
+
+All three endpoints begin with OPTIONS + STARTUP:
+
+```
+Client → Server: OPTIONS (stream 0, no body)
+Server → Client: SUPPORTED (string multimap: CQL_VERSION → [...], COMPRESSION → [...])
+
+Client → Server: STARTUP (stream 0, string map: { "CQL_VERSION": "3.0.0" })
+Server → Client: READY                         ← no auth required
+             OR: AUTHENTICATE (authenticator class name)  ← auth needed
+             OR: ERROR
+```
+
+`CQL_VERSION` is hardcoded to `"3.0.0"` regardless of what SUPPORTED advertised. This works because servers accept `3.0.0` for any v3+ native protocol.
+
+---
+
+## Endpoints
+
+### `POST /api/cassandra/connect` — Capabilities probe
+
+Discovers server capabilities without querying data. Does not require credentials.
+
+**Request:**
+```json
+{ "host": "cassandra.example.com", "port": 9042, "timeout": 10000 }
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `port` | `9042` | |
+| `timeout` | `10000` | Wall-clock timeout in ms |
+
+**Response:**
+```json
+{
+  "success": true,
+  "host": "cassandra.example.com",
+  "port": 9042,
+  "connectTime": 12,
+  "rtt": 45,
+  "protocolVersion": 4,
+  "cqlVersions": ["3.4.6"],
+  "compression": ["snappy", "lz4"],
+  "authRequired": false,
+  "startupResponse": "READY"
 }
 ```
 
-## Web UI Design
-
-```typescript
-// src/components/CassandraClient.tsx
-
-export function CassandraClient() {
-  const [connected, setConnected] = useState(false);
-  const [host, setHost] = useState('localhost');
-  const [port, setPort] = useState(9042);
-  const [keyspace, setKeyspace] = useState('');
-  const [query, setQuery] = useState('SELECT * FROM users LIMIT 10');
-  const [result, setResult] = useState<QueryResult | null>(null);
-
-  const connect = async () => {
-    const response = await fetch('/api/cassandra/connect', {
-      method: 'POST',
-      body: JSON.stringify({ host, port, keyspace }),
-    });
-
-    if (response.ok) {
-      setConnected(true);
-    }
-  };
-
-  const executeQuery = async () => {
-    const response = await fetch('/api/cassandra/query', {
-      method: 'POST',
-      body: JSON.stringify({ query }),
-    });
-
-    const data = await response.json();
-    setResult(data);
-  };
-
-  return (
-    <div className="cassandra-client">
-      <h2>Cassandra CQL Client</h2>
-
-      {!connected ? (
-        <div className="connection-form">
-          <input
-            type="text"
-            placeholder="Host"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <input
-            type="number"
-            placeholder="Port"
-            value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
-          />
-          <input
-            type="text"
-            placeholder="Keyspace (optional)"
-            value={keyspace}
-            onChange={(e) => setKeyspace(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <>
-          <div className="query-editor">
-            <textarea
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              rows={5}
-              placeholder="Enter CQL query..."
-            />
-            <button onClick={executeQuery}>Execute</button>
-          </div>
-
-          {result && (
-            <div className="results">
-              <h3>Results ({result.rowCount} rows)</h3>
-              <table>
-                <thead>
-                  <tr>
-                    {result.columns.map(col => (
-                      <th key={col.name}>
-                        {col.name}
-                        <span className="type">({col.type})</span>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.rows.map((row, i) => (
-                    <tr key={i}>
-                      {result.columns.map(col => (
-                        <td key={col.name}>
-                          {JSON.stringify(row[col.name])}
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </>
-      )}
-    </div>
-  );
+**When auth is required:**
+```json
+{
+  "success": true,
+  "authRequired": true,
+  "authenticator": "org.apache.cassandra.auth.PasswordAuthenticator",
+  "startupResponse": "AUTHENTICATE"
 }
 ```
 
-## Security
+**Fields:**
 
-### Authentication
+| Field | Notes |
+|-------|-------|
+| `connectTime` | ms from `connect()` call to `socket.opened` |
+| `rtt` | ms from start to final frame received |
+| `protocolVersion` | Response version byte masked with `0x7F` (strips the response bit). Should be `4` for v4 servers. |
+| `cqlVersions` | Array from `SUPPORTED['CQL_VERSION']`. Typically `["3.4.6"]`. |
+| `compression` | Array from `SUPPORTED['COMPRESSION']`. Compression is never negotiated — this is informational only. |
+| `authRequired` | `true` if STARTUP response was AUTHENTICATE. |
+| `authenticator` | Fully-qualified Java class name from AUTHENTICATE body. Present only when `authRequired: true`. |
+| `startupError` | Present if STARTUP returned an ERROR frame. Note: `success` remains `true` even in this case — check `startupError`. |
+| `startupResponse` | String opcode name of the STARTUP response frame (`"READY"`, `"AUTHENTICATE"`, `"ERROR"`, or `"UNKNOWN(0xNN)"`). |
 
-```typescript
-// SASL PLAIN authentication
-const credentials = `\0${username}\0${password}`;
+No authentication is attempted by this endpoint. If `authRequired` is `true`, use `/api/cassandra/query` or `/api/cassandra/prepare` with credentials.
 
-// Or use certificate-based auth
+---
+
+### `POST /api/cassandra/query` — Execute CQL query
+
+Authenticates (if needed) and executes a raw CQL string. Returns structured rows.
+
+**Request:**
+```json
+{
+  "host": "cassandra.example.com",
+  "port": 9042,
+  "timeout": 15000,
+  "cql": "SELECT keyspace_name, table_name FROM system_schema.tables LIMIT 10",
+  "username": "cassandra",
+  "password": "cassandra"
+}
 ```
 
-### Client Encryption
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | **required** | |
+| `cql` | **required** | CQL string |
+| `username` | `""` | Sent in AUTH_RESPONSE even if empty |
+| `password` | `""` | Sent in AUTH_RESPONSE even if empty |
+| `port` | `9042` | |
+| `timeout` | `15000` | |
 
-```typescript
-// Enable client-to-node encryption
-// Requires SSL/TLS configuration on Cassandra cluster
+**Authentication:** SASL PLAIN encoding: `\0username\0password`. Sent as `AUTH_RESPONSE` frame with a 4-byte length prefix before the SASL token.
+
+**QUERY frame parameters (hardcoded):**
+
+| Parameter | Value | Implication |
+|-----------|-------|-------------|
+| Consistency | `ONE` (0x0001) | Cannot be changed to QUORUM, LOCAL_QUORUM, ALL, etc. |
+| Flags | `0x00` | No values, no skip metadata, no page size in flags byte |
+| Page size | `100` | Always sent regardless of flags. Responses with > 100 rows are truncated at 100; no `paging_state` is captured or returned. |
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "cassandra.example.com",
+  "port": 9042,
+  "rtt": 23,
+  "cqlVersions": ["3.4.6"],
+  "columns": [
+    { "keyspace": "system_schema", "table": "tables", "name": "keyspace_name", "type": "varchar" },
+    { "keyspace": "system_schema", "table": "tables", "name": "table_name", "type": "varchar" }
+  ],
+  "rows": [
+    { "keyspace_name": "system", "table_name": "peers" },
+    { "keyspace_name": "system", "table_name": "local" }
+  ],
+  "rowCount": 2
+}
 ```
 
-## Testing
+**Response (query error):**
+```json
+{
+  "success": false,
+  "host": "cassandra.example.com",
+  "port": 9042,
+  "rtt": 18,
+  "error": "Query error: unconfigured table nonexistent (code 8704)",
+  "cqlVersions": ["3.4.6"]
+}
+```
+
+**Column type mapping:**
+
+| CQL type | Hex | Decoded as |
+|----------|-----|-----------|
+| ascii | 0x0001 | Text (correct) |
+| bigint | 0x0002 | Raw 8-byte BE int decoded as UTF-8 (garbled!) |
+| blob | 0x0003 | Raw bytes decoded as UTF-8 (garbled) |
+| boolean | 0x0004 | Single byte decoded as UTF-8 — `"\x01"` or `""` (empty for false) |
+| counter | 0x0005 | Raw 8-byte BE int (garbled) |
+| double | 0x0007 | Raw 8-byte IEEE 754 (garbled) |
+| float | 0x0008 | Raw 4-byte IEEE 754 (garbled) |
+| int | 0x0009 | Raw 4-byte BE int (garbled) |
+| text / varchar | 0x000A / 0x000D | Text (correct) |
+| timestamp | 0x000B | Raw 8-byte ms-since-epoch (garbled) |
+| uuid / timeuuid | 0x000C / 0x000F | Raw 16-byte UUID (garbled) |
+| inet | 0x0010 | Raw 4 or 16 bytes (garbled) |
+| date | 0x0011 | Raw 4-byte day-since-epoch (garbled) |
+| time | 0x0012 | Raw 8-byte ns-since-midnight (garbled) |
+| smallint | 0x0013 | Raw 2-byte BE int (garbled) |
+| tinyint | 0x0014 | Raw 1-byte int (garbled) |
+| list / set | 0x0020 / 0x0022 | Element type code consumed (2 bytes), but values TextDecoded as-is (garbled) |
+| map | 0x0021 | Key+value type codes consumed (4 bytes), values TextDecoded as-is (garbled) |
+| udt | 0x0030 | Type code consumed but field subtypes NOT consumed → parser likely crashes on UDT columns |
+| tuple | 0x0031 | Same as UDT — subtypes not consumed |
+
+**Null cells** (wire length = `-1`) are returned as `null` in the row object.
+
+**Practical implication:** `/api/cassandra/query` is reliable for queries against `system_schema`, `system`, and `system_auth` keyspaces (which use text/varchar/uuid columns) and for `SELECT` on user tables with text columns. Do not rely on `int`, `boolean`, `timestamp`, `uuid`, `list`, `map`, `set`, or binary columns returning readable values.
+
+**USE keyspace:** There is no USE statement between connection and query. All tables must be fully qualified: `SELECT * FROM mykeyspace.mytable` — not `SELECT * FROM mytable`. A bare table name returns error code 8704.
+
+---
+
+### `POST /api/cassandra/prepare` — Prepare and execute a parameterized statement
+
+PREPARE a CQL template, then EXECUTE it with bound string values. Uses two network round-trips on the same connection.
+
+**Request:**
+```json
+{
+  "host": "cassandra.example.com",
+  "port": 9042,
+  "timeout": 15000,
+  "cql": "SELECT * FROM system.peers WHERE peer = ?",
+  "values": ["127.0.0.2"],
+  "username": "cassandra",
+  "password": "cassandra"
+}
+```
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `cql` | **required** | CQL with `?` placeholders |
+| `values` | `[]` | Positional bound values (all must be strings) |
+
+**Wire sequence:**
+```
+OPTIONS (stream 0) → SUPPORTED
+STARTUP (stream 0) → READY / AUTHENTICATE
+[AUTH_RESPONSE (stream 2) → AUTH_SUCCESS]   ← only if auth required
+PREPARE (stream 3, body: long-string query) → RESULT (kind=PREPARED)
+EXECUTE (stream 4, body: preparedId + consistency ONE + values) → RESULT (kind=Rows) or ERROR
+```
+
+**PREPARE body:** `[4-byte big-endian length][query UTF-8 bytes]`
+
+**PREPARED result body:** `kind(4)=0x0004 + preparedId_len(2) + preparedId_bytes + (metadata follows but is not parsed)`
+
+**EXECUTE body:**
+```
+[2-byte preparedId length][preparedId bytes]
+[2-byte consistency = ONE (0x0001)]
+[1-byte flags = 0x01 if values present, 0x00 if no values]
+[if flags=0x01: 2-byte value count + [4-byte len + bytes per value]]
+```
+
+All values are serialized as UTF-8 bytes. This is correct only for `text`, `varchar`, and `ascii` parameters. For `int`, `bigint`, `boolean`, `uuid`, `inet`, `timestamp`, etc., the Cassandra server will reject EXECUTE with a deserialization error because the bytes don't match the expected binary format.
+
+**Response:**
+```json
+{
+  "success": true,
+  "host": "cassandra.example.com",
+  "port": 9042,
+  "rtt": 31,
+  "preparedIdHex": "a1b2c3d4e5f60011",
+  "cqlVersions": ["3.4.6"],
+  "columns": [...],
+  "rows": [...],
+  "rowCount": 1
+}
+```
+
+`preparedIdHex` is the prepared statement identifier as a hex string. It is scoped to this connection and is discarded after the response — there is no prepared statement cache across HTTP requests.
+
+The same column type decoding limitations from `/query` apply here.
+
+---
+
+## Stream reading: `readExact`
+
+All frame reads use `readExact(reader, length)`, which loops calling `reader.read()` until exactly `length` bytes are accumulated. This handles TCP segment fragmentation correctly. However, if the connection closes before `length` bytes arrive, it throws `"Connection closed while reading"`.
+
+There is no per-read timeout inside `readExact`. The outer `timeout` promise races the entire connection promise — if any `readExact` call hangs indefinitely, the outer timeout will fire. The inner reads themselves have no independent deadline.
+
+---
+
+## Error codes
+
+| Code (hex) | Code (dec) | Name |
+|------------|-----------|------|
+| 0x0000 | 0 | ServerError |
+| 0x000A | 10 | ProtocolError |
+| 0x0100 | 256 | AuthenticationError |
+| 0x1000 | 4096 | Unavailable |
+| 0x1001 | 4097 | Overloaded |
+| 0x1002 | 4098 | IsBootstrapping |
+| 0x1003 | 4099 | TruncateError |
+| 0x1100 | 4352 | WriteTimeout |
+| 0x1200 | 4608 | ReadTimeout |
+| 0x2000 | 8192 | SyntaxError |
+| 0x2100 | 8448 | Unauthorized |
+| 0x2200 | 8704 | Invalid (e.g., table not found, not fully qualified) |
+| 0x2300 | 8960 | ConfigError |
+| 0x2400 | 9216 | AlreadyExists |
+| 0x2500 | 9472 | Unprepared |
+
+Error codes appear in the `error` field as `"... (code N)"` using the decimal form.
+
+---
+
+## What is NOT implemented
+
+| Feature | Notes |
+|---------|-------|
+| TLS / SSL | Plain TCP only; Cassandra TLS port 9142 will fail |
+| SASL mechanisms beyond PLAIN | No Kerberos, no GSSAPI |
+| Compression | SNAPPY and LZ4 are advertised by the server; neither is negotiated |
+| Configurable consistency | Hardcoded to ONE; QUORUM, LOCAL_QUORUM, ALL are not available |
+| Pagination | Page size fixed at 100; no paging_state tracking |
+| Non-string bound values | Only UTF-8 strings work as EXECUTE values |
+| Non-text column decoding | int, boolean, float, uuid, timestamp, list, map, set return garbled or null |
+| USE keyspace | No USE between connect and query; fully-qualify all table names |
+| BATCH | No batch statement support |
+| EVENT / REGISTER | No server-side push events |
+| Schema changes | DDL (CREATE TABLE, DROP, ALTER) returns RESULT_SCHEMA_CHANGE (0x0005); `columns` and `rows` will be empty and the schema change is not surfaced |
+| Prepared statement caching | preparedId is scoped to one connection; not reusable across requests |
+| Cluster topology | No round-robin across replica nodes |
+
+---
+
+## curl quick reference
 
 ```bash
-# Docker Cassandra
-docker run -d \
-  -p 9042:9042 \
-  --name cassandra \
-  cassandra:latest
+# Connect probe (no credentials needed)
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com"}' | jq '{protocolVersion,cqlVersions,compression,authRequired}'
+
+# Check if auth is required
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com"}' | jq '{authRequired,authenticator}'
+
+# List keyspaces (system_schema — no auth on many setups)
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com","cql":"SELECT keyspace_name FROM system_schema.keyspaces"}' | jq '.rows[].keyspace_name'
+
+# List tables in a keyspace
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com","cql":"SELECT table_name FROM system_schema.tables WHERE keyspace_name = '"'"'system'"'"'"}' | jq '.rows[].table_name'
+
+# Query with auth
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com","username":"cassandra","password":"cassandra","cql":"SELECT peer, data_center, rack FROM system.peers"}' | jq '.rows'
+
+# Prepared statement with ? placeholder (string params only)
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/prepare \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com","cql":"SELECT * FROM system_schema.tables WHERE keyspace_name = ?","values":["system"]}' | jq '{preparedIdHex,rowCount,rows}'
+
+# Peer topology check
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com","cql":"SELECT peer, data_center, rack, release_version FROM system.peers"}' | jq '.rows'
+
+# Check local node info
+curl -s -X POST https://portofcall.ross.gg/api/cassandra/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"cassandra.example.com","cql":"SELECT cluster_name, data_center, rack, release_version, cql_version FROM system.local"}' | jq '.rows[0]'
+```
+
+---
+
+## Local test server
+
+```bash
+# Single-node Cassandra (no auth)
+docker run -d -p 9042:9042 --name cassandra cassandra:4.1
 
 # Wait for startup
-docker exec -it cassandra cqlsh
+docker exec cassandra nodetool status 2>/dev/null | grep -q UN && echo ready || echo not ready
 
-# Create test keyspace
-CREATE KEYSPACE test WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1};
-USE test;
-
-# Create test table
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  name TEXT,
-  email TEXT,
-  created_at TIMESTAMP
-);
-
-# Insert data
-INSERT INTO users (id, name, email, created_at)
-VALUES (uuid(), 'Alice', 'alice@example.com', toTimestamp(now()));
+# With PasswordAuthenticator (requires username/password)
+docker run -d -p 9042:9042 \
+  -e CASSANDRA_AUTHENTICATOR=PasswordAuthenticator \
+  -e CASSANDRA_AUTHORIZER=CassandraAuthorizer \
+  --name cassandra-auth cassandra:4.1
 ```
 
-## Resources
+Default credentials when `PasswordAuthenticator` is enabled: `cassandra` / `cassandra`.
 
-- **Cassandra Protocol**: [Binary Protocol Spec](https://github.com/apache/cassandra/blob/trunk/doc/native_protocol_v5.spec)
-- **CQL**: [Cassandra Query Language](https://cassandra.apache.org/doc/latest/cql/)
-- **DataStax Drivers**: [Official drivers](https://docs.datastax.com/en/developer/nodejs-driver/)
-
-## Common CQL Patterns
-
-### Create Keyspace
-```cql
-CREATE KEYSPACE myapp
-WITH replication = {
-  'class': 'SimpleStrategy',
-  'replication_factor': 3
-};
-```
-
-### Time-Series Data
-```cql
-CREATE TABLE events (
-  device_id UUID,
-  timestamp TIMESTAMP,
-  value DOUBLE,
-  PRIMARY KEY (device_id, timestamp)
-) WITH CLUSTERING ORDER BY (timestamp DESC);
-```
-
-### Collections
-```cql
-CREATE TABLE users (
-  id UUID PRIMARY KEY,
-  emails SET<TEXT>,
-  phone_numbers LIST<TEXT>,
-  metadata MAP<TEXT, TEXT>
-);
-```
-
-## Notes
-
-- **Binary protocol** - complex framing and encoding
-- **Distributed** - partition keys determine data location
-- **Eventually consistent** - tunable consistency levels
-- **Wide-column** store - flexible schema
-- **CQL** is SQL-like but with NoSQL semantics
-- **Prepared statements** improve performance significantly
-- **Batch operations** for atomic mutations
+For testing text-column queries, the `system_schema` and `system` keyspaces work well without needing to create your own schema — they contain only `varchar` / `text` / `uuid` columns. Avoid `system.local.tokens` (a `set<varchar>` which currently returns garbled data from the list/set parser).

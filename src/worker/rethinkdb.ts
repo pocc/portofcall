@@ -647,3 +647,149 @@ export async function handleRethinkDBServerInfo(request: Request): Promise<Respo
     );
   }
 }
+
+// ReQL term opcodes for write operations
+const TERM_TABLE_CREATE = 60;
+const TERM_INSERT = 56;
+const TERM_TABLE = 15;
+
+/**
+ * Create a RethinkDB table.
+ * POST /api/rethinkdb/table-create
+ *
+ * Executes: r.db(db).tableCreate(name)
+ * ReQL AST:  [1, [TABLE_CREATE, [[DB, [[db]]], [name]]], {}]
+ *
+ * Request: { host, port?, password?, db?, name?, timeout? }
+ * Response: { success, host, port, rtt, created, responseType, error? }
+ */
+export async function handleRethinkDBTableCreate(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; password?: string; db?: string; name?: string; timeout?: number;
+    };
+    const { host, port = 28015, password = '', db = 'test', timeout = 15000 } = body;
+    const name = body.name ?? `portofcall_${Date.now()}`;
+    if (!host) return new Response(
+      JSON.stringify({ success: false, error: 'host is required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
+    );
+
+    const socket = connect({ hostname: host, port });
+    await Promise.race([socket.opened, timeoutPromise]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+    if (!authResult.success) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(
+        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // r.db(db).tableCreate(name) → [1, [TABLE_CREATE, [[DB, [[db]]], [name]]], {}]
+    const query = JSON.stringify([1, [TERM_TABLE_CREATE, [[TERM_DB, [[db]]], [name]]], {}]);
+    await writer.write(buildQueryPacket(1, query));
+    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+    const rtt = Date.now() - startTime;
+    writer.releaseLock(); reader.releaseLock(); socket.close();
+
+    const parsed = parseReQLResponse(responseJson);
+    const result = parsed.results[0] as Record<string, unknown> | undefined;
+
+    return new Response(JSON.stringify({
+      success: !parsed.error, host, port, rtt,
+      tableName: name, db,
+      created: (result?.tables_created as number | undefined) ?? (parsed.error ? 0 : 1),
+      responseType: parsed.typeName,
+      error: parsed.error,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Insert documents into a RethinkDB table.
+ * POST /api/rethinkdb/insert
+ *
+ * Executes: r.db(db).table(name).insert(docs)
+ * ReQL AST:  [1, [INSERT, [[TABLE, [[DB, [[db]]], [name]]], [docs...]]], {}]
+ *
+ * Request: { host, port?, password?, db?, table?, docs?, timeout? }
+ *   docs: array of JSON objects (default: [{ source: 'portofcall', ts: Date.now() }])
+ * Response: { success, host, port, rtt, inserted, errors, responseType, error? }
+ */
+export async function handleRethinkDBInsert(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; password?: string;
+      db?: string; table?: string;
+      docs?: Record<string, unknown>[]; timeout?: number;
+    };
+    const { host, port = 28015, password = '', db = 'test', timeout = 15000 } = body;
+    const table = body.table ?? 'portofcall';
+    const docs = body.docs ?? [{ source: 'portofcall', ts: Date.now() }];
+    if (!host) return new Response(
+      JSON.stringify({ success: false, error: 'host is required' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
+    );
+
+    const socket = connect({ hostname: host, port });
+    await Promise.race([socket.opened, timeoutPromise]);
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+    if (!authResult.success) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      return new Response(
+        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // r.db(db).table(name).insert(docs) →
+    //   [1, [INSERT, [[TABLE, [[DB, [[db]]], [name]]], [docs...]]], {}]
+    const query = JSON.stringify([1, [TERM_INSERT, [[TERM_TABLE, [[TERM_DB, [[db]]], [table]]], docs]], {}]);
+    await writer.write(buildQueryPacket(1, query));
+    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+    const rtt = Date.now() - startTime;
+    writer.releaseLock(); reader.releaseLock(); socket.close();
+
+    const parsed = parseReQLResponse(responseJson);
+    const result = parsed.results[0] as Record<string, unknown> | undefined;
+
+    return new Response(JSON.stringify({
+      success: !parsed.error, host, port, rtt,
+      db, table,
+      inserted: result?.inserted ?? 0,
+      errors: result?.errors ?? 0,
+      generatedKeys: result?.generated_keys ?? [],
+      responseType: parsed.typeName,
+      error: parsed.error,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}

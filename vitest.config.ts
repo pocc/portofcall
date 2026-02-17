@@ -5,11 +5,19 @@ export default defineConfig({
     // Test environment
     environment: 'node',
 
+    // Environment variables for tests
+    // Note: Tests define their own API_BASE defaults
+    // Uncomment below only for local Worker testing:
+    // env: {
+    //   API_BASE: 'http://localhost:8787',
+    // },
+
     // Globals
     globals: true,
 
     // Test file patterns
     include: ['tests/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+    exclude: ['tests/ftp-integration.test.js'], // Standalone Node script, not Vitest-compatible
 
     // Timeout for each test
     testTimeout: 60000, // 60 seconds (FTP operations can be slow)

@@ -8,6 +8,10 @@
 import { describe, it, expect } from 'vitest';
 
 const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+// Use local Docker echo server (port 7) when running against localhost
+const isLocal = API_BASE.includes('localhost');
+const ECHO_HOST = isLocal ? 'localhost' : 'tcpbin.com';
+const ECHO_PORT = isLocal ? 7 : 4242;
 
 describe('ECHO Protocol Integration Tests', () => {
   describe('POST /api/echo/test', () => {
@@ -16,8 +20,8 @@ describe('ECHO Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'tcpbin.com',
-          port: 4242,
+          host: ECHO_HOST,
+          port: ECHO_PORT,
           message: 'Hello, ECHO!',
           timeout: 10000,
         }),
@@ -47,8 +51,8 @@ describe('ECHO Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'tcpbin.com',
-          port: 4242,
+          host: ECHO_HOST,
+          port: ECHO_PORT,
           message: specialMessage,
           timeout: 10000,
         }),
@@ -72,8 +76,8 @@ describe('ECHO Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'tcpbin.com',
-          port: 4242,
+          host: ECHO_HOST,
+          port: ECHO_PORT,
           message: '',
           timeout: 10000,
         }),
@@ -95,8 +99,8 @@ describe('ECHO Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'tcpbin.com',
-          port: 4242,
+          host: ECHO_HOST,
+          port: ECHO_PORT,
           message: longMessage,
           timeout: 10000,
         }),
@@ -161,8 +165,8 @@ describe('ECHO Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'tcpbin.com',
-          port: 4242,
+          host: ECHO_HOST,
+          port: ECHO_PORT,
           message: 'RTT test',
           timeout: 10000,
         }),
@@ -185,8 +189,8 @@ describe('ECHO Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'tcpbin.com',
-          port: 4242,
+          host: ECHO_HOST,
+          port: ECHO_PORT,
           message: unicodeMessage,
           timeout: 10000,
         }),

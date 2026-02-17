@@ -218,6 +218,12 @@ function parseLampHours(value: string): { hours: number; on: boolean }[] {
  * POST /api/pjlink/probe
  */
 export async function handlePJLinkProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as PJLinkRequest;
     const { host, port = 4352, timeout = 10000, password = '' } = body;
@@ -415,6 +421,12 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
  * POST /api/pjlink/power
  */
 export async function handlePJLinkPower(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as PJLinkRequest & { action: 'on' | 'off' | 'query' };
     const { host, port = 4352, timeout = 10000, password = '', action = 'query' } = body;

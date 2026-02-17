@@ -68,15 +68,17 @@ describe('TCP Ping Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'google.com',
-          port: 12345, // Unlikely to be open
+          host: 'unreachable-host-12345.invalid',
+          port: 12345,
+          timeout: 5000, // Short timeout to avoid hanging on filtered ports
         }),
       });
 
-      // This might succeed or fail depending on firewall rules
+      // Should fail since host is unreachable
       const data = await response.json();
       expect(data).toHaveProperty('success');
-    });
+      expect(data.success).toBe(false);
+    }, 15000);
 
     it('should return 405 for GET request', async () => {
       const response = await fetch(`${API_BASE}/ping`, {

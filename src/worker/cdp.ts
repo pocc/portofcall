@@ -157,6 +157,7 @@ function decodeChunked(data: string): string {
  * GET /json/version returns browser version info
  */
 export async function handleCDPHealth(request: Request): Promise<Response> {
+  const start = Date.now();
   try {
     const body = await request.json() as CDPRequest;
     const { host, port = 9222, timeout = 10000 } = body;
@@ -183,8 +184,6 @@ export async function handleCDPHealth(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-
-    const start = Date.now();
 
     // Query /json/version endpoint
     const versionResult = await sendHttpRequest(host, port, '/json/version', timeout);
@@ -235,6 +234,7 @@ export async function handleCDPHealth(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Connection failed',
+      latencyMs: Date.now() - start,
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
@@ -247,6 +247,7 @@ export async function handleCDPHealth(request: Request): Promise<Response> {
  * Supports /json/version, /json/list, /json/protocol, /json/new, /json/close/<id>
  */
 export async function handleCDPQuery(request: Request): Promise<Response> {
+  const start = Date.now();
   try {
     const body = await request.json() as CDPQueryRequest;
     const {
@@ -268,8 +269,6 @@ export async function handleCDPQuery(request: Request): Promise<Response> {
 
     // Validate endpoint starts with /
     const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-
-    const start = Date.now();
 
     const result = await sendHttpRequest(host, port, normalizedEndpoint, timeout);
     const latencyMs = Date.now() - start;
@@ -298,6 +297,9 @@ export async function handleCDPQuery(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Query failed',
+      statusCode: 0,
+      latencyMs: Date.now() - start,
+      body: '',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

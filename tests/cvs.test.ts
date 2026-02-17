@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 
-const WORKER_URL = 'http://localhost:8787';
+const WORKER_URL = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace('/api', '');
+const isLocal = WORKER_URL.includes('localhost');
+const CVS_HOST = isLocal ? 'localhost' : 'cvs.example.com';
 
 describe('CVS pserver Integration', () => {
   describe('Connect', () => {
@@ -9,7 +11,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: 2401,
         }),
       });
@@ -41,7 +43,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: -1,
         }),
       });
@@ -57,7 +59,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1 (RFC 5737) - guaranteed to timeout
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1 (RFC 5737) - guaranteed to timeout
           port: 2401,
         }),
       });
@@ -75,7 +77,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: 2401,
           repository: '/cvs',
           username: 'anonymous',
@@ -113,7 +115,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: 99999,
           repository: '/cvs',
           username: 'user',
@@ -132,7 +134,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: 2401,
           repository: '',
           username: 'user',
@@ -147,11 +149,11 @@ describe('CVS pserver Integration', () => {
     });
 
     it('should reject missing username for login', async () => {
-      const response = await fetch(`${WORKER_URL}/api/cvS/login`, {
+      const response = await fetch(`${WORKER_URL}/api/cvs/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: 2401,
           repository: '/cvs',
           username: '',
@@ -170,7 +172,7 @@ describe('CVS pserver Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'cvs.example.com',
+          host: CVS_HOST,
           port: 2401,
           repository: '/cvs',
           username: 'user',

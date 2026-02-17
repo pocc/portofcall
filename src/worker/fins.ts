@@ -287,6 +287,12 @@ async function readFINSFrame(
  * POST /api/fins/connect
  */
 export async function handleFINSConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as FINSRequest;
     const { host, port = 9600, timeout = 10000, clientNode = 0 } = body;

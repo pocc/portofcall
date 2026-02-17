@@ -37,12 +37,14 @@ import { handleIMAPConnect, handleIMAPList, handleIMAPSelect } from './imap';
 import { handleMySQLConnect, handleMySQLQuery } from './mysql';
 import { handlePostgreSQLConnect } from './postgres';
 import { handleOracleConnect } from './oracle';
+import { handleMaxDBConnect } from './maxdb';
 import { handleRedisConnect, handleRedisCommand } from './redis';
 import { handleMQTTConnect } from './mqtt';
 import { handleLDAPConnect } from './ldap';
 import { handleLDAPSConnect, handleLDAPSSearch } from './ldaps';
 import { handleSMBConnect } from './smb';
 import { handleEchoTest, handleEchoWebSocket } from './echo';
+import { handleActiveUsersTest } from './activeusers';
 import { handleWhoisLookup } from './whois';
 import { handleSyslogSend } from './syslog';
 import { handleSocks4Connect } from './socks4';
@@ -51,6 +53,7 @@ import { handleFingerQuery } from './finger';
 import { handleTimeGet } from './time';
 import { handleChargenStream } from './chargen';
 import { handleDiscardSend } from './discard';
+import { handleGaduGaduConnect } from './gadugadu';
 import { handleGeminiFetch } from './gemini';
 import { handleGopherFetch } from './gopher';
 import { handleIRCConnect, handleIRCWebSocket } from './irc';
@@ -103,6 +106,8 @@ import { handleX11Connect } from './x11';
 import { handleKerberosConnect } from './kerberos';
 import { handleSCCPProbe, handleSCCPRegister } from './sccp';
 import { handleMatrixHealth, handleMatrixQuery } from './matrix';
+import { handleCDPHealth, handleCDPQuery, handleCDPTunnel } from './cdp';
+import { handleNodeInspectorHealth, handleNodeInspectorQuery, handleNodeInspectorTunnel } from './node-inspector';
 import { handleISCSIDiscover } from './iscsi';
 import { handleWebSocketProbe } from './websocket';
 import { handleH323Connect } from './h323';
@@ -153,6 +158,7 @@ import { handleStunBinding, handleStunProbe } from './stun';
 import { handleFluentdConnect, handleFluentdSend } from './fluentd';
 import { handleAerospikeConnect, handleAerospikeInfo } from './aerospike';
 import { handleRexecExecute, handleRexecWebSocket } from './rexec';
+import { handleRshExecute, handleRshWebSocket } from './rsh';
 import { handleFIXProbe, handleFIXHeartbeat } from './fix';
 import { handleEPMDNames, handleEPMDPort } from './epmd';
 import { handleTarantoolConnect, handleTarantoolProbe } from './tarantool';
@@ -237,6 +243,15 @@ import { handleShoutCastProbe, handleShoutCastInfo } from './shoutcast';
 import { handleMumbleProbe, handleMumbleVersion } from './mumble';
 import { handleSybaseProbe, handleSybaseVersion } from './sybase';
 import { handleInformixProbe, handleInformixVersion } from './informix';
+import { eppConnect, eppLogin, eppDomainCheck } from './epp';
+import { handleHTTPRequest, handleHTTPHead, handleHTTPOptions } from './http';
+import { handleUUCPProbe } from './uucp';
+import { handlePerforceProbe, handlePerforceInfo } from './perforce';
+import { handleQuake3Status, handleQuake3Info } from './quake3';
+import { handleCollectdProbe, handleCollectdSend } from './collectd';
+import { handleEthereumProbe } from './ethereum';
+import { handleIPFSProbe } from './ipfs';
+import { handleKubernetesProbe, handleKubernetesQuery } from './kubernetes';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface Env {
@@ -265,6 +280,11 @@ export default {
         return handleEchoWebSocket(request);
       }
       return new Response('WebSocket upgrade required', { status: 426 });
+    }
+
+    // Active Users API endpoint
+    if (url.pathname === '/api/activeusers/test') {
+      return handleActiveUsersTest(request);
     }
 
     // WHOIS API endpoint
@@ -310,6 +330,11 @@ export default {
     // DISCARD API endpoint
     if (url.pathname === '/api/discard/send') {
       return handleDiscardSend(request);
+    }
+
+    // Gadu-Gadu API endpoint
+    if (url.pathname === '/api/gadugadu/connect') {
+      return handleGaduGaduConnect(request);
     }
 
     // GEMINI API endpoint
@@ -541,6 +566,11 @@ export default {
     // Oracle TNS
     if (url.pathname === '/api/oracle/connect') {
       return handleOracleConnect(request);
+    }
+
+    // MaxDB API endpoints
+    if (url.pathname === '/api/maxdb/connect') {
+      return handleMaxDBConnect(request);
     }
 
     // PostgreSQL API endpoints
@@ -874,6 +904,40 @@ export default {
 
     if (url.pathname === '/api/matrix/query') {
       return handleMatrixQuery(request);
+    }
+
+    // Chrome DevTools Protocol endpoints
+    if (url.pathname === '/api/cdp/health') {
+      return handleCDPHealth(request);
+    }
+
+    if (url.pathname === '/api/cdp/query') {
+      return handleCDPQuery(request);
+    }
+
+    if (url.pathname === '/api/cdp/tunnel') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleCDPTunnel(request);
+      }
+      return new Response('WebSocket upgrade required', { status: 426 });
+    }
+
+    // Node Inspector Protocol endpoints
+    if (url.pathname === '/api/node-inspector/health') {
+      return handleNodeInspectorHealth(request);
+    }
+
+    if (url.pathname === '/api/node-inspector/query') {
+      return handleNodeInspectorQuery(request);
+    }
+
+    if (url.pathname === '/api/node-inspector/tunnel') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleNodeInspectorTunnel(request);
+      }
+      return new Response('WebSocket upgrade required', { status: 426 });
     }
 
     // WebSocket API endpoint
@@ -1303,6 +1367,15 @@ export default {
         return handleRexecWebSocket(request);
       }
       return handleRexecExecute(request);
+    }
+
+    // RSH API endpoints
+    if (url.pathname === '/api/rsh/execute') {
+      const upgradeHeader = request.headers.get('Upgrade');
+      if (upgradeHeader === 'websocket') {
+        return handleRshWebSocket(request);
+      }
+      return handleRshExecute(request);
     }
 
     // FIX Protocol API endpoints
@@ -2122,6 +2195,122 @@ export default {
       return handleInformixVersion(request);
     }
 
+    // EPP (Extensible Provisioning Protocol) API endpoints
+    if (url.pathname === '/api/epp/connect') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      try {
+        const data = await request.json<{ host: string; port: number; timeout?: number }>();
+        const result = await eppConnect({ host: data.host, port: data.port });
+        return new Response(JSON.stringify(result), {
+          headers: { 'Content-Type': 'application/json' },
+          status: result.success ? 200 : 500,
+        });
+      } catch (error: any) {
+        return new Response(JSON.stringify({ success: false, error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    if (url.pathname === '/api/epp/login') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      try {
+        const data = await request.json<{ host: string; port: number; clid: string; pw: string; timeout?: number }>();
+        const result = await eppLogin({ host: data.host, port: data.port, clid: data.clid, pw: data.pw });
+        return new Response(JSON.stringify(result), {
+          headers: { 'Content-Type': 'application/json' },
+          status: result.success ? 200 : 500,
+        });
+      } catch (error: any) {
+        return new Response(JSON.stringify({ success: false, error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    if (url.pathname === '/api/epp/domain-check') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      try {
+        const data = await request.json<{ host: string; port: number; clid: string; pw: string; domain: string; timeout?: number }>();
+        const result = await eppDomainCheck({ host: data.host, port: data.port, clid: data.clid, pw: data.pw }, data.domain);
+        return new Response(JSON.stringify(result), {
+          headers: { 'Content-Type': 'application/json' },
+          status: result.success ? 200 : 500,
+        });
+      } catch (error: any) {
+        return new Response(JSON.stringify({ success: false, error: error.message }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // HTTP/1.1 API endpoints
+    if (url.pathname === '/api/http/request') {
+      return handleHTTPRequest(request);
+    }
+
+    if (url.pathname === '/api/http/head') {
+      return handleHTTPHead(request);
+    }
+
+    if (url.pathname === '/api/http/options') {
+      return handleHTTPOptions(request);
+    }
+
+    // UUCP API endpoints
+    if (url.pathname === '/api/uucp/probe') {
+      return handleUUCPProbe(request);
+    }
+
+    // Perforce API endpoints
+    if (url.pathname === '/api/perforce/probe') {
+      return handlePerforceProbe(request);
+    }
+
+    if (url.pathname === '/api/perforce/info') {
+      return handlePerforceInfo(request);
+    }
+
+    // Quake 3 API endpoints
+    if (url.pathname === '/api/quake3/status') {
+      return handleQuake3Status(request);
+    }
+
+    if (url.pathname === '/api/quake3/info') {
+      return handleQuake3Info(request);
+    }
+
+    // collectd API endpoints
+    if (url.pathname === '/api/collectd/probe') {
+      return handleCollectdProbe(request);
+    }
+
+    if (url.pathname === '/api/collectd/send') {
+      return handleCollectdSend(request);
+    }
+
+    // Ethereum P2P API endpoints
+    if (url.pathname === '/api/ethereum/probe') {
+      return handleEthereumProbe(request);
+    }
+
+    // IPFS API endpoints
+    if (url.pathname === '/api/ipfs/probe') {
+      return handleIPFSProbe(request);
+    }
+
+    // Kubernetes API endpoints
+    if (url.pathname === '/api/kubernetes/probe') {
+      return handleKubernetesProbe(request);
+    }
+
+    if (url.pathname === '/api/kubernetes/query') {
+      return handleKubernetesQuery(request);
+    }
+
     // Serve static assets (built React app)
     return env.ASSETS.fetch(request);
   },
@@ -2139,7 +2328,7 @@ async function handleTcpPing(request: Request): Promise<Response> {
   }
 
   try {
-    const { host, port } = await request.json<{ host: string; port: number }>();
+    const { host, port, timeout = 10000 } = await request.json<{ host: string; port: number; timeout?: number }>();
 
     if (!host || !port) {
       return new Response('Missing host or port', { status: 400 });
@@ -2160,8 +2349,11 @@ async function handleTcpPing(request: Request): Promise<Response> {
 
     const start = Date.now();
     const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
+    );
 
-    await socket.opened;
+    await Promise.race([socket.opened, timeoutPromise]);
     const rtt = Date.now() - start;
 
     await socket.close();

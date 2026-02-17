@@ -24,6 +24,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface DockerRequest {
   host: string;
@@ -187,6 +188,19 @@ export async function handleDockerHealth(request: Request): Promise<Response> {
         error: 'Host is required',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check for Cloudflare protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'vitest';
 
-const API_BASE = 'https://portofcall.rj.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Fluentd Forward Protocol - Server Probe', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 24224 }),
@@ -16,7 +16,7 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
   });
 
   test('should validate port range', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 99999 }),
@@ -28,7 +28,7 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
   });
 
   test('should validate tag format', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 24224, tag: 'invalid tag with spaces!' }),
@@ -40,11 +40,11 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
   });
 
   test('should handle connection timeout for unreachable hosts', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // RFC 5737 TEST-NET
+        host: 'unreachable-host-12345.invalid', // RFC 5737 TEST-NET
         port: 24224,
         timeout: 3000,
       }),
@@ -55,11 +55,11 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
   }, 15000);
 
   test('should use default port 24224 when not specified', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         timeout: 2000,
       }),
     });
@@ -70,7 +70,7 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
   }, 10000);
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'GET',
     });
 
@@ -80,7 +80,7 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
 
 describe('Fluentd Forward Protocol - Send Log Entry', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/send`, {
+    const response = await fetch(`${API_BASE}/fluentd/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tag: 'test', record: { message: 'hello' } }),
@@ -92,7 +92,7 @@ describe('Fluentd Forward Protocol - Send Log Entry', () => {
   });
 
   test('should validate tag format on send', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/send`, {
+    const response = await fetch(`${API_BASE}/fluentd/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -108,7 +108,7 @@ describe('Fluentd Forward Protocol - Send Log Entry', () => {
   });
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/send`, {
+    const response = await fetch(`${API_BASE}/fluentd/send`, {
       method: 'GET',
     });
 
@@ -118,11 +118,11 @@ describe('Fluentd Forward Protocol - Send Log Entry', () => {
 
 describe('Fluentd Forward Protocol - MessagePack Encoding', () => {
   test('should handle tag with dots (namespace format)', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         tag: 'app.logs.access',
         timeout: 2000,
       }),
@@ -134,11 +134,11 @@ describe('Fluentd Forward Protocol - MessagePack Encoding', () => {
   }, 10000);
 
   test('should handle tag with hyphens and underscores', async () => {
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         tag: 'my-app_v2.logs',
         timeout: 2000,
       }),
@@ -150,7 +150,7 @@ describe('Fluentd Forward Protocol - MessagePack Encoding', () => {
 
   test('should reject tag exceeding max length', async () => {
     const longTag = 'a'.repeat(129);
-    const response = await fetch(`${API_BASE}/api/fluentd/connect`, {
+    const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -19,8 +19,8 @@ describe('RabbitMQ Management API Integration', () => {
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.success).toBe(true);
-      expect(data.overview).toBeDefined();
-      expect(data.nodes).toBeDefined();
+      expect(data.version).toBeDefined();
+      expect(data.clusterName).toBeDefined();
     });
 
     it('should reject empty host for health check', async () => {
@@ -64,7 +64,7 @@ describe('RabbitMQ Management API Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1 (RFC 5737) - guaranteed to timeout
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1 (RFC 5737) - guaranteed to timeout
           port: 15672,
           username: 'guest',
           password: 'guest',
@@ -95,7 +95,7 @@ describe('RabbitMQ Management API Integration', () => {
       expect(response.ok).toBe(true);
       const data = await response.json();
       expect(data.success).toBe(true);
-      expect(data.body).toBeDefined();
+      expect(data.response).toBeDefined();
     });
 
     it('should reject empty host for query', async () => {

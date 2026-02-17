@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'vitest';
 
-const API_BASE = 'https://portofcall.rj.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('WinRM Protocol - Identify Probe', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 5985 }),
@@ -16,7 +16,7 @@ describe('WinRM Protocol - Identify Probe', () => {
   });
 
   test('should validate port range', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 99999 }),
@@ -28,11 +28,11 @@ describe('WinRM Protocol - Identify Probe', () => {
   });
 
   test('should handle connection timeout for unreachable hosts', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // RFC 5737 TEST-NET
+        host: 'unreachable-host-12345.invalid', // RFC 5737 TEST-NET
         port: 5985,
         timeout: 3000,
       }),
@@ -43,11 +43,11 @@ describe('WinRM Protocol - Identify Probe', () => {
   }, 15000);
 
   test('should use default port 5985 when not specified', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         timeout: 2000,
       }),
     });
@@ -58,7 +58,7 @@ describe('WinRM Protocol - Identify Probe', () => {
   }, 10000);
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'GET',
     });
 
@@ -68,7 +68,7 @@ describe('WinRM Protocol - Identify Probe', () => {
 
 describe('WinRM Protocol - Auth Probe', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/auth`, {
+    const response = await fetch(`${API_BASE}/winrm/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 5985 }),
@@ -80,7 +80,7 @@ describe('WinRM Protocol - Auth Probe', () => {
   });
 
   test('should validate port range', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/auth`, {
+    const response = await fetch(`${API_BASE}/winrm/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 0 }),
@@ -92,7 +92,7 @@ describe('WinRM Protocol - Auth Probe', () => {
   });
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/auth`, {
+    const response = await fetch(`${API_BASE}/winrm/auth`, {
       method: 'GET',
     });
 
@@ -102,7 +102,7 @@ describe('WinRM Protocol - Auth Probe', () => {
 
 describe('WinRM Protocol - SOAP Envelope', () => {
   test('should handle invalid JSON body gracefully', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: 'not json',
@@ -114,11 +114,11 @@ describe('WinRM Protocol - SOAP Envelope', () => {
   });
 
   test('should handle port 5986 (HTTPS variant)', async () => {
-    const response = await fetch(`${API_BASE}/api/winrm/identify`, {
+    const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         port: 5986,
         timeout: 2000,
       }),

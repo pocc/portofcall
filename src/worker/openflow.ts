@@ -286,7 +286,7 @@ export async function handleOpenFlowProbe(request: Request): Promise<Response> {
     }
 
     const host = body.host;
-    const port = body.port || 6653;
+    const port = body.port !== undefined ? body.port : 6653;
     const version = body.version || OFP_VERSION_1_3;
     const timeout = body.timeout || 10000;
 
@@ -490,7 +490,7 @@ export async function handleOpenFlowEcho(request: Request): Promise<Response> {
     }
 
     const host = body.host;
-    const port = body.port || 6653;
+    const port = body.port !== undefined ? body.port : 6653;
     const version = body.version || OFP_VERSION_1_3;
     const timeout = body.timeout || 10000;
 

@@ -1,10 +1,15 @@
 import { describe, it, expect } from 'vitest';
 
-const WORKER_URL = 'http://localhost:8787';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const WORKER_URL = API_BASE.replace('/api', '');
+const isLocal = WORKER_URL.includes('localhost');
+
+// wrangler dev does not support secureTransport: 'on' for localhost connections
+const itTlsTest = isLocal ? it.skip : it;
 
 describe('AMQPS Integration', () => {
   describe('Connect', () => {
-    it('should connect to AMQPS broker over TLS', async () => {
+    itTlsTest('should connect to AMQPS broker over TLS', async () => {
       const response = await fetch(`${WORKER_URL}/api/amqps/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -58,7 +63,7 @@ describe('AMQPS Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1 (RFC 5737) - guaranteed to timeout
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1 (RFC 5737) - guaranteed to timeout
           port: 5671,
         }),
       });

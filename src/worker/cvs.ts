@@ -130,14 +130,22 @@ export async function handleCVSConnect(request: Request): Promise<Response> {
     const reader = socket.readable.getReader();
 
     try {
-      // Send BEGIN AUTH REQUEST
-      const authRequest = 'BEGIN AUTH REQUEST\n';
+      // Send a complete (but intentionally wrong) auth request to trigger server response.
+      // CVS pserver responds after receiving END AUTH REQUEST or EOF.
+      const authRequest = [
+        'BEGIN AUTH REQUEST',
+        '/cvsroot',
+        'anonymous',
+        'A',
+        'END AUTH REQUEST',
+        '',
+      ].join('\n');
       await writer.write(new TextEncoder().encode(authRequest));
+      await writer.close();
 
-      // Read server response (greeting, version, etc.)
+      // Read server response (I LOVE YOU, I HATE YOU, or error message)
       const lines = await readLines(reader, 10000);
 
-      await writer.close();
       await reader.cancel();
       await socket.close();
 

@@ -205,6 +205,157 @@ export async function handleRedisConnect(request: Request): Promise<Response> {
 }
 
 /**
+ * Format a raw RESP response into a human-readable string (redis-cli style)
+ */
+function formatRESPResponse(resp: string): string {
+  const trimmed = resp.trim();
+  if (!trimmed) return '(empty)';
+
+  // Error
+  if (trimmed.startsWith('-')) return '(error) ' + trimmed.slice(1);
+  // Simple string
+  if (trimmed.startsWith('+')) return trimmed.slice(1);
+  // Integer
+  if (trimmed.startsWith(':')) return '(integer) ' + trimmed.slice(1);
+  // Null bulk string
+  if (trimmed === '$-1') return '(nil)';
+  // Bulk string: $N\r\ndata\r\n
+  if (trimmed.startsWith('$')) {
+    const lines = trimmed.split('\r\n');
+    if (lines.length >= 2) return '"' + lines[1] + '"';
+  }
+  // Array: *N\r\n...
+  if (trimmed.startsWith('*')) {
+    const lines = trimmed.split('\r\n');
+    const count = parseInt(lines[0].slice(1));
+    if (count === 0) return '(empty array)';
+    if (count === -1) return '(nil)';
+    const items: string[] = [];
+    let i = 1;
+    for (let n = 0; n < count && i < lines.length; n++) {
+      if (lines[i].startsWith('$')) {
+        i++;
+        items.push(`${n + 1}) "${lines[i] ?? ''}"` );
+        i++;
+      } else if (lines[i].startsWith(':')) {
+        items.push(`${n + 1}) (integer) ${lines[i].slice(1)}`);
+        i++;
+      } else {
+        items.push(`${n + 1}) ${lines[i]}`);
+        i++;
+      }
+    }
+    return items.join('\n');
+  }
+  return trimmed;
+}
+
+/**
+ * Handle Redis interactive WebSocket session
+ * GET /api/redis/session?host=...&port=...&password=...&database=...
+ *
+ * WebSocket message protocol:
+ *   Browser → Worker: JSON { type: 'command', command: string[] }
+ *   Worker → Browser: JSON { type: 'connected', version: string }
+ *                          { type: 'response', response: string, raw: string, command: string[] }
+ *                          { type: 'error', message: string }
+ */
+export async function handleRedisSession(request: Request): Promise<Response> {
+  if (request.headers.get('Upgrade') !== 'websocket') {
+    return new Response('WebSocket upgrade required', { status: 426 });
+  }
+
+  const url = new URL(request.url);
+  const host = url.searchParams.get('host') || '';
+  const port = parseInt(url.searchParams.get('port') || '6379');
+  const password = url.searchParams.get('password') || undefined;
+  const database = url.searchParams.get('database') ? parseInt(url.searchParams.get('database')!) : undefined;
+
+  if (!host) {
+    return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+    }), { status: 403 });
+  }
+
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  server.accept();
+
+  (async () => {
+    try {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      // AUTH
+      if (password) {
+        await writer.write(encodeRESPArray(['AUTH', password]));
+        const authResp = await readRESPResponse(reader, 5000);
+        if (!authResp.startsWith('+OK')) {
+          server.send(JSON.stringify({ type: 'error', message: 'Authentication failed: ' + authResp.trim() }));
+          server.close();
+          return;
+        }
+      }
+
+      // SELECT database
+      if (database !== undefined) {
+        await writer.write(encodeRESPArray(['SELECT', database.toString()]));
+        const selResp = await readRESPResponse(reader, 5000);
+        if (!selResp.startsWith('+OK')) {
+          server.send(JSON.stringify({ type: 'error', message: 'Database selection failed: ' + selResp.trim() }));
+          server.close();
+          return;
+        }
+      }
+
+      // Get version
+      await writer.write(encodeRESPArray(['INFO', 'server']));
+      const infoResp = await readRESPResponse(reader, 5000);
+      const versionMatch = infoResp.match(/redis_version:([^\r\n]+)/);
+      const version = versionMatch ? versionMatch[1] : 'unknown';
+
+      server.send(JSON.stringify({ type: 'connected', version, host, port }));
+
+      // Handle incoming commands
+      server.addEventListener('message', async (event) => {
+        try {
+          const msg = JSON.parse(event.data as string) as { type: string; command?: string[] };
+          if (msg.type === 'command' && msg.command && msg.command.length > 0) {
+            await writer.write(encodeRESPArray(msg.command));
+            const raw = await readRESPResponse(reader, 30000);
+            server.send(JSON.stringify({
+              type: 'response',
+              response: formatRESPResponse(raw),
+              raw,
+              command: msg.command,
+            }));
+          }
+        } catch (e) {
+          server.send(JSON.stringify({ type: 'error', message: String(e) }));
+        }
+      });
+
+      server.addEventListener('close', () => {
+        socket.close().catch(() => {});
+      });
+    } catch (e) {
+      server.send(JSON.stringify({ type: 'error', message: String(e) }));
+      server.close();
+    }
+  })();
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+/**
  * Handle Redis command execution
  */
 export async function handleRedisCommand(request: Request): Promise<Response> {

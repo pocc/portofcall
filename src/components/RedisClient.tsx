@@ -1,7 +1,14 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 
 interface RedisClientProps {
   onBack: () => void;
+}
+
+type Status = 'idle' | 'connecting' | 'connected' | 'disconnected';
+
+interface HistoryEntry {
+  type: 'command' | 'response' | 'error' | 'info';
+  text: string;
 }
 
 export default function RedisClient({ onBack }: RedisClientProps) {
@@ -9,298 +16,295 @@ export default function RedisClient({ onBack }: RedisClientProps) {
   const [port, setPort] = useState('6379');
   const [password, setPassword] = useState('');
   const [database, setDatabase] = useState('0');
-  const [command, setCommand] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string>('');
-  const [error, setError] = useState<string>('');
+  const [status, setStatus] = useState<Status>('idle');
+  const [statusMsg, setStatusMsg] = useState('');
+  const [version, setVersion] = useState('');
+  const [input, setInput] = useState('');
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [cmdHistoryIdx, setCmdHistoryIdx] = useState(-1);
 
-  const handleConnect = async () => {
+  const wsRef = useRef<WebSocket | null>(null);
+  const outputRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Scroll output to bottom whenever history changes
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [history]);
+
+  const addEntry = useCallback((type: HistoryEntry['type'], text: string) => {
+    setHistory(prev => [...prev, { type, text }]);
+  }, []);
+
+  const handleConnect = () => {
     if (!host) {
-      setError('Host is required');
+      setStatusMsg('Host is required.');
       return;
     }
+    setStatus('connecting');
+    setStatusMsg('');
+    setHistory([]);
 
-    setLoading(true);
-    setError('');
-    setResult('');
+    const params = new URLSearchParams({ host, port });
+    if (password) params.set('password', password);
+    if (database && database !== '0') params.set('database', database);
 
-    try {
-      const response = await fetch('/api/redis/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host,
-          port: parseInt(port),
-          password: password || undefined,
-          database: database ? parseInt(database) : undefined,
-          timeout: 10000,
-        }),
-      });
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/redis/session?${params}`);
+    wsRef.current = ws;
 
-      const data = await response.json() as {
-        success?: boolean;
-        error?: string;
-        serverInfo?: string;
-        version?: string;
-      };
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data as string) as {
+          type: string;
+          version?: string;
+          response?: string;
+          command?: string[];
+          message?: string;
+        };
 
-      if (response.ok && data.success) {
-        setResult(`Connected to Redis server at ${host}:${port}\n\nVersion: ${data.version || 'Unknown'}\n${data.serverInfo || ''}`);
-      } else {
-        setError(data.error || 'Connection failed');
+        if (msg.type === 'connected') {
+          setStatus('connected');
+          setVersion(msg.version ?? '');
+          addEntry('info', `Connected to ${host}:${port} — Redis ${msg.version ?? 'unknown'}`);
+          addEntry('info', 'Type commands below. Example: GET mykey');
+          inputRef.current?.focus();
+        } else if (msg.type === 'response') {
+          addEntry('response', msg.response ?? '');
+        } else if (msg.type === 'error') {
+          setStatus('disconnected');
+          addEntry('error', msg.message ?? 'Error');
+          setStatusMsg(msg.message ?? 'Error');
+        }
+      } catch {
+        addEntry('info', event.data as string);
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Connection failed');
-    } finally {
-      setLoading(false);
-    }
-  };
+    };
 
-  const handleExecuteCommand = async () => {
-    if (!host) {
-      setError('Host is required');
-      return;
-    }
+    ws.onerror = () => {
+      addEntry('error', 'WebSocket error');
+      setStatus('disconnected');
+    };
 
-    if (!command.trim()) {
-      setError('Command is required');
-      return;
-    }
-
-    setLoading(true);
-    setError('');
-    setResult('');
-
-    try {
-      // Parse command into arguments
-      const args = command.trim().split(/\s+/);
-
-      const response = await fetch('/api/redis/command', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host,
-          port: parseInt(port),
-          password: password || undefined,
-          database: database ? parseInt(database) : undefined,
-          command: args,
-          timeout: 10000,
-        }),
-      });
-
-      const data = await response.json() as {
-        success?: boolean;
-        error?: string;
-        response?: string;
-        command?: string[];
-      };
-
-      if (response.ok && data.success) {
-        setResult(`Command: ${data.command?.join(' ')}\n\nResponse:\n${data.response || ''}`);
-      } else {
-        setError(data.error || 'Command failed');
+    ws.onclose = (e) => {
+      if (status !== 'disconnected') {
+        addEntry('info', `[closed: ${e.reason || e.code}]`);
+        setStatus('disconnected');
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Command failed');
-    } finally {
-      setLoading(false);
+      wsRef.current = null;
+    };
+  };
+
+  const handleDisconnect = () => {
+    wsRef.current?.close(1000, 'user disconnect');
+    wsRef.current = null;
+    setStatus('disconnected');
+    addEntry('info', '[disconnected]');
+  };
+
+  const sendCommand = () => {
+    const trimmed = input.trim();
+    if (!trimmed || wsRef.current?.readyState !== WebSocket.OPEN) return;
+
+    const args = trimmed.split(/\s+/);
+    addEntry('command', trimmed);
+    wsRef.current.send(JSON.stringify({ type: 'command', command: args }));
+
+    setCmdHistory(prev => [trimmed, ...prev.slice(0, 99)]);
+    setCmdHistoryIdx(-1);
+    setInput('');
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      sendCommand();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      const nextIdx = Math.min(cmdHistoryIdx + 1, cmdHistory.length - 1);
+      setCmdHistoryIdx(nextIdx);
+      setInput(cmdHistory[nextIdx] ?? '');
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      const nextIdx = Math.max(cmdHistoryIdx - 1, -1);
+      setCmdHistoryIdx(nextIdx);
+      setInput(nextIdx === -1 ? '' : (cmdHistory[nextIdx] ?? ''));
     }
   };
 
-  const handleKeyDownConnect = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !loading && host) {
-      handleConnect();
-    }
-  };
+  const statusDot =
+    status === 'connected'
+      ? 'bg-green-400 animate-pulse'
+      : status === 'connecting'
+      ? 'bg-yellow-400 animate-pulse'
+      : 'bg-slate-500';
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="mb-6 flex items-center gap-4">
-        <button
-          onClick={onBack}
-          className="text-white hover:text-blue-400 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 rounded px-2 py-1"
-          aria-label="Go back to protocol selector"
-        >
-          ← Back
-        </button>
-        <h1 className="text-3xl font-bold text-white">Redis Client</h1>
-      </div>
-
-      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
-        {/* Step 1: Connection */}
-        <div className="flex items-center gap-3 mb-4">
-          <div className="flex-shrink-0 w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
-            <span className="text-white font-bold text-sm">1</span>
-          </div>
-          <h2 className="text-xl font-semibold text-white">Connection</h2>
-        </div>
-
-        <div className="grid md:grid-cols-2 gap-4 mb-6">
-          <div>
-            <label htmlFor="redis-host" className="block text-sm font-medium text-slate-300 mb-1">
-              Host <span className="text-red-400" aria-label="required">*</span>
-            </label>
-            <input
-              id="redis-host"
-              type="text"
-              value={host}
-              onChange={(e) => setHost(e.target.value)}
-              onKeyDown={handleKeyDownConnect}
-              placeholder="redis.example.com"
-              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              aria-required="true"
-              aria-describedby="redis-host-help"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="redis-port" className="block text-sm font-medium text-slate-300 mb-1">
-              Port
-            </label>
-            <input
-              id="redis-port"
-              type="number"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              onKeyDown={handleKeyDownConnect}
-              min="1"
-              max="65535"
-              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-              aria-describedby="redis-port-help"
-            />
-            <p id="redis-port-help" className="text-xs text-slate-400 mt-1">Default: 6379</p>
-          </div>
-
-          <div>
-            <label htmlFor="redis-password" className="block text-sm font-medium text-slate-300 mb-1">
-              Password <span className="text-xs text-slate-400">(optional)</span>
-            </label>
-            <input
-              id="redis-password"
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={handleKeyDownConnect}
-              placeholder="password"
-              autoComplete="off"
-              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="redis-database" className="block text-sm font-medium text-slate-300 mb-1">
-              Database <span className="text-xs text-slate-400">(0-15)</span>
-            </label>
-            <input
-              id="redis-database"
-              type="number"
-              value={database}
-              onChange={(e) => setDatabase(e.target.value)}
-              onKeyDown={handleKeyDownConnect}
-              min="0"
-              max="15"
-              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-            />
-          </div>
-        </div>
-
-        <button
-          onClick={handleConnect}
-          disabled={loading || !host}
-          className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed mb-6 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 focus:ring-offset-slate-800"
-          aria-label="Test Redis connection"
-        >
-          {loading ? (
-            <span className="flex items-center justify-center gap-2">
-              <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
-              Connecting...
-            </span>
-          ) : (
-            'Test Connection'
-          )}
-        </button>
-
-        {/* Step 2: Execute Command */}
-        <div className="pt-6 border-t border-slate-600">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex-shrink-0 w-8 h-8 bg-green-600 rounded-full flex items-center justify-center">
-              <span className="text-white font-bold text-sm">2</span>
-            </div>
-            <h2 className="text-xl font-semibold text-white">Execute Command</h2>
-          </div>
-
-          <div className="mb-4">
-            <label htmlFor="redis-command" className="block text-sm font-medium text-slate-300 mb-1">
-              Redis Command
-            </label>
-            <input
-              id="redis-command"
-              type="text"
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              placeholder="PING"
-              className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !loading) {
-                  handleExecuteCommand();
-                }
-              }}
-              aria-describedby="redis-command-help"
-            />
-            <p id="redis-command-help" className="text-xs text-slate-400 mt-1">
-              Examples: PING, SET mykey myvalue, GET mykey, DEL mykey, KEYS *
-            </p>
-          </div>
-
-          <button
-            onClick={handleExecuteCommand}
-            disabled={loading || !host}
-            className="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 focus:ring-offset-slate-800"
-            aria-label="Execute Redis command"
-          >
-            {loading ? (
-              <span className="flex items-center justify-center gap-2">
-                <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true"></span>
-                Executing...
-              </span>
-            ) : (
-              'Execute Command'
-            )}
+    <div className="max-w-6xl mx-auto">
+      {/* Header */}
+      <div className="mb-6 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <button onClick={onBack} className="text-white hover:text-blue-400 transition-colors">
+            ← Back
           </button>
+          <h1 className="text-3xl font-bold text-white">Redis Client</h1>
         </div>
-
-        {/* Results */}
-        {(result || error) && (
-          <div className="mt-6 bg-slate-900 rounded-lg p-4 border border-slate-600" role="region" aria-live="polite">
-            <div className="flex items-center gap-2 mb-2">
-              {error ? (
-                <span className="text-red-400 text-xl" aria-hidden="true">✕</span>
-              ) : (
-                <span className="text-green-400 text-xl" aria-hidden="true">✓</span>
-              )}
-              <h3 className="text-sm font-semibold text-slate-300">
-                {error ? 'Error' : 'Success'}
-              </h3>
-            </div>
-            <pre className={`text-sm whitespace-pre-wrap font-mono ${
-              error ? 'text-red-400' : 'text-green-400'
-            }`}>
-              {error || result}
-            </pre>
+        {status !== 'idle' && (
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${statusDot}`} />
+            <span className="text-sm text-slate-300">
+              {status === 'connected'
+                ? `${host}:${port}${version ? ` (${version})` : ''}`
+                : status === 'connecting'
+                ? 'Connecting…'
+                : 'Disconnected'}
+            </span>
           </div>
         )}
+      </div>
 
-        {/* Help Section */}
-        <div className="mt-6 pt-6 border-t border-slate-600">
-          <h3 className="text-sm font-semibold text-slate-300 mb-2">About Redis</h3>
-          <p className="text-xs text-slate-400 leading-relaxed mb-3">
-            Redis is an in-memory data structure store used as a database, cache, and message broker.
-            This interface uses RESP (Redis Serialization Protocol) to communicate with Redis servers.
-            Port 6379 is the default. Common commands: PING, SET, GET, DEL, EXISTS, KEYS, INCR, EXPIRE.
-          </p>
-          <p className="text-xs text-slate-500 italic">
-            <kbd className="px-2 py-1 bg-slate-700 rounded text-slate-300">Enter</kbd> to submit forms
-          </p>
+      <div className="grid lg:grid-cols-4 gap-6">
+        {/* Connection panel */}
+        <div className="lg:col-span-1">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
+            <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Host</label>
+                <input
+                  type="text"
+                  value={host}
+                  onChange={(e) => setHost(e.target.value)}
+                  placeholder="redis.example.com"
+                  disabled={status === 'connected' || status === 'connecting'}
+                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Port</label>
+                <input
+                  type="number"
+                  value={port}
+                  onChange={(e) => setPort(e.target.value)}
+                  disabled={status === 'connected' || status === 'connecting'}
+                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">
+                  Password <span className="text-xs text-slate-400">(optional)</span>
+                </label>
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={status === 'connected' || status === 'connecting'}
+                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">
+                  Database <span className="text-xs text-slate-400">(0–15)</span>
+                </label>
+                <input
+                  type="number"
+                  value={database}
+                  onChange={(e) => setDatabase(e.target.value)}
+                  min="0"
+                  max="15"
+                  disabled={status === 'connected' || status === 'connecting'}
+                  className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
+                />
+              </div>
+
+              {statusMsg && <p className="text-sm text-red-400">{statusMsg}</p>}
+
+              {status !== 'connected' ? (
+                <button
+                  onClick={handleConnect}
+                  disabled={status === 'connecting' || !host}
+                  className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {status === 'connecting' ? 'Connecting…' : 'Connect'}
+                </button>
+              ) : (
+                <button
+                  onClick={handleDisconnect}
+                  className="w-full bg-slate-600 hover:bg-slate-500 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                >
+                  Disconnect
+                </button>
+              )}
+
+              <div className="pt-4 border-t border-slate-600 space-y-1 text-xs text-slate-400">
+                <p>Persistent WebSocket connection.</p>
+                <p>↑↓ arrow keys for command history.</p>
+                <p>Examples: PING · SET k v · GET k · KEYS * · INFO server</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* REPL */}
+        <div className="lg:col-span-3">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-4 flex flex-col h-[560px]">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-white">REPL</h2>
+              <button
+                onClick={() => setHistory([])}
+                className="text-sm text-slate-400 hover:text-white transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+
+            {/* Output */}
+            <div
+              ref={outputRef}
+              className="flex-1 overflow-y-auto font-mono text-sm bg-black rounded p-3 mb-3 space-y-0.5"
+            >
+              {history.length === 0 && (
+                <p className="text-slate-500 italic">Connect to a Redis server to start.</p>
+              )}
+              {history.map((entry, i) => (
+                <div key={i} className={
+                  entry.type === 'command'
+                    ? 'text-yellow-300'
+                    : entry.type === 'response'
+                    ? 'text-green-400 whitespace-pre-wrap'
+                    : entry.type === 'error'
+                    ? 'text-red-400'
+                    : 'text-slate-400'
+                }>
+                  {entry.type === 'command' ? `> ${entry.text}` : entry.text}
+                </div>
+              ))}
+            </div>
+
+            {/* Input */}
+            <div className="flex gap-2">
+              <span className="text-yellow-300 font-mono text-sm self-center">{'>'}</span>
+              <input
+                ref={inputRef}
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder={status === 'connected' ? 'PING' : 'Connect first…'}
+                disabled={status !== 'connected'}
+                className="flex-1 bg-black border border-slate-600 rounded px-3 py-2 text-white font-mono text-sm placeholder-slate-600 focus:outline-none focus:ring-1 focus:ring-yellow-500 disabled:opacity-40"
+              />
+              <button
+                onClick={sendCommand}
+                disabled={status !== 'connected' || !input.trim()}
+                className="bg-yellow-600 hover:bg-yellow-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed text-sm"
+              >
+                Send
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

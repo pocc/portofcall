@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+export { handleSSHTerminal } from './ssh2-impl';
 
 /**
  * SSH Authentication Methods

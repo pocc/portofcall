@@ -250,6 +250,110 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
 }
 
 /**
+ * Handle Memcached interactive WebSocket session
+ * GET /api/memcached/session?host=...&port=...
+ *
+ * WebSocket message protocol:
+ *   Browser → Worker: JSON { type: 'command', command: string }  (raw text command)
+ *   Worker → Browser: JSON { type: 'connected', version: string }
+ *                          { type: 'response', response: string, command: string }
+ *                          { type: 'error', message: string }
+ */
+export async function handleMemcachedSession(request: Request): Promise<Response> {
+  if (request.headers.get('Upgrade') !== 'websocket') {
+    return new Response('WebSocket upgrade required', { status: 426 });
+  }
+
+  const url = new URL(request.url);
+  const host = url.searchParams.get('host') || '';
+  const port = parseInt(url.searchParams.get('port') || '11211');
+
+  if (!host) {
+    return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+    }), { status: 403 });
+  }
+
+  const pair = new WebSocketPair();
+  const [client, server] = Object.values(pair);
+  server.accept();
+
+  (async () => {
+    try {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      // Get version to confirm connectivity
+      await writer.write(encoder.encode('version\r\n'));
+      const versionResp = await readMemcachedResponse(reader, 5000);
+      const versionMatch = versionResp.match(/^VERSION (.+)\r\n$/);
+      const version = versionMatch ? versionMatch[1] : 'unknown';
+
+      server.send(JSON.stringify({ type: 'connected', version, host, port }));
+
+      // Handle incoming commands
+      server.addEventListener('message', async (event) => {
+        try {
+          const msg = JSON.parse(event.data as string) as { type: string; command?: string };
+          if (msg.type === 'command' && msg.command) {
+            const trimmed = msg.command.trim();
+            const parts = trimmed.split(/\s+/);
+            const cmd = parts[0].toLowerCase();
+            const storageCommands = ['set', 'add', 'replace', 'append', 'prepend', 'cas'];
+
+            if (storageCommands.includes(cmd)) {
+              if (parts.length < 5) {
+                server.send(JSON.stringify({
+                  type: 'error',
+                  message: `Storage format: ${cmd} <key> <flags> <exptime> <value>`,
+                }));
+                return;
+              }
+              const key = parts[1];
+              const flags = parts[2];
+              const exptime = parts[3];
+              const dataValue = parts.slice(4).join(' ');
+              const dataBytes = encoder.encode(dataValue);
+              const header = `${cmd} ${key} ${flags} ${exptime} ${dataBytes.length}\r\n`;
+              await writer.write(encoder.encode(header));
+              await writer.write(encoder.encode(dataValue + '\r\n'));
+            } else {
+              await writer.write(encoder.encode(trimmed + '\r\n'));
+            }
+
+            const response = await readMemcachedResponse(reader, 30000);
+            server.send(JSON.stringify({
+              type: 'response',
+              response: response.trimEnd(),
+              command: trimmed,
+            }));
+          }
+        } catch (e) {
+          server.send(JSON.stringify({ type: 'error', message: String(e) }));
+        }
+      });
+
+      server.addEventListener('close', () => {
+        socket.close().catch(() => {});
+      });
+    } catch (e) {
+      server.send(JSON.stringify({ type: 'error', message: String(e) }));
+      server.close();
+    }
+  })();
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+/**
  * Handle Memcached stats retrieval
  * POST /api/memcached/stats
  */

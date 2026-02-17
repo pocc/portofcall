@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
+import { Terminal } from '@xterm/xterm';
+import { FitAddon } from '@xterm/addon-fit';
+import '@xterm/xterm/css/xterm.css';
 
 interface SSHClientProps {
   onBack: () => void;
 }
 
 type AuthMethod = 'password' | 'privateKey';
+type Status = 'idle' | 'connecting' | 'connected' | 'disconnected';
 
 export default function SSHClient({ onBack }: SSHClientProps) {
   const [host, setHost] = useState('');
@@ -14,249 +18,233 @@ export default function SSHClient({ onBack }: SSHClientProps) {
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
-  const [connected, setConnected] = useState(false);
-  const [command, setCommand] = useState('');
-  const [terminal, setTerminal] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const terminalRef = useRef<HTMLDivElement>(null);
+  const [status, setStatus] = useState<Status>('idle');
+  const [statusMsg, setStatusMsg] = useState('');
 
+  const termDivRef = useRef<HTMLDivElement>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+
+  // Initialise xterm when component mounts
   useEffect(() => {
-    // Auto-scroll terminal to bottom
-    if (terminalRef.current) {
-      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
-    }
-  }, [terminal]);
+    if (!termDivRef.current) return;
 
-  const addToTerminal = (text: string, type: 'input' | 'output' | 'error' | 'info' = 'output') => {
-    const prefix = {
-      input: '$ ',
-      output: '',
-      error: '❌ ',
-      info: '💡 ',
-    }[type];
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      theme: {
+        background: '#000000',
+        foreground: '#d4d4d4',
+        cursor: '#ffffff',
+      },
+    });
+    const fit = new FitAddon();
+    term.loadAddon(fit);
+    term.open(termDivRef.current);
+    fit.fit();
 
-    setTerminal(prev => [...prev, `${prefix}${text}`]);
-  };
+    term.writeln('\x1b[1;32mSSH Terminal\x1b[0m — connect to a server to start a session.');
 
-  const handleConnect = async () => {
+    termRef.current = term;
+    fitRef.current = fit;
+
+    const handleResize = () => fit.fit();
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      term.dispose();
+    };
+  }, []);
+
+  const handleConnect = () => {
     if (!host || !username) {
-      addToTerminal('Error: Host and username are required', 'error');
+      setStatusMsg('Host and username are required.');
       return;
     }
-
     if (authMethod === 'password' && !password) {
-      addToTerminal('Error: Password is required', 'error');
+      setStatusMsg('Password is required.');
       return;
     }
-
     if (authMethod === 'privateKey' && !privateKey) {
-      addToTerminal('Error: Private key is required', 'error');
+      setStatusMsg('Private key is required.');
       return;
     }
 
-    setLoading(true);
-    const authDisplay = authMethod === 'password' ? 'password' : 'private key';
-    addToTerminal(`Connecting to ${username}@${host}:${port} using ${authDisplay}...`, 'info');
+    setStatus('connecting');
+    setStatusMsg('');
 
-    try {
-      // Call Cloudflare Worker API
-      const requestBody = {
-        host,
-        port: parseInt(port),
-        username,
-        authMethod,
-        ...(authMethod === 'password' ? { password } : {}),
-        ...(authMethod === 'privateKey' ? {
-          privateKey,
-          ...(passphrase ? { passphrase } : {})
-        } : {}),
-      };
+    const params = new URLSearchParams({
+      host,
+      port,
+      username,
+      authMethod,
+      ...(authMethod === 'password' ? { password } : { privateKey }),
+      ...(passphrase ? { passphrase } : {}),
+    });
 
-      const response = await fetch('/api/ssh/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      });
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/api/ssh/terminal?${params}`);
+    ws.binaryType = 'arraybuffer';
+    wsRef.current = ws;
 
-      const data = await response.json() as { hostname?: string; error?: string };
+    const term = termRef.current!;
 
-      if (response.ok) {
-        setConnected(true);
-        addToTerminal(`Connected to ${host}`, 'info');
-        addToTerminal(`Welcome to ${data.hostname || host}!`, 'output');
-        addToTerminal('Type commands below. Use Ctrl+C to cancel running commands.', 'info');
-      } else {
-        addToTerminal(`Connection failed: ${data.error}`, 'error');
-      }
-    } catch (error) {
-      addToTerminal(
-        `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'error'
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+    ws.onopen = () => {
+      term.writeln('\x1b[90mWebSocket open — performing SSH handshake…\x1b[0m');
+    };
 
-  const handleExecuteCommand = async () => {
-    if (!command.trim()) return;
-
-    const cmd = command.trim();
-    addToTerminal(cmd, 'input');
-    setCommand('');
-    setLoading(true);
-
-    try {
-      const response = await fetch('/api/ssh/execute', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ command: cmd }),
-      });
-
-      const data = await response.json() as { stdout?: string; stderr?: string; error?: string };
-
-      if (response.ok) {
-        if (data.stdout) {
-          data.stdout.split('\n').forEach((line: string) => {
-            if (line.trim()) addToTerminal(line, 'output');
-          });
-        }
-        if (data.stderr) {
-          data.stderr.split('\n').forEach((line: string) => {
-            if (line.trim()) addToTerminal(line, 'error');
-          });
-        }
-        if (!data.stdout && !data.stderr) {
-          addToTerminal('(command executed successfully)', 'info');
+    ws.onmessage = (event) => {
+      if (typeof event.data === 'string') {
+        // Control message (JSON)
+        try {
+          const msg = JSON.parse(event.data) as { type: string; message?: string };
+          if (msg.type === 'info') {
+            term.writeln(`\x1b[90m${msg.message}\x1b[0m`);
+          } else if (msg.type === 'error') {
+            term.writeln(`\x1b[1;31m✗ ${msg.message}\x1b[0m`);
+            setStatus('disconnected');
+            setStatusMsg(msg.message ?? 'Error');
+          } else if (msg.type === 'connected') {
+            setStatus('connected');
+            setStatusMsg('');
+            term.writeln('\x1b[1;32m✓ Connected\x1b[0m\r\n');
+            // Wire up user input after connection
+            term.onData((data) => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(data);
+              }
+            });
+          } else if (msg.type === 'disconnected') {
+            setStatus('disconnected');
+            term.writeln('\r\n\x1b[90m[session closed]\x1b[0m');
+          }
+        } catch {
+          // Not JSON — treat as terminal output
+          term.write(event.data);
         }
       } else {
-        addToTerminal(`Error: ${data.error}`, 'error');
+        // Binary — raw terminal bytes (ANSI sequences etc.)
+        term.write(new Uint8Array(event.data as ArrayBuffer));
       }
-    } catch (error) {
-      addToTerminal(
-        `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        'error'
-      );
-    } finally {
-      setLoading(false);
-    }
+    };
+
+    ws.onerror = () => {
+      term.writeln('\x1b[1;31m✗ WebSocket error\x1b[0m');
+      setStatus('disconnected');
+    };
+
+    ws.onclose = (event) => {
+      if (status !== 'disconnected') {
+        term.writeln(`\r\n\x1b[90m[closed: ${event.reason || event.code}]\x1b[0m`);
+        setStatus('disconnected');
+      }
+      wsRef.current = null;
+    };
   };
 
-  const handleDisconnect = async () => {
-    try {
-      await fetch('/api/ssh/disconnect', { method: 'POST' });
-    } catch (error) {
-      // Ignore errors on disconnect
-    }
-    setConnected(false);
-    setTerminal([]);
-    addToTerminal('Disconnected from server', 'info');
+  const handleDisconnect = () => {
+    wsRef.current?.close(1000, 'user disconnect');
+    wsRef.current = null;
+    setStatus('disconnected');
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleExecuteCommand();
-    }
-  };
+  const statusDot =
+    status === 'connected'
+      ? 'bg-green-400 animate-pulse'
+      : status === 'connecting'
+      ? 'bg-yellow-400 animate-pulse'
+      : 'bg-slate-500';
 
   return (
     <div className="max-w-6xl mx-auto">
       {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <button
-            onClick={onBack}
-            className="text-white hover:text-blue-400 transition-colors"
-          >
+          <button onClick={onBack} className="text-white hover:text-blue-400 transition-colors">
             ← Back
           </button>
           <h1 className="text-3xl font-bold text-white">SSH Client</h1>
         </div>
-        {connected && (
+        {status !== 'idle' && (
           <div className="flex items-center gap-2">
-            <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
-            <span className="text-green-400 text-sm">
-              Connected to {host}
+            <div className={`w-2 h-2 rounded-full ${statusDot}`} />
+            <span className="text-sm text-slate-300">
+              {status === 'connected'
+                ? `${username}@${host}`
+                : status === 'connecting'
+                ? 'Connecting…'
+                : 'Disconnected'}
             </span>
           </div>
         )}
       </div>
 
       <div className="grid lg:grid-cols-4 gap-6">
-        {/* Connection Panel */}
+        {/* Connection panel */}
         <div className="lg:col-span-1">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
             <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Host
-                </label>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
-                  placeholder="ssh.example.com"
-                  disabled={connected}
+                  placeholder="192.168.1.1"
+                  disabled={status === 'connected' || status === 'connecting'}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Port
-                </label>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Port</label>
                 <input
                   type="number"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
-                  disabled={connected}
+                  disabled={status === 'connected' || status === 'connecting'}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Username
-                </label>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Username</label>
                 <input
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="username"
-                  disabled={connected}
+                  placeholder="root"
+                  disabled={status === 'connected' || status === 'connecting'}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
-                  Authentication Method
-                </label>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Auth method</label>
                 <select
                   value={authMethod}
                   onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
-                  disabled={connected}
+                  disabled={status === 'connected' || status === 'connecting'}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 >
                   <option value="password">Password</option>
-                  <option value="privateKey">Private Key (Ed25519/RSA/ECDSA)</option>
+                  <option value="privateKey">Private key (Ed25519)</option>
                 </select>
               </div>
 
               {authMethod === 'password' ? (
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1">
-                    Password
-                  </label>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Password</label>
                   <input
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    placeholder="password"
-                    disabled={connected}
+                    disabled={status === 'connected' || status === 'connecting'}
                     className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                   />
                 </div>
@@ -264,63 +252,59 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                 <>
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">
-                      Private Key
-                      <span className="text-xs text-slate-400 ml-2">
-                        (PEM format)
-                      </span>
+                      Private key
+                      <span className="text-xs text-slate-400 ml-1">(OpenSSH PEM, Ed25519)</span>
                     </label>
                     <textarea
                       value={privateKey}
                       onChange={(e) => setPrivateKey(e.target.value)}
-                      placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
-                      disabled={connected}
+                      placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----'}
+                      disabled={status === 'connected' || status === 'connecting'}
                       rows={6}
                       className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 font-mono text-xs resize-none"
                     />
                     <input
                       type="file"
-                      accept=".pem,.key,.pub"
+                      accept=".pem,.key"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) {
                           const reader = new FileReader();
-                          reader.onload = (event) => {
-                            setPrivateKey(event.target?.result as string);
-                          };
+                          reader.onload = (ev) => setPrivateKey(ev.target?.result as string);
                           reader.readAsText(file);
                         }
                       }}
-                      disabled={connected}
-                      className="mt-2 text-xs text-slate-400 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-slate-600 file:text-white hover:file:bg-slate-500 disabled:opacity-50"
+                      disabled={status === 'connected' || status === 'connecting'}
+                      className="mt-2 text-xs text-slate-400 file:mr-3 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:font-semibold file:bg-slate-600 file:text-white hover:file:bg-slate-500 disabled:opacity-50"
                     />
                   </div>
-
                   <div>
                     <label className="block text-sm font-medium text-slate-300 mb-1">
-                      Passphrase
-                      <span className="text-xs text-slate-400 ml-2">
-                        (if key is encrypted)
-                      </span>
+                      Passphrase <span className="text-xs text-slate-400">(if encrypted)</span>
                     </label>
                     <input
                       type="password"
                       value={passphrase}
                       onChange={(e) => setPassphrase(e.target.value)}
-                      placeholder="passphrase (optional)"
-                      disabled={connected}
+                      placeholder="optional"
+                      disabled={status === 'connected' || status === 'connecting'}
                       className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                     />
                   </div>
                 </>
               )}
 
-              {!connected ? (
+              {statusMsg && (
+                <p className="text-sm text-red-400">{statusMsg}</p>
+              )}
+
+              {status !== 'connected' ? (
                 <button
                   onClick={handleConnect}
-                  disabled={loading}
+                  disabled={status === 'connecting'}
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {loading ? 'Connecting...' : 'Connect'}
+                  {status === 'connecting' ? 'Connecting…' : 'Connect'}
                 </button>
               ) : (
                 <button
@@ -330,113 +314,29 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                   Disconnect
                 </button>
               )}
-            </div>
 
-            {connected && (
-              <div className="mt-6 pt-6 border-t border-slate-600">
-                <h3 className="text-sm font-semibold text-slate-300 mb-2">
-                  Quick Commands
-                </h3>
-                <div className="space-y-2">
-                  {['pwd', 'ls -la', 'whoami', 'uname -a'].map((cmd) => (
-                    <button
-                      key={cmd}
-                      onClick={() => {
-                        setCommand(cmd);
-                        setTimeout(() => {
-                          handleExecuteCommand();
-                        }, 100);
-                      }}
-                      className="w-full text-left text-sm bg-slate-700 hover:bg-slate-600 text-slate-300 py-2 px-3 rounded transition-colors"
-                    >
-                      {cmd}
-                    </button>
-                  ))}
-                </div>
+              <div className="pt-4 border-t border-slate-600 space-y-1 text-xs text-slate-400">
+                <p>Supports Ed25519 private keys.</p>
+                <p>RSA/ECDSA keys: convert with <code className="font-mono">ssh-keygen -t ed25519</code>.</p>
               </div>
-            )}
+            </div>
           </div>
         </div>
 
         {/* Terminal */}
         <div className="lg:col-span-3">
-          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold text-white">Terminal</h2>
-              {connected && (
-                <button
-                  onClick={() => setTerminal([])}
-                  className="text-sm text-slate-400 hover:text-white transition-colors"
-                >
-                  Clear
-                </button>
-              )}
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-white">Terminal</h2>
+              <button
+                onClick={() => termRef.current?.clear()}
+                className="text-sm text-slate-400 hover:text-white transition-colors"
+              >
+                Clear
+              </button>
             </div>
-
-            {/* Terminal Output */}
-            <div
-              ref={terminalRef}
-              className="bg-black rounded-lg p-4 h-96 overflow-y-auto font-mono text-sm mb-4"
-            >
-              {terminal.length === 0 ? (
-                <div className="text-green-400">
-                  {connected
-                    ? 'Ready. Type a command below.'
-                    : 'Connect to start a session...'}
-                </div>
-              ) : (
-                terminal.map((line, idx) => {
-                  const isInput = line.startsWith('$ ');
-                  const isError = line.startsWith('❌');
-                  const isInfo = line.startsWith('💡');
-
-                  return (
-                    <div
-                      key={idx}
-                      className={`mb-1 ${
-                        isInput
-                          ? 'text-green-400 font-bold'
-                          : isError
-                          ? 'text-red-400'
-                          : isInfo
-                          ? 'text-blue-400'
-                          : 'text-gray-300'
-                      }`}
-                    >
-                      {line}
-                    </div>
-                  );
-                })
-              )}
-            </div>
-
-            {/* Command Input */}
-            {connected && (
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={command}
-                  onChange={(e) => setCommand(e.target.value)}
-                  onKeyPress={handleKeyPress}
-                  placeholder="Enter command..."
-                  disabled={loading}
-                  className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-50"
-                />
-                <button
-                  onClick={handleExecuteCommand}
-                  disabled={loading || !command.trim()}
-                  className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {loading ? 'Running...' : 'Execute'}
-                </button>
-              </div>
-            )}
-
-            {!connected && (
-              <div className="text-center py-8 text-slate-500">
-                Connect to an SSH server to execute commands
-              </div>
-            )}
+            {/* xterm.js mounts here — give it a fixed height */}
+            <div ref={termDivRef} className="h-[480px] rounded overflow-hidden" />
           </div>
         </div>
       </div>

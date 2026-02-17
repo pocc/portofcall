@@ -19,7 +19,7 @@ import {
   handleFTPMkdir,
   handleFTPRename,
 } from './ftp';
-import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect } from './ssh';
+import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect, handleSSHTerminal } from './ssh';
 import {
   handleSFTPConnect,
   handleSFTPList,
@@ -33,17 +33,18 @@ import { handleTelnetConnect, handleTelnetWebSocket } from './telnet';
 import { handleSMTPConnect, handleSMTPSend } from './smtp';
 import { handleSubmissionConnect, handleSubmissionSend } from './submission';
 import { handlePOP3Connect, handlePOP3List, handlePOP3Retrieve } from './pop3';
-import { handleIMAPConnect, handleIMAPList, handleIMAPSelect } from './imap';
+import { handleIMAPConnect, handleIMAPList, handleIMAPSelect, handleIMAPSession } from './imap';
 import { handleMySQLConnect, handleMySQLQuery } from './mysql';
 import { handlePostgreSQLConnect } from './postgres';
 import { handleOracleConnect } from './oracle';
 import { handleMaxDBConnect } from './maxdb';
-import { handleRedisConnect, handleRedisCommand } from './redis';
+import { handleRedisConnect, handleRedisCommand, handleRedisSession } from './redis';
 import { handleMQTTConnect } from './mqtt';
 import { handleLDAPConnect } from './ldap';
 import { handleLDAPSConnect, handleLDAPSSearch } from './ldaps';
 import { handleSMBConnect } from './smb';
 import { handleEchoTest, handleEchoWebSocket } from './echo';
+import { handleTcpSend } from './tcp';
 import { handleActiveUsersTest } from './activeusers';
 import { handleWhoisLookup } from './whois';
 import { handleSyslogSend } from './syslog';
@@ -58,7 +59,7 @@ import { handleGeminiFetch } from './gemini';
 import { handleGopherFetch } from './gopher';
 import { handleIRCConnect, handleIRCWebSocket } from './irc';
 import { handleIRCSConnect, handleIRCSWebSocket } from './ircs';
-import { handleMemcachedConnect, handleMemcachedCommand, handleMemcachedStats } from './memcached';
+import { handleMemcachedConnect, handleMemcachedCommand, handleMemcachedStats, handleMemcachedSession } from './memcached';
 import { handleDNSQuery } from './dns';
 import { handleNNTPConnect, handleNNTPGroup, handleNNTPArticle } from './nntp';
 import { handleStompConnect, handleStompSend } from './stomp';
@@ -268,6 +269,11 @@ export default {
       return handleTcpPing(request);
     }
 
+    // Raw TCP send/receive
+    if (url.pathname === '/api/tcp/send') {
+      return handleTcpSend(request);
+    }
+
     // ECHO API endpoints
     if (url.pathname === '/api/echo/test') {
       return handleEchoTest(request);
@@ -383,6 +389,10 @@ export default {
       return handleMemcachedStats(request);
     }
 
+    if (url.pathname === '/api/memcached/session') {
+      return handleMemcachedSession(request);
+    }
+
     // Modbus TCP API endpoints
     if (url.pathname === '/api/modbus/connect') {
       return handleModbusConnect(request);
@@ -471,6 +481,10 @@ export default {
       return handleSSHDisconnect(request);
     }
 
+    if (url.pathname === '/api/ssh/terminal') {
+      return handleSSHTerminal(request);
+    }
+
     // SFTP API endpoints
     if (url.pathname === '/api/sftp/connect') {
       return handleSFTPConnect(request);
@@ -554,6 +568,10 @@ export default {
       return handleIMAPSelect(request);
     }
 
+    if (url.pathname === '/api/imap/session') {
+      return handleIMAPSession(request);
+    }
+
     // MySQL API endpoints
     if (url.pathname === '/api/mysql/connect') {
       return handleMySQLConnect(request);
@@ -585,6 +603,10 @@ export default {
 
     if (url.pathname === '/api/redis/command') {
       return handleRedisCommand(request);
+    }
+
+    if (url.pathname === '/api/redis/session') {
+      return handleRedisSession(request);
     }
 
     // MQTT API endpoints

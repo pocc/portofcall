@@ -5,7 +5,9 @@ import ThemeToggle from './components/ThemeToggle';
 import { useTheme } from './contexts/ThemeContext';
 
 // Lazy load all protocol clients for better performance
+const TcpClient = lazy(() => import('./components/TcpClient'));
 const EchoClient = lazy(() => import('./components/EchoClient'));
+const ActiveUsersClient = lazy(() => import('./components/ActiveUsersClient'));
 const WhoisClient = lazy(() => import('./components/WhoisClient'));
 const SyslogClient = lazy(() => import('./components/SyslogClient'));
 const Socks4Client = lazy(() => import('./components/Socks4Client'));
@@ -130,9 +132,11 @@ const DNP3Client = lazy(() => import('./components/DNP3Client'));
 const STUNClient = lazy(() => import('./components/STUNClient'));
 const FluentdClient = lazy(() => import('./components/FluentdClient'));
 const RexecClient = lazy(() => import('./components/RexecClient'));
+const RSHClient = lazy(() => import('./components/RSHClient'));
 const FIXClient = lazy(() => import('./components/FIXClient'));
 const AerospikeClient = lazy(() => import('./components/AerospikeClient'));
 const EPMDClient = lazy(() => import('./components/EPMDClient'));
+const EPPClient = lazy(() => import('./components/EPPClient'));
 const TarantoolClient = lazy(() => import('./components/TarantoolClient'));
 const VaultClient = lazy(() => import('./components/VaultClient'));
 const SolrClient = lazy(() => import('./components/SolrClient'));
@@ -189,8 +193,32 @@ const LDPClient = lazy(() => import('./components/LDPClient'));
 const FirebirdClient = lazy(() => import('./components/FirebirdClient'));
 const HazelcastClient = lazy(() => import('./components/HazelcastClient'));
 const IgniteClient = lazy(() => import('./components/IgniteClient'));
+const BeatsClient = lazy(() => import('./components/BeatsClient'));
+const CoAPClient = lazy(() => import('./components/CoAPClient'));
+const MSRPClient = lazy(() => import('./components/MSRPClient'));
+const RadsecClient = lazy(() => import('./components/RadsecClient'));
+const SIPSClient = lazy(() => import('./components/SIPSClient'));
+const GaduGaduClient = lazy(() => import('./components/GaduGaduClient'));
+const NapsterClient = lazy(() => import('./components/NapsterClient'));
+const VentriloClient = lazy(() => import('./components/VentriloClient'));
+const OSCARClient = lazy(() => import('./components/OSCARClient'));
+const YMSGClient = lazy(() => import('./components/YMSGClient'));
+const MSNClient = lazy(() => import('./components/MSNClient'));
+const JabberComponentClient = lazy(() => import('./components/JabberComponentClient'));
+const XMPPS2SClient = lazy(() => import('./components/XMPPS2SClient'));
+const InformixClient = lazy(() => import('./components/InformixClient'));
+const SybaseClient = lazy(() => import('./components/SybaseClient'));
+const SHOUTcastClient = lazy(() => import('./components/SHOUTcastClient'));
+const RealAudioClient = lazy(() => import('./components/RealAudioClient'));
+const MMSClient = lazy(() => import('./components/MMSClient'));
+const MumbleClient = lazy(() => import('./components/MumbleClient'));
+const IKEClient = lazy(() => import('./components/IKEClient'));
+const L2TPClient = lazy(() => import('./components/L2TPClient'));
+const TURNClient = lazy(() => import('./components/TURNClient'));
+const KubernetesClient = lazy(() => import('./components/KubernetesClient'));
 type Protocol =
   | 'echo'
+  | 'activeusers'
   | 'whois'
   | 'syslog'
   | 'socks4'
@@ -315,9 +343,11 @@ type Protocol =
   | 'fluentd'
   | 'stun'
   | 'rexec'
+  | 'rsh'
   | 'fix'
   | 'aerospike'
   | 'epmd'
+  | 'epp'
   | 'tarantool'
   | 'vault'
   | 'solr'
@@ -375,6 +405,30 @@ type Protocol =
   | 'firebird'
   | 'hazelcast'
   | 'ignite'
+  | 'beats'
+  | 'coap'
+  | 'msrp'
+  | 'radsec'
+  | 'sips'
+  | 'gadugadu'
+  | 'napster'
+  | 'ventrilo'
+  | 'oscar'
+  | 'ymsg'
+  | 'msn'
+  | 'jabber-component'
+  | 'xmpp-s2s'
+  | 'informix'
+  | 'sybase'
+  | 'shoutcast'
+  | 'realaudio'
+  | 'mms'
+  | 'mumble'
+  | 'ike'
+  | 'l2tp'
+  | 'turn'
+  | 'kubernetes'
+  | 'tcp'
   | null;
 
 // Loading fallback component
@@ -404,6 +458,8 @@ function App() {
     switch (selectedProtocol) {
       case 'echo':
         return <EchoClient onBack={handleBack} />;
+      case 'activeusers':
+        return <ActiveUsersClient onBack={handleBack} />;
       case 'whois':
         return <WhoisClient onBack={handleBack} />;
       case 'syslog':
@@ -652,12 +708,16 @@ function App() {
         return <STUNClient onBack={handleBack} />;
       case 'rexec':
         return <RexecClient onBack={handleBack} />;
+      case 'rsh':
+        return <RSHClient onBack={handleBack} />;
       case 'fix':
         return <FIXClient onBack={handleBack} />;
       case 'aerospike':
         return <AerospikeClient onBack={handleBack} />;
       case 'epmd':
         return <EPMDClient onBack={handleBack} />;
+      case 'epp':
+        return <EPPClient onBack={handleBack} />;
       case 'tarantool':
         return <TarantoolClient onBack={handleBack} />;
       case 'vault':
@@ -770,6 +830,54 @@ function App() {
         return <CVSClient onBack={handleBack} />;
       case 'amqps':
         return <AMQPSClient onBack={handleBack} />;
+      case 'beats':
+        return <BeatsClient onBack={handleBack} />;
+      case 'coap':
+        return <CoAPClient onBack={handleBack} />;
+      case 'msrp':
+        return <MSRPClient onBack={handleBack} />;
+      case 'radsec':
+        return <RadsecClient onBack={handleBack} />;
+      case 'sips':
+        return <SIPSClient onBack={handleBack} />;
+      case 'gadugadu':
+        return <GaduGaduClient onBack={handleBack} />;
+      case 'napster':
+        return <NapsterClient onBack={handleBack} />;
+      case 'ventrilo':
+        return <VentriloClient onBack={handleBack} />;
+      case 'oscar':
+        return <OSCARClient onBack={handleBack} />;
+      case 'ymsg':
+        return <YMSGClient onBack={handleBack} />;
+      case 'msn':
+        return <MSNClient onBack={handleBack} />;
+      case 'jabber-component':
+        return <JabberComponentClient onBack={handleBack} />;
+      case 'xmpp-s2s':
+        return <XMPPS2SClient onBack={handleBack} />;
+      case 'informix':
+        return <InformixClient onBack={handleBack} />;
+      case 'sybase':
+        return <SybaseClient onBack={handleBack} />;
+      case 'shoutcast':
+        return <SHOUTcastClient onBack={handleBack} />;
+      case 'realaudio':
+        return <RealAudioClient onBack={handleBack} />;
+      case 'mms':
+        return <MMSClient onBack={handleBack} />;
+      case 'mumble':
+        return <MumbleClient onBack={handleBack} />;
+      case 'ike':
+        return <IKEClient onBack={handleBack} />;
+      case 'l2tp':
+        return <L2TPClient onBack={handleBack} />;
+      case 'turn':
+        return <TURNClient onBack={handleBack} />;
+      case 'kubernetes':
+        return <KubernetesClient onBack={handleBack} />;
+      case 'tcp':
+        return <TcpClient onBack={handleBack} />;
       default:
         return <ProtocolSelector onSelect={setSelectedProtocol} />;
     }
@@ -778,7 +886,7 @@ function App() {
   return (
     <div className={`min-h-screen ${theme === 'retro' ? 'retro-screen retro-boot' : 'bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900'}`}>
       <ThemeToggle />
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 pt-14 pb-8">
         <Suspense fallback={<LoadingFallback />}>{renderProtocolClient()}</Suspense>
       </div>
     </div>

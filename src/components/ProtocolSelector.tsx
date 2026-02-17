@@ -6,7 +6,7 @@ type PopularityTier = 'ubiquitous' | 'common' | 'moderate' | 'rare' | 'niche';
 type ProtocolCategory = 'databases' | 'messaging' | 'email' | 'remote' | 'files' | 'web' | 'network' | 'specialty';
 
 interface ProtocolSelectorProps {
-  onSelect: (protocol: 'echo' | 'whois' | 'syslog' | 'socks4' | 'daytime' | 'finger' | 'time' | 'chargen' | 'gemini' | 'ftp' | 'ssh' | 'telnet' | 'smtp' | 'submission' | 'pop3' | 'imap' | 'mysql' | 'postgres' | 'redis' | 'mqtt' | 'ldap' | 'smb' | 'irc' | 'ircs' | 'gopher' | 'memcached' | 'dns' | 'stomp' | 'socks5' | 'modbus' | 'mongodb' | 'graphite' | 'git' | 'zookeeper' | 'amqp' | 'cassandra' | 'kafka' | 'rtsp' | 'rsync' | 'tds' | 'vnc' | 'spice' | 'battlenet' | 'neo4j' | 'rtmp' | 'tacacs' | 'hl7' | 'elasticsearch' | 'ajp' | 'rcon' | 'sourcercon' | 'nntp' | 'rdp' | 'xmpp' | 'nats' | 'jetdirect' | 'fastcgi' | 'diameter' | 'etcd' | 'consul' | 'influxdb' | 'bgp' | 'docker' | 'pptp' | 'dicom' | 'jsonrpc' | '9p' | 'thrift' | 'slp' | 'bittorrent' | 'x11' | 'kerberos' | 'sccp' | 'matrix' | 'cdp' | 'node-inspector' | 'iscsi' | 'websocket' | 'h323' | 'dot' | 'soap' | 'openvpn' | 'dict' | 'sip' | 'qotd' | 'lpd' | 'discard' | 'minecraft' | 'zabbix' | 'ident' | 'oracle-tns' | 'mpd' | 'beanstalkd' | 'clamav' | 'lmtp' | 'managesieve' | 'couchdb' | 'ipp' | 'svn' | 'smpp' | 'teamspeak' | 'radius' | 'nrpe' | 'rlogin' | 's7comm' | 'snpp' | 'rethinkdb' | 'clickhouse' | 'gearman' | 'ethernetip' | 'prometheus' | 'portmapper' | 'relp' | 'adb' | 'dnp3' | 'fluentd' | 'stun' | 'rexec' | 'fix' | 'aerospike' | 'epmd' | 'tarantool' | 'vault' | 'solr' | 'iec104' | 'riak' | 'opentsdb' | 'bitcoin' | 'spamd' | 'nsq' | 'opcua' | 'zmtp' | 'munin' | 'sane' | 'ceph' | 'httpproxy' | 'varnish' | 'fins' | 'couchbase' | 'ami' | 'jdwp' | 'drda' | 'livestatus' | 'dcerpc' | 'nsca' | 'imaps' | 'loki' | 'openflow' | 'pjlink' | 'icecast' | 'meilisearch' | 'haproxy' | 'rmi' | 'nbd' | 'ganglia' | 'netbios' | 'pop3s' | 'smtps' | 'pcep' | 'winrm' | 'uwsgi' | 'torcontrol' | 'gpsd' | 'ldaps' | 'kibana' | 'grafana' | 'rserve' | 'sonic' | 'sentinel' | 'nntps' | 'rabbitmq' | 'cvs' | 'amqps' | 'nomad' | 'ldp-mpls' | 'firebird' | 'hazelcast' | 'ignite') => void;
+  onSelect: (protocol: 'echo' | 'activeusers' | 'whois' | 'syslog' | 'socks4' | 'daytime' | 'finger' | 'time' | 'chargen' | 'gemini' | 'ftp' | 'ftps' | 'ssh' | 'telnet' | 'smtp' | 'submission' | 'pop3' | 'imap' | 'mysql' | 'postgres' | 'redis' | 'mqtt' | 'ldap' | 'smb' | 'irc' | 'ircs' | 'gopher' | 'memcached' | 'dns' | 'stomp' | 'socks5' | 'modbus' | 'mongodb' | 'graphite' | 'git' | 'zookeeper' | 'amqp' | 'cassandra' | 'kafka' | 'rtsp' | 'rsync' | 'tds' | 'vnc' | 'spice' | 'battlenet' | 'neo4j' | 'rtmp' | 'tacacs' | 'hl7' | 'elasticsearch' | 'ajp' | 'rcon' | 'sourcercon' | 'nntp' | 'rdp' | 'xmpp' | 'nats' | 'jetdirect' | 'fastcgi' | 'diameter' | 'etcd' | 'consul' | 'influxdb' | 'bgp' | 'docker' | 'pptp' | 'dicom' | 'jsonrpc' | '9p' | 'thrift' | 'slp' | 'bittorrent' | 'x11' | 'kerberos' | 'sccp' | 'matrix' | 'cdp' | 'node-inspector' | 'iscsi' | 'websocket' | 'h323' | 'dot' | 'soap' | 'openvpn' | 'dict' | 'sip' | 'qotd' | 'lpd' | 'discard' | 'minecraft' | 'zabbix' | 'ident' | 'oracle-tns' | 'mpd' | 'beanstalkd' | 'clamav' | 'lmtp' | 'managesieve' | 'couchdb' | 'ipp' | 'svn' | 'smpp' | 'teamspeak' | 'radius' | 'nrpe' | 'rlogin' | 's7comm' | 'snpp' | 'rethinkdb' | 'clickhouse' | 'gearman' | 'ethernetip' | 'prometheus' | 'portmapper' | 'relp' | 'adb' | 'dnp3' | 'fluentd' | 'stun' | 'rexec' | 'rsh' | 'fix' | 'aerospike' | 'epmd' | 'epp' | 'tarantool' | 'vault' | 'solr' | 'iec104' | 'riak' | 'opentsdb' | 'bitcoin' | 'spamd' | 'nsq' | 'opcua' | 'zmtp' | 'munin' | 'sane' | 'ceph' | 'httpproxy' | 'varnish' | 'fins' | 'couchbase' | 'ami' | 'jdwp' | 'drda' | 'livestatus' | 'dcerpc' | 'nsca' | 'imaps' | 'loki' | 'openflow' | 'pjlink' | 'icecast' | 'meilisearch' | 'haproxy' | 'rmi' | 'nbd' | 'ganglia' | 'netbios' | 'pop3s' | 'smtps' | 'pcep' | 'winrm' | 'uwsgi' | 'torcontrol' | 'gpsd' | 'ldaps' | 'kibana' | 'grafana' | 'rserve' | 'sonic' | 'sentinel' | 'nntps' | 'rabbitmq' | 'cvs' | 'amqps' | 'nomad' | 'ldp-mpls' | 'firebird' | 'hazelcast' | 'ignite' | 'beats' | 'coap' | 'msrp' | 'radsec' | 'sips' | 'gadugadu' | 'napster' | 'ventrilo' | 'oscar' | 'ymsg' | 'msn' | 'jabber-component' | 'xmpp-s2s' | 'informix' | 'sybase' | 'shoutcast' | 'realaudio' | 'mms' | 'mumble' | 'ike' | 'l2tp' | 'turn' | 'kubernetes' | 'tcp') => void;
 }
 
 const popularityConfig: Record<PopularityTier, { width: number; barColor: string; textColor: string; label: string }> = {
@@ -86,7 +86,9 @@ const nonImplementableRFCs: RFCEntry[] = [
 ];
 
 const protocols = [
+  { id: 'tcp' as const, name: 'Raw TCP', description: 'Raw TCP client — connect to any port, send text or hex bytes, inspect the response', port: 0, icon: '🔌', features: ['Banner grabbing', 'Protocol exploration', 'Hex + UTF-8 display', 'Protocol presets'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 1974 },
   { id: 'echo' as const, name: 'ECHO', description: 'ECHO Protocol (RFC 862) - The simplest TCP test protocol', port: 7, icon: '🔊', features: ['Network testing', 'Latency measurement', 'Connectivity verification'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1983 },
+  { id: 'activeusers' as const, name: 'Active Users', description: 'Active Users Protocol (RFC 866) - Reports number of users logged into a system', port: 11, icon: '👥', features: ['System monitoring', 'User count query', 'Internet Standard'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 1983, rfc: '866' },
   { id: 'whois' as const, name: 'WHOIS', description: 'WHOIS Protocol (RFC 3912) - Domain registration information lookup', port: 43, icon: '🔍', features: ['Domain registration info', 'Auto-detect WHOIS server', 'IP/ASN lookup'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'network' as ProtocolCategory , year: 2004 },
   { id: 'syslog' as const, name: 'Syslog', description: 'Syslog Protocol (RFC 5424/3164) - Centralized logging and event forwarding', port: 514, icon: '📝', features: ['8 severity levels', 'RFC 5424 & 3164 formats', 'SIEM integration'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'network' as ProtocolCategory , year: 2001 },
   { id: 'socks4' as const, name: 'SOCKS4', description: 'SOCKS4 Protocol - TCP connection proxying through firewalls', port: 1080, icon: '🔀', features: ['Proxy testing', 'SOCKS4a hostname support', 'SSH tunneling'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'network' as ProtocolCategory , year: 1992 },
@@ -97,13 +99,14 @@ const protocols = [
   { id: 'discard' as const, name: 'Discard', description: 'Discard Protocol (RFC 863) - Silently discards all data sent to it', port: 9, icon: '🗑️', features: ['Fire-and-forget testing', 'Throughput measurement', 'Data sink for debugging'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1983 },
   { id: 'gemini' as const, name: 'Gemini', description: 'Gemini Protocol - Modern privacy-focused alternative to HTTP/HTML', port: 1965, icon: '💎', features: ['TLS mandatory', 'Simple Gemtext markup', 'No tracking/cookies'], status: 'niche' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 2020 },
   { id: 'ftp' as const, name: 'FTP (Passive Mode)', description: 'File Transfer Protocol - Transfer files to/from FTP servers', port: 21, icon: '📁', features: ['Directory listing', 'File upload/download', 'Passive mode support'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'files' as ProtocolCategory , year: 1985 },
-  { id: 'ssh' as const, name: 'SSH', description: 'Secure Shell - Execute commands on remote servers', port: 22, icon: '🔐', features: ['Private key authentication', 'Password authentication', 'Encrypted connection'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'remote' as ProtocolCategory , year: 1995 },
+  { id: 'ftps' as const, name: 'FTPS', description: 'FTPS - FTP over TLS (RFC 4217) - Encrypted file transfer with implicit TLS on port 990', port: 990, icon: '🔒', features: ['Implicit TLS on port 990', 'FEAT/SYST detection', 'TLS feature enumeration'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'files' as ProtocolCategory, year: 2005 },
+  { id: 'ssh' as const, name: 'SSH', description: 'Secure Shell - Execute commands on remote servers', port: 22, icon: '🔐', features: ['Private key authentication', 'Password authentication', 'Encrypted connection'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'remote' as ProtocolCategory , year: 1995, lastUpdated: 2025, implementations: [{name: 'OpenSSH 9.9p2', url: 'https://www.openssh.com/'}] },
   { id: 'telnet' as const, name: 'Telnet', description: 'Telnet Protocol - Unencrypted text-based terminal protocol', port: 23, icon: '📟', features: ['Interactive terminal', 'Command execution', 'WebSocket tunnel'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'remote' as ProtocolCategory , year: 1983 },
   { id: 'smtp' as const, name: 'SMTP', description: 'Simple Mail Transfer Protocol - Send emails via SMTP servers', port: 587, icon: '📧', features: ['Email sending', 'AUTH LOGIN support', 'Multiple ports (25/587/465)'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'email' as ProtocolCategory , year: 1982 },
   { id: 'submission' as const, name: 'Submission', description: 'Message Submission Protocol (RFC 6409) - Authenticated mail submission on port 587 with STARTTLS', port: 587, icon: '📮', features: ['STARTTLS support', 'Authenticated submission', 'AUTH before MAIL FROM', 'RFC 6409 compliance'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'email' as ProtocolCategory , year: 2011 },
   { id: 'pop3' as const, name: 'POP3', description: 'Post Office Protocol v3 - Retrieve emails from mail servers', port: 110, icon: '📬', features: ['Email retrieval', 'Message listing', 'Mailbox management'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'email' as ProtocolCategory , year: 1996 },
   { id: 'imap' as const, name: 'IMAP', description: 'Internet Message Access Protocol - Advanced email management', port: 143, icon: '📮', features: ['Multiple folders', 'Server-side organization', 'Message flags'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'email' as ProtocolCategory , year: 2003 },
-  { id: 'mysql' as const, name: 'MySQL', description: 'MySQL Database - Connectivity testing for MySQL servers', port: 3306, icon: '🗄️', features: ['Server handshake', 'Version detection', 'Connection testing'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory , year: 1995 },
+  { id: 'mysql' as const, name: 'MySQL', description: 'MySQL Database - Connectivity testing for MySQL servers', port: 3306, icon: '🗄️', features: ['Server handshake', 'Version detection', 'Connection testing'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory , year: 1995, lastUpdated: 2025, implementations: [{name: 'MySQL 8.0.41', url: 'https://dev.mysql.com/'}] },
   { id: 'postgres' as const, name: 'PostgreSQL', description: 'PostgreSQL Database - Connectivity testing for PostgreSQL servers', port: 5432, icon: '🐘', features: ['Startup message', 'Authentication check', 'Connection testing'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory , year: 1996 },
   { id: 'redis' as const, name: 'Redis', description: 'Redis In-Memory Store - Key-value store and cache server', port: 6379, icon: '⚡', features: ['RESP protocol', 'Command execution', 'AUTH & database selection'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory , year: 2009 },
   { id: 'mqtt' as const, name: 'MQTT', description: 'MQTT Protocol - Lightweight IoT messaging protocol', port: 1883, icon: '📡', features: ['Publish/subscribe', 'MQTT 3.1.1', 'Username/password auth'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 1999 },
@@ -151,6 +154,7 @@ const protocols = [
   { id: 'influxdb' as const, name: 'InfluxDB', description: 'InfluxDB HTTP API - Purpose-built time-series database for metrics and IoT', port: 8086, icon: '📈', features: ['Health check & version detection', 'Line Protocol data writing', 'Flux query execution'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory , year: 2013 },
   { id: 'bgp' as const, name: 'BGP', description: 'Border Gateway Protocol (RFC 4271) - Internet routing between autonomous systems', port: 179, icon: '🌍', features: ['OPEN handshake & version detection', 'AS number & capability discovery', 'Session establishment check'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory , year: 1989 },
   { id: 'docker' as const, name: 'Docker', description: 'Docker Engine API - HTTP REST API for container management over TCP', port: 2375, icon: '🐳', features: ['Ping connectivity check', 'Version & platform detection', 'Cloudflare protection detection'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'web' as ProtocolCategory , year: 2013 },
+  { id: 'kubernetes' as const, name: 'Kubernetes', description: 'Kubernetes API Server (port 6443) - HTTPS REST API for cluster management and control plane access', port: 6443, icon: '☸️', features: ['Health probe (/healthz)', 'Authenticated API queries', 'Bearer token support'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'web' as ProtocolCategory , year: 2014 },
   { id: 'pptp' as const, name: 'PPTP', description: 'PPTP Protocol (RFC 2637) - Legacy VPN server discovery and fingerprinting', port: 1723, icon: '🔒', features: ['Version & capability detection', 'Hostname & vendor fingerprint', 'Framing/bearer enumeration'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'network' as ProtocolCategory , year: 1996 },
   { id: 'dicom' as const, name: 'DICOM', description: 'DICOM Protocol (ISO 12052) - Medical imaging communication and PACS connectivity', port: 104, icon: '🏥', features: ['A-ASSOCIATE handshake', 'C-ECHO verification (DICOM ping)', 'SOP Class negotiation'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1993 },
   { id: 'jsonrpc' as const, name: 'JSON-RPC', description: 'JSON-RPC 2.0 Protocol - Lightweight RPC for Ethereum, Bitcoin, and custom APIs', port: 8545, icon: '🔗', features: ['Ethereum & Bitcoin RPC', 'Method call with params', 'Batch request support'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'web' as ProtocolCategory , year: 2005 },
@@ -206,9 +210,11 @@ const protocols = [
   { id: 'stun' as const, name: 'STUN', description: 'STUN Protocol (RFC 5389/8489) - NAT traversal for WebRTC, VoIP, and peer-to-peer', port: 3478, icon: '🔀', features: ['Binding Request/Response', 'Public IP discovery', 'Server software detection'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'network' as ProtocolCategory , year: 2003 },
   { id: 'fluentd' as const, name: 'Fluentd', description: 'Fluentd Forward Protocol - Log aggregation with MessagePack-encoded forwarding over TCP', port: 24224, icon: '📊', features: ['Server probe with ack verification', 'Custom log entry forwarding', 'MessagePack binary encoding'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'network' as ProtocolCategory , year: 2011 },
   { id: 'rexec' as const, name: 'Rexec', description: 'BSD Remote Execution (Port 512) - Execute commands on remote Unix hosts with password auth', port: 512, icon: '🖥️', features: ['Command execution with output', 'Password authentication (cleartext)', 'Internet archaeology (pre-SSH)'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'remote' as ProtocolCategory , year: 1983 },
+  { id: 'rsh' as const, name: 'RSH', description: 'BSD Remote Shell (RFC 1282) — execute commands on remote Unix hosts via .rhosts trust', port: 514, icon: '🖥️', features: ['Command execution via .rhosts trust', 'Privileged port detection', 'Internet archaeology (pre-SSH)'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'remote' as ProtocolCategory, year: 1983 },
   { id: 'fix' as const, name: 'FIX', description: 'FIX Protocol (FIX.4.x) - Financial Information eXchange for electronic trading', port: 9878, icon: '💹', features: ['Logon/Logout handshake probe', 'Heartbeat & TestRequest', 'FIX version & CompID detection'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1992 },
   { id: 'aerospike' as const, name: 'Aerospike', description: 'Aerospike Info Protocol - High-performance NoSQL database cluster health and metadata', port: 3000, icon: '🚀', features: ['Build version & edition detection', 'Namespace enumeration', 'Cluster health & statistics'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'databases' as ProtocolCategory , year: 2009 },
   { id: 'epmd' as const, name: 'EPMD', description: 'Erlang Port Mapper Daemon - Node discovery for RabbitMQ, CouchDB, and Elixir clusters', port: 4369, icon: '🐇', features: ['List registered Erlang nodes', 'Node port lookup', 'RabbitMQ/CouchDB cluster discovery'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory , year: 1998 },
+  { id: 'epp' as const, name: 'EPP', description: 'EPP Protocol (RFCs 5730-5734) - Extensible Provisioning Protocol for domain registration', port: 700, icon: '🌐', features: ['Connect & hello handshake', 'Login authentication', 'Domain availability check'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory , year: 2009 },
   { id: 'tarantool' as const, name: 'Tarantool', description: 'Tarantool IPROTO Protocol - High-performance in-memory database with binary wire protocol', port: 3301, icon: '🔵', features: ['128-byte greeting banner detection', 'IPROTO_PING connectivity test', 'Version & instance UUID discovery'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'databases' as ProtocolCategory , year: 2008 },
   { id: 'vault' as const, name: 'Vault', description: 'HashiCorp Vault - Secret management with HTTP API for health, seal status, and system info', port: 8200, icon: '🔐', features: ['Health check & version detection', 'Seal/unseal status monitoring', 'Cluster & replication info'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'web' as ProtocolCategory , year: 2015 },
   { id: 'nomad' as const, name: 'Nomad', description: 'HashiCorp Nomad HTTP API - Workload orchestration and job scheduling for containers and VMs', port: 4646, icon: '🚀', features: ['Agent info & cluster status', 'Job listing & management', 'Node discovery & health'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'web' as ProtocolCategory , year: 2015 },
@@ -265,6 +271,28 @@ const protocols = [
   { id: 'rabbitmq' as const, name: 'RabbitMQ Management', description: 'RabbitMQ Management HTTP API - Message broker health monitoring and queue management', port: 15672, icon: '🐰', features: ['Health check & overview', 'Queue, exchange, channel stats', 'Node metrics & management'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 2007 },
   { id: 'cvs' as const, name: 'CVS pserver', description: 'CVS Password Server - Legacy version control with text-based repository access', port: 2401, icon: '📦', features: ['Repository connection probe', 'Password authentication (scrambled)', '"I LOVE YOU/I HATE YOU" responses'], status: 'active' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'files' as ProtocolCategory , year: 1990 },
   { id: 'amqps' as const, name: 'AMQPS', description: 'AMQP 0-9-1 over TLS - Secure message broker connectivity for RabbitMQ and others', port: 5671, icon: '🔒', features: ['Implicit TLS encryption', 'Broker properties & version', 'Authentication mechanisms'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 2008 },
+  { id: 'beats' as const, name: 'Beats', description: 'Elastic Beats / Lumberjack v2 — binary log shipping protocol for Filebeat and Metricbeat to Logstash', port: 5044, icon: '📊', features: ['Lumberjack v2 WINDOW/DATA/ACK frames', 'Compressed JSON event batches', 'Acknowledgment tracking'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 2014 },
+  { id: 'coap' as const, name: 'CoAP', description: 'Constrained Application Protocol (RFC 7252/8323) — lightweight RESTful protocol for IoT devices', port: 5683, icon: '📡', features: ['GET/POST/PUT/DELETE methods', 'Resource discovery (/.well-known/core)', 'TCP variant (RFC 8323)'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 2014 },
+  { id: 'msrp' as const, name: 'MSRP', description: 'Message Session Relay Protocol (RFC 4975) — SIP-based instant messaging and file transfer', port: 2855, icon: '💬', features: ['SEND request with chunking', 'Transaction ID matching', 'MIME content type support'], status: 'active' as ProtocolStatus, popularity: 'niche' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 2007 },
+  { id: 'radsec' as const, name: 'RadSec', description: 'RADIUS over TLS (RFC 6614) — secure AAA for WPA2-Enterprise, eduroam, and 802.1X', port: 2083, icon: '🔐', features: ['RADIUS over TLS (no shared secret)', 'Access-Accept/Reject detection', 'eduroam / 802.1X use cases'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 2012 },
+  { id: 'sips' as const, name: 'SIPS', description: 'SIP over TLS (RFC 3261) — encrypted VoIP signaling on port 5061', port: 5061, icon: '📞', features: ['OPTIONS capability probe', 'REGISTER auth probe (401 detection)', 'Server & Allow header parsing'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 2002 },
+  { id: 'gadugadu' as const, name: 'Gadu-Gadu', description: 'Gadu-Gadu (GG) — Polish instant messenger with proprietary binary protocol and UIN-based auth', port: 8074, icon: '💬', features: ['GG_WELCOME seed handshake', 'GG32 and SHA-1 password hashing', 'Login status detection'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 2000 },
+  { id: 'napster' as const, name: 'Napster', description: 'Napster/OpenNap — pioneering P2P file sharing protocol (historical/educational)', port: 6699, icon: '🎵', features: ['TCP connectivity test', 'LOGIN command & MOTD', 'Server stats (users, files, GB)'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'files' as ProtocolCategory, year: 1999 },
+  { id: 'ventrilo' as const, name: 'Ventrilo', description: 'Ventrilo — proprietary gaming VoIP with binary status protocol', port: 3784, icon: '🎮', features: ['Server name & version detection', 'User & channel count', 'Uptime reporting'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 2002 },
+  { id: 'oscar' as const, name: 'OSCAR (AIM/ICQ)', description: 'OSCAR — AOL Instant Messenger / ICQ binary protocol using FLAP frames and SNAC messages', port: 5190, icon: '💬', features: ['FLAP frame detection', 'Channel & sequence probe', 'Login server handshake'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 1997 },
+  { id: 'ymsg' as const, name: 'Yahoo Messenger', description: 'YMSG — Yahoo Messenger proprietary binary protocol (versions 9–16)', port: 5050, icon: '💛', features: ['20-byte header detection', 'Service & session ID probe', 'Version negotiation (YMSG9–16)'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 1998 },
+  { id: 'msn' as const, name: 'MSN Messenger', description: 'MSNP — Microsoft Notification Protocol for MSN/Windows Live Messenger', port: 1863, icon: '🦋', features: ['VER version negotiation', 'CVR client info exchange', 'Protocol version detection'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 1999 },
+  { id: 'jabber-component' as const, name: 'Jabber Component', description: 'XEP-0114 Jabber Component Protocol — connect external components (bots, gateways) to XMPP servers', port: 5275, icon: '🔌', features: ['XML stream opening', 'SHA-1 handshake authentication', 'Server domain detection'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 2005 },
+  { id: 'xmpp-s2s' as const, name: 'XMPP S2S', description: 'XMPP Server-to-Server federation (RFC 6120) — inter-domain message routing between XMPP servers', port: 5269, icon: '🌐', features: ['S2S stream opening', 'STARTTLS & Dialback detection', 'Server domain & feature discovery'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'messaging' as ProtocolCategory, year: 2004 },
+  { id: 'informix' as const, name: 'IBM Informix', description: 'IBM Informix Dynamic Server — relational database with proprietary binary wire protocol', port: 1526, icon: '🗄️', features: ['Binary protocol probe', 'Server version detection', 'Connectivity testing'], status: 'active' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'databases' as ProtocolCategory, year: 1985 },
+  { id: 'sybase' as const, name: 'Sybase ASE', description: 'Sybase Adaptive Server Enterprise — TDS-based relational database', port: 5000, icon: '🗄️', features: ['TDS Prelogin packet probe', 'Packet type detection', 'Server presence detection'], status: 'active' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'databases' as ProtocolCategory, year: 1987 },
+  { id: 'shoutcast' as const, name: 'SHOUTcast', description: 'SHOUTcast — Nullsoft internet radio streaming with ICY protocol extensions', port: 8000, icon: '📻', features: ['ICY header detection', 'Station name & genre', 'Bitrate & metadata interval'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 1998 },
+  { id: 'realaudio' as const, name: 'RealAudio/RTSP', description: 'RealNetworks RealAudio/RealVideo — RTSP-based streaming with RealMedia extensions on port 7070', port: 7070, icon: '🎬', features: ['RTSP OPTIONS probe', 'DESCRIBE stream metadata', 'Server version detection'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 1995 },
+  { id: 'mms' as const, name: 'MMS', description: 'Microsoft Media Services — proprietary Windows Media streaming protocol', port: 1755, icon: '🎬', features: ['Binary command probe', 'Server version detection', 'Command code identification'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 1996 },
+  { id: 'mumble' as const, name: 'Mumble', description: 'Mumble — open-source low-latency VoIP using Protocol Buffers over TCP/UDP', port: 64738, icon: '🎙️', features: ['Protobuf version handshake', 'Server version & release', 'OS detection'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'specialty' as ProtocolCategory, year: 2005 },
+  { id: 'ike' as const, name: 'IKE/ISAKMP', description: 'IKE/ISAKMP — IPsec VPN key exchange protocol (RFC 2408/7296)', port: 500, icon: '🔐', features: ['IKEv1/v2 SA probe', 'Exchange type detection', 'Vendor ID enumeration'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 1998 },
+  { id: 'l2tp' as const, name: 'L2TP', description: 'Layer 2 Tunneling Protocol (RFC 2661) — PPP tunneling for VPNs, commonly paired with IPsec', port: 1701, icon: '🔒', features: ['SCCRQ tunnel initiation', 'Peer hostname & vendor detection', 'Protocol version discovery'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 1999 },
+  { id: 'turn' as const, name: 'TURN', description: 'TURN Relay (RFC 8656) — NAT traversal relay for WebRTC and VoIP, extends STUN', port: 3478, icon: '🔄', features: ['Allocate request probe', 'Relay address discovery', 'Realm & auth detection'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'network' as ProtocolCategory, year: 2010 },
 ];
 
 type SortOption = 'popularity' | 'year-asc' | 'year-desc' | 'port-asc' | 'port-desc';
@@ -298,9 +326,14 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
       case 'port-desc':
         return b.port - a.port;
       case 'popularity':
-      default:
-        // Sort by status first (active before deprecated), then by popularity
-        return sortKey(a) - sortKey(b);
+      default: {
+        // Sort by status first (active before deprecated), then by popularity, then by year
+        const keyDiff = sortKey(a) - sortKey(b);
+        if (keyDiff !== 0) return keyDiff;
+        // Within deprecated: sort by year so year-range bands stay contiguous
+        if (a.status === 'deprecated' && b.status === 'deprecated') return a.year - b.year;
+        return 0;
+      }
     }
   });
   const activeCount = protocols.filter(p => p.status !== 'deprecated').length;
@@ -518,12 +551,19 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
       </div>
 
       <div className={isRetro ? 'retro-grid' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6'}>
-        {sortedProtocols.map((protocol, index) => {
+        {(() => {
+          const shownYearRanges = new Set<string>();
+          return sortedProtocols.map((protocol, index) => {
           const prevProtocol = index > 0 ? sortedProtocols[index - 1] : null;
           const isFirstDeprecated = protocol.status === 'deprecated' && prevProtocol?.status !== 'deprecated';
+          const currentRange = getYearRange(protocol.year);
           const yearRangeChanged = protocol.status === 'deprecated' &&
             prevProtocol?.status === 'deprecated' &&
-            getYearRange(protocol.year) !== getYearRange(prevProtocol.year);
+            currentRange !== getYearRange(prevProtocol.year);
+          const shouldShowYearHeader = protocol.status === 'deprecated' &&
+            (isFirstDeprecated || yearRangeChanged) &&
+            !shownYearRanges.has(currentRange);
+          if (shouldShowYearHeader) shownYearRanges.add(currentRange);
 
           return (
           <>
@@ -537,10 +577,10 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
             )}
 
             {/* Year range headers for deprecated protocols */}
-            {(isFirstDeprecated || yearRangeChanged) && (
-              <div key={`year-range-${protocol.year}`} className={`${isRetro ? '' : 'col-span-full'} text-center py-2 ${isRetro ? '' : 'mt-4'}`}>
+            {shouldShowYearHeader && (
+              <div key={`year-range-${currentRange}`} className={`${isRetro ? '' : 'col-span-full'} text-center py-2 ${isRetro ? '' : 'mt-4'}`}>
                 <span className={`text-xs font-semibold ${isRetro ? 'retro-text' : 'text-slate-400'}`}>
-                  {isRetro ? '[ ' : ''}📅 {getYearRange(protocol.year)}{isRetro ? ' ]' : ''}
+                  {isRetro ? '[ ' : ''}📅 {currentRange}{isRetro ? ' ]' : ''}
                 </span>
               </div>
             )}
@@ -624,9 +664,9 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
               </div>
 
               <div className={`flex items-center justify-between text-xs pt-3 border-t ${isRetro ? 'retro-border' : 'border-slate-700'}`}>
-                <span className={isRetro ? 'retro-text-amber' : 'text-slate-500'} title={`Last updated: ${protocol.year}`}>
-                  📅 Added/Updated: {protocol.year}
-                </span>
+                <div className={`flex flex-col gap-1 ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>
+                  <span>📅 Created: {protocol.year}</span>
+                </div>
                 <a
                   href={`https://github.com/pocc/portofcall/blob/main/src/worker/${protocol.id === '9p' ? 'ninep' : protocol.id.replace(/-/g, '')}.ts`}
                   target="_blank"
@@ -641,7 +681,8 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
             </button>
           </>
           );
-        })}
+        });
+        })()}
       </div>
         </>
       )}
@@ -695,7 +736,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
       {activeTab === 'rfcs' && (() => {
         // Combine implemented protocols with non-implementable RFCs
         // Only include protocols that have an RFC number
-        const allRFCEntries: Array<RFCEntry & { implemented?: boolean }> = [
+        const allRFCEntries: Array<RFCEntry & { implemented?: boolean; protocolId?: string }> = [
           ...protocols
             .map(p => {
               const rfcMatch = p.description.match(/RFC\s*(\d+)/i);
@@ -707,11 +748,14 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                 description: p.description.replace(/\s*\(RFC.*?\)\s*-?\s*/i, ' - '),
                 workersCompatible: true,
                 layer: 'Application' as const,
-                implemented: p.status === 'active' || p.status === 'niche',
+                implemented: true, // All protocols in the array are implemented, regardless of active/deprecated status
+                protocolId: p.id, // Store the protocol ID for navigation
               };
             })
             .filter(entry => entry.rfc !== null), // Only include protocols with RFC numbers
-          ...nonImplementableRFCs.map(r => ({ ...r, implemented: false })),
+          ...nonImplementableRFCs
+            .filter(r => r.rfc !== null) // Only include non-implementable protocols with RFC numbers
+            .map(r => ({ ...r, implemented: false })),
         ];
 
         // Sort RFC entries
@@ -784,10 +828,20 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                         className={`${isRetro ? 'retro-border' : 'border-b border-slate-700'} ${idx % 2 === 0 ? (isRetro ? '' : 'bg-slate-800/50') : ''}`}
                       >
                         <td className={`py-3 px-4 ${isRetro ? 'retro-text' : 'text-white font-medium'}`}>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xl" aria-hidden="true">{entry.icon}</span>
-                            <span className="whitespace-nowrap">{entry.name}</span>
-                          </div>
+                          {entry.implemented && entry.protocolId ? (
+                            <button
+                              onClick={() => onSelect(entry.protocolId as any)}
+                              className={`flex items-center gap-2 ${isRetro ? 'retro-link' : 'hover:text-blue-400 transition-colors'} text-left`}
+                            >
+                              <span className="text-xl" aria-hidden="true">{entry.icon}</span>
+                              <span className="whitespace-nowrap">{entry.name}</span>
+                            </button>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <span className="text-xl" aria-hidden="true">{entry.icon}</span>
+                              <span className="whitespace-nowrap">{entry.name}</span>
+                            </div>
+                          )}
                         </td>
                         <td className={`py-3 px-4 ${isRetro ? 'retro-text-amber' : 'text-blue-400'}`}>
                           {entry.rfc ? (
@@ -857,7 +911,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                 </p>
                 <ul className={`text-xs ${isRetro ? 'retro-text' : 'text-slate-400'} space-y-1 ml-4`}>
                   <li>• <strong>Workers Compatible:</strong> Whether the protocol can be implemented using Cloudflare Workers TCP Sockets API</li>
-                  <li>• <strong>Implemented:</strong> Whether this protocol has been implemented in this application</li>
+                  <li>• <strong>Implemented:</strong> Whether this protocol has been implemented in this application (includes both active and deprecated protocols)</li>
                   <li>• <strong>Layer:</strong> OSI model layer - L2 (Data Link), L3 (Network), L4/L7 (Transport/Application), Application (TCP-based)</li>
                   <li>• Workers only supports TCP connections via connect() API - UDP and raw Layer 2/3 protocols cannot be implemented</li>
                 </ul>

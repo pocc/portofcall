@@ -73,7 +73,7 @@ describe('SMTP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1
           port: 25,
           timeout: 3000,
         }),
@@ -104,7 +104,7 @@ describe('SMTP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1 (reserved, should be unreachable)
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1 (reserved, should be unreachable)
           port: 25,
           timeout: 5000,
         }),
@@ -211,7 +211,7 @@ describe('SMTP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 25,
           timeout: 3000,
         }),
@@ -226,7 +226,7 @@ describe('SMTP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 587,
           timeout: 3000,
         }),
@@ -241,7 +241,7 @@ describe('SMTP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 465,
           timeout: 3000,
         }),

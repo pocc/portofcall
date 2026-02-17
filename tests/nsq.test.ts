@@ -61,7 +61,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4150,
           timeout: 3000,
         }),
@@ -125,7 +125,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4150,
           topic: 'test',
           message: 'hello',
@@ -182,7 +182,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4150,
           timeout: 3000,
         }),
@@ -197,7 +197,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4152,
           timeout: 3000,
         }),

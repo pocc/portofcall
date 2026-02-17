@@ -71,7 +71,7 @@ describe('XMPP S2S Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address
+          host: 'unreachable-host-12345.invalid', // TEST-NET address
           fromDomain: 'example.com',
           timeout: 3000,
         }),
@@ -89,7 +89,7 @@ describe('XMPP S2S Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           fromDomain: 'example.com',
           port: 5269,
           timeout: 3000,
@@ -107,7 +107,7 @@ describe('XMPP S2S Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           fromDomain: 'example.com',
           toDomain: 'jabber.org',
           port: 5269,
@@ -127,7 +127,7 @@ describe('XMPP S2S Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           fromDomain: 'example.com',
           useTLS: false,
           port: 5269,
@@ -202,7 +202,7 @@ describe('XMPP S2S Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address
+          host: 'unreachable-host-12345.invalid', // TEST-NET address
           fromDomain: 'example.com',
           port: 5269,
           timeout: 3000,
@@ -220,7 +220,7 @@ describe('XMPP S2S Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           fromDomain: 'example.com',
           timeout: 3000,
         }),

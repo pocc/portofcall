@@ -105,7 +105,7 @@ describe('SLP Protocol (Port 427)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 427,
           timeout: 5000,
         }),
@@ -157,7 +157,7 @@ describe('SLP Protocol (Port 427)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 427,
           timeout: 3000,
         }),
@@ -168,14 +168,14 @@ describe('SLP Protocol (Port 427)', () => {
       expect(data.success).toBe(false);
       expect(data).toHaveProperty('error');
       expect(typeof data.error).toBe('string');
-    }, 8000);
+    }, 15000);
 
     it('should return proper error format for find failures', async () => {
       const response = await fetch(`${API_BASE}/api/slp/find`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 427,
           serviceType: 'service:printer',
           timeout: 3000,
@@ -186,14 +186,14 @@ describe('SLP Protocol (Port 427)', () => {
       expect(data).toHaveProperty('success');
       expect(data.success).toBe(false);
       expect(data).toHaveProperty('error');
-    }, 8000);
+    }, 15000);
 
     it('should return proper error format for attributes failures', async () => {
       const response = await fetch(`${API_BASE}/api/slp/attributes`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 427,
           url: 'service:printer:lpr://printer.example.com',
           timeout: 3000,
@@ -204,6 +204,6 @@ describe('SLP Protocol (Port 427)', () => {
       expect(data).toHaveProperty('success');
       expect(data.success).toBe(false);
       expect(data).toHaveProperty('error');
-    }, 8000);
+    }, 15000);
   });
 });

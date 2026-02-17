@@ -46,7 +46,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6889,
           timeout: 3000,
         }),
@@ -62,7 +62,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6881,
           timeout: 3000,
         }),
@@ -78,7 +78,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6881,
           timeout: 3000,
           infoHash: 'aabbccddee11223344556677889900aabbccddee',
@@ -95,7 +95,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6881,
           infoHash: 'not-valid-hex',
         }),
@@ -124,7 +124,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6881,
           timeout: 5000,
         }),
@@ -161,7 +161,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6881,
           timeout: 3000,
         }),
@@ -176,7 +176,7 @@ describe('BitTorrent Peer Wire Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 6969,
           timeout: 3000,
         }),

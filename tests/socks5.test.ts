@@ -86,7 +86,7 @@ describe('SOCKS5 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          proxyHost: '192.0.2.1', // TEST-NET-1 (reserved, unreachable)
+          proxyHost: 'unreachable-host-12345.invalid', // TEST-NET-1 (reserved, unreachable)
           proxyPort: 1080,
           destHost: 'example.com',
           destPort: 80,

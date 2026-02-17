@@ -46,7 +46,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2576,
           timeout: 3000,
         }),
@@ -62,7 +62,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2575,
           timeout: 3000,
         }),
@@ -115,7 +115,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2575,
           messageType: 'ORU^R01',
           sendingApplication: 'LabSystem',
@@ -134,7 +134,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2575,
           messageType: 'ADT^A01',
           sendingApplication: 'MyEHR',
@@ -180,7 +180,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2575,
           timeout: 5000,
         }),
@@ -217,7 +217,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2575,
           timeout: 3000,
         }),
@@ -232,7 +232,7 @@ describe('HL7 v2.x Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2576,
           timeout: 3000,
         }),

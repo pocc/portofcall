@@ -5,7 +5,8 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api/ssh';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const SSH_BASE = `${API_BASE}/ssh`;
 
 // Public SSH test server
 const SSH_CONFIG = {
@@ -16,7 +17,7 @@ const SSH_CONFIG = {
 describe('SSH Protocol Integration Tests', () => {
   describe('SSH Connect (HTTP)', () => {
     it('should connect and read SSH banner', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SSH_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(SSH_CONFIG),
@@ -37,7 +38,7 @@ describe('SSH Protocol Integration Tests', () => {
         port: SSH_CONFIG.port.toString(),
       });
 
-      const response = await fetch(`${API_BASE}/connect?${params}`);
+      const response = await fetch(`${SSH_BASE}/connect?${params}`);
       expect(response.ok).toBe(true);
 
       const data = await response.json();
@@ -46,7 +47,7 @@ describe('SSH Protocol Integration Tests', () => {
     });
 
     it('should fail with non-existent host', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SSH_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -62,7 +63,7 @@ describe('SSH Protocol Integration Tests', () => {
     });
 
     it('should fail with missing host parameter', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SSH_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -79,7 +80,7 @@ describe('SSH Protocol Integration Tests', () => {
 
   describe('SSH Execute Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/execute`, {
+      const response = await fetch(`${SSH_BASE}/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -97,7 +98,7 @@ describe('SSH Protocol Integration Tests', () => {
 
   describe('SSH Disconnect Endpoint', () => {
     it('should return success message', async () => {
-      const response = await fetch(`${API_BASE}/disconnect`, {
+      const response = await fetch(`${SSH_BASE}/disconnect`, {
         method: 'POST',
       });
 

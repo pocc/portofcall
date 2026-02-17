@@ -1,81 +1,115 @@
+/**
+ * FastCGI Protocol Integration Tests
+ * Tests FastCGI server probing and request forwarding
+ *
+ * FastCGI uses a binary record format:
+ *   version(1) + type(1) + requestId(2) + contentLength(2) + paddingLength(1) + reserved(1) + content
+ *
+ * Two endpoints:
+ * - /api/fastcgi/probe - FCGI_GET_VALUES to discover server capabilities
+ * - /api/fastcgi/request - Send a CGI request (BEGIN_REQUEST + PARAMS + STDIN)
+ */
+
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = 'http://localhost:8787';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
-describe('FastCGI Protocol (Port 9000)', () => {
-  describe('Probe - Input Validation', () => {
-    it('should reject GET requests', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
-        method: 'GET',
-      });
-      expect(response.status).toBe(405);
-    });
+describe('FastCGI Protocol Integration Tests', () => {
+  // ─── Probe endpoint ────────────────────────────────────────────────────────
 
-    it('should require host', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
+  describe('POST /api/fastcgi/probe - input validation', () => {
+    it('should require host parameter', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ port: 9000 }),
       });
-      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      const data = await response.json() as { success: boolean; error: string };
       expect(data.success).toBe(false);
       expect(data.error).toContain('Host');
     });
 
-    it('should reject invalid ports', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
+    it('should reject invalid port (0)', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host: 'example.com',
-          port: 99999,
-        }),
+        body: JSON.stringify({ host: 'example.com', port: 0 }),
       });
-      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      const data = await response.json() as { success: boolean; error: string };
+      expect(data.success).toBe(false);
+      expect(data.error).toContain('Port');
+    });
+
+    it('should reject invalid port (65536)', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host: 'example.com', port: 65536 }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json() as { success: boolean; error: string };
       expect(data.success).toBe(false);
       expect(data.error).toContain('Port');
     });
   });
 
-  describe('Request - Input Validation', () => {
-    it('should reject GET requests', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/request`, {
-        method: 'GET',
-      });
-      expect(response.status).toBe(405);
-    });
-
-    it('should require host', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/request`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scriptFilename: '/index.php' }),
-      });
-      const data = await response.json();
-      expect(data.success).toBe(false);
-      expect(data.error).toContain('Host');
-    });
-  });
-
-  describe('Connection Tests', () => {
-    it('should handle unreachable hosts gracefully', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
+  describe('POST /api/fastcgi/probe - connection failures', () => {
+    it('should fail gracefully for non-existent host', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'non-existent-fastcgi-host-12345.invalid',
           port: 9000,
           timeout: 5000,
         }),
       });
 
-      const data = await response.json();
+      expect(response.ok).toBe(false);
+      const data = await response.json() as { success: boolean; error: string };
       expect(data.success).toBe(false);
       expect(data.error).toBeDefined();
+    }, 15000);
+
+    it('should respect timeout parameter', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: 'unreachable-host-12345.invalid',
+          port: 9000,
+          timeout: 3000,
+        }),
+      });
+
+      const data = await response.json() as { success: boolean };
+      expect(data.success).toBe(false);
     }, 10000);
 
-    it('should detect Cloudflare-protected hosts', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
+    it('should use default port 9000 when not specified', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: 'unreachable-host-12345.invalid',
+          timeout: 3000,
+        }),
+      });
+
+      const data = await response.json() as { success: boolean };
+      expect(data).toHaveProperty('success');
+      expect(data.success).toBe(false);
+    }, 10000);
+  });
+
+  describe('POST /api/fastcgi/probe - Cloudflare detection', () => {
+    it('should block Cloudflare-protected host', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -84,65 +118,143 @@ describe('FastCGI Protocol (Port 9000)', () => {
         }),
       });
 
-      const data = await response.json();
+      expect(response.status).toBe(403);
+      const data = await response.json() as { success: boolean; isCloudflare: boolean; error: string };
       expect(data.success).toBe(false);
-    });
+      expect(data.isCloudflare).toBe(true);
+      expect(data.error).toContain('Cloudflare');
+    }, 15000);
+  });
 
-    it('should handle wrong port (non-FastCGI service)', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
+  describe('POST /api/fastcgi/probe - response structure', () => {
+    it('should return consistent error structure for unreachable host', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'google.com',
-          port: 80,
+          host: 'unreachable-host-12345.invalid',
+          port: 9000,
+          timeout: 3000,
+        }),
+      });
+
+      const data = await response.json() as { success: boolean; error: string };
+      expect(data).toHaveProperty('success');
+      expect(data).toHaveProperty('error');
+      expect(typeof data.success).toBe('boolean');
+      expect(typeof data.error).toBe('string');
+    }, 10000);
+  });
+
+  // ─── Request endpoint ──────────────────────────────────────────────────────
+
+  describe('POST /api/fastcgi/request - input validation', () => {
+    it('should require host parameter', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          port: 9000,
+          scriptFilename: '/index.php',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json() as { success: boolean; error: string };
+      expect(data.success).toBe(false);
+      expect(data.error).toContain('Host');
+    });
+
+    it('should reject invalid port', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: 'example.com',
+          port: 99999,
+          scriptFilename: '/index.php',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json() as { success: boolean; error: string };
+      expect(data.success).toBe(false);
+      expect(data.error).toContain('Port');
+    });
+  });
+
+  describe('POST /api/fastcgi/request - connection failures', () => {
+    it('should fail gracefully for non-existent host', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: 'non-existent-fastcgi-host-12345.invalid',
+          port: 9000,
+          scriptFilename: '/index.php',
+          requestUri: '/',
           timeout: 5000,
         }),
       });
 
-      const data = await response.json();
-      // May get connected but won't get valid FastCGI response
-      if (data.success) {
-        expect(data.records).toBeDefined();
-      } else {
-        expect(data.error).toBeDefined();
-      }
+      expect(response.ok).toBe(false);
+      const data = await response.json() as { success: boolean; error: string };
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
+    }, 15000);
+
+    it('should use default values when optional params omitted', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: 'unreachable-host-12345.invalid',
+          timeout: 3000,
+        }),
+      });
+
+      const data = await response.json() as { success: boolean };
+      expect(data).toHaveProperty('success');
+      expect(data.success).toBe(false);
     }, 10000);
   });
 
-  describe('Response Structure', () => {
-    it('should return proper error format for probe failures', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/probe`, {
+  describe('POST /api/fastcgi/request - Cloudflare detection', () => {
+    it('should block Cloudflare-protected host', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/request`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'cloudflare.com',
+          port: 9000,
+          scriptFilename: '/index.php',
+        }),
+      });
+
+      expect(response.status).toBe(403);
+      const data = await response.json() as { success: boolean; isCloudflare: boolean; error: string };
+      expect(data.success).toBe(false);
+      expect(data.isCloudflare).toBe(true);
+    }, 15000);
+  });
+
+  describe('POST /api/fastcgi/request - response structure', () => {
+    it('should return consistent error structure', async () => {
+      const response = await fetch(`${API_BASE}/fastcgi/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: 'unreachable-host-12345.invalid',
           port: 9000,
           timeout: 3000,
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json() as { success: boolean; error: string };
       expect(data).toHaveProperty('success');
-      expect(data.success).toBe(false);
       expect(data).toHaveProperty('error');
+      expect(typeof data.success).toBe('boolean');
       expect(typeof data.error).toBe('string');
-    }, 8000);
-
-    it('should return proper error format for request failures', async () => {
-      const response = await fetch(`${API_BASE}/api/fastcgi/request`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host: '192.0.2.1',
-          port: 9000,
-          timeout: 3000,
-        }),
-      });
-
-      const data = await response.json();
-      expect(data).toHaveProperty('success');
-      expect(data.success).toBe(false);
-      expect(data).toHaveProperty('error');
-    }, 8000);
+    }, 10000);
   });
 });

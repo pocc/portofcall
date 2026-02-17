@@ -65,7 +65,7 @@ describe('POP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1
           port: 110,
           username: 'test',
           password: 'test',
@@ -114,7 +114,7 @@ describe('POP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1 (reserved, should be unreachable)
+          host: 'unreachable-host-12345.invalid', // TEST-NET-1 (reserved, should be unreachable)
           port: 110,
           username: 'test',
           password: 'test',
@@ -286,7 +286,7 @@ describe('POP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 110,
           timeout: 3000,
         }),
@@ -301,7 +301,7 @@ describe('POP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 995,
           timeout: 3000,
         }),

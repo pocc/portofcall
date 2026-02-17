@@ -140,7 +140,7 @@ describe('IDENT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           serverPort: 22,
           clientPort: 12345,
           timeout: 3000,
@@ -194,14 +194,14 @@ describe('IDENT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           serverPort: 22,
           clientPort: 12345,
           timeout: 3000,
         }),
       });
 
-      // Should attempt connection (will likely fail since 192.0.2.1 is TEST-NET)
+      // Should attempt connection (will likely fail since unreachable-host-12345.invalid is TEST-NET)
       // but validates that default port 113 is used
       expect(response.status).toBe(500);
       const data = await response.json() as {

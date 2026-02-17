@@ -275,23 +275,44 @@
   font-family: 'Courier New', 'VT323', monospace !important;
 }
 
-/* Theme Toggle Button (Special Styling) */
-[data-theme="retro"] .theme-toggle {
+/* Theme Toggle Bar (centered banner at top) */
+[data-theme="retro"] .theme-toggle-bar {
   position: fixed;
-  top: 1rem;
-  right: 1rem;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 1000;
+  display: flex;
+  justify-content: center;
   background: var(--retro-bg);
-  border: 2px solid var(--retro-border);
+  border-bottom: 2px solid var(--retro-border);
+  box-shadow: 0 0 15px var(--retro-glow);
+}
+
+[data-theme="retro"] .theme-toggle {
+  background: transparent;
+  border: none;
   color: var(--retro-fg-green);
-  padding: 0.5rem 1rem;
-  font-size: 0.75rem;
+  padding: 0.5rem 2rem;
+  font-size: 0.85rem;
   cursor: pointer;
-  box-shadow: 0 0 10px var(--retro-glow);
+  letter-spacing: 0.1em;
+  width: 100%;
+  text-align: center;
 }
 
 [data-theme="retro"] .theme-toggle:hover {
-  box-shadow: 0 0 20px var(--retro-glow);
+  background: rgba(51, 255, 51, 0.08);
+  box-shadow: none;
+}
+
+[data-theme="retro"] .theme-toggle-arrow {
+  color: var(--retro-fg-amber, #ffb000);
+}
+
+[data-theme="retro"] .theme-toggle-inactive {
+  opacity: 0.45;
+  text-decoration: underline;
 }
 
 /* Boot Screen Animation */

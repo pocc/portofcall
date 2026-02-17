@@ -20,6 +20,7 @@ services:
   vsftpd:
     image: fauria/vsftpd
     container_name: testserver-ftp
+    platform: linux/amd64
     ports:
       - "20:20"
       - "21:21"
@@ -32,8 +33,6 @@ services:
       - PASV_MAX_PORT=21110
       - LOCAL_UMASK=022
     volumes:
-      - ./docker/vsftpd/vsftpd.conf:/etc/vsftpd/vsftpd.conf:ro
-      - ./docker/vsftpd/init.sh:/usr/local/bin/init.sh:ro
       - ftp_data:/home/vsftpd
     restart: unless-stopped
     networks:

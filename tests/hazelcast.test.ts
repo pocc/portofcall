@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'vitest';
 
-const API_BASE = 'https://portofcall.rj.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Hazelcast Protocol - Probe', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 5701 }),
@@ -16,7 +16,7 @@ describe('Hazelcast Protocol - Probe', () => {
   });
 
   test('should validate port range', async () => {
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 99999 }),
@@ -28,11 +28,11 @@ describe('Hazelcast Protocol - Probe', () => {
   });
 
   test('should handle connection timeout for unreachable hosts', async () => {
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // RFC 5737 TEST-NET
+        host: 'unreachable-host-12345.invalid', // RFC 5737 TEST-NET
         port: 5701,
         timeout: 3000,
       }),
@@ -43,11 +43,11 @@ describe('Hazelcast Protocol - Probe', () => {
   }, 15000);
 
   test('should use default port 5701 when not specified', async () => {
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         timeout: 2000,
       }),
     });
@@ -58,7 +58,7 @@ describe('Hazelcast Protocol - Probe', () => {
   }, 10000);
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'GET',
     });
 
@@ -66,7 +66,7 @@ describe('Hazelcast Protocol - Probe', () => {
   });
 
   test('should handle invalid JSON body gracefully', async () => {
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: 'not json',
@@ -79,7 +79,7 @@ describe('Hazelcast Protocol - Probe', () => {
 
   test('should detect non-Hazelcast servers', async () => {
     // Attempt to connect to a non-Hazelcast port
-    const response = await fetch(`${API_BASE}/api/hazelcast/probe`, {
+    const response = await fetch(`${API_BASE}/hazelcast/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

@@ -19,7 +19,7 @@ describe('H.323 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Non-routable, will timeout
+          host: 'unreachable-host-12345.invalid', // Non-routable, will timeout
           port: 1720,
           callingNumber: '1000',
           calledNumber: '2000',
@@ -31,7 +31,7 @@ describe('H.323 Protocol Integration Tests', () => {
 
       // Either succeeds with probe data or fails with connection error
       if (data.success) {
-        expect(data.host).toBe('192.0.2.1');
+        expect(data.host).toBe('unreachable-host-12345.invalid');
         expect(data.port).toBe(1720);
         expect(data.status).toBeDefined();
         expect(typeof data.connectTime).toBe('number');
@@ -140,7 +140,7 @@ describe('H.323 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1720,
           callingNumber: '+15105901098',
           calledNumber: '*72#2000',
@@ -161,7 +161,7 @@ describe('H.323 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           timeout: 2000,
         }),
       });
@@ -178,7 +178,7 @@ describe('H.323 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1720,
           timeout: 2000,
         }),
@@ -197,7 +197,7 @@ describe('H.323 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Non-routable address
+          host: 'unreachable-host-12345.invalid', // Non-routable address
           port: 1720,
           timeout: 2000,
         }),

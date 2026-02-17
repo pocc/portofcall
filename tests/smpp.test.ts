@@ -49,7 +49,7 @@ describe('SMPP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           systemId: 'probe',
           timeout: 3000,
         }),
@@ -65,7 +65,7 @@ describe('SMPP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2776,
           systemId: 'custom_esme',
           password: 'secret',
@@ -83,7 +83,7 @@ describe('SMPP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2775,
           systemId: 'probe',
           timeout: 3000,
@@ -134,7 +134,7 @@ describe('SMPP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           timeout: 3000,
         }),
       });
@@ -187,7 +187,7 @@ describe('SMPP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2775,
           systemId: 'probe',
           timeout: 3000,

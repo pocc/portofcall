@@ -46,7 +46,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           method: 'getVersion',
           timeout: 3000,
@@ -63,7 +63,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           timeout: 3000,
         }),
@@ -79,7 +79,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           timeout: 3000,
         }),
       });
@@ -93,7 +93,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           transport: 'buffered',
           timeout: 3000,
@@ -126,7 +126,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
         }),
       });
 
@@ -141,7 +141,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           method: 'getUser',
           args: [{ id: 1, type: 'i32', value: '42' }],
@@ -159,7 +159,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           method: 'findUser',
           args: [{ id: 1, type: 'string', value: 'testuser' }],
@@ -189,7 +189,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           timeout: 5000,
         }),
@@ -243,7 +243,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9090,
           timeout: 3000,
         }),
@@ -258,7 +258,7 @@ describe('Thrift Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 9091,
           timeout: 3000,
         }),

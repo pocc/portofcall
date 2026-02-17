@@ -1,2 +1,49 @@
 /* Additional app-specific styles */
 /* Using Tailwind CSS for all component styling */
+
+/* Theme Toggle Banner — modern mode */
+.theme-toggle-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.85);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.35);
+}
+
+.theme-toggle {
+  background: transparent;
+  border: none;
+  color: #a5b4fc;
+  padding: 0.45rem 2rem;
+  font-size: 0.8rem;
+  font-family: ui-monospace, 'Cascadia Code', monospace;
+  cursor: pointer;
+  letter-spacing: 0.08em;
+  width: 100%;
+  text-align: center;
+  transition: background 0.15s;
+}
+
+.theme-toggle:hover {
+  background: rgba(99, 102, 241, 0.12);
+}
+
+.theme-toggle-arrow {
+  color: #818cf8;
+}
+
+.theme-toggle-inactive {
+  opacity: 0.4;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.theme-toggle-active {
+  color: #c7d2fe;
+  font-weight: 600;
+}

@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('LMTP Protocol Integration Tests', () => {
   describe('POST /api/lmtp/connect', () => {
     it('should reject missing host', async () => {
-      const response = await fetch(`${API_BASE}/api/lmtp/connect`, {
+      const response = await fetch(`${API_BASE}/lmtp/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -20,7 +20,7 @@ describe('LMTP Protocol Integration Tests', () => {
     });
 
     it('should handle unreachable host gracefully', async () => {
-      const response = await fetch(`${API_BASE}/api/lmtp/connect`, {
+      const response = await fetch(`${API_BASE}/lmtp/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -37,7 +37,7 @@ describe('LMTP Protocol Integration Tests', () => {
 
     it('should support GET with query params', async () => {
       const response = await fetch(
-        `${API_BASE}/api/lmtp/connect?host=nonexistent.invalid&port=24&timeout=3000`
+        `${API_BASE}/lmtp/connect?host=nonexistent.invalid&port=24&timeout=3000`
       );
 
       expect(response.status).toBe(500);
@@ -48,13 +48,13 @@ describe('LMTP Protocol Integration Tests', () => {
 
   describe('POST /api/lmtp/send', () => {
     it('should reject GET requests', async () => {
-      const response = await fetch(`${API_BASE}/api/lmtp/send`);
+      const response = await fetch(`${API_BASE}/lmtp/send`);
 
       expect(response.status).toBe(405);
     });
 
     it('should reject missing required fields', async () => {
-      const response = await fetch(`${API_BASE}/api/lmtp/send`, {
+      const response = await fetch(`${API_BASE}/lmtp/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -71,7 +71,7 @@ describe('LMTP Protocol Integration Tests', () => {
     });
 
     it('should handle unreachable LMTP server', async () => {
-      const response = await fetch(`${API_BASE}/api/lmtp/send`, {
+      const response = await fetch(`${API_BASE}/lmtp/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -91,7 +91,7 @@ describe('LMTP Protocol Integration Tests', () => {
     });
 
     it('should accept single recipient as string', async () => {
-      const response = await fetch(`${API_BASE}/api/lmtp/send`, {
+      const response = await fetch(`${API_BASE}/lmtp/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

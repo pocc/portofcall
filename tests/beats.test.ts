@@ -89,7 +89,7 @@ describe('Beats Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           port: 5044,
           events: [{ message: 'test log entry' }],
           timeout: 3000,
@@ -107,7 +107,7 @@ describe('Beats Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Will fail, but validates defaults
+          host: 'unreachable-host-12345.invalid', // Will fail, but validates defaults
           events: [{ message: 'test' }],
           timeout: 3000,
         }),
@@ -125,7 +125,7 @@ describe('Beats Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 5044,
           events: [
             { message: 'log entry 1', level: 'info' },
@@ -167,7 +167,7 @@ describe('Beats Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 5044,
           events: [{ message: 'test' }],
           timeout: 3000,
@@ -186,7 +186,7 @@ describe('Beats Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 5044,
           events: [{ message: 'test' }],
           windowSize: 500,
@@ -224,7 +224,7 @@ describe('Beats Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           port: 5044,
           timeout: 3000,
         }),

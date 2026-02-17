@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Bitcoin P2P Protocol Integration Tests', () => {
   describe('POST /api/bitcoin/connect', () => {
     it('should reject missing host', async () => {
-      const response = await fetch(`${API_BASE}/api/bitcoin/connect`, {
+      const response = await fetch(`${API_BASE}/bitcoin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port: 8333 }),
@@ -18,7 +18,7 @@ describe('Bitcoin P2P Protocol Integration Tests', () => {
     });
 
     it('should reject unknown network', async () => {
-      const response = await fetch(`${API_BASE}/api/bitcoin/connect`, {
+      const response = await fetch(`${API_BASE}/bitcoin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -34,7 +34,7 @@ describe('Bitcoin P2P Protocol Integration Tests', () => {
     });
 
     it('should handle unreachable host gracefully', async () => {
-      const response = await fetch(`${API_BASE}/api/bitcoin/connect`, {
+      const response = await fetch(`${API_BASE}/bitcoin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -52,7 +52,7 @@ describe('Bitcoin P2P Protocol Integration Tests', () => {
 
     it('should support GET with query params', async () => {
       const response = await fetch(
-        `${API_BASE}/api/bitcoin/connect?host=nonexistent.invalid&port=8333&timeout=3000`
+        `${API_BASE}/bitcoin/connect?host=nonexistent.invalid&port=8333&timeout=3000`
       );
 
       expect(response.status).toBe(500);
@@ -61,7 +61,7 @@ describe('Bitcoin P2P Protocol Integration Tests', () => {
     });
 
     it('should default to port 8333 and mainnet', async () => {
-      const response = await fetch(`${API_BASE}/api/bitcoin/connect`, {
+      const response = await fetch(`${API_BASE}/bitcoin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -78,7 +78,7 @@ describe('Bitcoin P2P Protocol Integration Tests', () => {
 
   describe('POST /api/bitcoin/getaddr', () => {
     it('should reject missing host', async () => {
-      const response = await fetch(`${API_BASE}/api/bitcoin/getaddr`, {
+      const response = await fetch(`${API_BASE}/bitcoin/getaddr`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port: 8333 }),
@@ -90,7 +90,7 @@ describe('Bitcoin P2P Protocol Integration Tests', () => {
     });
 
     it('should handle unreachable host', async () => {
-      const response = await fetch(`${API_BASE}/api/bitcoin/getaddr`, {
+      const response = await fetch(`${API_BASE}/bitcoin/getaddr`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -139,7 +139,7 @@ describe('MPD Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // TEST-NET address, should timeout/fail
+        host: 'unreachable-host-12345.invalid', // TEST-NET address, should timeout/fail
         port: 6600,
         timeout: 5000,
       }),

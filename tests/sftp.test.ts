@@ -5,7 +5,8 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api/sftp';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const SFTP_BASE = `${API_BASE}/sftp`;
 
 // Public SSH test server (SFTP runs over SSH)
 const SFTP_CONFIG = {
@@ -18,7 +19,7 @@ const SFTP_CONFIG = {
 describe('SFTP Protocol Integration Tests', () => {
   describe('SFTP Connect (HTTP)', () => {
     it('should connect and verify SSH server for SFTP', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SFTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(SFTP_CONFIG),
@@ -41,7 +42,7 @@ describe('SFTP Protocol Integration Tests', () => {
         username: SFTP_CONFIG.username,
       });
 
-      const response = await fetch(`${API_BASE}/connect?${params}`);
+      const response = await fetch(`${SFTP_BASE}/connect?${params}`);
       expect(response.ok).toBe(true);
 
       const data = await response.json();
@@ -50,7 +51,7 @@ describe('SFTP Protocol Integration Tests', () => {
     });
 
     it('should fail with non-existent host', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SFTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -67,7 +68,7 @@ describe('SFTP Protocol Integration Tests', () => {
     });
 
     it('should fail with missing host parameter', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SFTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -84,7 +85,7 @@ describe('SFTP Protocol Integration Tests', () => {
     });
 
     it('should fail with missing username parameter', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${SFTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -103,7 +104,7 @@ describe('SFTP Protocol Integration Tests', () => {
 
   describe('SFTP List Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/list`, {
+      const response = await fetch(`${SFTP_BASE}/list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -121,7 +122,7 @@ describe('SFTP Protocol Integration Tests', () => {
 
   describe('SFTP Download Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/download`, {
+      const response = await fetch(`${SFTP_BASE}/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -139,7 +140,7 @@ describe('SFTP Protocol Integration Tests', () => {
 
   describe('SFTP Upload Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/upload`, {
+      const response = await fetch(`${SFTP_BASE}/upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -158,7 +159,7 @@ describe('SFTP Protocol Integration Tests', () => {
 
   describe('SFTP Delete Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/delete`, {
+      const response = await fetch(`${SFTP_BASE}/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -176,7 +177,7 @@ describe('SFTP Protocol Integration Tests', () => {
 
   describe('SFTP Mkdir Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/mkdir`, {
+      const response = await fetch(`${SFTP_BASE}/mkdir`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -194,7 +195,7 @@ describe('SFTP Protocol Integration Tests', () => {
 
   describe('SFTP Rename Endpoint', () => {
     it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${API_BASE}/rename`, {
+      const response = await fetch(`${SFTP_BASE}/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

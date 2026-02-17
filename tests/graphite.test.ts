@@ -47,7 +47,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
         }),
       });
 
@@ -62,7 +62,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           metrics: [],
         }),
       });
@@ -77,7 +77,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           metrics: [{ name: 'invalid metric name!', value: 42 }],
         }),
       });
@@ -92,7 +92,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2003,
           metrics: [
             { name: 'test.cpu.usage', value: 45.2 },
@@ -134,7 +134,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2003,
           metrics: [{ name: 'app.web.prod.requests.total', value: 100 }],
           timeout: 3000,
@@ -151,7 +151,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2003,
           metrics: [{ name: 'my-app.web_server.response-time', value: 42.5 }],
           timeout: 3000,
@@ -167,7 +167,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           metrics: [{ name: 'invalid name', value: 42 }],
         }),
       });
@@ -180,7 +180,7 @@ describe('Graphite Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2004,
           metrics: [{ name: 'test.metric', value: 42 }],
           timeout: 3000,

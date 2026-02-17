@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('SMTPS Protocol Integration Tests', () => {
   describe('POST /api/smtps/connect', () => {
     it('should reject missing host', async () => {
-      const response = await fetch(`${API_BASE}/api/smtps/connect`, {
+      const response = await fetch(`${API_BASE}/smtps/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port: 465 }),
@@ -18,7 +18,7 @@ describe('SMTPS Protocol Integration Tests', () => {
     });
 
     it('should handle unreachable host gracefully', async () => {
-      const response = await fetch(`${API_BASE}/api/smtps/connect`, {
+      const response = await fetch(`${API_BASE}/smtps/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -35,7 +35,7 @@ describe('SMTPS Protocol Integration Tests', () => {
 
     it('should support GET with query params', async () => {
       const response = await fetch(
-        `${API_BASE}/api/smtps/connect?host=nonexistent.invalid&port=465&timeout=5000`
+        `${API_BASE}/smtps/connect?host=nonexistent.invalid&port=465&timeout=5000`
       );
 
       expect(response.status).toBe(500);
@@ -44,7 +44,7 @@ describe('SMTPS Protocol Integration Tests', () => {
     });
 
     it('should default to port 465', async () => {
-      const response = await fetch(`${API_BASE}/api/smtps/connect`, {
+      const response = await fetch(`${API_BASE}/smtps/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -61,7 +61,7 @@ describe('SMTPS Protocol Integration Tests', () => {
 
   describe('POST /api/smtps/send', () => {
     it('should reject missing required fields', async () => {
-      const response = await fetch(`${API_BASE}/api/smtps/send`, {
+      const response = await fetch(`${API_BASE}/smtps/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -77,13 +77,13 @@ describe('SMTPS Protocol Integration Tests', () => {
     });
 
     it('should reject GET requests', async () => {
-      const response = await fetch(`${API_BASE}/api/smtps/send`);
+      const response = await fetch(`${API_BASE}/smtps/send`);
 
       expect(response.status).toBe(405);
     });
 
     it('should reject send with missing body', async () => {
-      const response = await fetch(`${API_BASE}/api/smtps/send`, {
+      const response = await fetch(`${API_BASE}/smtps/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

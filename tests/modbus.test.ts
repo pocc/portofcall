@@ -46,7 +46,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 502,
           timeout: 3000,
         }),
@@ -62,7 +62,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 502,
           unitId: 5,
           timeout: 3000,
@@ -96,7 +96,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           address: 0,
         }),
       });
@@ -111,7 +111,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           functionCode: 5, // Write Single Coil
           address: 0,
           quantity: 1,
@@ -129,7 +129,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           functionCode: 16, // Write Multiple Registers (0x10)
           address: 0,
           quantity: 1,
@@ -146,7 +146,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 502,
           functionCode: 3,
           address: 0,
@@ -165,7 +165,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 502,
           functionCode: 1,
           address: 0,
@@ -224,7 +224,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 502,
           timeout: 3000,
         }),
@@ -239,7 +239,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 5020,
           timeout: 3000,
         }),
@@ -256,7 +256,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           functionCode: 3,
           address: 0,
           quantity: 200,
@@ -273,7 +273,7 @@ describe('Modbus TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           functionCode: 3,
           address: 0,
           quantity: 0,

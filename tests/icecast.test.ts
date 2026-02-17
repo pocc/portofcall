@@ -1,10 +1,10 @@
 import { describe, test, expect } from 'vitest';
 
-const API_BASE = 'https://portofcall.rj.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Icecast Streaming Server - Status Probe', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/status`, {
+    const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 8000 }),
@@ -16,7 +16,7 @@ describe('Icecast Streaming Server - Status Probe', () => {
   });
 
   test('should validate port range', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/status`, {
+    const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 99999 }),
@@ -28,11 +28,11 @@ describe('Icecast Streaming Server - Status Probe', () => {
   });
 
   test('should handle connection timeout for unreachable hosts', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/status`, {
+    const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // RFC 5737 TEST-NET
+        host: 'unreachable-host-12345.invalid', // RFC 5737 TEST-NET
         port: 8000,
         timeout: 3000,
       }),
@@ -43,11 +43,11 @@ describe('Icecast Streaming Server - Status Probe', () => {
   }, 15000);
 
   test('should use default port 8000 when not specified', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/status`, {
+    const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         timeout: 2000,
       }),
     });
@@ -57,7 +57,7 @@ describe('Icecast Streaming Server - Status Probe', () => {
   }, 10000);
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/status`, {
+    const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'GET',
     });
 
@@ -67,7 +67,7 @@ describe('Icecast Streaming Server - Status Probe', () => {
 
 describe('Icecast Streaming Server - Admin Stats', () => {
   test('should validate required host parameter', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/admin`, {
+    const response = await fetch(`${API_BASE}/icecast/admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: 8000 }),
@@ -79,7 +79,7 @@ describe('Icecast Streaming Server - Admin Stats', () => {
   });
 
   test('should require admin password', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/admin`, {
+    const response = await fetch(`${API_BASE}/icecast/admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ host: 'localhost', port: 8000 }),
@@ -91,7 +91,7 @@ describe('Icecast Streaming Server - Admin Stats', () => {
   });
 
   test('should reject non-POST requests', async () => {
-    const response = await fetch(`${API_BASE}/api/icecast/admin`, {
+    const response = await fetch(`${API_BASE}/icecast/admin`, {
       method: 'GET',
     });
 
@@ -103,11 +103,11 @@ describe('Icecast - Non-Icecast Server Handling', () => {
   test('should handle non-Icecast HTTP server gracefully', async () => {
     // Connecting to a regular HTTP server (not Icecast) should still work
     // but report that it's not an Icecast server
-    const response = await fetch(`${API_BASE}/api/icecast/status`, {
+    const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         port: 80,
         timeout: 3000,
       }),

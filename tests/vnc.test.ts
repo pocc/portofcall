@@ -97,7 +97,7 @@ describe('VNC (RFB) Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address that should timeout
+          host: 'unreachable-host-12345.invalid', // TEST-NET address that should timeout
           port: 5900,
           timeout: 3000,
         }),

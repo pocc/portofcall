@@ -92,7 +92,7 @@ describe('RADSEC Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           port: 2083,
           username: 'testuser',
           password: 'testpass',
@@ -111,7 +111,7 @@ describe('RADSEC Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Will fail, but validates defaults
+          host: 'unreachable-host-12345.invalid', // Will fail, but validates defaults
           username: 'testuser',
           password: 'testpass',
           timeout: 3000,
@@ -130,7 +130,7 @@ describe('RADSEC Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2083,
           username: 'testuser',
           password: 'testpass',
@@ -151,7 +151,7 @@ describe('RADSEC Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2083,
           username: 'testuser',
           password: 'testpass',
@@ -192,7 +192,7 @@ describe('RADSEC Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2083,
           username: 'testuser',
           password: 'testpass',
@@ -230,7 +230,7 @@ describe('RADSEC Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           port: 2083,
           timeout: 3000,
         }),

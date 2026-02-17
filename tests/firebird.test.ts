@@ -32,7 +32,7 @@ describe('Firebird Protocol Endpoints', () => {
       const response = await fetch('http://localhost:8787/api/firebird/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: '10.255.255.1', port: 3050 }),
+        body: JSON.stringify({ host: 'unreachable-host-12345.invalid', port: 3050 }),
       });
 
       const data = await response.json();
@@ -75,7 +75,7 @@ describe('Firebird Protocol Endpoints', () => {
       const response = await fetch('http://localhost:8787/api/firebird/version', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: '10.255.255.1', port: 3050 }),
+        body: JSON.stringify({ host: 'unreachable-host-12345.invalid', port: 3050 }),
       });
 
       const data = await response.json();

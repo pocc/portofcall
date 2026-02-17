@@ -169,7 +169,7 @@ describe('AMI Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // TEST-NET address, should timeout/fail
+        host: 'unreachable-host-12345.invalid', // TEST-NET address, should timeout/fail
         port: 5038,
         timeout: 5000,
       }),
@@ -186,7 +186,7 @@ describe('AMI Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         port: 5038,
         username: 'admin',
         secret: 'password',

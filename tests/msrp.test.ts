@@ -116,7 +116,7 @@ describe('MSRP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           port: 2855,
           fromPath: 'msrp://client.example.com:2855/session123;tcp',
           toPath: 'msrp://relay.example.com:2855/session456;tcp',
@@ -136,7 +136,7 @@ describe('MSRP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Will fail, but validates defaults
+          host: 'unreachable-host-12345.invalid', // Will fail, but validates defaults
           fromPath: 'msrp://client.example.com:2855/session123;tcp',
           toPath: 'msrp://relay.example.com:2855/session456;tcp',
           content: 'Hello, MSRP!',
@@ -156,7 +156,7 @@ describe('MSRP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           fromPath: 'msrp://client.example.com:2855/session123;tcp',
           toPath: 'msrp://relay.example.com:2855/session456;tcp',
           content: 'Hello, MSRP!',
@@ -176,7 +176,7 @@ describe('MSRP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 2855,
           fromPath: 'msrp://client.example.com:2855/session123;tcp',
           toPath: 'msrp://relay.example.com:2855/session456;tcp',
@@ -216,7 +216,7 @@ describe('MSRP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET address, should fail
+          host: 'unreachable-host-12345.invalid', // TEST-NET address, should fail
           port: 2855,
           fromPath: 'msrp://client.example.com:2855/session123;tcp',
           toPath: 'msrp://relay.example.com:2855/session456;tcp',

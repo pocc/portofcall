@@ -92,6 +92,20 @@ These protocols are technically possible but impractical due to Workers limitati
 - **Reason**: Many IRC servers block cloud provider IPs (abuse prevention)
 - **Note**: Could implement but may not work with most servers
 
+### Protocol Negotiation Limitations
+
+Cloudflare Workers TCP sockets do not expose TLS ALPN negotiation, making protocols that depend on it impossible to probe correctly.
+
+#### HTTP/2 (h2)
+- **Port**: 443 (via TLS + ALPN), 80 (h2c cleartext — rarely deployed)
+- **Reason**: HTTP/2 requires TLS ALPN negotiation (`h2` token) which is not exposed by the Cloudflare Workers sockets API. h2c (cleartext) is almost never enabled in production.
+- **Alternative**: Use `fetch()` which transparently uses HTTP/2 when negotiated by the CDN layer
+
+#### gRPC
+- **Port**: 50051 (convention, any port)
+- **Reason**: gRPC requires HTTP/2 as its transport (see above). Without ALPN negotiation support in the TCP sockets API, a proper gRPC handshake cannot be established.
+- **Alternative**: Use `fetch()` with `Content-Type: application/grpc` for unary RPCs if the gRPC server supports h2c
+
 ## Summary
 
 - **UDP Protocols**: 7 (impossible - no UDP support)
@@ -99,5 +113,6 @@ These protocols are technically possible but impractical due to Workers limitati
 - **Too Complex**: 3 (RDP, VNC, X11 - exceed Workers limits)
 - **Performance Limited**: 2 (video streaming - exceed time limits)
 - **Security Restricted**: 1 (IRC - often blocked)
+- **Protocol Negotiation**: 2 (HTTP/2, gRPC - require TLS ALPN not available in sockets API)
 
-**Total Impossible**: 15 protocols
+**Total Impossible**: 17 protocols

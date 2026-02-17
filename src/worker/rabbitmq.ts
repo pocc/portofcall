@@ -180,7 +180,7 @@ export async function handleRabbitMQHealth(request: Request): Promise<Response> 
 
     if (!body.host) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Host is required' }),
+        JSON.stringify({ success: false, error: 'host is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -193,7 +193,7 @@ export async function handleRabbitMQHealth(request: Request): Promise<Response> 
 
     if (port < 1 || port > 65535) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        JSON.stringify({ success: false, error: 'port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -325,14 +325,14 @@ export async function handleRabbitMQQuery(request: Request): Promise<Response> {
 
     if (!body.host) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Host is required' }),
+        JSON.stringify({ success: false, error: 'host is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
 
     if (!body.path) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Path is required' }),
+        JSON.stringify({ success: false, error: 'path is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -346,7 +346,7 @@ export async function handleRabbitMQQuery(request: Request): Promise<Response> {
 
     if (port < 1 || port > 65535) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        JSON.stringify({ success: false, error: 'port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -356,7 +356,7 @@ export async function handleRabbitMQQuery(request: Request): Promise<Response> {
       return new Response(
         JSON.stringify({
           success: false,
-          error: `Path "${path}" is not allowed. Only /api/* paths are permitted.`,
+          error: `path must start with /api/ (got: ${path})`,
         }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );

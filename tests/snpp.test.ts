@@ -109,7 +109,7 @@ describe('SNPP Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1', // TEST-NET address, should timeout/fail
+        host: 'unreachable-host-12345.invalid', // TEST-NET address, should timeout/fail
         port: 444,
         timeout: 5000,
       }),
@@ -126,7 +126,7 @@ describe('SNPP Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '192.0.2.1',
+        host: 'unreachable-host-12345.invalid',
         port: 444,
         pagerId: '5551234567',
         message: 'Test message',

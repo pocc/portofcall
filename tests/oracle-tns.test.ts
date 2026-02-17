@@ -48,7 +48,7 @@ describe('Oracle TNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           timeout: 3000,
         }),
       });
@@ -63,7 +63,7 @@ describe('Oracle TNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1522,
           serviceName: 'XE',
           timeout: 3000,
@@ -80,7 +80,7 @@ describe('Oracle TNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1521,
           timeout: 3000,
         }),
@@ -130,7 +130,7 @@ describe('Oracle TNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           timeout: 3000,
         }),
       });
@@ -182,7 +182,7 @@ describe('Oracle TNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1521,
           serviceName: 'ORCL',
           timeout: 3000,

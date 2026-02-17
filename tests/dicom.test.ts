@@ -116,7 +116,7 @@ describe('DICOM Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Non-routable address
+          host: 'unreachable-host-12345.invalid', // Non-routable address
           port: 104,
           timeout: 2000,
         }),

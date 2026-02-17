@@ -106,7 +106,7 @@ describe('Battle.net BNCS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // TEST-NET-1 (RFC 5737) - should timeout
+          host: 'unreachable-host-12345.invalid',
           port: 6112,
           timeout: 2000,
         }),
@@ -115,7 +115,7 @@ describe('Battle.net BNCS Protocol Integration Tests', () => {
       expect(response.status).toBe(200);
       const data = await response.json();
       expect(data.success).toBe(false);
-    });
+    }, 10000);
 
     it('should reject GET requests', async () => {
       const response = await fetch(

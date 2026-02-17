@@ -189,14 +189,14 @@ describe('TIME Protocol Integration Tests', () => {
     // Test the binary parsing logic
     // TIME protocol sends 4 bytes in big-endian (network byte order)
 
-    // Example: 0xE9A7C640 = 3,920,873,024 (decimal)
+    // Example: 0xE9B3C640 = 3,920,873,024 (decimal)
     // Breakdown:
     // - Byte 0: 0xE9 = 233
-    // - Byte 1: 0xA7 = 167
+    // - Byte 1: 0xB3 = 179
     // - Byte 2: 0xC6 = 198
     // - Byte 3: 0x40 = 64
 
-    const bytes = new Uint8Array([0xE9, 0xA7, 0xC6, 0x40]);
+    const bytes = new Uint8Array([0xE9, 0xB3, 0xC6, 0x40]);
     const dataView = new DataView(bytes.buffer);
     const value = dataView.getUint32(0, false); // false = big-endian
 

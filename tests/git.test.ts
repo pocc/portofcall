@@ -119,7 +119,7 @@ describe('Git Protocol (Port 9418)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           repo: '/test.git',
           timeout: 5000,
         }),

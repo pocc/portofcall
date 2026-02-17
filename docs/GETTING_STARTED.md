@@ -212,15 +212,22 @@ npm test
 ### Testing a Protocol Locally
 
 ```bash
+# Start the local Worker
+npx wrangler dev --port 8787
+
 # Start a test server (example: Redis)
 docker run -d -p 6379:6379 redis:latest
 
-# Start Worker
-npm run worker:dev
+# Run tests against local Worker
+API_BASE=http://localhost:8787/api npm test -- tests/redis.test.ts
 
 # Test in browser
 open http://localhost:8787
 ```
+
+> **Important:** The production Worker at `portofcall.ross.gg` runs on Cloudflare's edge and cannot reach `localhost`. Always use `npx wrangler dev` for tests that require local Docker servers (FTP, Redis, databases, etc.).
+>
+> See [docs/LOCAL_TESTING.md](LOCAL_TESTING.md) for the full Docker setup guide.
 
 ### Debugging WebSocket Connections
 
@@ -319,10 +326,16 @@ npx wrangler kv:key list      # List KV keys (if using KV)
 - Use origin IP instead of domain
 - Or deploy on non-Cloudflare platform
 
-**Q: Tests failing**
-- Ensure test servers are running (Docker)
-- Check test credentials in test files
-- Verify network connectivity
+**Q: Tests failing (infrastructure tests like FTP, Redis, MySQL)**
+- Tests default to `https://portofcall.ross.gg` — they cannot reach `localhost`
+- Start `npx wrangler dev --port 8787` and run with `API_BASE=http://localhost:8787/api npm test`
+- Start the required Docker container (see [LOCAL_TESTING.md](LOCAL_TESTING.md))
+- Check test credentials match the Docker container config
+
+**Q: Tests failing ("Unexpected end of JSON input")**
+- Check test files for double `/api/api/` URL patterns
+- Ensure `API_BASE` does not already include `/api` when tests append `/api/`
+- If using `vitest.config.ts` env override, use `http://localhost:8787/api` (with `/api`)
 
 ## Next Steps
 

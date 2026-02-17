@@ -58,7 +58,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1883,
           timeout: 3000,
         }),
@@ -74,7 +74,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1883,
           clientId: 'test-client-123',
           timeout: 3000,
@@ -90,7 +90,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1883,
           username: 'testuser',
           password: 'testpass',
@@ -107,7 +107,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1883,
           timeout: 3000,
         }),
@@ -137,7 +137,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1883,
           timeout: 5000,
         }),
@@ -174,7 +174,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1883,
           timeout: 3000,
         }),
@@ -189,7 +189,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 8883,
           timeout: 3000,
         }),
@@ -204,7 +204,7 @@ describe('MQTT Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 1884,
           timeout: 3000,
         }),

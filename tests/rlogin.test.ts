@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Rlogin Protocol Integration Tests', () => {
   describe('POST /api/rlogin/connect', () => {
     it('should reject missing host', async () => {
-      const response = await fetch(`${API_BASE}/api/rlogin/connect`, {
+      const response = await fetch(`${API_BASE}/rlogin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ port: 513 }),
@@ -18,7 +18,7 @@ describe('Rlogin Protocol Integration Tests', () => {
     });
 
     it('should handle unreachable host gracefully', async () => {
-      const response = await fetch(`${API_BASE}/api/rlogin/connect`, {
+      const response = await fetch(`${API_BASE}/rlogin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -34,7 +34,7 @@ describe('Rlogin Protocol Integration Tests', () => {
     });
 
     it('should accept custom user and terminal params', async () => {
-      const response = await fetch(`${API_BASE}/api/rlogin/connect`, {
+      const response = await fetch(`${API_BASE}/rlogin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -56,7 +56,7 @@ describe('Rlogin Protocol Integration Tests', () => {
 
     it('should support GET with query params', async () => {
       const response = await fetch(
-        `${API_BASE}/api/rlogin/connect?host=nonexistent.invalid&port=513&timeout=3000`
+        `${API_BASE}/rlogin/connect?host=nonexistent.invalid&port=513&timeout=3000`
       );
 
       expect(response.status).toBe(500);
@@ -65,7 +65,7 @@ describe('Rlogin Protocol Integration Tests', () => {
     });
 
     it('should default to port 513 and guest user', async () => {
-      const response = await fetch(`${API_BASE}/api/rlogin/connect`, {
+      const response = await fetch(`${API_BASE}/rlogin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -82,7 +82,7 @@ describe('Rlogin Protocol Integration Tests', () => {
 
   describe('WebSocket /api/rlogin/connect', () => {
     it('should serve HTTP probe without upgrade header', async () => {
-      const response = await fetch(`${API_BASE}/api/rlogin/connect`, {
+      const response = await fetch(`${API_BASE}/rlogin/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

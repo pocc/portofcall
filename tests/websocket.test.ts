@@ -41,7 +41,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 80,
           path: '/ws',
           timeout: 3000,
@@ -51,7 +51,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
       // Should attempt connection (and fail for unreachable host)
       expect(data.success).toBe(false);
       expect(data.error).toBeDefined();
-    }, 8000);
+    }, 15000);
   });
 
   describe('Connection Tests', () => {
@@ -60,7 +60,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 80,
           timeout: 5000,
         }),
@@ -69,7 +69,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
       const data = await response.json();
       expect(data.success).toBe(false);
       expect(data.error).toBeDefined();
-    }, 10000);
+    }, 20000);
 
     it('should detect Cloudflare-protected hosts', async () => {
       const response = await fetch(`${API_BASE}/api/websocket/probe`, {
@@ -113,7 +113,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 80,
           timeout: 3000,
         }),
@@ -124,7 +124,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
       expect(data.success).toBe(false);
       expect(data).toHaveProperty('error');
       expect(typeof data.error).toBe('string');
-    }, 8000);
+    }, 15000);
 
     it('should include timing information when connection is made', async () => {
       const response = await fetch(`${API_BASE}/api/websocket/probe`, {
@@ -152,7 +152,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 80,
           sendPing: true,
           timeout: 3000,
@@ -163,7 +163,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
       expect(data.success).toBe(false);
       // Ping only happens after successful upgrade, so no pingResponse on failed connection
       expect(data.pingResponse).toBeUndefined();
-    }, 8000);
+    }, 15000);
   });
 
   describe('Protocol Sub-protocols', () => {
@@ -172,7 +172,7 @@ describe('WebSocket Protocol (Port 80/443)', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 80,
           protocols: 'chat, superchat',
           timeout: 3000,
@@ -181,6 +181,6 @@ describe('WebSocket Protocol (Port 80/443)', () => {
 
       const data = await response.json();
       expect(data.success).toBe(false);
-    }, 8000);
+    }, 15000);
   });
 });

@@ -15,7 +15,8 @@ Complete documentation for Port of Call - a browser-to-TCP bridge via Cloudflare
 - **[Impossible Protocols](IMPOSSIBLE.md)** - Protocols that cannot run on Workers (UDP, raw sockets)
 
 ### Implementation Status
-- **[Implemented Protocols](IMPLEMENTED.md)** - Complete list of 53+ implemented protocols with test status
+- **[Implemented Protocols](IMPLEMENTED.md)** - Complete list of 181 implemented protocols with test status
+- **[Internet Standards Analysis](INTERNET_STANDARDS.md)** - RFC Internet Standards feasibility analysis
 - **[Protocol Mutex](../node_modules/mutex.md)** - Current work in progress tracking
 - **[RFC Compliance Audit](RFC_COMPLIANCE_AUDIT.md)** - Protocol standards compliance review
 
@@ -60,17 +61,16 @@ Understanding the system:
 ### For Project Managers
 Planning and tracking:
 1. [Project Overview](PROJECT_OVERVIEW.md) - Goals and vision
-2. [Implemented Protocols](IMPLEMENTED.md) - Current status (53+ protocols)
+2. [Implemented Protocols](IMPLEMENTED.md) - Current status (181 protocols)
 3. [Protocol Mutex](../node_modules/mutex.md) - Active work tracker
-4. [Implementation Guide](protocols/IMPLEMENTATION_GUIDE.md) - 8-week roadmap
+4. [Implementation Guide](protocols/IMPLEMENTATION_GUIDE.md) - Implementation roadmap
 
 ## 📊 Current Project Status
 
 ### Implementation Progress
-- **Total Protocols**: 53+ implemented
-- **Deployed & Live**: 14 protocols
-- **Awaiting Deployment**: 39 protocols
-- **In Development**: 1 protocol (Informix - see [mutex.md](../node_modules/mutex.md))
+- **Total Protocols**: 181 implemented
+- **Internet Standards**: 24 IETF Internet Standards (IS) implemented
+- **Latest Addition**: Active Users Protocol (RFC 866) - Feb 2026
 - **Test Coverage**: 214+ integration tests
 
 ### Protocol Categories

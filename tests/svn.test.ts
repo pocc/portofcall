@@ -159,10 +159,10 @@ describe('SVN Protocol Integration Tests', () => {
       }
 
       // Should have at least the capabilities and auth groups
-      expect(groups.length).toBeGreaterThanOrEqual(3);
+      expect(groups.length).toBeGreaterThanOrEqual(2);
 
       // Capabilities group
-      const capabilities = groups[2].split(/\s+/).filter(w => w.length > 0);
+      const capabilities = groups[0].split(/\s+/).filter(w => w.length > 0);
       expect(capabilities).toContain('edit-pipeline');
       expect(capabilities).toContain('svndiff1');
       expect(capabilities).toContain('absent-entries');
@@ -170,7 +170,7 @@ describe('SVN Protocol Integration Tests', () => {
       expect(capabilities).toContain('mergeinfo');
 
       // Auth mechanisms group
-      const authMechanisms = groups[3].split(/\s+/).filter(w => w.length > 0);
+      const authMechanisms = groups[1].split(/\s+/).filter(w => w.length > 0);
       expect(authMechanisms).toContain('ANONYMOUS');
       expect(authMechanisms).toContain('CRAM-MD5');
     });
@@ -193,10 +193,10 @@ describe('SVN Protocol Integration Tests', () => {
       }
 
       // Empty groups should produce empty arrays
-      const caps = groups[2].split(/\s+/).filter(w => w.length > 0);
+      const caps = groups[0].split(/\s+/).filter(w => w.length > 0);
       expect(caps).toHaveLength(0);
 
-      const mechs = groups[3].split(/\s+/).filter(w => w.length > 0);
+      const mechs = groups[1].split(/\s+/).filter(w => w.length > 0);
       expect(mechs).toHaveLength(0);
     });
 

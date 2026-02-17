@@ -46,7 +46,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 554,
           path: '/live/stream1',
           timeout: 3000,
@@ -63,7 +63,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 554,
           timeout: 3000,
         }),
@@ -79,7 +79,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 554,
           username: 'admin',
           password: 'admin',
@@ -129,7 +129,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 554,
           path: '/cam/realmonitor',
           timeout: 3000,
@@ -159,7 +159,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 554,
           timeout: 5000,
         }),
@@ -196,7 +196,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 554,
           timeout: 3000,
         }),
@@ -211,7 +211,7 @@ describe('RTSP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 8554,
           timeout: 3000,
         }),

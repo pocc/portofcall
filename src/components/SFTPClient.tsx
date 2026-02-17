@@ -116,6 +116,10 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
         <div className="protocol-info">Port 22 - SSH File Transfer Protocol</div>
       </div>
 
+      <div className="info-box" style={{ marginBottom: '1rem', borderColor: '#f59e0b', background: 'rgba(245,158,11,0.08)', color: '#fcd34d' }}>
+        <strong>Connectivity test only.</strong> Clicking Connect verifies TCP reachability and reads the SSH banner. All file operations (list, upload, download, delete, mkdir, rename) are not implemented — every file operation endpoint returns 501. Full SFTP requires a browser-side SSH library negotiating the SFTP subsystem over a WebSocket tunnel.
+      </div>
+
       {!connected ? (
         <div className="connection-form">
           <h3>Connect to SFTP Server</h3>

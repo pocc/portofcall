@@ -5,21 +5,22 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api/ftp';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const FTP_BASE = `${API_BASE}/ftp`;
 
-// Test server credentials (public test server)
+// Test server credentials (local docker vsftpd server)
 const FTP_CONFIG = {
-  host: 'ftp.dlptest.com',
+  host: 'localhost',
   port: 21,
-  username: 'dlpuser@dlptest.com',
-  password: 'SzMf7rTE4pCrf9dV286GuNe4N',
+  username: 'testuser',
+  password: 'testpass123',
 };
 
 describe('FTP Protocol Integration Tests', () => {
   // Test 1: Connection
   describe('FTP Connect', () => {
     it('should connect to FTP server successfully', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${FTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(FTP_CONFIG),
@@ -34,7 +35,7 @@ describe('FTP Protocol Integration Tests', () => {
     });
 
     it('should fail with invalid credentials', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${FTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -49,7 +50,7 @@ describe('FTP Protocol Integration Tests', () => {
     });
 
     it('should fail with missing parameters', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${FTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -67,7 +68,7 @@ describe('FTP Protocol Integration Tests', () => {
   // Test 2: List Directory
   describe('FTP List', () => {
     it('should list directory contents', async () => {
-      const response = await fetch(`${API_BASE}/list`, {
+      const response = await fetch(`${FTP_BASE}/list`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -103,7 +104,7 @@ describe('FTP Protocol Integration Tests', () => {
         path: '/',
       });
 
-      const response = await fetch(`${API_BASE}/list?${params}`);
+      const response = await fetch(`${FTP_BASE}/list?${params}`);
       expect(response.ok).toBe(true);
 
       const data = await response.json();
@@ -126,7 +127,7 @@ describe('FTP Protocol Integration Tests', () => {
       formData.append('remotePath', '/vitest-upload.txt');
       formData.append('file', blob, 'test.txt');
 
-      const response = await fetch(`${API_BASE}/upload`, {
+      const response = await fetch(`${FTP_BASE}/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -148,7 +149,7 @@ describe('FTP Protocol Integration Tests', () => {
       formData.append('remotePath', '/test.txt');
       // Missing file
 
-      const response = await fetch(`${API_BASE}/upload`, {
+      const response = await fetch(`${FTP_BASE}/upload`, {
         method: 'POST',
         body: formData,
       });
@@ -162,7 +163,7 @@ describe('FTP Protocol Integration Tests', () => {
   // Test 4: Download File
   describe('FTP Download', () => {
     it('should download file successfully', async () => {
-      const response = await fetch(`${API_BASE}/download`, {
+      const response = await fetch(`${FTP_BASE}/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -179,7 +180,7 @@ describe('FTP Protocol Integration Tests', () => {
     });
 
     it('should fail with non-existent file', async () => {
-      const response = await fetch(`${API_BASE}/download`, {
+      const response = await fetch(`${FTP_BASE}/download`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -198,7 +199,7 @@ describe('FTP Protocol Integration Tests', () => {
   // Test 5: Rename File
   describe('FTP Rename', () => {
     it('should rename file successfully', async () => {
-      const response = await fetch(`${API_BASE}/rename`, {
+      const response = await fetch(`${FTP_BASE}/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -216,7 +217,7 @@ describe('FTP Protocol Integration Tests', () => {
     });
 
     it('should fail with non-existent source file', async () => {
-      const response = await fetch(`${API_BASE}/rename`, {
+      const response = await fetch(`${FTP_BASE}/rename`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -235,7 +236,7 @@ describe('FTP Protocol Integration Tests', () => {
   // Test 6: Delete File
   describe('FTP Delete', () => {
     it('should delete file successfully', async () => {
-      const response = await fetch(`${API_BASE}/delete`, {
+      const response = await fetch(`${FTP_BASE}/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -252,7 +253,7 @@ describe('FTP Protocol Integration Tests', () => {
     });
 
     it('should handle delete of non-existent file', async () => {
-      const response = await fetch(`${API_BASE}/delete`, {
+      const response = await fetch(`${FTP_BASE}/delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -271,7 +272,7 @@ describe('FTP Protocol Integration Tests', () => {
   describe('FTP Mkdir', () => {
     it('should create directory successfully', async () => {
       const timestamp = Date.now();
-      const response = await fetch(`${API_BASE}/mkdir`, {
+      const response = await fetch(`${FTP_BASE}/mkdir`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -291,7 +292,7 @@ describe('FTP Protocol Integration Tests', () => {
   // Test 8: API Error Handling
   describe('FTP Error Handling', () => {
     it('should return 405 for GET on upload endpoint', async () => {
-      const response = await fetch(`${API_BASE}/upload`, {
+      const response = await fetch(`${FTP_BASE}/upload`, {
         method: 'GET',
       });
 
@@ -299,7 +300,7 @@ describe('FTP Protocol Integration Tests', () => {
     });
 
     it('should handle network errors gracefully', async () => {
-      const response = await fetch(`${API_BASE}/connect`, {
+      const response = await fetch(`${FTP_BASE}/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

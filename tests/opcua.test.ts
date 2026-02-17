@@ -46,7 +46,7 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4840,
           timeout: 3000,
         }),
@@ -62,9 +62,9 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4840,
-          endpointUrl: 'opc.tcp://192.0.2.1:4840/custom/path',
+          endpointUrl: 'opc.tcp://unreachable-host-12345.invalid:4840/custom/path',
           timeout: 3000,
         }),
       });
@@ -78,7 +78,7 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4841,
           timeout: 3000,
         }),
@@ -110,7 +110,7 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4840,
           timeout: 3000,
         }),
@@ -126,9 +126,9 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4840,
-          endpointUrl: 'opc.tcp://192.0.2.1:4840/discovery',
+          endpointUrl: 'opc.tcp://unreachable-host-12345.invalid:4840/discovery',
           timeout: 3000,
         }),
       });
@@ -179,7 +179,7 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4840,
           timeout: 3000,
         }),
@@ -194,7 +194,7 @@ describe('OPC UA Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 4841,
           timeout: 3000,
         }),

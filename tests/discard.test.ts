@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg';
+const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('DISCARD Protocol Integration Tests', () => {
   describe('POST /api/discard/send', () => {
     it('should send data and report statistics', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -30,7 +30,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should reject missing host', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -46,7 +46,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should reject missing data', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -62,7 +62,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should reject empty data', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -79,7 +79,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should reject invalid port', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -96,7 +96,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should handle special characters in data', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -114,7 +114,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should handle 1KB of data', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -132,7 +132,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should handle 10KB of data', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -151,7 +151,7 @@ describe('DISCARD Protocol Integration Tests', () => {
     });
 
     it('should reject data exceeding 1MB', async () => {
-      const response = await fetch(`${API_BASE}/api/discard/send`, {
+      const response = await fetch(`${API_BASE}/discard/send`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

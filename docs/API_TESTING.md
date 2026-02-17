@@ -2,6 +2,23 @@
 
 This guide provides curl commands to test all Port of Call API endpoints.
 
+## Local vs Production Testing
+
+All examples below use the production URL `https://portofcall.ross.gg/api`. For local development:
+
+```bash
+# Set this environment variable to test against a local Worker
+export API_BASE=http://localhost:8787/api
+
+# Then run tests
+npm test
+# or curl against localhost:
+curl http://localhost:8787/api/ftp/connect ...
+```
+
+> **Note:** Protocols that connect to `localhost` (FTP, Redis, databases) require a local Worker (`npx wrangler dev`) since the production Worker cannot reach your machine's localhost.
+> See [LOCAL_TESTING.md](LOCAL_TESTING.md) for Docker setup.
+
 ## FTP Protocol Endpoints
 
 All FTP operations have been implemented and tested against public FTP test servers.

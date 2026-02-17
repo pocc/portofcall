@@ -19,7 +19,7 @@ describe('AFP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Non-routable, will timeout
+          host: 'unreachable-host-12345.invalid', // Non-routable, will timeout
           port: 548,
           timeout: 3000,
         }),
@@ -29,7 +29,7 @@ describe('AFP Protocol Integration Tests', () => {
 
       // Either succeeds with server info or fails with connection error
       if (data.success) {
-        expect(data.host).toBe('192.0.2.1');
+        expect(data.host).toBe('unreachable-host-12345.invalid');
         expect(data.port).toBe(548);
         expect(data.status).toBeDefined();
         expect(typeof data.connectTime).toBe('number');
@@ -96,7 +96,7 @@ describe('AFP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           timeout: 2000,
         }),
       });
@@ -113,7 +113,7 @@ describe('AFP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1', // Non-routable address
+          host: 'unreachable-host-12345.invalid', // Non-routable address
           port: 548,
           timeout: 2000,
         }),
@@ -132,7 +132,7 @@ describe('AFP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 548,
           timeout: 3000,
         }),

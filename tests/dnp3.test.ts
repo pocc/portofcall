@@ -46,7 +46,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           timeout: 3000,
         }),
@@ -62,7 +62,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           destination: 10,
           source: 5,
@@ -96,7 +96,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           classNum: 5,
         }),
       });
@@ -112,7 +112,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           classNum: -1,
         }),
       });
@@ -128,7 +128,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           destination: 1,
           source: 3,
@@ -147,7 +147,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           classNum: 1,
           timeout: 3000,
@@ -164,7 +164,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           classNum: 2,
           timeout: 3000,
@@ -181,7 +181,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           classNum: 3,
           timeout: 3000,
@@ -236,7 +236,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           timeout: 3000,
         }),
@@ -251,7 +251,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20001,
           timeout: 3000,
         }),
@@ -268,7 +268,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           classNum: 0,
           timeout: 3000,
@@ -284,7 +284,7 @@ describe('DNP3 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.0.2.1',
+          host: 'unreachable-host-12345.invalid',
           port: 20000,
           destination: 100,
           source: 50,

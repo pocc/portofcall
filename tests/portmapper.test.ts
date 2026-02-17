@@ -208,7 +208,7 @@ describe('Portmapper / rpcbind Protocol Integration Tests', () => {
 
       // Verify last-fragment bit is set
       const readBack = view.getUint32(0);
-      expect(readBack & 0x80000000).toBe(0x80000000);
+      expect((readBack & 0x80000000) >>> 0).toBe(0x80000000);
 
       // Verify length
       expect(readBack & 0x7FFFFFFF).toBe(40);

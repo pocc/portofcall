@@ -57,6 +57,21 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ⚠️  FTP server issues (dlptest.com credentials changed)
 - **Documentation**: README.md
 
+### FTPS (FTP over TLS)
+- **Port**: 990 (implicit FTPS default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Implicit FTPS: TLS from the first byte on port 990
+  - Server banner reading (220 welcome)
+  - FEAT command for feature enumeration
+  - SYST command for OS/system type detection
+  - TLS feature flags (AUTH TLS, PBSZ, PROT, UTF8, MLST, EPSV)
+  - Cloudflare detection
+  - RTT and connect-time reporting
+- **UI**: Yes (connection test with TLS feature display)
+- **Tests**: ⚠️ Awaiting deployment (8 integration tests)
+- **Documentation**: docs/protocols/FTPS.md
+
 ### Telnet
 - **Port**: 23 (default)
 - **Status**: ✅ Complete
@@ -69,6 +84,18 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes (full terminal with command input and history)
 - **Tests**: ✅ Passing (9/9)
 - **Documentation**: README.md
+
+### LMTP (Local Mail Transfer Protocol — RFC 2033)
+- **Port**: 24 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Connection test with LHLO capability discovery
+  - Full message delivery: LHLO → MAIL FROM → RCPT TO → DATA
+  - Multiple recipients with per-recipient delivery status (key LMTP feature)
+  - Cloudflare detection
+- **UI**: Yes (connection test + message composer with multi-recipient support)
+- **Tests**: ⚠️ Awaiting deployment (5 integration tests)
+- **Documentation**: docs/protocols/LMTP.md
 
 ### SMTP (Simple Mail Transfer Protocol)
 - **Port**: 25/587/465
@@ -349,6 +376,57 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ⚠️ Awaiting deployment
 - **Documentation**: docs/protocols/MATRIX.md
 
+### Chrome DevTools Protocol (CDP)
+- **Port**: 9222 (default)
+- **Status**: ✅ Complete
+- **Features**:
+  - Browser version and metadata detection (/json/version)
+  - Target enumeration (pages, workers, extensions)
+  - Available targets listing (/json/list)
+  - WebSocket debugger URL discovery
+  - Protocol specification query (/json/protocol)
+  - Browser info (Chrome version, V8, WebKit, User-Agent)
+  - HTTP/1.1 over raw TCP socket implementation
+  - **WebSocket tunnel for bidirectional CDP communication**
+  - **JSON-RPC 2.0 command execution (all CDP domains)**
+  - **JavaScript evaluation (Runtime.evaluate)**
+  - **Page navigation and control (Page.navigate)**
+  - **Screenshot capture (Page.captureScreenshot)**
+  - **PDF generation (Page.printToPDF)**
+  - **DOM inspection (DOM.getDocument)**
+  - **Network monitoring (Network.enable)**
+  - **CDP event subscriptions and real-time events**
+  - WebSocket frame parsing and masking
+  - Quick command buttons for common operations
+  - Support for launching new tabs (/json/new)
+- **UI**: Yes (connection form with endpoint query + WebSocket command execution)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: docs/protocols/CDP.md
+- **Note**: Requires Chrome/Chromium launched with --remote-debugging-port=9222
+
+### Node Inspector (V8 Inspector Protocol)
+- **Port**: 9229 (default)
+- **Status**: ✅ Complete
+- **Features**:
+  - Debugging session discovery (/json, /json/list)
+  - Node.js and V8 version detection (/json/version)
+  - WebSocket debugger URL discovery (UUID-based session paths)
+  - HTTP/1.1 over raw TCP socket implementation
+  - **WebSocket tunnel for bidirectional V8 Inspector Protocol communication**
+  - **JSON-RPC 2.0 command execution (all V8 Inspector domains)**
+  - **JavaScript evaluation (Runtime.evaluate)**
+  - **Heap usage inspection (Runtime.getHeapUsage)**
+  - **Debugger control (Debugger.enable/pause/resume)**
+  - **CPU profiling (Profiler.enable/start/stop)**
+  - **Memory snapshots and heap profiling**
+  - **Event subscriptions for debugging events**
+  - WebSocket frame parsing and masking
+  - Quick command buttons for common debugging operations
+- **UI**: Yes (session discovery + WebSocket command execution)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: docs/protocols/NODE-INSPECTOR.md
+- **Note**: Requires Node.js launched with --inspect or --inspect-brk flag
+
 ### Minecraft RCON (Source RCON Protocol)
 - **Port**: 25575 (default)
 - **Status**: ✅ Complete (not yet deployed)
@@ -363,6 +441,26 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes (connection + command execution with history)
 - **Tests**: ⚠️ Awaiting deployment (11 integration tests)
 - **Documentation**: docs/protocols/MINECRAFT_RCON.md
+
+### Source RCON (Steam/Valve Games)
+- **Port**: 27015 (default, configurable)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Valve Source RCON binary protocol (same as Minecraft RCON)
+  - Password authentication (SERVERDATA_AUTH)
+  - Command execution (SERVERDATA_EXECCOMMAND)
+  - Multi-packet response parsing
+  - Input validation (host, port, password, command length)
+  - Quick command buttons for Source Engine games (status, users, changelevel, etc.)
+  - Player management commands (kick, ban, say)
+  - Map control commands (changelevel, maps *, mp_restartgame)
+  - Game-specific commands (CS:GO, TF2, L4D2, GMod)
+  - Command history with re-execution
+- **UI**: Yes (connection + command execution with Source-specific commands)
+- **Tests**: ⚠️ Awaiting deployment (20 integration tests)
+- **Documentation**: docs/protocols/SOURCE_RCON.md
+- **Supported Games**: CS:GO, CS:Source, TF2, L4D2, HL2DM, Portal 2, Garry's Mod, DoD:S
+- **Use Cases**: Game server administration, player management, map rotation, server monitoring
 
 ### PPTP (RFC 2637)
 - **Port**: 1723 (default)
@@ -404,6 +502,21 @@ This document tracks all protocols that have been fully implemented in Port of C
   - Response parsing with answer extraction
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (7 real-world tests)
+
+### DoT (DNS over TLS — RFC 7858)
+- **Port**: 853 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TLS-encrypted DNS queries (prevents eavesdropping)
+  - A, AAAA, MX, TXT, NS, CNAME, SOA, SRV, PTR, ANY record types
+  - Binary DNS protocol over TLS with 2-byte TCP length prefix
+  - Response parsing with answer/authority/additional sections
+  - RTT and TLS connect-time reporting
+  - Pre-configured public DoT servers (Cloudflare, Google, Quad9, AdGuard)
+  - Input validation (domain, port, record type)
+- **UI**: Yes (domain + record type + server quick-select buttons)
+- **Tests**: ⚠️ Awaiting deployment (5 integration tests)
+- **Documentation**: docs/protocols/DOT.md
 
 ### Gopher (RFC 1436)
 - **Port**: 70 (default)
@@ -467,6 +580,21 @@ This document tracks all protocols that have been fully implemented in Port of C
   - Username/password authentication (RFC 1929)
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (3 real-world tests)
+
+### SLP (Service Location Protocol — RFC 2608)
+- **Port**: 427 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Service Type Request (SrvTypeRqst) — enumerate all available service types
+  - Service Request (SrvRqst) — find services by type with optional LDAP predicate
+  - Attribute Request (AttrRqst) — fetch key/value attributes for a service URL
+  - Full SLP v2 binary protocol (header + length-prefixed strings)
+  - SLP error code decoding (LANGUAGE_NOT_SUPPORTED, SCOPE_NOT_SUPPORTED, etc.)
+  - Clickable service type → Find flow; clickable URL → Attributes flow
+  - Cloudflare detection
+- **UI**: Yes (three-tab interface: Service Types / Find Services / Attributes)
+- **Tests**: ⚠️ Awaiting deployment (14 integration tests)
+- **Documentation**: docs/protocols/SLP.md
 
 ### Modbus (ICS/SCADA)
 - **Port**: 502 (default)
@@ -584,6 +712,63 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (2 real-world tests)
 
+### Oracle Database (TNS Protocol)
+- **Port**: 1521 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TNS (Transparent Network Substrate) protocol handshake
+  - CONNECT/ACCEPT/REFUSE packet handling
+  - Service Name connection (Oracle 8i+ modern method)
+  - SID connection (legacy method)
+  - Protocol version detection (TNS 314 / 0x013A)
+  - SDU size and MTU negotiation
+  - Server capability detection
+  - Connection refusal reason parsing
+  - Cloudflare detection
+- **UI**: Yes (service name vs SID selection, connection test)
+- **Tests**: ⚠️ Awaiting deployment (13 integration tests)
+- **Documentation**: docs/protocols/ORACLE.md
+- **Complexity**: Very High (proprietary protocol, reverse-engineered)
+
+### Chrome DevTools Protocol (CDP)
+- **Port**: 9222 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Browser version and metadata detection
+  - Target enumeration (pages, workers, service workers, iframes)
+  - WebSocket debugger URL discovery
+  - HTTP JSON endpoint queries (/json/version, /json/list, /json/protocol)
+  - CDP protocol specification retrieval
+  - Browser information (Chrome version, V8, WebKit, User-Agent)
+  - Raw HTTP/1.1 over TCP implementation
+  - Chunked transfer encoding support
+  - Cloudflare detection
+- **UI**: Yes (connection discovery + query interface with quick actions)
+- **Tests**: ⚠️ Awaiting deployment (15 integration tests)
+- **Documentation**: docs/protocols/CDP.md
+- **Use Cases**: Remote browser debugging, automation (Puppeteer/Playwright), performance monitoring
+- **Complexity**: High (HTTP-based discovery, WebSocket JSON-RPC for full functionality)
+- **Note**: HTTP discovery endpoints only - WebSocket command execution not yet implemented
+
+### SAP MaxDB
+- **Port**: 7200 (default X Server), 7210 (sql6)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - X Server connectivity testing
+  - Binary protocol packet construction
+  - Port 7200 (legacy) and 7210 (modern) support
+  - Database name specification
+  - Response hex dump analysis
+  - MaxDB signature detection
+  - Timeout handling
+  - Cloudflare detection
+- **UI**: Yes (connection form with port quick-select buttons)
+- **Tests**: ⚠️ Awaiting deployment (13 integration tests)
+- **Documentation**: docs/protocols/MAXDB.md
+- **Use Cases**: SAP database connectivity testing, X Server health monitoring, network validation
+- **Complexity**: Medium-High (proprietary NI/NISSL protocol)
+- **Note**: Connection probing only - no authentication or SQL execution
+
 ### VNC (RFB Protocol)
 - **Port**: 5900 (default)
 - **Status**: ✅ Complete (not yet deployed)
@@ -670,6 +855,23 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (2 real-world tests)
 
+### JSON-RPC 2.0 (over HTTP/TCP)
+- **Port**: 8545 (Ethereum default), 8332 (Bitcoin default), configurable
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - JSON-RPC 2.0 method calls with positional or named params
+  - Batch requests (multiple calls in one HTTP request)
+  - Basic Auth support (Bitcoin RPC, secured endpoints)
+  - Configurable HTTP path (default `/`)
+  - Chunked transfer encoding support
+  - Raw HTTP/1.1 over TCP socket
+  - Quick call buttons for Ethereum (eth_blockNumber, eth_chainId, net_version, web3_clientVersion, eth_gasPrice, net_peerCount) and Bitcoin (getblockchaininfo, getblockcount, getnetworkinfo, getmininginfo)
+- **UI**: Yes (connection form + method/params input with quick call buttons)
+- **Tests**: ⚠️ Awaiting deployment (9 integration tests)
+- **Documentation**: docs/protocols/JSONRPC.md
+- **Use Cases**: Ethereum node interaction, Bitcoin RPC, custom JSON-RPC services
+- **Spec**: https://www.jsonrpc.org/specification
+
 ### Docker API (Engine API)
 - **Port**: 2375 (HTTP), 2376 (HTTPS)
 - **Status**: ✅ Complete (not yet deployed)
@@ -707,6 +909,42 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ✅ Passing (26 integration tests)
 - **Documentation**: docs/protocols/ETCD.md
 - **Use Cases**: Kubernetes cluster coordination, distributed configuration, service discovery
+
+### EPP (Extensible Provisioning Protocol)
+- **Port**: 700 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **RFCs**: 5730 (base), 5731 (domain), 5732 (host), 5733 (contact), 5734 (TCP transport)
+- **Features**:
+  - XML-based protocol with 4-byte big-endian length-prefixed framing
+  - Connect & Hello handshake (server greeting)
+  - Login authentication (SASL PLAIN)
+  - Domain availability check (check command)
+  - Service name/SID support
+  - Object URIs (domain, contact, host)
+  - Transaction ID (clTRID) generation
+  - XML response parsing (result code, messages)
+  - Cloudflare detection
+- **UI**: Yes (connection test + login + domain check)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: RFCs 5730-5734
+- **Use Cases**: Domain registration, registrar-registry provisioning, domain availability queries
+- **Complexity**: High (XML protocol with length-prefixed framing, authenticated commands)
+- **Note**: Only basic operations implemented (connect, login, domain check) - no create/transfer/update/delete
+
+### FastCGI
+- **Port**: 9000 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - FCGI_GET_VALUES probe (server capability discovery: max conns, max reqs, multiplexing)
+  - Full CGI request (BEGIN_REQUEST + PARAMS + STDIN → STDOUT/STDERR/END_REQUEST)
+  - Binary record format with 8-byte header and name-value pair encoding
+  - Response header parsing from FCGI_STDOUT
+  - Protocol status and exit code reporting
+  - Cloudflare detection
+- **UI**: Yes (probe tab + request tab with SCRIPT_FILENAME/REQUEST_URI fields)
+- **Tests**: ⚠️ Awaiting deployment (14 integration tests)
+- **Documentation**: docs/protocols/FASTCGI.md
+- **Use Cases**: PHP-FPM health checks, WSGI application testing, backend connectivity validation
 
 ### AJP (Apache JServ Protocol)
 - **Port**: 8009 (default)
@@ -798,6 +1036,421 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Tests**: ⚠️ Awaiting deployment (9 integration tests)
 - **Note**: File transfers (P2P) not implemented - out of scope
 
+### Gadu-Gadu (GG)
+- **Port**: 8074 (default), 443 (fallback)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TCP connectivity testing
+  - Binary protocol (Little-Endian)
+  - GG_WELCOME packet parsing (seed extraction)
+  - GG32 hash algorithm (legacy)
+  - SHA-1 hash algorithm (modern)
+  - GG_LOGIN80 authentication packet building
+  - Login success/failure detection (GG_LOGIN80_OK/FAILED)
+  - UIN (User Identification Number) validation (1-99999999)
+  - Cloudflare detection
+  - Timing statistics (connect, welcome, login)
+  - Hash type selection (gg32 or sha1)
+- **UI**: Yes (connection form with UIN, password, hash type)
+- **Tests**: ⚠️ Awaiting deployment (10 integration tests)
+- **Documentation**: docs/protocols/GADUGADU.md
+- **Use Cases**: Polish instant messenger connectivity, protocol research, authentication testing
+- **Complexity**: Medium (proprietary binary protocol with password hashing)
+- **Note**: Connection and authentication only - messaging not implemented
+
+### Rlogin (RFC 1282)
+- **Port**: 513 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TCP connectivity testing
+  - Rlogin handshake (null byte + localUser\0remoteUser\0terminal/speed\0)
+  - Server acceptance/rejection detection (first byte \0 = accepted)
+  - Banner reading after handshake
+  - WebSocket tunnel for interactive sessions
+  - Terminal type and speed configuration
+  - Cloudflare detection
+  - RTT measurement
+- **UI**: Yes (connection form with local/remote user, terminal type)
+- **Tests**: ⚠️ Awaiting deployment (6 integration tests)
+- **Security Note**: No encryption, no host key verification — cleartext credentials. Use SSH instead.
+- **Complexity**: Low (simple binary handshake)
+
+### Rexec (BSD Remote Execution)
+- **Port**: 512 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - TCP connectivity testing
+  - Full Rexec handshake (stderr port \0 + username\0 + password\0 + command\0)
+  - Server acceptance/rejection detection (first byte \0 = success, \1 = error)
+  - Command output reading (up to 10 chunks, 2s timeout)
+  - WebSocket tunnel for interactive stdin/stdout sessions
+  - Cloudflare detection
+  - RTT measurement
+  - GET (query params) and POST (JSON body) support
+- **UI**: Yes (connection form with host/port/username/password/command, security warning)
+- **Tests**: ⚠️ Awaiting deployment (5 integration tests)
+- **Documentation**: docs/protocols/REXEC.md
+- **Security Note**: Cleartext username and password — superseded by SSH. Use only for legacy system testing.
+- **Complexity**: Low (simple null-delimited text handshake)
+- **Note**: Stderr channel not implemented (Workers cannot accept inbound TCP connections for the secondary port)
+
+### HTTP Proxy / CONNECT (RFC 9110 §9.3.6)
+- **Port**: 3128 (Squid default), 8080, 8888
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Forward proxy probe: sends absolute-URI GET request (`GET http://example.com/ HTTP/1.1`)
+  - CONNECT tunnel test: sends `CONNECT host:port HTTP/1.1` and reads tunnel establishment response
+  - HTTP 200 (tunnel established), 407 (auth required) response parsing
+  - Proxy type fingerprinting from response headers (Squid, Nginx, Apache, HAProxy, Varnish, Tinyproxy, Privoxy, CCProxy)
+  - Proxy-Authorization Basic auth support (user:password)
+  - Via / Proxy-Agent header detection and reporting
+  - Cloudflare detection
+  - RTT measurement
+  - GET (query params) and POST (JSON body) support for forward proxy probe
+- **UI**: Yes (proxy server config + forward proxy test + CONNECT tunnel test panels)
+- **Tests**: ⚠️ Awaiting deployment (7 integration tests)
+- **Documentation**: docs/protocols/HTTPPROXY.md
+- **Complexity**: Low (text-based HTTP, single TCP connection per operation)
+- **Comparison**: Complements SOCKS4/SOCKS5 proxy testing with HTTP-layer proxy capabilities
+
+### BGP (Border Gateway Protocol)
+- **Port**: 179 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **RFC**: RFC 4271 (BGP-4)
+- **Features**:
+  - TCP connectivity testing
+  - BGP OPEN message construction (16-byte 0xFF marker, version, AS, hold time, router ID)
+  - Server OPEN response parsing (peer AS, hold time, router ID)
+  - Capability detection (Multiprotocol Extensions, Route Refresh, 4-Octet AS, Graceful Restart, ADD-PATH, FQDN)
+  - KEEPALIVE exchange for session establishment confirmation
+  - NOTIFICATION parsing (error code, subcode, human-readable names)
+  - Cloudflare detection
+  - RTT and connect-time measurement
+- **UI**: Yes (host/port + localAS/routerID config, OPEN response with capabilities table, message type reference, AS range table)
+- **Tests**: ⚠️ Awaiting deployment (6 integration tests)
+- **Complexity**: Medium (binary protocol with BGP message framing)
+- **Note**: Sends OPEN for capability probing only — does not advertise or withdraw routes
+
+### Diameter Protocol
+- **Port**: 3868 (default), 3869 (TLS)
+- **Status**: ✅ Complete (not yet deployed)
+- **RFC**: RFC 6733
+- **Features**:
+  - Capabilities-Exchange-Request/Answer (CER/CEA) — peer capability negotiation
+  - Device-Watchdog-Request/Answer (DWR/DWA) — keepalive with RTT measurement
+  - AVP parsing (Origin-Host, Origin-Realm, Product-Name, Vendor-Id, Result-Code)
+  - Clean disconnect via Disconnect-Peer-Request (DPR)
+  - Cloudflare detection
+  - Configurable Origin-Host and Origin-Realm
+- **UI**: Yes (host/port/originHost/originRealm fields, two-step CER then DWR flow, AVP output)
+- **Tests**: ⚠️ Awaiting deployment (11 integration tests)
+- **Complexity**: Medium (binary protocol with Diameter message framing and AVP encoding)
+
+### SVN (Subversion)
+- **Port**: 3690 (default)
+- **Status**: ✅ Complete
+- **Features**: SVN protocol greeting and capability detection, anonymous repository probe
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Fluentd / Fluent-bit
+- **Port**: 24224 (default)
+- **Status**: ✅ Complete
+- **Features**: MessagePack-framed log forwarding, tag + JSON record sending, ACK detection
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### WinRM (Windows Remote Management)
+- **Port**: 5985 (HTTP), 5986 (HTTPS)
+- **Status**: ✅ Complete
+- **Features**: WSMAN Identify probe (anonymous), auth method detection, product vendor & version discovery
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### SPICE (Simple Protocol for Independent Computing Environments)
+- **Port**: 5900 (default)
+- **Status**: ✅ Complete
+- **Features**: SPICE handshake, server capabilities detection, VM display remoting probe
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Hazelcast IMDG
+- **Port**: 5701 (default)
+- **Status**: ✅ Complete
+- **Features**: Authentication & cluster probe, version & member count detection, cluster name discovery
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Zabbix
+- **Port**: 10050 (agent), 10051 (server)
+- **Status**: ✅ Complete
+- **Features**: Zabbix protocol header detection, agent.version query, active check capability
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### iSCSI
+- **Port**: 3260 (default)
+- **Status**: ✅ Complete
+- **Features**: iSCSI login negotiation, target discovery, SendTargets probe
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Icecast
+- **Port**: 8000 (default)
+- **Status**: ✅ Complete
+- **Features**: HTTP-based stream source connection, mountpoint listing, server info
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### DICOM (Digital Imaging and Communications in Medicine)
+- **Port**: 104 (default)
+- **Status**: ✅ Complete
+- **Features**: DICOM Association Request (A-ASSOCIATE-RQ), SOP class negotiation, AE title detection
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Apache Thrift
+- **Port**: 9090 (default)
+- **Status**: ✅ Complete
+- **Features**: Thrift binary/compact/JSON transport detection, service introspection probe
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### InfluxDB
+- **Port**: 8086 (default)
+- **Status**: ✅ Complete
+- **Features**: HTTP API version detection, health check, database listing (v1) / bucket listing (v2)
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Consul
+- **Port**: 8500 (default)
+- **Status**: ✅ Complete
+- **Features**: Agent info & version, service catalog enumeration, datacenter discovery
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Nomad
+- **Port**: 4646 (default)
+- **Status**: ✅ Complete
+- **Features**: Agent info & version, node & job listing, datacenter discovery
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### RADIUS (Remote Authentication Dial-In User Service)
+- **Port**: 1812 (auth), 1813 (accounting)
+- **Status**: ✅ Complete
+- **RFC**: RFC 2865
+- **Features**: Access-Request with MD5 password obfuscation, Access-Accept/Reject/Challenge detection, shared secret
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Kerberos
+- **Port**: 88 (default)
+- **Status**: ✅ Complete
+- **RFC**: RFC 4120
+- **Features**: AS-REQ probe for KDC detection, realm & principal enumeration, error code parsing
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### NFS (Network File System)
+- **Port**: 2049 (default)
+- **Status**: ✅ Complete
+- **RFC**: RFC 7530 (v4)
+- **Features**: NFSv4 NULL procedure probe, mount path enumeration, server detection
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### H.323 (ITU-T Video/Voice Conferencing)
+- **Port**: 1720 (default)
+- **Status**: ✅ Complete
+- **Features**: Q.931 SETUP message, H.225 capability exchange, endpoint type detection
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### SCCP (Cisco Skinny Client Control Protocol)
+- **Port**: 2000 (default)
+- **Status**: ✅ Complete
+- **Features**: Register request, station registration detection, Cisco IP phone protocol
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### MGCP (Media Gateway Control Protocol)
+- **Port**: 2427 (default)
+- **Status**: ✅ Complete
+- **RFC**: RFC 3435
+- **Features**: AUEP endpoint probe, gateway capability detection, response code parsing
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### OpenVPN
+- **Port**: 1194 (default)
+- **Status**: ✅ Complete
+- **Features**: P_CONTROL_HARD_RESET_CLIENT_V2 probe, TLS mode detection, server reset detection
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### Beats / Lumberjack v2 (Elastic)
+- **Port**: 5044 (default)
+- **Status**: ✅ Complete
+- **Features**: Lumberjack v2 binary framing, WINDOW/DATA/ACK frames, compressed JSON event batches
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### CoAP (Constrained Application Protocol)
+- **Port**: 5683 (default, TCP variant)
+- **Status**: ✅ Complete
+- **RFC**: RFC 7252 / RFC 8323 (TCP)
+- **Features**: GET/POST/PUT/DELETE methods, resource discovery (/.well-known/core), TCP framing
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### MSRP (Message Session Relay Protocol)
+- **Port**: 2855 (default)
+- **Status**: ✅ Complete
+- **RFC**: RFC 4975
+- **Features**: SEND request with To-Path/From-Path, transaction ID matching, MIME content type support
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### RadSec (RADIUS over TLS)
+- **Port**: 2083 (default)
+- **Status**: ✅ Complete
+- **RFC**: RFC 6614
+- **Features**: RADIUS over TLS (no shared secret), Access-Accept/Reject detection, eduroam / 802.1X
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### SIPS (SIP over TLS)
+- **Port**: 5061 (default)
+- **Status**: ✅ Complete
+- **RFC**: RFC 3261
+- **Features**: OPTIONS capability probe, REGISTER auth probe (401 detection), server & Allow header parsing
+- **UI**: Yes
+- **Tests**: ⚠️ Awaiting deployment
+
+### RSH (BSD Remote Shell)
+- **Port**: 514/tcp
+- **Status**: ✅ Complete
+- **RFC**: RFC 1282
+- **Features**:
+  - .rhosts trust handshake (no password sent)
+  - Privileged port rejection detection (Workers connect from port > 1023)
+  - Command execution with output streaming
+  - WebSocket tunnel for interactive use
+  - Cloudflare detection
+- **UI**: Yes (host/port/localUser/remoteUser/command fields, privileged port note)
+- **Tests**: ✅ 6 integration tests
+- **Documentation**: docs/protocols/RSH.md
+- **Complexity**: Low (text protocol, similar to Rexec/Rlogin)
+
+### Kubernetes API Server
+- **Port**: 6443 (default, HTTPS/TLS)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Health probe via `/healthz` endpoint (HTTPS over TLS)
+  - TCP latency measurement
+  - HTTP status and server header detection
+  - Auth requirement detection (401/403)
+  - Arbitrary API path query with Bearer token support
+  - Quick access to common endpoints (/version, /api, /apis, /api/v1/namespaces, /api/v1/nodes, /api/v1/pods)
+  - Cloudflare detection
+- **UI**: Yes (probe + query interface with quick path buttons)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: https://kubernetes.io/docs/reference/using-api/
+- **Complexity**: Medium (HTTPS REST, Bearer token auth)
+- **Note**: Health endpoints often require no auth; all resource endpoints require a ServiceAccount token
+
+### UUCP (Unix-to-Unix Copy Protocol)
+- **Port**: 540 (uucpd)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Wakeup handshake (`\r\0`)
+  - Server system name extraction from greeting (`Shere\0`)
+  - System name negotiation (`S{name}\0`)
+  - TCP latency measurement
+  - Cloudflare detection
+- **UI**: Yes (host/port/system name + probe button)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: RFC 976
+- **Complexity**: Low (legacy binary handshake)
+- **Note**: UUCP is a historical protocol; modern systems rarely run it. Security warning displayed in UI.
+
+### Perforce Helix Core (p4d)
+- **Port**: 1666 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Protocol negotiation probe (binary tagged key-value pairs)
+  - Server version detection
+  - Server info query (address, date, license, root, case handling)
+  - TCP latency measurement
+  - Cloudflare detection
+- **UI**: Yes (host/port + "Probe (Protocol)" and "Server Info" buttons)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: Perforce technical notes
+- **Complexity**: Medium (proprietary binary protocol, reverse-engineered)
+
+### Quake 3 Arena / id Tech 3
+- **Port**: 27960 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - `getstatus` — full server variables + player list
+  - `getinfo` — summary query (no player details)
+  - OOB packet format (`\xFF\xFF\xFF\xFF{command}\n`)
+  - `\key\value\` server variable parsing
+  - Player line parsing (score, ping, name)
+  - UDP latency measurement
+  - Cloudflare detection
+- **UI**: Yes (host/port + getstatus/getinfo buttons + server vars + player table)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: id Software Quake 3 networking docs
+- **Complexity**: Low (UDP OOB packets, text parsing)
+- **Note**: Protocol shared by Quake 3, Urban Terror, OpenArena, and many other id Tech 3 games
+
+### collectd (Binary Protocol)
+- **Port**: 25826 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Listen for pushed metric data (server broadcast detection)
+  - TLV (Type-Length-Value) part decoding
+  - GAUGE metric send (plugin/type/value)
+  - UDP latency measurement
+  - Cloudflare detection
+- **UI**: Yes (probe listen tab + metric send form with plugin/type/value fields)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: collectd binary protocol spec
+- **Complexity**: Medium (binary TLV, big-endian encoding)
+
+### Ethereum P2P / RLPx
+- **Port**: 30303 (default)
+- **Status**: ✅ Complete (partial — not yet deployed)
+- **Features**:
+  - TCP connectivity check
+  - RLPx fingerprinting (EIP-8 or legacy 307-byte auth-message detection)
+  - Received bytes analysis
+  - TCP latency measurement
+  - Cloudflare detection
+- **UI**: Yes (host/port + probe button + limitations disclosure)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: https://github.com/ethereum/devp2p/blob/master/rlpx.md
+- **Complexity**: Very High (full RLPx requires secp256k1 ECIES — unavailable in Workers)
+- **Note**: Full handshake not possible in Cloudflare Workers (no secp256k1); probe confirms port open + fingerprints initial bytes
+
+### IPFS / libp2p (Multistream-Select)
+- **Port**: 4001 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - libp2p multistream-select protocol negotiation
+  - Varint-prefixed message encoding/decoding
+  - `ls` command for available protocol listing
+  - Protocol negotiation (/p2p/0.1.0, /ipfs/0.1.0, /ipfs/kad/1.0.0)
+  - TCP latency measurement
+  - Cloudflare detection
+- **UI**: Yes (host/port + probe button + negotiated/unsupported protocol lists)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: https://github.com/multiformats/multistream-select
+- **Complexity**: Medium (custom varint framing + multistream protocol)
+
 ## 🔒 Security Features
 
 ### Cloudflare Detection
@@ -808,9 +1461,9 @@ This document tracks all protocols that have been fully implemented in Port of C
 
 ## Summary
 
-- **Total Implemented**: 60 protocols + 1 security feature
+- **Total Implemented**: 109 protocols + 1 security feature
 - **Deployed & Passing**: 14 protocols
-- **Awaiting Deployment**: 46 protocols
-- **Real-World Usage Tests**: 270 integration tests covering all protocols with realistic hosts/ports/parameters
+- **Awaiting Deployment**: 69 protocols
+- **Real-World Usage Tests**: 403 integration tests covering all protocols with realistic hosts/ports/parameters
 - **Test Coverage** (by protocol):
-  - POP3 (18), IMAP (17), Redis (17), Docker (14), SSH (14), SMTP (14), MQTT (13), LDAP (13), MySQL (12), SMB (10), Discard (9), Echo (9), PostgreSQL (9), Telnet (9), Syslog (11+11), SOCKS4 (10+7), WHOIS (8+8), SFTP (7), TCP Ping (6), Cloudflare Detection (5), DNS (7), Memcached (6), SOCKS5 (3), Modbus (5), MongoDB (4), Graphite (4), RCON (5), Git (4), ZooKeeper (4), Rsync (5), IRC (4), Gopher (4), Gemini (3), NNTP (3), AMQP (3), Kafka (3), RTSP (3), CHARGEN (3), Cassandra (3), STOMP (2), TDS (2), VNC (2), Neo4j (2), RTMP (2), TACACS+ (2), HL7 (2), Elasticsearch (2), AJP (2), XMPP (2), RDP (2), NATS (2), JetDirect (2), Daytime (4), Time (4), Finger (6)
+  - Source RCON (20), POP3 (18), IMAP (17), Redis (17), CDP (15), Docker (14), SSH (14), SMTP (14), Oracle (13), MaxDB (13), MQTT (13), LDAP (13), MySQL (12), SMB (10), Gadu-Gadu (10), Discard (9), Napster (9), PPTP (9), Echo (9), PostgreSQL (9), Telnet (9), Beanstalkd (8), Syslog (11+11), SOCKS4 (10+7), WHOIS (8+8), LPD (7), 9P (7), SFTP (7), DNS (7), HTTP Proxy (7), BGP (6), Ventrilo (6), Rlogin (6), Finger (6), TCP Ping (6), Memcached (6), Cloudflare Detection (5), RCON (5), Rexec (5), DoT (5), Rsync (5), Modbus (5), LMTP (5), MongoDB (4), Graphite (4), Git (4), ZooKeeper (4), IRC (4), Gopher (4), Daytime (4), Time (4), Gemini (3), NNTP (3), AMQP (3), Kafka (3), RTSP (3), CHARGEN (3), Cassandra (3), STOMP (2), TDS (2), VNC (2), Neo4j (2), RTMP (2), TACACS+ (2), HL7 (2), Elasticsearch (2), AJP (2), XMPP (2), RDP (2), NATS (2), JetDirect (2)

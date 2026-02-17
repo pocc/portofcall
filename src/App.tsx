@@ -216,6 +216,12 @@ const IKEClient = lazy(() => import('./components/IKEClient'));
 const L2TPClient = lazy(() => import('./components/L2TPClient'));
 const TURNClient = lazy(() => import('./components/TURNClient'));
 const KubernetesClient = lazy(() => import('./components/KubernetesClient'));
+const UUCPClient = lazy(() => import('./components/UUCPClient'));
+const PerforceClient = lazy(() => import('./components/PerforceClient'));
+const Quake3Client = lazy(() => import('./components/Quake3Client'));
+const CollectdClient = lazy(() => import('./components/CollectdClient'));
+const EthereumClient = lazy(() => import('./components/EthereumClient'));
+const IPFSClient = lazy(() => import('./components/IPFSClient'));
 type Protocol =
   | 'echo'
   | 'activeusers'
@@ -428,6 +434,12 @@ type Protocol =
   | 'l2tp'
   | 'turn'
   | 'kubernetes'
+  | 'uucp'
+  | 'perforce'
+  | 'quake3'
+  | 'collectd'
+  | 'ethereum'
+  | 'ipfs'
   | 'tcp'
   | null;
 
@@ -876,6 +888,18 @@ function App() {
         return <TURNClient onBack={handleBack} />;
       case 'kubernetes':
         return <KubernetesClient onBack={handleBack} />;
+      case 'uucp':
+        return <UUCPClient onBack={handleBack} />;
+      case 'perforce':
+        return <PerforceClient onBack={handleBack} />;
+      case 'quake3':
+        return <Quake3Client onBack={handleBack} />;
+      case 'collectd':
+        return <CollectdClient onBack={handleBack} />;
+      case 'ethereum':
+        return <EthereumClient onBack={handleBack} />;
+      case 'ipfs':
+        return <IPFSClient onBack={handleBack} />;
       case 'tcp':
         return <TcpClient onBack={handleBack} />;
       default:

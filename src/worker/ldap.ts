@@ -1,6 +1,6 @@
 /**
  * LDAP Protocol Support for Cloudflare Workers
- * Implements basic LDAP connectivity testing with BIND operation
+ * Implements LDAP operations: BIND, SEARCH, ADD, MODIFY, DELETE
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -13,6 +13,384 @@ export interface LDAPConnectionOptions {
   password?: string;
   timeout?: number;
 }
+
+// ---------------------------------------------------------------------------
+// ASN.1/BER encoding helpers
+// ---------------------------------------------------------------------------
+
+function berLength(n: number): number[] {
+  if (n < 128) return [n];
+  const bytes: number[] = [];
+  let v = n;
+  while (v > 0) { bytes.unshift(v & 0xFF); v >>= 8; }
+  return [0x80 | bytes.length, ...bytes];
+}
+
+function berTLV(tag: number, data: number[]): number[] {
+  return [tag, ...berLength(data.length), ...data];
+}
+
+function berInteger(value: number): number[] {
+  if (value >= 0 && value < 128) return [0x02, 0x01, value];
+  const bytes: number[] = [];
+  let v = value;
+  // Handle negative numbers and multi-byte
+  if (v < 0) {
+    // Two's complement: use 4 bytes
+    const u = v >>> 0;
+    return [0x02, 0x04,
+      (u >> 24) & 0xFF, (u >> 16) & 0xFF, (u >> 8) & 0xFF, u & 0xFF];
+  }
+  while (v > 0) { bytes.unshift(v & 0xFF); v >>= 8; }
+  if (bytes[0] & 0x80) bytes.unshift(0x00);
+  return [0x02, bytes.length, ...bytes];
+}
+
+function berEnumerated(value: number): number[] {
+  return [0x0A, 0x01, value];
+}
+
+function berOctetString(s: string): number[] {
+  const b = new TextEncoder().encode(s);
+  return berTLV(0x04, Array.from(b));
+}
+
+function berSequence(data: number[]): number[] {
+  return berTLV(0x30, data);
+}
+
+function ldapMessage(msgId: number, protocolOp: number[]): Uint8Array {
+  const msg = [...berInteger(msgId), ...protocolOp];
+  return new Uint8Array(berSequence(msg));
+}
+
+// ---------------------------------------------------------------------------
+// Length-aware reader for plain LDAP (no TLS)
+// ---------------------------------------------------------------------------
+
+function parseLength(data: Uint8Array, offset: number): { length: number; bytesRead: number } {
+  if (data[offset] < 128) return { length: data[offset], bytesRead: 1 };
+  const numBytes = data[offset] & 0x7F;
+  let length = 0;
+  for (let i = 0; i < numBytes; i++) length = (length << 8) | data[offset + 1 + i];
+  return { length, bytesRead: 1 + numBytes };
+}
+
+async function readLDAPData(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  const maxBytes = 131072;
+
+  const readPromise = (async () => {
+    while (totalBytes < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      totalBytes += value.length;
+
+      const combined = new Uint8Array(totalBytes);
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+
+      if (combined.length >= 2) {
+        let expectedLen: number;
+        if (combined[1] < 128) {
+          expectedLen = 2 + combined[1];
+        } else {
+          const numBytes = combined[1] & 0x7F;
+          if (combined.length < 2 + numBytes) continue;
+          let len = 0;
+          for (let i = 0; i < numBytes; i++) len = (len << 8) | combined[2 + i];
+          expectedLen = 2 + numBytes + len;
+        }
+        if (totalBytes >= expectedLen) break;
+      }
+    }
+    const result = new Uint8Array(totalBytes);
+    let off = 0;
+    for (const c of chunks) { result.set(c, off); off += c.length; }
+    return result;
+  })();
+
+  return Promise.race([
+    readPromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('LDAP read timeout')), timeoutMs)
+    ),
+  ]);
+}
+
+async function readLDAPSearchData(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  const maxBytes = 131072;
+
+  const readPromise = (async () => {
+    while (totalBytes < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      totalBytes += value.length;
+
+      const combined = new Uint8Array(totalBytes);
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+
+      // Scan for SearchResultDone (0x65) tag inside any SEQUENCE
+      let scanOff = 0;
+      let foundDone = false;
+      while (scanOff < combined.length) {
+        if (combined[scanOff] !== 0x30) break;
+        scanOff++;
+        if (scanOff >= combined.length) break;
+        const lenInfo = parseLength(combined, scanOff);
+        scanOff += lenInfo.bytesRead;
+        const msgEnd = scanOff + lenInfo.length;
+        // Skip message ID
+        if (scanOff < combined.length && combined[scanOff] === 0x02) {
+          scanOff++;
+          const idLen = parseLength(combined, scanOff);
+          scanOff += idLen.bytesRead + idLen.length;
+        }
+        if (scanOff < combined.length && combined[scanOff] === 0x65) {
+          foundDone = true;
+          break;
+        }
+        scanOff = msgEnd;
+      }
+      if (foundDone) break;
+    }
+
+    const result = new Uint8Array(totalBytes);
+    let off = 0;
+    for (const c of chunks) { result.set(c, off); off += c.length; }
+    return result;
+  })();
+
+  return Promise.race([
+    readPromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('LDAP search timeout')), timeoutMs)
+    ),
+  ]);
+}
+
+// ---------------------------------------------------------------------------
+// BER response parsers
+// ---------------------------------------------------------------------------
+
+function parseLDAPResult(data: Uint8Array, expectedTag: number): {
+  success: boolean; resultCode: number; matchedDN: string; message: string;
+} {
+  let offset = 0;
+  if (data[offset] !== 0x30) return { success: false, resultCode: -1, matchedDN: '', message: 'Expected SEQUENCE' };
+  offset++;
+  const seqLen = parseLength(data, offset); offset += seqLen.bytesRead;
+
+  // Skip message ID
+  if (data[offset] === 0x02) {
+    offset++;
+    const idLen = parseLength(data, offset); offset += idLen.bytesRead + idLen.length;
+  }
+
+  if (data[offset] !== expectedTag) {
+    return { success: false, resultCode: -1, matchedDN: '', message: `Expected tag 0x${expectedTag.toString(16)}, got 0x${data[offset].toString(16)}` };
+  }
+  offset++;
+  const opLen = parseLength(data, offset); offset += opLen.bytesRead;
+
+  // resultCode (ENUMERATED)
+  let resultCode = -1;
+  if (data[offset] === 0x0A) {
+    offset++;
+    const rcLen = parseLength(data, offset); offset += rcLen.bytesRead;
+    resultCode = data[offset]; offset += rcLen.length;
+  }
+
+  // matchedDN (OCTET STRING)
+  let matchedDN = '';
+  if (offset < data.length && data[offset] === 0x04) {
+    offset++;
+    const dnLen = parseLength(data, offset); offset += dnLen.bytesRead;
+    if (dnLen.length > 0) matchedDN = new TextDecoder().decode(data.slice(offset, offset + dnLen.length));
+    offset += dnLen.length;
+  }
+
+  // diagnosticMessage (OCTET STRING)
+  let diagMessage = '';
+  if (offset < data.length && data[offset] === 0x04) {
+    offset++;
+    const msgLen = parseLength(data, offset); offset += msgLen.bytesRead;
+    if (msgLen.length > 0) diagMessage = new TextDecoder().decode(data.slice(offset, offset + msgLen.length));
+  }
+
+  const ldapMessages: Record<number, string> = {
+    0: 'Success', 1: 'Operations error', 2: 'Protocol error', 7: 'Auth method not supported',
+    8: 'Stronger auth required', 16: 'No such attribute', 17: 'Undefined attribute type',
+    20: 'Attribute or value exists', 21: 'Invalid attribute syntax', 32: 'No such object',
+    34: 'Invalid DN syntax', 48: 'Inappropriate authentication', 49: 'Invalid credentials',
+    50: 'Insufficient access rights', 53: 'Unwilling to perform', 64: 'Naming violation',
+    65: 'Object class violation', 68: 'Entry already exists', 69: 'Object class mods prohibited',
+  };
+
+  const msg = diagMessage || ldapMessages[resultCode] || `LDAP result code: ${resultCode}`;
+  return { success: resultCode === 0, resultCode, matchedDN, message: msg };
+}
+
+function parseLDAPSearchResults(data: Uint8Array): {
+  entries: Array<{ dn: string; attributes: Array<{ type: string; values: string[] }> }>;
+  resultCode: number;
+  message: string;
+} {
+  const entries: Array<{ dn: string; attributes: Array<{ type: string; values: string[] }> }> = [];
+  let resultCode = -1;
+  let message = '';
+  let offset = 0;
+
+  while (offset < data.length) {
+    if (data[offset] !== 0x30) break;
+    offset++;
+    const seqLen = parseLength(data, offset); offset += seqLen.bytesRead;
+    const messageEnd = offset + seqLen.length;
+
+    // Skip message ID
+    if (data[offset] === 0x02) {
+      offset++;
+      const idLen = parseLength(data, offset); offset += idLen.bytesRead + idLen.length;
+    }
+
+    const tag = data[offset];
+
+    if (tag === 0x64) {
+      // SearchResultEntry (APPLICATION 4)
+      offset++;
+      const entryLen = parseLength(data, offset); offset += entryLen.bytesRead;
+
+      let dn = '';
+      if (data[offset] === 0x04) {
+        offset++;
+        const dnLen = parseLength(data, offset); offset += dnLen.bytesRead;
+        if (dnLen.length > 0) dn = new TextDecoder().decode(data.slice(offset, offset + dnLen.length));
+        offset += dnLen.length;
+      }
+
+      const attributes: Array<{ type: string; values: string[] }> = [];
+      if (data[offset] === 0x30) {
+        offset++;
+        const attrsLen = parseLength(data, offset); offset += attrsLen.bytesRead;
+        const attrsEnd = offset + attrsLen.length;
+
+        while (offset < attrsEnd) {
+          if (data[offset] !== 0x30) break;
+          offset++;
+          const attrLen = parseLength(data, offset); offset += attrLen.bytesRead;
+
+          let attrType = '';
+          if (data[offset] === 0x04) {
+            offset++;
+            const typeLen = parseLength(data, offset); offset += typeLen.bytesRead;
+            if (typeLen.length > 0) attrType = new TextDecoder().decode(data.slice(offset, offset + typeLen.length));
+            offset += typeLen.length;
+          }
+
+          const values: string[] = [];
+          if (data[offset] === 0x31) {
+            offset++;
+            const setLen = parseLength(data, offset); offset += setLen.bytesRead;
+            const setEnd = offset + setLen.length;
+            while (offset < setEnd) {
+              if (data[offset] === 0x04) {
+                offset++;
+                const valLen = parseLength(data, offset); offset += valLen.bytesRead;
+                if (valLen.length > 0) values.push(new TextDecoder().decode(data.slice(offset, offset + valLen.length)));
+                offset += valLen.length;
+              } else break;
+            }
+          }
+          if (attrType) attributes.push({ type: attrType, values });
+        }
+      }
+      entries.push({ dn, attributes });
+      offset = messageEnd;
+    } else if (tag === 0x65) {
+      // SearchResultDone (APPLICATION 5)
+      offset++;
+      const doneLen = parseLength(data, offset); offset += doneLen.bytesRead;
+      if (data[offset] === 0x0A) {
+        offset++;
+        const rcLen = parseLength(data, offset); offset += rcLen.bytesRead;
+        resultCode = data[offset]; offset += rcLen.length;
+      }
+      // Skip matched DN
+      if (offset < data.length && data[offset] === 0x04) {
+        offset++;
+        const dnLen = parseLength(data, offset); offset += dnLen.bytesRead + dnLen.length;
+      }
+      // Diagnostic message
+      if (offset < data.length && data[offset] === 0x04) {
+        offset++;
+        const msgLen = parseLength(data, offset); offset += msgLen.bytesRead;
+        if (msgLen.length > 0) message = new TextDecoder().decode(data.slice(offset, offset + msgLen.length));
+        offset += msgLen.length;
+      }
+      break;
+    } else {
+      offset = messageEnd;
+    }
+  }
+
+  return { entries, resultCode, message };
+}
+
+// ---------------------------------------------------------------------------
+// Shared bind helper: open socket, bind, return socket/reader/writer
+// ---------------------------------------------------------------------------
+
+async function ldapBindOnSocket(
+  host: string,
+  port: number,
+  bindDn: string,
+  password: string,
+  timeoutMs: number
+): Promise<{
+  socket: ReturnType<typeof connect>;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+}> {
+  const socket = connect(`${host}:${port}`);
+  await socket.opened;
+
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
+
+  const bindReq = ldapMessage(1, berTLV(0x60, [
+    ...berInteger(3),
+    ...berOctetString(bindDn),
+    ...berTLV(0x80, Array.from(new TextEncoder().encode(password))),
+  ]));
+  await writer.write(bindReq);
+
+  const bindData = await readLDAPData(reader, timeoutMs);
+  const bindResult = parseLDAPResult(bindData, 0x61);
+  if (!bindResult.success) {
+    reader.releaseLock();
+    writer.releaseLock();
+    await socket.close();
+    throw new Error(`Bind failed (code ${bindResult.resultCode}): ${bindResult.message}`);
+  }
+
+  return { socket, reader, writer };
+}
+
+// ---------------------------------------------------------------------------
+// Legacy bind request used by handleLDAPConnect (kept for compatibility)
+// ---------------------------------------------------------------------------
 
 /**
  * Encode LDAP BIND request using ASN.1/BER
@@ -48,14 +426,14 @@ function encodeLDAPBindRequest(options: {
   const bindRequestEncoded = [bindTag, bindRequest.length, ...bindRequest];
 
   // Build LDAP message
-  const ldapMessage = [...messageId, ...bindRequestEncoded];
+  const ldapMessage_legacy = [...messageId, ...bindRequestEncoded];
 
   // Sequence tag (0x30) and length
-  const totalLength = ldapMessage.length;
+  const totalLength = ldapMessage_legacy.length;
 
   // Handle length encoding (simple case for lengths < 128)
   if (totalLength < 128) {
-    return new Uint8Array([0x30, totalLength, ...ldapMessage]);
+    return new Uint8Array([0x30, totalLength, ...ldapMessage_legacy]);
   } else {
     // Long form length encoding
     const lengthBytes = [];
@@ -64,7 +442,7 @@ function encodeLDAPBindRequest(options: {
       lengthBytes.unshift(len & 0xFF);
       len >>= 8;
     }
-    return new Uint8Array([0x30, 0x80 | lengthBytes.length, ...lengthBytes, ...ldapMessage]);
+    return new Uint8Array([0x30, 0x80 | lengthBytes.length, ...lengthBytes, ...ldapMessage_legacy]);
   }
 }
 
@@ -249,5 +627,405 @@ export async function handleLDAPConnect(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Encode a filter string into BER bytes
+// Supports: (attr=*) presence filter and (attr=value) equality filter
+// ---------------------------------------------------------------------------
+
+function encodeFilter(filter: string): number[] {
+  const presenceMatch = filter.match(/^\(([^=)]+)=\*\)$/);
+  if (presenceMatch) {
+    const attrBytes = new TextEncoder().encode(presenceMatch[1]);
+    return berTLV(0x87, Array.from(attrBytes));
+  }
+  const equalityMatch = filter.match(/^\(([^=)]+)=([^)]*)\)$/);
+  if (equalityMatch) {
+    const attrPart = berOctetString(equalityMatch[1]);
+    const valPart = berOctetString(equalityMatch[2]);
+    return berTLV(0xA3, [...attrPart, ...valPart]);
+  }
+  // Default: (objectClass=*) presence
+  const fallback = new TextEncoder().encode('objectClass');
+  return berTLV(0x87, Array.from(fallback));
+}
+
+// ---------------------------------------------------------------------------
+// handleLDAPSearch
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/ldap/search
+ * Body: { host, port=389, bindDn?, password?, baseDn, filter='(objectClass=*)',
+ *         scope=2, attributes=[], sizeLimit=100, timeout=15000 }
+ */
+export async function handleLDAPSearch(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDn?: string; password?: string;
+      baseDn: string; filter?: string; scope?: number; attributes?: string[];
+      sizeLimit?: number; timeout?: number;
+    };
+
+    const { host, port = 389, bindDn = '', password = '', baseDn,
+      filter = '(objectClass=*)', scope = 2, attributes = [],
+      sizeLimit = 100, timeout = 15000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!baseDn) {
+      return new Response(JSON.stringify({ success: false, error: 'baseDn is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
+
+      try {
+        // Build SearchRequest (APPLICATION 3 = 0x63)
+        const filterBytes = encodeFilter(filter);
+        // AttributeSelection: SEQUENCE OF LDAPString
+        const attrList = attributes.flatMap(a => berOctetString(a));
+        const attrSeq = berSequence(attrList);
+
+        const searchBody: number[] = [
+          ...berOctetString(baseDn),
+          ...berEnumerated(scope),
+          ...berEnumerated(0),         // derefAliases: neverDerefAliases
+          ...berInteger(sizeLimit),
+          ...berInteger(Math.floor(timeout / 1000)),
+          0x01, 0x01, 0x00,            // typesOnly BOOLEAN FALSE
+          ...filterBytes,
+          ...attrSeq,
+        ];
+        const searchReq = ldapMessage(2, berTLV(0x63, searchBody));
+        await writer.write(searchReq);
+
+        const rawData = await readLDAPSearchData(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const parsed = parseLDAPSearchResults(rawData);
+
+        // Unbind
+        const unbindReq = ldapMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true, host, port, baseDn, scope,
+          entries: parsed.entries,
+          resultCode: parsed.resultCode,
+          rtt,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Search failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleLDAPAdd
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/ldap/add
+ * Body: { host, port=389, bindDn, password, entry: { dn, attributes: {attrName: string|string[]} }, timeout=10000 }
+ */
+export async function handleLDAPAdd(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDn: string; password: string;
+      entry: { dn: string; attributes: Record<string, string | string[]> };
+      timeout?: number;
+    };
+
+    const { host, port = 389, bindDn, password, entry, timeout = 10000 } = body;
+
+    if (!host || !bindDn || !entry?.dn) {
+      return new Response(JSON.stringify({ success: false, error: 'host, bindDn, and entry.dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
+
+      try {
+        // Build AttributeList: SEQUENCE OF SEQUENCE { type, vals SET OF value }
+        const attrListBytes: number[] = [];
+        for (const [attrName, attrVal] of Object.entries(entry.attributes)) {
+          const vals = Array.isArray(attrVal) ? attrVal : [attrVal];
+          const valSet = vals.flatMap(v => berOctetString(v));
+          const valSetBer = berTLV(0x31, valSet);
+          const attrSeq = berSequence([...berOctetString(attrName), ...valSetBer]);
+          attrListBytes.push(...attrSeq);
+        }
+
+        // AddRequest (APPLICATION 8 = 0x68)
+        const addBody = [...berOctetString(entry.dn), ...berSequence(attrListBytes)];
+        const addReq = ldapMessage(2, berTLV(0x68, addBody));
+        await writer.write(addReq);
+
+        const respData = await readLDAPData(reader, timeout);
+        const rtt = Date.now() - startTime;
+
+        // AddResponse is APPLICATION 9 = 0x69
+        const result = parseLDAPResult(respData, 0x69);
+
+        const unbindReq = ldapMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return { success: result.success, host, port, dn: entry.dn, resultCode: result.resultCode, message: result.message, rtt };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Add failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleLDAPModify
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/ldap/modify
+ * Body: { host, port=389, bindDn, password, dn,
+ *         changes: Array<{operation:'add'|'replace'|'delete', attribute:string, values:string[]}>,
+ *         timeout=10000 }
+ */
+export async function handleLDAPModify(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDn: string; password: string;
+      dn: string;
+      changes: Array<{ operation: 'add' | 'replace' | 'delete'; attribute: string; values: string[] }>;
+      timeout?: number;
+    };
+
+    const { host, port = 389, bindDn, password, dn, changes, timeout = 10000 } = body;
+
+    if (!host || !bindDn || !dn || !changes) {
+      return new Response(JSON.stringify({ success: false, error: 'host, bindDn, dn, and changes are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
+
+      try {
+        const opCodes: Record<string, number> = { add: 0, delete: 1, replace: 2 };
+
+        // Build changes SEQUENCE OF SEQUENCE { operation ENUMERATED, modification PartialAttribute }
+        const changesBytes: number[] = [];
+        for (const change of changes) {
+          const opCode = opCodes[change.operation] ?? 0;
+          const valSet = change.values.flatMap(v => berOctetString(v));
+          const partialAttr = berSequence([
+            ...berOctetString(change.attribute),
+            ...berTLV(0x31, valSet),
+          ]);
+          const changeSeq = berSequence([...berEnumerated(opCode), ...partialAttr]);
+          changesBytes.push(...changeSeq);
+        }
+
+        // ModifyRequest APPLICATION 6 = 0x66
+        const modBody = [...berOctetString(dn), ...berSequence(changesBytes)];
+        const modReq = ldapMessage(2, berTLV(0x66, modBody));
+        await writer.write(modReq);
+
+        const respData = await readLDAPData(reader, timeout);
+        const rtt = Date.now() - startTime;
+
+        // ModifyResponse APPLICATION 7 = 0x67
+        const result = parseLDAPResult(respData, 0x67);
+
+        const unbindReq = ldapMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return { success: result.success, host, port, dn, resultCode: result.resultCode, message: result.message, rtt };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Modify failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// handleLDAPDelete
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/ldap/delete
+ * Body: { host, port=389, bindDn, password, dn, timeout=10000 }
+ */
+export async function handleLDAPDelete(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDn: string; password: string;
+      dn: string; timeout?: number;
+    };
+
+    const { host, port = 389, bindDn, password, dn, timeout = 10000 } = body;
+
+    if (!host || !bindDn || !dn) {
+      return new Response(JSON.stringify({ success: false, error: 'host, bindDn, and dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
+
+      try {
+        // DelRequest: APPLICATION 10 = 0x4a, content is the DN as raw bytes
+        const dnBytes = Array.from(new TextEncoder().encode(dn));
+        const delReq = ldapMessage(2, berTLV(0x4a, dnBytes));
+        await writer.write(delReq);
+
+        const respData = await readLDAPData(reader, timeout);
+        const rtt = Date.now() - startTime;
+
+        // DelResponse: APPLICATION 11 = 0x6b (standard LDAPResult inside SEQUENCE)
+        const result = parseLDAPResult(respData, 0x6b);
+
+        const unbindReq = ldapMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return { success: result.success, host, port, dn, resultCode: result.resultCode, message: result.message, rtt };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Delete failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

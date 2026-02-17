@@ -278,3 +278,415 @@ export async function handleXMPPConnect(request: Request): Promise<Response> {
     );
   }
 }
+
+/**
+ * Read XMPP stream until one of the given patterns appears or timeout.
+ */
+async function readUntil(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  patterns: string[],
+  timeoutMs: number,
+): Promise<string> {
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Read timeout')), timeoutMs),
+  );
+
+  const readPromise = (async () => {
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      if (patterns.some(p => buffer.includes(p))) return buffer;
+      if (buffer.length > 65536) return buffer;
+    }
+    return buffer;
+  })();
+
+  return Promise.race([readPromise, timeoutPromise]);
+}
+
+/**
+ * Open an XMPP stream and wait for stream features.
+ */
+async function openXMPPStream(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  domain: string,
+): Promise<string> {
+  const streamOpen =
+    `<?xml version='1.0'?>` +
+    `<stream:stream to='${domain}' xmlns='jabber:client' ` +
+    `xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>`;
+  await writer.write(encoder.encode(streamOpen));
+  return readUntil(reader, ['</stream:features>', '<stream:error', '</features>'], 5000);
+}
+
+/**
+ * Handle XMPP SASL PLAIN login, resource binding, and session establishment.
+ * POST /api/xmpp/login
+ *
+ * Accept JSON: {host, port?, username, password, timeout?}
+ */
+export async function handleXMPPLogin(request: Request): Promise<Response> {
+  try {
+    const { host, port = 5222, username, password, timeout = 15000 } = await request.json() as {
+      host: string; port?: number; username: string; password: string; timeout?: number;
+    };
+
+    if (!host || !username || !password) {
+      return new Response(JSON.stringify({
+        success: false, error: 'host, username, and password are required',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const domain = host;
+    const phases: string[] = [];
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const featuresXml = await openXMPPStream(writer, reader, domain);
+        phases.push('stream_opened');
+        const features = parseStreamFeatures(featuresXml);
+
+        if (!features.saslMechanisms.includes('PLAIN')) {
+          await socket.close();
+          return {
+            success: false, host, port, phases,
+            error: `SASL PLAIN not supported. Available: ${features.saslMechanisms.join(', ')}`,
+          };
+        }
+
+        // SASL PLAIN: base64(\0username\0password)
+        const authStr = btoa(`\0${username}\0${password}`);
+        await writer.write(encoder.encode(
+          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${authStr}</auth>`,
+        ));
+        phases.push('sasl_plain_sent');
+
+        const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
+        if (!authResp.includes('<success')) {
+          const failureMatch = authResp.match(/<([a-z-]+)\s*\/>/);
+          await socket.close();
+          return {
+            success: false, host, port, phases,
+            error: `SASL authentication failed: ${failureMatch?.[1] || 'unknown failure'}`,
+          };
+        }
+        phases.push('authenticated');
+
+        // Restart stream after auth
+        const newFeaturesXml = await openXMPPStream(writer, reader, domain);
+        phases.push('stream_restarted');
+        const newFeat = parseStreamFeatures(newFeaturesXml);
+
+        // Bind resource
+        await writer.write(encoder.encode(
+          `<iq type='set' id='bind1'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>portofcall</resource></bind></iq>`,
+        ));
+        const bindResp = await readUntil(reader, ['</iq>', '<iq '], 5000);
+        phases.push('resource_bound');
+        const jidMatch = bindResp.match(/<jid>([^<]+)<\/jid>/);
+        const jid = jidMatch?.[1] || `${username}@${domain}/portofcall`;
+
+        // Establish session (optional but commonly required)
+        if (newFeat.features.includes('session')) {
+          await writer.write(encoder.encode(
+            `<iq type='set' id='sess1'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>`,
+          ));
+          await readUntil(reader, ['</iq>'], 5000).catch(() => '');
+          phases.push('session_established');
+        }
+
+        try { await writer.write(encoder.encode('</stream:stream>')); } catch { /* ignore */ }
+        await socket.close();
+
+        return {
+          success: true, host, port, phases, jid, domain,
+          features: newFeat.features, saslMechanisms: features.saslMechanisms,
+          message: 'XMPP login successful',
+        };
+      } catch (error) {
+        try { await socket.close(); } catch { /* ignore */ }
+        return {
+          success: false, host, port, phases,
+          error: error instanceof Error ? error.message : 'XMPP login failed',
+        };
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'XMPP login failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle XMPP roster (contact list) retrieval.
+ * POST /api/xmpp/roster
+ *
+ * Accept JSON: {host, port?, username, password, timeout?}
+ */
+export async function handleXMPPRoster(request: Request): Promise<Response> {
+  try {
+    const { host, port = 5222, username, password, timeout = 20000 } = await request.json() as {
+      host: string; port?: number; username: string; password: string; timeout?: number;
+    };
+
+    if (!host || !username || !password) {
+      return new Response(JSON.stringify({
+        success: false, error: 'host, username, and password are required',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const domain = host;
+    const phases: string[] = [];
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const featuresXml = await openXMPPStream(writer, reader, domain);
+        phases.push('stream_opened');
+        const features = parseStreamFeatures(featuresXml);
+
+        if (!features.saslMechanisms.includes('PLAIN')) {
+          await socket.close();
+          return { success: false, host, port, phases, error: 'SASL PLAIN not available' };
+        }
+
+        const authStr = btoa(`\0${username}\0${password}`);
+        await writer.write(encoder.encode(
+          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${authStr}</auth>`,
+        ));
+        const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
+        if (!authResp.includes('<success')) {
+          await socket.close();
+          return { success: false, host, port, phases, error: 'Authentication failed' };
+        }
+        phases.push('authenticated');
+
+        const newFeatXml = await openXMPPStream(writer, reader, domain);
+        const newFeat = parseStreamFeatures(newFeatXml);
+        phases.push('stream_restarted');
+
+        await writer.write(encoder.encode(
+          `<iq type='set' id='bind1'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>portofcall</resource></bind></iq>`,
+        ));
+        const bindResp = await readUntil(reader, ['</iq>'], 5000);
+        const jidMatch = bindResp.match(/<jid>([^<]+)<\/jid>/);
+        const jid = jidMatch?.[1] || `${username}@${domain}/portofcall`;
+        phases.push('resource_bound');
+
+        if (newFeat.features.includes('session')) {
+          await writer.write(encoder.encode(
+            `<iq type='set' id='sess1'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>`,
+          ));
+          await readUntil(reader, ['</iq>'], 5000).catch(() => '');
+          phases.push('session_established');
+        }
+
+        // Request roster
+        await writer.write(encoder.encode(
+          `<iq type='get' id='roster1'><query xmlns='jabber:iq:roster'/></iq>`,
+        ));
+        const rosterResp = await readUntil(reader, ['</iq>', '<iq '], 8000);
+        phases.push('roster_received');
+
+        // Parse roster contacts
+        const contacts: Array<{ jid: string; name: string | null; subscription: string; groups: string[] }> = [];
+        const itemRegex = /<item\s+([^>]+)>/g;
+        let itemMatch;
+        while ((itemMatch = itemRegex.exec(rosterResp)) !== null) {
+          const attrs = itemMatch[1];
+          const getAttr = (name: string) => attrs.match(new RegExp(`${name}=['"]([^'"]+)['"]`))?.[1] || null;
+          const jidAttr = getAttr('jid');
+          if (!jidAttr) continue;
+          const groups: string[] = [];
+          const groupRegex = /<group>([^<]+)<\/group>/g;
+          let gm;
+          const ctx = rosterResp.substring(itemMatch.index, itemMatch.index + 500);
+          while ((gm = groupRegex.exec(ctx)) !== null) groups.push(gm[1]);
+          contacts.push({ jid: jidAttr, name: getAttr('name'), subscription: getAttr('subscription') || 'none', groups });
+        }
+
+        try { await writer.write(encoder.encode('</stream:stream>')); } catch { /* ignore */ }
+        await socket.close();
+
+        return { success: true, host, port, phases, jid, roster: { total: contacts.length, contacts } };
+      } catch (error) {
+        try { await socket.close(); } catch { /* ignore */ }
+        return { success: false, host, port, phases, error: error instanceof Error ? error.message : 'Roster fetch failed' };
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'XMPP roster failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle XMPP message send.
+ * POST /api/xmpp/message
+ *
+ * Accept JSON: {host, port?, username, password, recipient, message?, timeout?}
+ */
+export async function handleXMPPMessage(request: Request): Promise<Response> {
+  try {
+    const {
+      host, port = 5222, username, password, recipient,
+      message = 'Hello from PortOfCall', timeout = 20000,
+    } = await request.json() as {
+      host: string; port?: number; username: string; password: string;
+      recipient?: string; message?: string; timeout?: number;
+    };
+
+    if (!host || !username || !password) {
+      return new Response(JSON.stringify({
+        success: false, error: 'host, username, and password are required',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (!recipient) {
+      return new Response(JSON.stringify({ success: false, error: 'recipient is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const domain = host;
+    const phases: string[] = [];
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const featuresXml = await openXMPPStream(writer, reader, domain);
+        phases.push('stream_opened');
+        const features = parseStreamFeatures(featuresXml);
+
+        if (!features.saslMechanisms.includes('PLAIN')) {
+          await socket.close();
+          return { success: false, host, port, phases, error: 'SASL PLAIN not available' };
+        }
+
+        const authStr = btoa(`\0${username}\0${password}`);
+        await writer.write(encoder.encode(
+          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${authStr}</auth>`,
+        ));
+        const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
+        if (!authResp.includes('<success')) {
+          await socket.close();
+          return { success: false, host, port, phases, error: 'Authentication failed' };
+        }
+        phases.push('authenticated');
+
+        const newFeatXml = await openXMPPStream(writer, reader, domain);
+        const newFeat = parseStreamFeatures(newFeatXml);
+        phases.push('stream_restarted');
+
+        await writer.write(encoder.encode(
+          `<iq type='set' id='bind1'><bind xmlns='urn:ietf:params:xml:ns:xmpp-bind'><resource>portofcall</resource></bind></iq>`,
+        ));
+        const bindResp = await readUntil(reader, ['</iq>'], 5000);
+        const jidMatch = bindResp.match(/<jid>([^<]+)<\/jid>/);
+        const jid = jidMatch?.[1] || `${username}@${domain}/portofcall`;
+        phases.push('resource_bound');
+
+        if (newFeat.features.includes('session')) {
+          await writer.write(encoder.encode(
+            `<iq type='set' id='sess1'><session xmlns='urn:ietf:params:xml:ns:xmpp-session'/></iq>`,
+          ));
+          await readUntil(reader, ['</iq>'], 5000).catch(() => '');
+          phases.push('session_established');
+        }
+
+        // Escape XML special chars in message body
+        const escapedMsg = message
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+
+        const msgId = `poc_${Date.now()}`;
+        await writer.write(encoder.encode(
+          `<message to='${recipient}' type='chat' id='${msgId}'><body>${escapedMsg}</body></message>`,
+        ));
+        phases.push('message_sent');
+
+        // Brief pause to detect delivery error
+        const echoOrError = await readUntil(reader, ['<message ', '<presence ', '<iq '], 2000).catch(() => '');
+        const deliveryError = echoOrError.includes('<error') ? echoOrError.match(/<error[^>]*>([\s\S]*?)<\/error>/)?.[1] || null : null;
+
+        try { await writer.write(encoder.encode('</stream:stream>')); } catch { /* ignore */ }
+        await socket.close();
+
+        return {
+          success: true, host, port, phases, jid,
+          message: { to: recipient, body: message, id: msgId },
+          deliveryError,
+        };
+      } catch (error) {
+        try { await socket.close(); } catch { /* ignore */ }
+        return { success: false, host, port, phases, error: error instanceof Error ? error.message : 'Message send failed' };
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'XMPP message send failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

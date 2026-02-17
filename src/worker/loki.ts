@@ -359,3 +359,153 @@ export async function handleLokiMetrics(request: Request): Promise<Response> {
     });
   }
 }
+
+
+/**
+ * Handle Loki log push
+ * POST /api/loki/push
+ * Pushes log entries to Loki via POST /loki/api/v1/push.
+ * Accepts an array of log lines with optional labels and timestamps.
+ */
+export async function handleLokiPush(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number;
+      labels?: Record<string, string>;
+      lines: string[];
+      timestamp?: number;
+      timeout?: number;
+    };
+    if (!body.host || !Array.isArray(body.lines) || body.lines.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, lines[]' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 3100;
+    const timeout = body.timeout || 10000;
+    const labels = body.labels || { job: 'portofcall' };
+    const tsNs = body.timestamp
+      ? String(body.timestamp * 1_000_000_000)
+      : String(Date.now() * 1_000_000);
+
+    const labelsStr = '{' + Object.entries(labels).map(([k, v]) => k + '="' + v + '"').join(', ') + '}';
+    const entries = body.lines.map(line => [tsNs, line]);
+    const payload = JSON.stringify({
+      streams: [{ stream: labels, values: entries }],
+    });
+
+    // Use fetch() since we're sending JSON POST
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    const startTime = Date.now();
+
+    try {
+      const resp = await fetch('http://' + host + ':' + port + '/loki/api/v1/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      const rtt = Date.now() - startTime;
+      const respText = await resp.text();
+
+      return new Response(JSON.stringify({
+        success: resp.status === 204 || resp.status === 200,
+        host, port, rtt,
+        httpStatus: resp.status,
+        linesSubmitted: body.lines.length,
+        labels: labelsStr,
+        ...(resp.status !== 204 && resp.status !== 200
+          ? { error: respText || 'HTTP ' + resp.status }
+          : { message: body.lines.length + ' log line(s) pushed successfully' }),
+      }), { headers: { 'Content-Type': 'application/json' } });
+    } catch (fetchError) {
+      clearTimeout(timer);
+      return new Response(JSON.stringify({ success: false, error: fetchError instanceof Error ? fetchError.message : 'Push failed' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Loki range query
+ * POST /api/loki/range
+ * Queries log entries over a time range using LogQL.
+ * Uses /loki/api/v1/query_range.
+ */
+export async function handleLokiRangeQuery(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; query: string;
+      start?: string; end?: string; limit?: number; direction?: 'forward' | 'backward';
+      timeout?: number;
+    };
+    if (!body.host || !body.query) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, query' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 3100;
+    const timeout = body.timeout || 15000;
+    const now = Date.now();
+    const start = body.start || String(Math.floor((now - 3600000) * 1e6)); // 1hr ago in ns
+    const end = body.end || String(Math.floor(now * 1e6));
+    const limit = body.limit || 100;
+    const direction = body.direction || 'backward';
+
+    const params = new URLSearchParams({ query: body.query, start, end, limit: String(limit), direction });
+    const path = '/loki/api/v1/query_range?' + params.toString();
+
+    const result = await sendHttpGet(host, port, path, timeout);
+    const httpOk = result.statusCode >= 200 && result.statusCode < 300;
+
+    if (!httpOk) {
+      return new Response(JSON.stringify({ success: false, host, port, httpStatus: result.statusCode, error: result.body || 'HTTP ' + result.statusCode }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    interface LokiRangeResult {
+      data?: {
+        resultType?: string;
+        result?: Array<{ stream: Record<string,string>; values: [string, string][] }>;
+        stats?: Record<string, unknown>;
+      };
+      status?: string;
+    }
+    let parsed: LokiRangeResult = {};
+    try { parsed = JSON.parse(result.body) as LokiRangeResult; } catch { /* raw */ }
+
+    const streams = parsed?.data?.result ?? [];
+    const totalEntries = streams.reduce((sum, s) => sum + (s.values?.length ?? 0), 0);
+
+    const formattedStreams = streams.map(s => ({
+      stream: s.stream,
+      entryCount: s.values?.length ?? 0,
+      entries: s.values?.slice(0, 10).map(([ts, line]) => ({
+        timestamp: new Date(parseInt(ts) / 1e6).toISOString(),
+        line,
+      })),
+    }));
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, query: body.query, start, end, limit, direction,
+      streamCount: streams.length,
+      totalEntries,
+      streams: formattedStreams,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Range query failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

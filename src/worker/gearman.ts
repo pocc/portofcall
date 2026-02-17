@@ -347,3 +347,150 @@ export async function handleGearmanCommand(request: Request): Promise<Response> 
     );
   }
 }
+
+/**
+ * Handle Gearman job submission using the binary protocol.
+ * POST /api/gearman/submit
+ */
+export async function handleGearmanSubmit(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number;
+      functionName: string;
+      payload?: string;
+      uniqueId?: string;
+      background?: boolean;
+      timeout?: number;
+    };
+    const {
+      host, port = 4730, functionName, payload = '', uniqueId = '',
+      background = false, timeout = 8000,
+    } = body;
+
+    if (!host || !functionName) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, functionName' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const enc = new TextEncoder();
+    const socket = connect(`${host}:${port}`);
+    try {
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        // SUBMIT_JOB=7 (foreground) or SUBMIT_JOB_BG=18 (background)
+        const jobType = background ? 18 : 7;
+        const fnBytes = enc.encode(functionName);
+        const idBytes = enc.encode(uniqueId);
+        const payloadBytes = enc.encode(payload);
+
+        // data = functionName\0uniqueId\0payload
+        const dataLen = fnBytes.length + 1 + idBytes.length + 1 + payloadBytes.length;
+        const packet = new Uint8Array(12 + dataLen);
+        const pView = new DataView(packet.buffer);
+
+        // Magic: \x00REQ
+        packet[0] = 0x00; packet[1] = 0x52; packet[2] = 0x45; packet[3] = 0x51;
+        pView.setUint32(4, jobType, false);
+        pView.setUint32(8, dataLen, false);
+
+        let off = 12;
+        packet.set(fnBytes, off); off += fnBytes.length;
+        packet[off++] = 0x00;
+        packet.set(idBytes, off); off += idBytes.length;
+        packet[off++] = 0x00;
+        packet.set(payloadBytes, off);
+
+        await writer.write(packet);
+
+        // Read response header (12 bytes: magic + type + size)
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const deadline = Date.now() + timeout;
+
+        while (totalBytes < 12) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new Error('Timeout waiting for response header');
+          const tp = new Promise<{ done: true; value: undefined }>(r =>
+            setTimeout(() => r({ done: true, value: undefined }), Math.min(remaining, 3000))
+          );
+          const result = await Promise.race([reader.read(), tp]);
+          if (result.done || !result.value) break;
+          chunks.push(result.value);
+          totalBytes += result.value.length;
+        }
+
+        if (totalBytes < 12) {
+          return new Response(JSON.stringify({
+            success: false, host, port, error: 'Incomplete response header',
+          }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+        }
+
+        const headerBuf = new Uint8Array(totalBytes);
+        let hOff = 0;
+        for (const c of chunks) { headerBuf.set(c, hOff); hOff += c.length; }
+
+        const rView = new DataView(headerBuf.buffer);
+        const respType = rView.getUint32(4, false);
+        const respSize = rView.getUint32(8, false);
+
+        // Read remaining data bytes
+        while (totalBytes < 12 + respSize) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+          const tp = new Promise<{ done: true; value: undefined }>(r =>
+            setTimeout(() => r({ done: true, value: undefined }), Math.min(remaining, 2000))
+          );
+          const result = await Promise.race([reader.read(), tp]);
+          if (result.done || !result.value) break;
+          chunks.push(result.value);
+          totalBytes += result.value.length;
+        }
+
+        const fullBuf = new Uint8Array(totalBytes);
+        hOff = 0;
+        for (const c of chunks) { fullBuf.set(c, hOff); hOff += c.length; }
+
+        const dataBytes = fullBuf.slice(12, 12 + respSize);
+        const dataStr = new TextDecoder().decode(dataBytes);
+        const rtt = Date.now() - startTime;
+
+        // JOB_CREATED = 8
+        const success = respType === 8;
+        return new Response(JSON.stringify({
+          success,
+          host, port, rtt,
+          functionName, background,
+          responseType: respType,
+          jobHandle: success ? dataStr : undefined,
+          error: !success ? dataStr : undefined,
+          message: success
+            ? `Job submitted, handle: ${dataStr}`
+            : `Gearman error (type ${respType}): ${dataStr}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Gearman submit failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

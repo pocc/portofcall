@@ -406,3 +406,119 @@ export async function handleSolrQuery(request: Request): Promise<Response> {
     );
   }
 }
+
+/**
+ * Handle Solr document index
+ * POST /api/solr/index
+ * Adds or updates documents in a Solr core/collection.
+ * Sends JSON documents to /solr/{core}/update/json/docs?commit=true
+ */
+export async function handleSolrIndex(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; core: string;
+      documents: Record<string, unknown>[];
+      username?: string; password?: string;
+      commit?: boolean; timeout?: number;
+    };
+    if (!body.host || !body.core || !Array.isArray(body.documents) || body.documents.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, core, documents[]' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 8983;
+    const timeout = body.timeout || 15000;
+    const commit = body.commit !== false;
+    const authHeader = body.username
+      ? 'Basic ' + btoa(body.username + ':' + (body.password || ''))
+      : undefined;
+
+    const payload = JSON.stringify(body.documents);
+    const path = '/solr/' + body.core + '/update/json/docs' + (commit ? '?commit=true' : '?commit=false');
+
+    const result = await sendHttpRequest(host, port, 'POST', path, payload, authHeader, timeout);
+    const ok = result.statusCode >= 200 && result.statusCode < 300;
+
+    let parsed: Record<string, unknown> = {};
+    try { parsed = JSON.parse(result.body) as Record<string, unknown>; } catch { /* raw */ }
+
+    const responseHeader = parsed.responseHeader as Record<string, unknown> | undefined;
+    const status = responseHeader?.status as number | undefined;
+    const qtime = responseHeader?.QTime as number | undefined;
+
+    return new Response(JSON.stringify({
+      success: ok && status === 0,
+      host, port, core: body.core,
+      documentsIndexed: body.documents.length,
+      committed: commit,
+      status,
+      qtime,
+      httpStatus: result.statusCode,
+      ...((!ok || status !== 0)
+        ? { error: (parsed.error as Record<string, unknown>)?.msg || 'HTTP ' + result.statusCode }
+        : { message: body.documents.length + ' document(s) indexed successfully' }),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Index failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Solr document delete
+ * POST /api/solr/delete
+ * Deletes documents by query or by ID list.
+ */
+export async function handleSolrDelete(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; core: string;
+      ids?: string[]; query?: string;
+      username?: string; password?: string;
+      commit?: boolean; timeout?: number;
+    };
+    if (!body.host || !body.core || (!body.ids?.length && !body.query)) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, core, and either ids[] or query' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 8983;
+    const timeout = body.timeout || 10000;
+    const commit = body.commit !== false;
+    const authHeader = body.username
+      ? 'Basic ' + btoa(body.username + ':' + (body.password || ''))
+      : undefined;
+
+    const deleteCmd = body.ids
+      ? { delete: body.ids.map((id: string) => ({ id })) }
+      : { delete: { query: body.query } };
+    const payload = JSON.stringify(deleteCmd);
+    const path = '/solr/' + body.core + '/update' + (commit ? '?commit=true' : '?commit=false');
+
+    const result = await sendHttpRequest(host, port, 'POST', path, payload, authHeader, timeout);
+    const ok = result.statusCode >= 200 && result.statusCode < 300;
+
+    let parsed: Record<string, unknown> = {};
+    try { parsed = JSON.parse(result.body) as Record<string, unknown>; } catch { /* raw */ }
+
+    const responseHeader = parsed.responseHeader as Record<string, unknown> | undefined;
+    const status = responseHeader?.status as number | undefined;
+
+    return new Response(JSON.stringify({
+      success: ok && status === 0,
+      host, port, core: body.core,
+      deleteMode: body.ids ? 'by-id' : 'by-query',
+      count: body.ids?.length,
+      query: body.query,
+      committed: commit, status, httpStatus: result.statusCode,
+      ...((!ok || status !== 0) ? { error: 'HTTP ' + result.statusCode } : { message: 'Delete successful' }),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Delete failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

@@ -352,3 +352,240 @@ export async function handleCassandraConnect(request: Request): Promise<Response
     });
   }
 }
+
+
+// ============================================================
+// CQL Query Execution (handleCassandraQuery)
+// ============================================================
+
+// Extra opcodes for query path
+const OPCODE_QUERY_EXEC = 0x07;
+const OPCODE_AUTH_RESPONSE_FRAME = 0x0F;
+const OPCODE_AUTH_SUCCESS_RESP = 0x10;
+
+/** RESULT kind = Rows */
+const RESULT_KIND_ROWS = 0x0002;
+
+const CQL_TYPE_NAMES: Record<number, string> = {
+  0x0001: 'ascii',     0x0002: 'bigint',     0x0003: 'blob',
+  0x0004: 'boolean',   0x0005: 'counter',    0x0006: 'decimal',
+  0x0007: 'double',    0x0008: 'float',      0x0009: 'int',
+  0x000A: 'text',      0x000B: 'timestamp',  0x000C: 'uuid',
+  0x000D: 'varchar',   0x000E: 'varint',     0x000F: 'timeuuid',
+  0x0010: 'inet',      0x0011: 'date',       0x0012: 'time',
+  0x0013: 'smallint',  0x0014: 'tinyint',
+  0x0020: 'list',      0x0021: 'map',        0x0022: 'set',
+  0x0030: 'udt',       0x0031: 'tuple',
+};
+
+/** Read a CQL short string (2-byte big-endian length prefix). */
+function readCqlShortString(data: Uint8Array, offset: number): [string, number] {
+  const view = new DataView(data.buffer, data.byteOffset);
+  const len = view.getInt16(offset, false);
+  const str = new TextDecoder().decode(data.slice(offset + 2, offset + 2 + len));
+  return [str, offset + 2 + len];
+}
+
+/** Build AUTH_RESPONSE frame using SASL PLAIN: \0username\0password */
+function buildAuthResponseFrame(username: string, password: string): Uint8Array {
+  const enc = new TextEncoder();
+  const u = enc.encode(username);
+  const p = enc.encode(password);
+  const sasl = new Uint8Array(1 + u.length + 1 + p.length);
+  sasl[0] = 0x00;
+  sasl.set(u, 1);
+  sasl[1 + u.length] = 0x00;
+  sasl.set(p, 2 + u.length);
+  const body = new Uint8Array(4 + sasl.length);
+  new DataView(body.buffer).setInt32(0, sasl.length, false);
+  body.set(sasl, 4);
+  return buildFrame(OPCODE_AUTH_RESPONSE_FRAME, body, 2);
+}
+
+/**
+ * Build a QUERY frame.
+ * Body: [query_len 4B][query bytes][consistency 2B=ONE][flags 1B=0x00][page_size 4B=100]
+ */
+function buildQueryFrame(cql: string, stream = 3): Uint8Array {
+  const qBytes = new TextEncoder().encode(cql);
+  const body = new Uint8Array(4 + qBytes.length + 7);
+  const view = new DataView(body.buffer);
+  let off = 0;
+  view.setInt32(off, qBytes.length, false); off += 4;
+  body.set(qBytes, off); off += qBytes.length;
+  view.setInt16(off, 0x0001, false); off += 2;  // consistency ONE
+  body[off] = 0x00; off += 1;                   // flags none
+  view.setInt32(off, 100, false); off += 4;      // page_size 100
+  return buildFrame(OPCODE_QUERY_EXEC, body.slice(0, off), stream);
+}
+
+/**
+ * Parse a RESULT body with kind=Rows (0x0002).
+ * Returns column metadata and decoded row data.
+ */
+function parseResultRows(body: Uint8Array): {
+  columns: Array<{ keyspace: string; table: string; name: string; type: string }>;
+  rows: Array<Record<string, string | null>>;
+} {
+  const view = new DataView(body.buffer, body.byteOffset);
+  let off = 0;
+  const kind = view.getInt32(off, false); off += 4;
+  if (kind !== RESULT_KIND_ROWS) return { columns: [], rows: [] };
+  const flags = view.getInt32(off, false); off += 4;
+  const colCount = view.getInt32(off, false); off += 4;
+  const hasGlobal = (flags & 0x0001) !== 0;
+  let gKs = '', gTbl = '';
+  if (hasGlobal) {
+    [gKs, off] = readCqlShortString(body, off);
+    [gTbl, off] = readCqlShortString(body, off);
+  }
+  const columns: Array<{ keyspace: string; table: string; name: string; type: string }> = [];
+  for (let i = 0; i < colCount; i++) {
+    let ks = gKs, tbl = gTbl;
+    if (!hasGlobal) {
+      [ks, off] = readCqlShortString(body, off);
+      [tbl, off] = readCqlShortString(body, off);
+    }
+    let name: string;
+    [name, off] = readCqlShortString(body, off);
+    const typeId = view.getInt16(off, false); off += 2;
+    if (typeId === 0x0020 || typeId === 0x0022) off += 2;  // list/set: skip element type
+    else if (typeId === 0x0021) off += 4;                   // map: skip key+val types
+    columns.push({
+      keyspace: ks, table: tbl, name,
+      type: CQL_TYPE_NAMES[typeId] ?? ('0x' + typeId.toString(16)),
+    });
+  }
+  const rowCount = view.getInt32(off, false); off += 4;
+  const rows: Array<Record<string, string | null>> = [];
+  for (let r = 0; r < rowCount; r++) {
+    const row: Record<string, string | null> = {};
+    for (let c = 0; c < columns.length; c++) {
+      const cellLen = view.getInt32(off, false); off += 4;
+      if (cellLen === -1) {
+        row[columns[c].name] = null;
+      } else {
+        row[columns[c].name] = new TextDecoder().decode(body.slice(off, off + cellLen));
+        off += cellLen;
+      }
+    }
+    rows.push(row);
+  }
+  return { columns, rows };
+}
+
+/**
+ * Execute a CQL query and return parsed column/row results.
+ *
+ * POST /api/cassandra/query
+ * Body: { host, port?, timeout?, cql, username?, password? }
+ *
+ * Protocol flow: OPTIONS -> STARTUP -> (AUTH_RESPONSE if needed) -> QUERY -> parse RESULT
+ */
+export async function handleCassandraQuery(request: Request, _env: unknown): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      cql: string;
+      username?: string;
+      password?: string;
+    };
+    const { host, port = 9042, timeout = 15000, cql, username = '', password = '' } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!cql) {
+      return new Response(JSON.stringify({ success: false, error: 'CQL query is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        // Step 1: OPTIONS - discover server capabilities
+        await writer.write(buildOptionsFrame());
+        const optResp = await readFrame(reader);
+        let supported: Record<string, string[]> = {};
+        if (optResp.opcode === OPCODE_SUPPORTED) {
+          supported = parseStringMultimap(optResp.body);
+        }
+
+        // Step 2: STARTUP - negotiate CQL version
+        await writer.write(buildStartupFrame());
+        const startResp = await readFrame(reader);
+
+        if (startResp.opcode === OPCODE_AUTHENTICATE) {
+          // Server requires auth - send SASL PLAIN credentials
+          await writer.write(buildAuthResponseFrame(username, password));
+          const authResp = await readFrame(reader);
+          if (authResp.opcode !== OPCODE_AUTH_SUCCESS_RESP && authResp.opcode !== OPCODE_READY) {
+            const msg = authResp.opcode === OPCODE_ERROR
+              ? parseError(authResp.body).message
+              : getOpcodeName(authResp.opcode);
+            throw new Error(`Authentication failed: ${msg}`);
+          }
+        } else if (startResp.opcode === OPCODE_ERROR) {
+          const err = parseError(startResp.body);
+          throw new Error(`STARTUP failed: ${err.message} (code ${err.code})`);
+        } else if (startResp.opcode !== OPCODE_READY) {
+          throw new Error(`Unexpected STARTUP response: ${getOpcodeName(startResp.opcode)}`);
+        }
+
+        // Step 3: QUERY - execute CQL and parse result
+        await writer.write(buildQueryFrame(cql));
+        const queryResp = await readFrame(reader);
+        const rtt = Date.now() - startTime;
+
+        if (queryResp.opcode === OPCODE_ERROR) {
+          const err = parseError(queryResp.body);
+          writer.releaseLock(); reader.releaseLock(); socket.close();
+          return {
+            success: false, host, port, rtt,
+            error: `Query error: ${err.message} (code ${err.code})`,
+            cqlVersions: supported['CQL_VERSION'] ?? [],
+          };
+        }
+
+        let columns: Array<{ keyspace: string; table: string; name: string; type: string }> = [];
+        let rows: Array<Record<string, string | null>> = [];
+        if (queryResp.opcode === 0x08) { // RESULT opcode
+          ({ columns, rows } = parseResultRows(queryResp.body));
+        }
+
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return {
+          success: true, host, port, rtt,
+          cqlVersions: supported['CQL_VERSION'] ?? [],
+          columns, rows, rowCount: rows.length,
+        };
+      } catch (err) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

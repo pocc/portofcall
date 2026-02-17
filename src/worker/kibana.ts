@@ -255,3 +255,279 @@ export async function handleKibanaSavedObjects(request: Request): Promise<Respon
     });
   }
 }
+
+/**
+ * Send an HTTP request with optional Basic/API key auth, supporting any method.
+ */
+async function sendHttpWithAuth(
+  host: string,
+  port: number,
+  method: string,
+  path: string,
+  body?: string,
+  username?: string,
+  password?: string,
+  apiKey?: string,
+  timeout = 15000,
+): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  const socket = connect(`${host}:${port}`);
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  await Promise.race([socket.opened, timeoutPromise]);
+  const writer = socket.writable.getWriter();
+
+  let req = `${method} ${path} HTTP/1.1\r\n`;
+  req += `Host: ${host}:${port}\r\n`;
+  req += `Accept: application/json\r\n`;
+  req += `kbn-xsrf: true\r\n`;
+  req += `Connection: close\r\n`;
+  req += `User-Agent: PortOfCall/1.0\r\n`;
+
+  if (apiKey) {
+    req += `Authorization: ApiKey ${apiKey}\r\n`;
+  } else if (username && password) {
+    req += `Authorization: Basic ${btoa(`${username}:${password}`)}\r\n`;
+  }
+
+  if (body) {
+    const bodyBytes = encoder.encode(body);
+    req += `Content-Type: application/json\r\n`;
+    req += `Content-Length: ${bodyBytes.length}\r\n\r\n`;
+    await writer.write(encoder.encode(req));
+    await writer.write(bodyBytes);
+  } else {
+    req += `\r\n`;
+    await writer.write(encoder.encode(req));
+  }
+  writer.releaseLock();
+
+  const reader = socket.readable.getReader();
+  let response = '';
+  try {
+    while (true) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done || !value) break;
+      response += decoder.decode(value, { stream: true });
+      if (response.length > 512_000) break;
+    }
+  } catch { /* timeout or close */ } finally {
+    reader.releaseLock();
+    socket.close();
+  }
+
+  const headerEnd = response.indexOf('\r\n\r\n');
+  if (headerEnd === -1) throw new Error('Invalid HTTP response');
+
+  const headerSection = response.substring(0, headerEnd);
+  let bodySection = response.substring(headerEnd + 4);
+  const statusMatch = headerSection.split('\r\n')[0].match(/HTTP\/[\d.]+\s+(\d+)/);
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+  const respHeaders: Record<string, string> = {};
+  for (const line of headerSection.split('\r\n').slice(1)) {
+    const ci = line.indexOf(':');
+    if (ci > 0) respHeaders[line.substring(0, ci).trim().toLowerCase()] = line.substring(ci + 1).trim();
+  }
+
+  if (respHeaders['transfer-encoding']?.includes('chunked')) {
+    let decoded = '';
+    let remaining = bodySection;
+    while (remaining.length > 0) {
+      const le = remaining.indexOf('\r\n');
+      if (le === -1) break;
+      const cs = parseInt(remaining.substring(0, le), 16);
+      if (isNaN(cs) || cs === 0) break;
+      decoded += remaining.substring(le + 2, le + 2 + cs);
+      remaining = remaining.substring(le + 2 + cs + 2);
+    }
+    bodySection = decoded;
+  }
+
+  return { statusCode, headers: respHeaders, body: bodySection };
+}
+
+/**
+ * List Kibana data views / index patterns.
+ * GET /api/data_views (v8+) or /api/index_patterns (v7)
+ *
+ * Accept JSON: {host, port?, username?, password?, api_key?, space?, timeout?}
+ */
+export async function handleKibanaIndexPatterns(request: Request): Promise<Response> {
+  try {
+    const {
+      host, port = 5601, username, password, api_key, space, timeout = 15000,
+    } = await request.json() as {
+      host: string; port?: number; username?: string; password?: string;
+      api_key?: string; space?: string; timeout?: number;
+    };
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const isCloudflare = await checkIfCloudflare(host);
+    if (isCloudflare) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const prefix = space ? `/s/${space}` : '';
+    const start = Date.now();
+
+    let resp = await sendHttpWithAuth(host, port, 'GET', `${prefix}/api/data_views`, undefined, username, password, api_key, timeout);
+    if (resp.statusCode === 404) {
+      resp = await sendHttpWithAuth(host, port, 'GET', `${prefix}/api/index_patterns`, undefined, username, password, api_key, timeout);
+    }
+
+    const elapsed = Date.now() - start;
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = JSON.parse(resp.body); } catch { parsed = null; }
+
+    const dataViews = ((parsed?.data_views || parsed?.index_patterns) as Array<Record<string, unknown>>) ?? [];
+
+    return new Response(JSON.stringify({
+      success: resp.statusCode === 200, host, port, statusCode: resp.statusCode, responseTime: elapsed,
+      total: dataViews.length,
+      dataViews: dataViews.map(dv => ({
+        id: dv.id, name: dv.name || dv.title, title: dv.title,
+        timeFieldName: dv.timeFieldName, namespaces: dv.namespaces,
+      })),
+      error: resp.statusCode !== 200 ? resp.body.substring(0, 500) : undefined,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (e: unknown) {
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * List Kibana alerting rules.
+ * GET /api/alerting/rules/_find (v8+) with fallback to legacy alerts API.
+ *
+ * Accept JSON: {host, port?, username?, password?, api_key?, space?, timeout?}
+ */
+export async function handleKibanaAlerts(request: Request): Promise<Response> {
+  try {
+    const {
+      host, port = 5601, username, password, api_key, space, timeout = 15000,
+    } = await request.json() as {
+      host: string; port?: number; username?: string; password?: string;
+      api_key?: string; space?: string; timeout?: number;
+    };
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const isCloudflare = await checkIfCloudflare(host);
+    if (isCloudflare) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const prefix = space ? `/s/${space}` : '';
+    const start = Date.now();
+
+    let resp = await sendHttpWithAuth(
+      host, port, 'GET', `${prefix}/api/alerting/rules/_find?per_page=50`,
+      undefined, username, password, api_key, timeout,
+    );
+    if (resp.statusCode === 404) {
+      resp = await sendHttpWithAuth(
+        host, port, 'GET', `${prefix}/api/alerts/alerts/_find?per_page=50`,
+        undefined, username, password, api_key, timeout,
+      );
+    }
+
+    const elapsed = Date.now() - start;
+    let parsed: Record<string, unknown> | null = null;
+    try { parsed = JSON.parse(resp.body); } catch { parsed = null; }
+
+    const rules = (parsed?.data as Array<Record<string, unknown>>) ?? [];
+
+    return new Response(JSON.stringify({
+      success: resp.statusCode === 200, host, port, statusCode: resp.statusCode, responseTime: elapsed,
+      total: parsed?.total ?? rules.length,
+      rules: rules.map(r => ({
+        id: r.id, name: r.name, enabled: r.enabled,
+        ruleTypeId: r.rule_type_id || r.alertTypeId, schedule: r.schedule,
+        tags: r.tags, executionStatus: r.execution_status,
+        lastRun: r.last_run, nextRun: r.next_run,
+      })),
+      error: resp.statusCode !== 200 ? resp.body.substring(0, 500) : undefined,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (e: unknown) {
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Proxy a query through the Kibana console API to Elasticsearch.
+ * POST /api/console/proxy?path=<es_path>&method=GET
+ *
+ * Accept JSON: {host, port?, username?, password?, api_key?, query?, body?, space?, timeout?}
+ */
+export async function handleKibanaQuery(request: Request): Promise<Response> {
+  try {
+    const {
+      host, port = 5601, username, password, api_key, space,
+      query = '_cat/indices?v', body: esBody, timeout = 15000,
+    } = await request.json() as {
+      host: string; port?: number; username?: string; password?: string;
+      api_key?: string; space?: string; query?: string; body?: string; timeout?: number;
+    };
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const isCloudflare = await checkIfCloudflare(host);
+    if (isCloudflare) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const prefix = space ? `/s/${space}` : '';
+    const esPath = encodeURIComponent(query.startsWith('/') ? query : `/${query}`);
+    const esMethod = esBody ? 'POST' : 'GET';
+    const proxyPath = `${prefix}/api/console/proxy?path=${esPath}&method=${esMethod}`;
+    const start = Date.now();
+
+    const resp = await sendHttpWithAuth(
+      host, port, 'POST', proxyPath, esBody || undefined,
+      username, password, api_key, timeout,
+    );
+
+    const elapsed = Date.now() - start;
+    let parsedResult: unknown = null;
+    try { parsedResult = JSON.parse(resp.body); } catch { parsedResult = null; }
+
+    return new Response(JSON.stringify({
+      success: resp.statusCode >= 200 && resp.statusCode < 300,
+      host, port, statusCode: resp.statusCode, responseTime: elapsed,
+      esPath: query, result: parsedResult || resp.body.substring(0, 2000),
+      error: resp.statusCode >= 400 ? resp.body.substring(0, 500) : undefined,
+    }), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (e: unknown) {
+    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

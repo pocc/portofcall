@@ -424,3 +424,116 @@ export async function handleClamAVStats(request: Request): Promise<Response> {
     );
   }
 }
+
+/**
+ * Handle ClamAV INSTREAM scan — scan base64-encoded data for viruses
+ * POST /api/clamav/scan
+ */
+export async function handleClamAVScan(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number;
+      data: string; // base64-encoded data to scan
+      timeout?: number;
+    };
+    const { host, port = 3310, data, timeout = 15000 } = body;
+
+    if (!host || !data) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, data (base64)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Decode base64 data
+    let scanData: Uint8Array;
+    try {
+      const binaryStr = atob(data);
+      scanData = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        scanData[i] = binaryStr.charCodeAt(i);
+      }
+    } catch {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid base64 data' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (scanData.length > 10 * 1024 * 1024) {
+      return new Response(JSON.stringify({ success: false, error: 'Data too large (max 10MB)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    try {
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        // Send "zINSTREAM\0" command (z-prefix = null-terminated response)
+        await writer.write(new TextEncoder().encode('zINSTREAM\x00'));
+
+        // Send data as chunks: 4-byte big-endian size + data
+        const CHUNK_SIZE = 65536;
+        for (let i = 0; i < scanData.length; i += CHUNK_SIZE) {
+          const chunk = scanData.slice(i, i + CHUNK_SIZE);
+          const header = new Uint8Array(4);
+          new DataView(header.buffer).setUint32(0, chunk.length, false);
+          const chunkPacket = new Uint8Array(4 + chunk.length);
+          chunkPacket.set(header, 0);
+          chunkPacket.set(chunk, 4);
+          await writer.write(chunkPacket);
+        }
+
+        // Terminate with 4 zero bytes
+        await writer.write(new Uint8Array(4));
+
+        // Read response
+        const response = await readClamdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+
+        // Parse: "stream: OK" / "stream: VIRUSNAME FOUND" / "stream: ERROR ..."
+        const virusFound = response.includes('FOUND');
+        const isError = response.includes('ERROR');
+        let virusName: string | undefined;
+        if (virusFound) {
+          const match = response.match(/stream:\s+(.+)\s+FOUND/);
+          virusName = match?.[1];
+        }
+
+        return new Response(JSON.stringify({
+          success: !isError,
+          host, port, rtt,
+          clean: !virusFound && !isError,
+          virusFound,
+          virusName,
+          response,
+          dataSize: scanData.length,
+          message: isError
+            ? `Scan error: ${response}`
+            : virusFound ? `Virus detected: ${virusName}` : 'No threats found',
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'ClamAV scan failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

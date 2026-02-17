@@ -440,3 +440,415 @@ export async function handleNeo4jConnect(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Open a Bolt socket, perform the handshake, and authenticate.
+ * Returns the socket handles, negotiated bolt version number, and server info.
+ */
+async function openBoltSession(
+  host: string,
+  port: number,
+  username: string,
+  password: string,
+  timeout: number,
+): Promise<{
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  socket: ReturnType<typeof connect>;
+  boltVersion: string;
+  majorVersion: number;
+  serverInfo: Record<string, unknown>;
+}> {
+  const socket = connect(`${host}:${port}`);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  await Promise.race([socket.opened, timeoutPromise]);
+
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+
+  // === Phase 1: Bolt Handshake ===
+  const handshake = new Uint8Array(20);
+  const view = new DataView(handshake.buffer);
+  view.setUint32(0, BOLT_MAGIC);
+  view.setUint32(4, 0x00000504);  // v5.4
+  view.setUint32(8, 0x00000503);  // v5.3
+  view.setUint32(12, 0x00000404); // v4.4
+  view.setUint32(16, 0x00000403); // v4.3
+
+  await writer.write(handshake);
+
+  const versionResult = await Promise.race([reader.read(), timeoutPromise]);
+  if (versionResult.done || !versionResult.value) {
+    throw new Error('Server closed connection during handshake');
+  }
+
+  const versionData = versionResult.value;
+  if (versionData.length < 4) {
+    throw new Error('Invalid handshake response');
+  }
+
+  const versionView = new DataView(versionData.buffer, versionData.byteOffset, 4);
+  const selectedVersion = versionView.getUint32(0);
+
+  if (selectedVersion === 0) {
+    throw new Error('Server does not support any offered Bolt protocol versions');
+  }
+
+  const boltVersion = formatVersion(selectedVersion);
+  const majorVersion = (selectedVersion >> 8) & 0xFF;
+
+  // === Phase 2: HELLO / auth ===
+  let helloMessage: Uint8Array;
+
+  if (majorVersion >= 4) {
+    // Bolt 4+: auth fields go in HELLO
+    const helloMap = packMap([
+      ['user_agent', packString('PortOfCall/1.0')],
+      ['scheme', packString('basic')],
+      ['principal', packString(username)],
+      ['credentials', packString(password)],
+    ]);
+    helloMessage = packStruct(0x01, [helloMap]);
+  } else {
+    // Bolt 3: same structure
+    const helloMap = packMap([
+      ['user_agent', packString('PortOfCall/1.0')],
+      ['scheme', packString('basic')],
+      ['principal', packString(username)],
+      ['credentials', packString(password)],
+    ]);
+    helloMessage = packStruct(0x01, [helloMap]);
+  }
+
+  await writer.write(buildChunkedMessage(helloMessage));
+
+  const helloResult = await Promise.race([reader.read(), timeoutPromise]);
+  if (!helloResult.value || helloResult.value.length === 0) {
+    throw new Error('No response to HELLO');
+  }
+
+  const helloParsed = parseResponse(helloResult.value);
+  if (!helloParsed) {
+    throw new Error('Could not parse HELLO response');
+  }
+
+  if (helloParsed.tag === 0x7F) { // FAILURE
+    const msg = String(helloParsed.metadata.message || 'Authentication failed');
+    throw new Error(msg);
+  }
+
+  if (helloParsed.tag !== 0x70) { // not SUCCESS
+    throw new Error(`Unexpected HELLO response tag: 0x${helloParsed.tag.toString(16)}`);
+  }
+
+  const serverInfo = helloParsed.metadata;
+
+  return { writer, reader, socket, boltVersion, majorVersion, serverInfo };
+}
+
+/**
+ * Read all available chunked Bolt response messages from the reader,
+ * assembling across multiple TCP reads until we get the final SUCCESS or FAILURE.
+ */
+async function readBoltMessages(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<Array<{ tag: number; fields: unknown[] }>> {
+  const messages: Array<{ tag: number; fields: unknown[] }> = [];
+  const deadline = Date.now() + timeoutMs;
+
+  // Accumulate raw bytes across reads
+  let buf = new Uint8Array(0);
+
+  function append(chunk: Uint8Array) {
+    const next = new Uint8Array(buf.length + chunk.length);
+    next.set(buf, 0);
+    next.set(chunk, buf.length);
+    buf = next;
+  }
+
+  // Parse and consume all complete messages from buf
+  function consumeMessages() {
+    while (true) {
+      if (buf.length < 2) break;
+      const chunkSize = (buf[0] << 8) | buf[1];
+      if (chunkSize === 0) {
+        // End-of-message marker — consume it and keep going
+        buf = buf.slice(2);
+        continue;
+      }
+      if (buf.length < 2 + chunkSize) break; // incomplete chunk
+
+      const chunkData = buf.slice(2, 2 + chunkSize);
+      buf = buf.slice(2 + chunkSize);
+
+      const [value] = unpackValue(chunkData, 0);
+      if (value && typeof value === 'object' && '_tag' in (value as Record<string, unknown>)) {
+        const struct = value as { _tag: number; _fields: unknown[] };
+        messages.push({ tag: struct._tag, fields: struct._fields });
+      }
+    }
+  }
+
+  // We need at least one SUCCESS/FAILURE to finish
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    const readPromise = reader.read();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Read timeout')), remaining);
+    });
+
+    const result = await Promise.race([readPromise, timeoutPromise]);
+    if (result.done) break;
+    if (result.value && result.value.length > 0) {
+      append(result.value);
+      consumeMessages();
+    }
+
+    // Stop once we have a terminal message (SUCCESS=0x70 or FAILURE=0x7F)
+    const last = messages[messages.length - 1];
+    if (last && (last.tag === 0x70 || last.tag === 0x7F)) break;
+  }
+
+  return messages;
+}
+
+/**
+ * Handle a Neo4j Cypher query via the Bolt protocol
+ */
+export async function handleNeo4jQuery(request: Request): Promise<Response> {
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let socket: ReturnType<typeof connect> | null = null;
+
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      query: string;
+      database?: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 7687,
+      username = 'neo4j',
+      password = '',
+      query,
+      database,
+      timeout = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!query) {
+      return new Response(JSON.stringify({ success: false, error: 'Query is required' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Open Bolt session and authenticate
+    const session = await openBoltSession(host, port, username, password, timeout);
+    writer = session.writer;
+    reader = session.reader;
+    socket = session.socket;
+    const { boltVersion, majorVersion, serverInfo } = session;
+
+    // === Phase 3: BEGIN (optional, for database selection on Bolt 4+) ===
+    if (majorVersion >= 4 && database) {
+      const beginMeta = packMap([['db', packString(database)]]);
+      const beginMsg = packStruct(0x11, [beginMeta]); // BEGIN = 0x11
+      await writer.write(buildChunkedMessage(beginMsg));
+
+      const beginMsgs = await readBoltMessages(reader, 5000);
+      const beginResult = beginMsgs.find(m => m.tag === 0x70 || m.tag === 0x7F);
+      if (beginResult && beginResult.tag === 0x7F) {
+        const meta = (beginResult.fields[0] as Record<string, unknown>) || {};
+        throw new Error(String(meta.message || 'BEGIN failed'));
+      }
+    }
+
+    // === Phase 4: RUN message ===
+    let runMessage: Uint8Array;
+    const emptyMap = packMap([]);
+
+    if (majorVersion >= 4) {
+      // Bolt 4+: RUN has extra metadata field (db routing info etc.)
+      const runMeta = database
+        ? packMap([['db', packString(database)]])
+        : emptyMap;
+      runMessage = packStruct(0x10, [packString(query), emptyMap, runMeta]);
+    } else {
+      // Bolt 3: RUN has only query + parameters
+      runMessage = packStruct(0x10, [packString(query), emptyMap]);
+    }
+
+    // === Phase 5: PULL message ===
+    let pullMessage: Uint8Array;
+    if (majorVersion >= 4) {
+      // Bolt 4+: PULL with n=-1 (fetch all)
+      pullMessage = packStruct(0x3F, [packMap([['n', packInteger(-1)]])]);
+    } else {
+      // Bolt 3: PULL_ALL = 0xB0 0x3F (struct with 0 fields, tag 0x3F)
+      pullMessage = packStruct(0x3F, []);
+    }
+
+    // Send RUN and PULL as separate chunked messages
+    await writer.write(buildChunkedMessage(runMessage));
+    await writer.write(buildChunkedMessage(pullMessage));
+
+    // === Phase 6: Read responses ===
+    // Expected: SUCCESS(fields) → RECORD* → SUCCESS(summary)  OR  FAILURE
+    const allMessages = await readBoltMessages(reader, timeout);
+
+    // Find the first SUCCESS (RUN response with fields list)
+    let columns: string[] = [];
+    const rows: unknown[][] = [];
+    let serverVersion = String(serverInfo.server || '');
+    let queryError: string | null = null;
+
+    let foundRunSuccess = false;
+    for (const msg of allMessages) {
+      if (msg.tag === 0x7F) { // FAILURE
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        queryError = String(meta.message || 'Query failed');
+        break;
+      }
+
+      if (msg.tag === 0x70 && !foundRunSuccess) { // First SUCCESS = RUN response
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        const fieldsList = meta.fields as unknown[] | undefined;
+        if (Array.isArray(fieldsList)) {
+          columns = fieldsList.map(f => String(f));
+        }
+        foundRunSuccess = true;
+        continue;
+      }
+
+      if (msg.tag === 0x71) { // RECORD
+        const recordData = msg.fields[0];
+        if (Array.isArray(recordData)) {
+          rows.push(recordData);
+        }
+        continue;
+      }
+
+      if (msg.tag === 0x70 && foundRunSuccess) { // Second SUCCESS = PULL response (summary)
+        const meta = (msg.fields[0] as Record<string, unknown>) || {};
+        if (meta.server) serverVersion = String(meta.server);
+        break;
+      }
+    }
+
+    // Close the socket
+    try {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+    } catch {
+      // ignore close errors
+    }
+    writer = null;
+    reader = null;
+    socket = null;
+
+    if (queryError) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        boltVersion,
+        error: queryError,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      boltVersion,
+      serverVersion,
+      columns,
+      rows,
+      rowCount: rows.length,
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    try {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
+      if (socket) socket.close();
+    } catch {
+      // ignore
+    }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Pack an integer value using PackStream encoding
+ */
+function packInteger(value: number): Uint8Array {
+  if (value >= -16 && value <= 127) {
+    // Tiny int or positive tiny int
+    return new Uint8Array([value & 0xFF]);
+  } else if (value >= -128 && value <= 127) {
+    return new Uint8Array([0xC8, value & 0xFF]);
+  } else if (value >= -32768 && value <= 32767) {
+    return new Uint8Array([0xC9, (value >> 8) & 0xFF, value & 0xFF]);
+  } else {
+    return new Uint8Array([
+      0xCA,
+      (value >> 24) & 0xFF,
+      (value >> 16) & 0xFF,
+      (value >> 8) & 0xFF,
+      value & 0xFF,
+    ]);
+  }
+}

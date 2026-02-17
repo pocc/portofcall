@@ -480,3 +480,203 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }
+
+
+// ============================================================
+// Couchbase / Memcached Binary Protocol: GET and SET
+// ============================================================
+
+const OPCODE_GET = 0x00;
+const OPCODE_SET = 0x01;
+
+const STATUS_NOT_FOUND = 0x0001;
+
+interface CouchbaseKVRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
+  bucket?: string;
+  username?: string;
+  password?: string;
+  key: string;
+  value?: string;
+}
+
+/**
+ * Build a memcached binary GET request.
+ * Header: magic(1) + opcode(1) + key_len(2) + extras_len(1) + data_type(1) + vbucket(2) + total_body(4) + opaque(4) + cas(8)
+ * GET has no extras (0 bytes), total_body = key_len.
+ */
+function buildGetRequest(key: string, opaque = 0x11111111): Uint8Array {
+  const keyBytes = new TextEncoder().encode(key);
+  const packet = new Uint8Array(HEADER_SIZE + keyBytes.length);
+  const view = new DataView(packet.buffer);
+  packet[0] = MAGIC_REQUEST;
+  packet[1] = OPCODE_GET;
+  view.setUint16(2, keyBytes.length);       // key length
+  packet[4] = 0;                            // extras length (none for GET)
+  packet[5] = 0;                            // data type
+  view.setUint16(6, 0);                     // vbucket
+  view.setUint32(8, keyBytes.length);       // total body = key only
+  view.setUint32(12, opaque);               // opaque
+  // CAS = 0 (bytes 16-23)
+  packet.set(keyBytes, HEADER_SIZE);
+  return packet;
+}
+
+/**
+ * Build a memcached binary SET request.
+ * SET extras: [flags 4B][expiry 4B] = 8 bytes
+ * total_body = extras(8) + key_len + value_len
+ */
+function buildSetRequest(key: string, value: string, flags = 0, expiry = 0, opaque = 0x22222222): Uint8Array {
+  const keyBytes = new TextEncoder().encode(key);
+  const valBytes = new TextEncoder().encode(value);
+  const extrasLen = 8;
+  const totalBody = extrasLen + keyBytes.length + valBytes.length;
+  const packet = new Uint8Array(HEADER_SIZE + totalBody);
+  const view = new DataView(packet.buffer);
+  packet[0] = MAGIC_REQUEST;
+  packet[1] = OPCODE_SET;
+  view.setUint16(2, keyBytes.length);       // key length
+  packet[4] = extrasLen;                    // extras length = 8
+  packet[5] = 0;                            // data type
+  view.setUint16(6, 0);                     // vbucket
+  view.setUint32(8, totalBody);             // total body length
+  view.setUint32(12, opaque);               // opaque
+  // Extras: flags(4) + expiry(4)
+  view.setUint32(HEADER_SIZE, flags);
+  view.setUint32(HEADER_SIZE + 4, expiry);
+  // Key
+  packet.set(keyBytes, HEADER_SIZE + extrasLen);
+  // Value
+  packet.set(valBytes, HEADER_SIZE + extrasLen + keyBytes.length);
+  return packet;
+}
+
+/**
+ * GET a document by key from Couchbase/memcached.
+ *
+ * POST /api/couchbase/get
+ * Body: { host, port?, timeout?, key, bucket?, username?, password? }
+ */
+export async function handleCouchbaseGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as CouchbaseKVRequest;
+    const { host, port = 11210, timeout = 10000, key } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!key) return new Response(JSON.stringify({ success: false, error: 'Key is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(buildGetRequest(key));
+      const { header, body: respBody } = await readResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (header.magic !== MAGIC_RESPONSE) {
+        return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `Invalid response magic: 0x${header.magic.toString(16)}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (header.status === STATUS_NOT_FOUND) {
+        return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: 'Key not found', statusCode: STATUS_NOT_FOUND }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (header.status !== STATUS_SUCCESS) {
+        return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `GET failed: ${STATUS_NAMES[header.status] ?? 'Unknown'} (0x${header.status.toString(16)})`, statusCode: header.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Response body: extras(flags 4B) + value
+      const extrasLen = header.extrasLength;
+      const flags = extrasLen >= 4 ? new DataView(respBody.buffer, respBody.byteOffset).getUint32(0) : 0;
+      const value = new TextDecoder().decode(respBody.slice(extrasLen));
+
+      return new Response(JSON.stringify({ success: true, host, port, key, rtt, value, flags }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * SET a document by key in Couchbase/memcached.
+ *
+ * POST /api/couchbase/set
+ * Body: { host, port?, timeout?, key, value, bucket?, username?, password? }
+ */
+export async function handleCouchbaseSet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as CouchbaseKVRequest;
+    const { host, port = 11210, timeout = 10000, key, value = '' } = body;
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!key) return new Response(JSON.stringify({ success: false, error: 'Key is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      await writer.write(buildSetRequest(key, value));
+      const { header } = await readResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (header.magic !== MAGIC_RESPONSE) {
+        return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `Invalid response magic: 0x${header.magic.toString(16)}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (header.status === STATUS_SUCCESS) {
+        return new Response(JSON.stringify({ success: true, host, port, key, rtt, message: 'Key stored successfully', valueLength: value.length }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      } else {
+        return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `SET failed: ${STATUS_NAMES[header.status] ?? 'Unknown'} (0x${header.status.toString(16)})`, statusCode: header.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

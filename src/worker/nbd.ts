@@ -1,9 +1,10 @@
 /**
  * NBD (Network Block Device) Protocol Implementation
  *
- * Implements NBD server detection and export listing via the NBD wire protocol
- * on port 10809. NBD is a Linux protocol for accessing remote block devices
- * over TCP, commonly used by QEMU/KVM, nbd-server, and various storage systems.
+ * Implements NBD server detection, export listing, and block read operations
+ * via the NBD wire protocol on port 10809. NBD is a Linux protocol for
+ * accessing remote block devices over TCP, commonly used by QEMU/KVM,
+ * nbd-server, and various storage systems.
  *
  * Protocol Structure (Newstyle Negotiation):
  * Server sends on connect:
@@ -15,22 +16,21 @@
  *
  * Client sends:
  * - Client flags: 4 bytes (big-endian)
- * - Option requests:
- *   - IHAVEOPT magic (8 bytes)
- *   - Option type (4 bytes BE)
- *   - Data length (4 bytes BE)
- *   - Data (variable)
+ * - Option requests: IHAVEOPT magic + option type + data length + data
  *
- * Option Reply:
- * - Reply magic: 0x3e889045565a9 (8 bytes)
- * - Option type (4 bytes BE)
- * - Reply type (4 bytes BE)
- * - Data length (4 bytes BE)
- * - Data (variable)
+ * NBD_OPT_EXPORT_NAME (0x1):
+ * - Client sends export name, server responds with export info
+ * - Export info: size[8B] + transmission_flags[2B] + 124 zero bytes
+ *
+ * Transmission phase:
+ * - READ command: [NBD_REQUEST_MAGIC 4B][flags 2B][type 2B][handle 8B][offset 8B][length 4B]
+ * - Response: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B][data...]
+ * - DISCONNECT: same structure with type=0x0002
  *
  * Use Cases:
  * - NBD server detection and capability fingerprinting
  * - Export listing (available block devices)
+ * - Block data reading (sector-level access)
  * - Storage infrastructure discovery
  * - QEMU/KVM storage backend verification
  */
@@ -42,7 +42,7 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 const NBDMAGIC = new Uint8Array([0x4e, 0x42, 0x44, 0x4d, 0x41, 0x47, 0x49, 0x43]); // "NBDMAGIC"
 const IHAVEOPT = new Uint8Array([0x49, 0x48, 0x41, 0x56, 0x45, 0x4f, 0x50, 0x54]); // "IHAVEOPT"
 
-// Reply magic: 0x3e889045565a9 (stored as 8 bytes big-endian)
+// Reply magic: 0x3e889045565a9 (8 bytes big-endian)
 const REPLY_MAGIC = new Uint8Array([0x00, 0x03, 0xe8, 0x89, 0x04, 0x55, 0x65, 0xa9]);
 
 // Handshake flags (server)
@@ -50,8 +50,17 @@ const NBD_FLAG_FIXED_NEWSTYLE = 1 << 0;
 const NBD_FLAG_NO_ZEROES = 1 << 1;
 
 // Option types
+const NBD_OPT_EXPORT_NAME = 1;
 const NBD_OPT_LIST = 3;
 const NBD_OPT_ABORT = 2;
+
+// Transmission request/reply magic
+const NBD_REQUEST_MAGIC = 0x25609513;
+const NBD_REPLY_MAGIC = 0x67446698;
+
+// Command types
+const NBD_CMD_READ = 0x0000;
+const NBD_CMD_DISCONNECT = 0x0002;
 
 // Reply types
 const NBD_REP_ACK = 1;
@@ -118,11 +127,9 @@ function parseHandshake(data: Uint8Array): {
 
   if (data.length < 18) return result;
 
-  // Check NBDMAGIC
   if (!bytesEqual(data.slice(0, 8), NBDMAGIC)) return result;
   result.isNBD = true;
 
-  // Check IHAVEOPT (newstyle)
   if (bytesEqual(data.slice(8, 16), IHAVEOPT)) {
     result.isNewstyle = true;
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -141,8 +148,8 @@ function buildClientFlags(fixedNewstyle: boolean, noZeroes: boolean): Uint8Array
   const buf = new Uint8Array(4);
   const view = new DataView(buf.buffer);
   let flags = 0;
-  if (fixedNewstyle) flags |= 1; // NBD_FLAG_C_FIXED_NEWSTYLE
-  if (noZeroes) flags |= 2; // NBD_FLAG_C_NO_ZEROES
+  if (fixedNewstyle) flags |= 1;
+  if (noZeroes) flags |= 2;
   view.setUint32(0, flags, false);
   return buf;
 }
@@ -153,11 +160,51 @@ function buildClientFlags(fixedNewstyle: boolean, noZeroes: boolean): Uint8Array
 function buildOptionRequest(optionType: number, data?: Uint8Array): Uint8Array {
   const dataLen = data ? data.length : 0;
   const buf = new Uint8Array(16 + dataLen);
-  buf.set(IHAVEOPT, 0); // Magic
+  buf.set(IHAVEOPT, 0);
   const view = new DataView(buf.buffer);
-  view.setUint32(8, optionType, false); // Option type
-  view.setUint32(12, dataLen, false); // Data length
+  view.setUint32(8, optionType, false);
+  view.setUint32(12, dataLen, false);
   if (data) buf.set(data, 16);
+  return buf;
+}
+
+/**
+ * Build NBD_OPT_EXPORT_NAME option request to enter transmission mode.
+ * This tells the server which export to open.
+ */
+function buildExportNameRequest(exportName: string): Uint8Array {
+  const nameBytes = new TextEncoder().encode(exportName);
+  return buildOptionRequest(NBD_OPT_EXPORT_NAME, nameBytes);
+}
+
+/**
+ * Build an NBD transmission READ request.
+ * Format: [NBD_REQUEST_MAGIC 4B][flags 2B][type 2B][handle 8B][offset 8B][length 4B]
+ */
+function buildReadRequest(handle: bigint, offset: bigint, length: number): Uint8Array {
+  const buf = new Uint8Array(28);
+  const view = new DataView(buf.buffer);
+  view.setUint32(0, NBD_REQUEST_MAGIC, false);  // magic
+  view.setUint16(4, 0, false);                   // flags
+  view.setUint16(6, NBD_CMD_READ, false);        // command type
+  view.setBigUint64(8, handle, false);           // handle
+  view.setBigUint64(16, offset, false);          // offset
+  view.setUint32(24, length, false);             // length
+  return buf;
+}
+
+/**
+ * Build an NBD DISCONNECT request.
+ */
+function buildDisconnectRequest(): Uint8Array {
+  const buf = new Uint8Array(28);
+  const view = new DataView(buf.buffer);
+  view.setUint32(0, NBD_REQUEST_MAGIC, false);
+  view.setUint16(4, 0, false);
+  view.setUint16(6, NBD_CMD_DISCONNECT, false);
+  view.setBigUint64(8, BigInt(0), false);
+  view.setBigUint64(16, BigInt(0), false);
+  view.setUint32(24, 0, false);
   return buf;
 }
 
@@ -173,7 +220,6 @@ function parseOptionReply(data: Uint8Array): {
 } | null {
   if (data.length < 20) return null;
 
-  // Check reply magic
   if (!bytesEqual(data.slice(0, 8), REPLY_MAGIC)) return null;
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
@@ -194,7 +240,6 @@ function parseOptionReply(data: Uint8Array): {
 
 /**
  * Parse an export name from NBD_REP_SERVER reply data.
- * Format: name_length (4 bytes BE) + name (variable)
  */
 function parseExportName(data: Uint8Array): string {
   if (data.length < 4) return '';
@@ -215,11 +260,9 @@ async function readExportList(
   const maxExports = 100;
 
   try {
-    // Read replies until we get NBD_REP_ACK or an error
     let buffer = new Uint8Array(0);
 
     for (let i = 0; i < maxExports + 1; i++) {
-      // Read more data if needed
       while (buffer.length < 20) {
         const result = await Promise.race([reader.read(), timeoutPromise]);
         if (result.done || !result.value) return { exports };
@@ -229,12 +272,10 @@ async function readExportList(
         buffer = newBuf;
       }
 
-      // Try to parse the reply header to get data length
       const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
       const dataLen = view.getUint32(16, false);
       const totalNeeded = 20 + dataLen;
 
-      // Read more if needed
       while (buffer.length < totalNeeded) {
         const result = await Promise.race([reader.read(), timeoutPromise]);
         if (result.done || !result.value) return { exports };
@@ -251,21 +292,43 @@ async function readExportList(
         const name = parseExportName(reply.replyData);
         exports.push(name || '(default)');
       } else if (reply.replyType === NBD_REP_ACK) {
-        break; // Done listing
+        break;
       } else if (reply.replyType === NBD_REP_ERR_UNSUP) {
         return { exports, error: 'Server does not support export listing' };
       } else if ((reply.replyType & (1 << 31)) !== 0) {
         return { exports, error: `Server error: reply type 0x${reply.replyType.toString(16)}` };
       }
 
-      // Advance buffer past this reply
       buffer = buffer.slice(reply.totalLength);
     }
   } catch {
-    // Timeout or read error during listing is OK, return what we have
+    // Timeout or read error — return what we have
   }
 
   return { exports };
+}
+
+/**
+ * Format raw bytes as a hex dump string with ASCII sidebar.
+ * Produces output like: "0000  4e 42 44 4d  |NBDM|"
+ */
+function formatHexDump(data: Uint8Array, maxBytes = 512): string {
+  const lines: string[] = [];
+  const limit = Math.min(data.length, maxBytes);
+
+  for (let i = 0; i < limit; i += 16) {
+    const rowBytes = data.slice(i, Math.min(i + 16, limit));
+    const hex = Array.from(rowBytes)
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join(' ')
+      .padEnd(47, ' ');
+    const ascii = Array.from(rowBytes)
+      .map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.')
+      .join('');
+    lines.push(`${i.toString(16).padStart(4, '0')}  ${hex}  |${ascii}|`);
+  }
+
+  return lines.join('\n');
 }
 
 /**
@@ -301,7 +364,6 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
       });
     }
 
-    // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -327,7 +389,6 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    // Read newstyle handshake (18 bytes: 8 NBDMAGIC + 8 IHAVEOPT + 2 flags)
     const handshakeData = await readExact(reader, 18, timeoutPromise);
     const handshake = parseHandshake(handshakeData);
 
@@ -335,20 +396,16 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
     let listError: string | undefined;
 
     if (handshake.isNBD && handshake.isNewstyle && handshake.fixedNewstyle) {
-      // Send client flags
       const clientFlags = buildClientFlags(true, handshake.noZeroes);
       await writer.write(clientFlags);
 
-      // Send NBD_OPT_LIST to get export names
       const listRequest = buildOptionRequest(NBD_OPT_LIST);
       await writer.write(listRequest);
 
-      // Read export list
       const listResult = await readExportList(reader, timeoutPromise);
       exports = listResult.exports;
       listError = listResult.error;
 
-      // Send NBD_OPT_ABORT to cleanly disconnect
       try {
         const abortRequest = buildOptionRequest(NBD_OPT_ABORT);
         await writer.write(abortRequest);
@@ -419,7 +476,6 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
       });
     }
 
-    // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -442,8 +498,6 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
     await Promise.race([socket.opened, timeoutPromise]);
 
     const reader = socket.readable.getReader();
-
-    // Read handshake (18 bytes)
     const handshakeData = await readExact(reader, 18, timeoutPromise);
     const rtt = Date.now() - startTime;
 
@@ -464,6 +518,232 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
       message: handshake.isNBD
         ? `NBD server detected (${handshake.isNewstyle ? 'newstyle' : 'oldstyle'}).`
         : 'Not an NBD server.',
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle NBD block read operation.
+ * POST /api/nbd/read
+ *
+ * Performs the full NBD newstyle negotiation, selects an export by name,
+ * enters transmission mode, reads a block of data at the given offset,
+ * then disconnects cleanly. Returns a hex dump of the block data.
+ *
+ * Request body JSON: { host, port?, export_name?, offset?, read_size?, timeout? }
+ *
+ * Default read_size is 512 bytes (one sector). Offset defaults to 0.
+ */
+export async function handleNBDRead(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      export_name?: string;
+      offset?: number;
+      length?: number;
+      read_size?: number;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 10809,
+      export_name: exportName = '',
+      offset = 0,
+      read_size,
+      length,
+      timeout = 15000,
+    } = body;
+
+    const readSize = read_size ?? length ?? 512;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Missing required parameter: host',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (readSize < 1 || readSize > 65536) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'read_size must be between 1 and 65536 bytes',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    // Step 1: Read handshake (18 bytes)
+    const handshakeData = await readExact(reader, 18, timeoutPromise);
+    const handshake = parseHandshake(handshakeData);
+
+    if (!handshake.isNBD) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Server does not speak the NBD protocol',
+        rawHex: Array.from(handshakeData).map(b => b.toString(16).padStart(2, '0')).join(' '),
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!handshake.isNewstyle || !handshake.fixedNewstyle) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'NBD server does not support fixed newstyle negotiation required for export selection',
+        isNBD: true,
+        isNewstyle: handshake.isNewstyle,
+        fixedNewstyle: handshake.fixedNewstyle,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Step 2: Send client flags
+    const clientFlags = buildClientFlags(true, handshake.noZeroes);
+    await writer.write(clientFlags);
+
+    // Step 3: Send NBD_OPT_EXPORT_NAME to select the export and enter transmission mode
+    // After NBD_OPT_EXPORT_NAME, if server accepts, it sends:
+    // export_size[8B] + transmission_flags[2B] + (if not NO_ZEROES: 124 zero bytes)
+    const exportNameReq = buildExportNameRequest(exportName);
+    await writer.write(exportNameReq);
+
+    // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
+    const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
+    const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
+    const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
+    const exportSize = exportView.getBigUint64(0, false);
+    const transmissionFlags = exportView.getUint16(8, false);
+
+    // Step 4: Send READ request
+    const handle = BigInt(0x1234567890ABCDEF);
+    const readReq = buildReadRequest(handle, BigInt(offset), readSize);
+    await writer.write(readReq);
+
+    // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
+    const replyHeader = await readExact(reader, 16, timeoutPromise);
+    const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
+    const replyMagic = replyView.getUint32(0, false);
+    const replyError = replyView.getUint32(4, false);
+
+    if (replyMagic !== NBD_REPLY_MAGIC) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Invalid NBD reply magic: 0x${replyMagic.toString(16)} (expected 0x${NBD_REPLY_MAGIC.toString(16)})`,
+      }), {
+        status: 502,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (replyError !== 0) {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+      return new Response(JSON.stringify({
+        success: false,
+        error: `NBD server returned error code: ${replyError} (errno ${replyError})`,
+        exportSize: exportSize.toString(),
+        transmissionFlags,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Step 6: Read block data
+    const blockData = await readExact(reader, readSize, timeoutPromise);
+    const rtt = Date.now() - startTime;
+
+    // Step 7: Send DISCONNECT
+    try {
+      const disconnectReq = buildDisconnectRequest();
+      await writer.write(disconnectReq);
+    } catch {
+      // Ignore write errors during cleanup
+    }
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    // Format hex dump
+    const hexDump = formatHexDump(blockData);
+    const rawHex = Array.from(blockData).map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+    // Basic analysis of block data
+    const isAllZero = blockData.every(b => b === 0);
+    const uniqueBytes = new Set(blockData).size;
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      rtt,
+      exportName: exportName || '(default)',
+      exportSize: exportSize.toString(),
+      transmissionFlags,
+      offset,
+      readSize,
+      bytesRead: blockData.length,
+      isAllZero,
+      uniqueByteValues: uniqueBytes,
+      hexDump,
+      rawHex: rawHex.substring(0, 1024), // first 512 bytes in hex
+      message: `Read ${blockData.length} bytes at offset ${offset} from export '${exportName || 'default'}'`,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },

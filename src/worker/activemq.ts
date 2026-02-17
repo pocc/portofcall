@@ -1,86 +1,187 @@
 /**
- * Apache ActiveMQ OpenWire Protocol Handler
+ * ActiveMQ OpenWire Protocol Probe (Port 61616/TCP)
  *
- * OpenWire is the native binary protocol used by Apache ActiveMQ.
- * Default Port: 61616
+ * Apache ActiveMQ's native binary protocol. When a client connects, both sides
+ * immediately exchange a WireFormatInfo command to negotiate protocol version
+ * and capabilities. The broker's WireFormatInfo contains the magic string
+ * "ActiveMQ" and the OpenWire protocol version number.
  *
- * Protocol Details:
- * - Binary marshalled command-based protocol
- * - WireFormat negotiation on connect
- * - Command framing: [type:1][size:4][data:n]
- * - Marshalling uses types like String, Integer, Boolean, etc.
+ * OpenWire Frame Format (size-prefixed):
+ *   [4 bytes: data length, big-endian — does NOT include these 4 bytes]
+ *   [1 byte:  command type = 0x01 for WIREFORMAT_INFO]
+ *   [4 bytes: command ID, big-endian]
+ *   [1 byte:  response required flag]
+ *   [4 bytes: correlation ID, big-endian]
+ *   [N bytes: marshalled command body]
  *
- * Handshake Flow:
- * 1. Client → Server: WIREFORMAT_INFO (command 1)
- * 2. Server → Client: WIREFORMAT_INFO response
- * 3. Optional: BROKER_INFO exchange
+ * WireFormatInfo Body (loose/untight encoding):
+ *   [2 bytes: magic string length = 8]
+ *   [8 bytes: "ActiveMQ" magic string]
+ *   [4 bytes: OpenWire protocol version (big-endian int32)]
+ *   [1 byte:  stackTraceEnabled boolean]
+ *   [1 byte:  cacheEnabled boolean]
+ *   [1 byte:  tcpNoDelayEnabled boolean]
+ *   [1 byte:  tightEncodingEnabled boolean]
+ *   [1 byte:  sizePrefixDisabled boolean]
  *
- * References:
- * - https://activemq.apache.org/openwire
- * - https://github.com/apache/activemq/blob/main/activemq-client/src/main/java/org/apache/activemq/openwire/v12/
+ * After WireFormatInfo exchange the broker typically sends a BrokerInfo command
+ * (type 0x02) with the broker's name, ID, and URL.
+ *
+ * Default Port: 61616/TCP
+ *
+ * ActiveMQ also listens on multiple other ports by default:
+ *   61613 — STOMP
+ *   5672  — AMQP 0-9-1
+ *   1883  — MQTT
+ *   61614 — WebSocket (STOMP over WS)
+ *   8161  — Web Admin Console (HTTP)
+ *
+ * Reference: https://activemq.apache.org/openwire
+ * Reference: https://activemq.apache.org/configuring-transports
  */
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
-const DEFAULT_PORT = 61616;
-const DEFAULT_TIMEOUT = 30000;
+const WIREFORMAT_INFO_TYPE = 0x01;
+const BROKER_INFO_TYPE = 0x02;
+const ACTIVEMQ_MAGIC = new TextEncoder().encode('ActiveMQ');
 
-// OpenWire Command IDs
-const WIREFORMAT_INFO = 1;
-const BROKER_INFO = 2;
-
-// OpenWire Data Types
-// const NULL_TYPE = 0;
-const BOOLEAN_TYPE = 1;
-// const BYTE_TYPE = 2;
-// const SHORT_TYPE = 4;
-const INTEGER_TYPE = 5;
-const LONG_TYPE = 6;
-const STRING_TYPE = 8;
-// const BYTE_ARRAY_TYPE = 10;
-
-interface WireFormatInfo {
-  version: number;
-  properties: Map<string, unknown>;
-  magic?: Uint8Array;
+interface ActiveMQRequest {
+  host: string;
+  port?: number;
+  timeout?: number;
 }
 
-interface BrokerInfo {
-  brokerId?: string;
-  brokerURL?: string;
-  brokerName?: string;
-  peerBrokerInfos?: unknown[];
-  brokerUploadUrl?: string;
-  networkConnection?: boolean;
-  duplex?: boolean;
-  slaveBroker?: boolean;
+function validateInput(host: string, port: number): string | null {
+  if (!host || host.trim().length === 0) return 'Host is required';
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) return 'Host contains invalid characters';
+  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  return null;
 }
 
 /**
- * Handle ActiveMQ connection test
- * Sends WIREFORMAT_INFO and parses response
+ * Build a minimal OpenWire WireFormatInfo frame.
+ * Both client and broker exchange this on connect to negotiate capabilities.
+ *
+ * Frame: [4-byte length][1-byte type=0x01][4-byte cmdId][1-byte respRequired]
+ *        [4-byte corrId][2-byte magicLen][8-byte "ActiveMQ"][4-byte version]
+ *        [5 boolean option bytes]
  */
-export async function handleActiveMQConnect(request: Request): Promise<Response> {
+function buildWireFormatInfo(): Uint8Array {
+  const body = new Uint8Array([
+    WIREFORMAT_INFO_TYPE,       // command type = 0x01
+    0x00, 0x00, 0x00, 0x01,     // commandId = 1
+    0x00,                       // responseRequired = false
+    0x00, 0x00, 0x00, 0x00,     // correlationId = 0
+    0x00, 0x08,                 // magic string length = 8
+    0x41, 0x63, 0x74, 0x69,     // "Acti"
+    0x76, 0x65, 0x4D, 0x51,     // "veMQ"
+    0x00, 0x00, 0x00, 0x01,     // version = 1 (minimal — avoids compat mismatches)
+    0x00,                       // stackTraceEnabled = false
+    0x00,                       // cacheEnabled = false
+    0x01,                       // tcpNoDelayEnabled = true
+    0x00,                       // tightEncodingEnabled = false
+    0x00,                       // sizePrefixDisabled = false
+  ]);
+
+  // Prepend 4-byte big-endian length (length of body, not including these 4 bytes)
+  const frame = new Uint8Array(4 + body.length);
+  new DataView(frame.buffer).setUint32(0, body.length, false);
+  frame.set(body, 4);
+  return frame;
+}
+
+/** Scan bytes for the "ActiveMQ" magic string. Returns offset or -1. */
+function findMagic(data: Uint8Array): number {
+  outer: for (let i = 0; i <= data.length - ACTIVEMQ_MAGIC.length; i++) {
+    for (let j = 0; j < ACTIVEMQ_MAGIC.length; j++) {
+      if (data[i + j] !== ACTIVEMQ_MAGIC[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+/** Parse 4-byte big-endian OpenWire version immediately following the magic. */
+function parseVersion(data: Uint8Array, magicOffset: number): number | null {
+  const off = magicOffset + ACTIVEMQ_MAGIC.length;
+  if (off + 4 > data.length) return null;
+  const v = new DataView(data.buffer, data.byteOffset + off).getInt32(0, false);
+  return (v > 0 && v < 100) ? v : null;
+}
+
+/**
+ * Try to extract broker name from a BrokerInfo frame body.
+ * BrokerInfo is a complex marshalled object; we do a best-effort text scan.
+ */
+function parseBrokerName(data: Uint8Array, commandTypeOffset: number): string | undefined {
+  if (data.length <= commandTypeOffset) return undefined;
+  // BrokerInfo body contains marshalled strings — scan for printable ASCII sequences
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  const body = decoder.decode(data.slice(commandTypeOffset));
+  // Look for a run of printable ASCII ≥ 4 chars that looks like a broker name
+  const match = body.match(/[a-zA-Z0-9][\w\-./]{3,63}/);
+  return match?.[0];
+}
+
+/** Read bytes from stream with a deadline, collecting up to maxBytes. */
+async function readBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  waitMs: number,
+  maxBytes = 512,
+): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const deadline = Date.now() + waitMs;
+
+  while (Date.now() < deadline && total < maxBytes) {
+    try {
+      const remaining = deadline - Date.now();
+      const t = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), Math.min(remaining, 500)),
+      );
+      const { value, done } = await Promise.race([reader.read(), t]);
+      if (done || !value) break;
+      chunks.push(value);
+      total += value.length;
+    } catch {
+      break;
+    }
+  }
+
+  const combined = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { combined.set(c, off); off += c.length; }
+  return combined;
+}
+
+/**
+ * Probe an Apache ActiveMQ broker.
+ *
+ * POST /api/activemq/probe
+ * Body: { host, port?, timeout? }
+ *
+ * Sends a WireFormatInfo handshake and parses the broker's response
+ * to detect ActiveMQ, OpenWire version, and capability flags.
+ */
+export async function handleActiveMQProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 });
   }
 
   try {
-    const { host, port = DEFAULT_PORT, timeout = DEFAULT_TIMEOUT } = await request.json<{
-      host?: string;
-      port?: number;
-      timeout?: number;
-    }>();
+    const body = (await request.json()) as ActiveMQRequest;
+    const { host, port = 61616, timeout = 10000 } = body;
 
-    if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-      });
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
     }
 
-    // Check if target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(
@@ -89,311 +190,110 @@ export async function handleActiveMQConnect(request: Request): Promise<Response>
           error: getCloudflareErrorMessage(host, cfCheck.ip),
           isCloudflare: true,
         }),
-        {
-          status: 403,
-          headers: { 'Content-Type': 'application/json' },
-        }
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
       );
     }
 
-    const socket = connect({ hostname: host, port });
-    const writer = socket.writable.getWriter();
-    const reader = socket.readable.getReader();
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const socket = connect(`${host}:${port}`);
 
     try {
-      // Set timeout
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout')), timeout)
-      );
-
+      const startTime = Date.now();
       await Promise.race([socket.opened, timeoutPromise]);
+      const tcpLatency = Date.now() - startTime;
 
-      // Send WIREFORMAT_INFO command
-      const wireFormatInfoPacket = buildWireFormatInfo();
-      await writer.write(wireFormatInfoPacket);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
 
-      // Read response with timeout
-      const responsePromise = readCommand(reader);
-      const response = (await Promise.race([responsePromise, timeoutPromise])) as {
-        commandId: number;
-        data: Uint8Array;
-      };
+      // Send our WireFormatInfo — triggers the broker to also send its WireFormatInfo
+      await writer.write(buildWireFormatInfo());
 
-      let result: {
-        success: boolean;
-        message?: string;
-        wireFormat?: WireFormatInfo;
-        broker?: BrokerInfo;
-        error?: string;
-      } = { success: true };
+      // Collect broker's response: WireFormatInfo + possibly BrokerInfo
+      const data = await readBytes(reader, 5000, 512);
 
-      if (response.commandId === WIREFORMAT_INFO) {
-        const wireFormat = parseWireFormatInfo(response.data);
-        result.wireFormat = wireFormat;
-        result.message = `Connected to ActiveMQ broker (OpenWire version ${wireFormat.version})`;
-      } else if (response.commandId === BROKER_INFO) {
-        const brokerInfo = parseBrokerInfo(response.data);
-        result.broker = brokerInfo;
-        result.message = `Connected to ActiveMQ broker: ${brokerInfo.brokerName || 'Unknown'}`;
-      } else {
-        result.message = `Received command ID ${response.commandId}`;
-      }
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
 
-      // Try to read BROKER_INFO if first response was WIREFORMAT_INFO
-      if (response.commandId === WIREFORMAT_INFO) {
-        try {
-          const brokerTimeout = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Broker info timeout')), 5000)
-          );
-          const brokerResponse = (await Promise.race([
-            readCommand(reader),
-            brokerTimeout,
-          ])) as { commandId: number; data: Uint8Array };
+      // Parse broker's WireFormatInfo
+      const magicOffset = findMagic(data);
+      const isActiveMQ = magicOffset >= 0;
+      let openWireVersion: number | undefined;
+      let stackTraceEnabled: boolean | undefined;
+      let cacheEnabled: boolean | undefined;
+      let tightEncodingEnabled: boolean | undefined;
+      let brokerName: string | undefined;
+      let hasBrokerInfo = false;
 
-          if (brokerResponse.commandId === BROKER_INFO) {
-            result.broker = parseBrokerInfo(brokerResponse.data);
+      if (isActiveMQ) {
+        openWireVersion = parseVersion(data, magicOffset) ?? undefined;
+
+        // Boolean flags after magic + version (5 bytes: stack, cache, tcpNoDelay, tight, sizePrefix)
+        const flagsOff = magicOffset + ACTIVEMQ_MAGIC.length + 4;
+        if (flagsOff + 3 < data.length) {
+          stackTraceEnabled    = data[flagsOff] !== 0;
+          cacheEnabled         = data[flagsOff + 1] !== 0;
+          // flagsOff+2 = tcpNoDelayEnabled (usually true, skip)
+          tightEncodingEnabled = data[flagsOff + 3] !== 0;
+        }
+
+        // Look for a BrokerInfo frame (type 0x02) after the first frame
+        // The first frame's length is in bytes [0..3]; skip past it to find second frame
+        if (data.length >= 4) {
+          const firstFrameLen = new DataView(data.buffer, data.byteOffset).getUint32(0, false);
+          const secondFrameStart = 4 + firstFrameLen;
+          if (secondFrameStart + 5 < data.length) {
+            const secondType = data[secondFrameStart + 4]; // type byte after the 4-byte length
+            if (secondType === BROKER_INFO_TYPE) {
+              hasBrokerInfo = true;
+              // Try to extract a broker name string from the BrokerInfo body
+              brokerName = parseBrokerName(data, secondFrameStart + 4 + 1);
+            }
           }
-        } catch {
-          // Broker info is optional, continue without it
         }
       }
 
-      await writer.close();
-      await reader.cancel();
-      await socket.close();
-
-      return new Response(JSON.stringify(result), {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          tcpLatency,
+          isActiveMQ,
+          openWireVersion,
+          stackTraceEnabled,
+          cacheEnabled,
+          tightEncodingEnabled,
+          hasBrokerInfo,
+          brokerName,
+          receivedBytes: data.length,
+          note: isActiveMQ
+            ? `Apache ActiveMQ broker detected. OpenWire v${openWireVersion ?? '?'} — ` +
+              `the broker's native binary protocol.`
+            : `Port ${port} is open but the ActiveMQ OpenWire magic was not detected ` +
+              `(${data.length} bytes received). ` +
+              `ActiveMQ also accepts STOMP on :61613, AMQP on :5672, MQTT on :1883.`,
+          references: [
+            'https://activemq.apache.org/openwire',
+            'https://activemq.apache.org/configuring-transports',
+          ],
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
     } catch (error) {
-      await writer.close();
-      await reader.cancel();
-      await socket.close();
+      socket.close();
       throw error;
     }
   } catch (error) {
     return new Response(
       JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : 'ActiveMQ connection failed',
+        error: error instanceof Error ? error.message : 'Unknown error',
       }),
-      {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      }
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
     );
   }
-}
-
-/**
- * Handle ActiveMQ broker probe
- * Get detailed broker information
- */
-export async function handleActiveMQProbe(request: Request): Promise<Response> {
-  // For now, probe is the same as connect
-  // Could be extended to send additional commands for more info
-  return handleActiveMQConnect(request);
-}
-
-/**
- * Build WIREFORMAT_INFO command packet
- */
-function buildWireFormatInfo(): Uint8Array {
-  const buffer: number[] = [];
-
-  // Command type: WIREFORMAT_INFO (1)
-  buffer.push(WIREFORMAT_INFO);
-
-  // Build WireFormatInfo data
-  const properties = new Map<string, unknown>();
-  properties.set('MaxFrameSize', 104857600); // 100MB
-  properties.set('CacheEnabled', true);
-  properties.set('SizePrefixDisabled', false);
-  properties.set('TcpNoDelayEnabled', true);
-  properties.set('TightEncodingEnabled', true);
-  properties.set('StackTraceEnabled', true);
-  properties.set('CacheSize', 1024);
-  properties.set('MaxInactivityDuration', 30000);
-  properties.set('MaxInactivityDurationInitalDelay', 10000);
-
-  const data: number[] = [];
-
-  // Marshal WireFormatInfo object
-  data.push(WIREFORMAT_INFO); // Object type
-
-  // Version (marshalled as int)
-  data.push(INTEGER_TYPE);
-  pushInt(data, 12); // OpenWire version 12
-
-  // Properties map
-  data.push(10); // Map type indicator
-  pushInt(data, properties.size);
-
-  for (const [key, value] of properties.entries()) {
-    // Key (string)
-    data.push(STRING_TYPE);
-    const keyBytes = new TextEncoder().encode(key);
-    pushShort(data, keyBytes.length);
-    data.push(...keyBytes);
-
-    // Value
-    if (typeof value === 'boolean') {
-      data.push(BOOLEAN_TYPE);
-      data.push(value ? 1 : 0);
-    } else if (typeof value === 'number') {
-      if (Number.isInteger(value)) {
-        data.push(INTEGER_TYPE);
-        pushInt(data, value);
-      } else {
-        // Long for large numbers
-        data.push(LONG_TYPE);
-        pushLong(data, value);
-      }
-    } else if (typeof value === 'string') {
-      data.push(STRING_TYPE);
-      const valueBytes = new TextEncoder().encode(value);
-      pushShort(data, valueBytes.length);
-      data.push(...valueBytes);
-    }
-  }
-
-  // Frame the command: [type:1][size:4][data:n]
-  const frameSize = data.length;
-  pushInt(buffer, frameSize);
-  buffer.push(...data);
-
-  return new Uint8Array(buffer);
-}
-
-/**
- * Read an OpenWire command from the socket
- */
-async function readCommand(
-  reader: ReadableStreamDefaultReader<Uint8Array>
-): Promise<{ commandId: number; data: Uint8Array }> {
-  // Read command type (1 byte)
-  const typeResult = await reader.read();
-  if (typeResult.done || !typeResult.value || typeResult.value.length === 0) {
-    throw new Error('Connection closed');
-  }
-  const commandId = typeResult.value[0];
-
-  // Read size (4 bytes, big-endian)
-  const sizeBytes = await readExact(reader, 4);
-  const size = new DataView(sizeBytes.buffer).getUint32(0, false);
-
-  // Read data
-  const data = await readExact(reader, size);
-
-  return { commandId, data };
-}
-
-/**
- * Read exact number of bytes from stream
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
-
-  while (offset < length) {
-    const result = await reader.read();
-    if (result.done) {
-      throw new Error('Unexpected end of stream');
-    }
-    const chunk = result.value;
-    const toCopy = Math.min(chunk.length, length - offset);
-    buffer.set(chunk.subarray(0, toCopy), offset);
-    offset += toCopy;
-  }
-
-  return buffer;
-}
-
-/**
- * Parse WIREFORMAT_INFO response
- */
-function parseWireFormatInfo(data: Uint8Array): WireFormatInfo {
-  let offset = 0;
-  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-
-  // Skip object type
-  offset += 1;
-
-  // Read version
-  const versionType = data[offset++];
-  let version = 0;
-  if (versionType === INTEGER_TYPE) {
-    version = view.getInt32(offset, false);
-    offset += 4;
-  }
-
-  // Read properties map (simplified parsing)
-  const properties = new Map<string, unknown>();
-
-  return { version, properties };
-}
-
-/**
- * Parse BROKER_INFO response
- */
-function parseBrokerInfo(data: Uint8Array): BrokerInfo {
-  let offset = 0;
-  // const _view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const result: BrokerInfo = {};
-
-  try {
-    // Skip object type
-    offset += 1;
-
-    // Parse fields (simplified)
-    // In reality, BrokerInfo has many fields that need proper unmarshalling
-    // For now, we'll try to extract basic info
-
-    // Try to find broker name in the data (simplified heuristic)
-    const decoder = new TextDecoder();
-    const dataStr = decoder.decode(data);
-
-    // Look for common patterns
-    const nameMatch = dataStr.match(/localhost|broker|activemq/i);
-    if (nameMatch) {
-      result.brokerName = nameMatch[0];
-    }
-
-    result.brokerURL = 'tcp://unknown:61616';
-  } catch {
-    // Parsing failed, return minimal info
-    result.brokerName = 'ActiveMQ Broker';
-  }
-
-  return result;
-}
-
-/**
- * Helper: Push int32 (big-endian)
- */
-function pushInt(buffer: number[], value: number): void {
-  buffer.push((value >> 24) & 0xff);
-  buffer.push((value >> 16) & 0xff);
-  buffer.push((value >> 8) & 0xff);
-  buffer.push(value & 0xff);
-}
-
-/**
- * Helper: Push int16 (big-endian)
- */
-function pushShort(buffer: number[], value: number): void {
-  buffer.push((value >> 8) & 0xff);
-  buffer.push(value & 0xff);
-}
-
-/**
- * Helper: Push int64 (big-endian, simplified)
- */
-function pushLong(buffer: number[], value: number): void {
-  // Simplified: treat as 32-bit for now
-  buffer.push(0, 0, 0, 0);
-  pushInt(buffer, value);
 }

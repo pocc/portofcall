@@ -21,6 +21,7 @@ const FUNCTION_CODES: Record<string, number> = {
   READ_INPUT_REGISTERS: 0x04,
   WRITE_SINGLE_COIL: 0x05,
   WRITE_SINGLE_REGISTER: 0x06,
+  WRITE_MULTIPLE_REGISTERS: 0x10,
 };
 
 /** Modbus exception code descriptions */
@@ -422,6 +423,270 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Connection failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Modbus TCP Write Single Coil (function code 0x05)
+ * POST /api/modbus/write/coil
+ *
+ * Writes a single coil (digital output) ON or OFF.
+ */
+export async function handleModbusWriteCoil(request: Request): Promise<Response> {
+  try {
+    const { host, port = 502, unitId = 1, address, value, timeout = 5000 } =
+      await request.json<{
+        host: string;
+        port?: number;
+        unitId?: number;
+        address: number;
+        value: boolean | number;
+        timeout?: number;
+      }>();
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (address === undefined || value === undefined) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: address and value',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Coil ON = 0xFF00, OFF = 0x0000
+    const coilValue = (value === true || value === 1) ? 0xFF00 : 0x0000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // FC 0x05: address(2BE) + coilValue(2BE)
+        const data = [
+          (address >> 8) & 0xFF,
+          address & 0xFF,
+          (coilValue >> 8) & 0xFF,
+          coilValue & 0xFF,
+        ];
+
+        const frame = buildModbusFrame(unitId, FUNCTION_CODES.WRITE_SINGLE_COIL, data);
+        await writer.write(frame);
+
+        const responseBytes = await readModbusResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const parsed = parseModbusResponse(responseBytes);
+
+        await socket.close();
+
+        if (parsed.isException) {
+          return {
+            success: false,
+            error: `Modbus exception: ${parsed.exceptionMessage} (code 0x${parsed.exceptionCode?.toString(16)})`,
+            host,
+            port,
+            unitId,
+            address,
+          };
+        }
+
+        // Echo response mirrors the request: address(2BE) + coilValue(2BE)
+        const echoAddress = (parsed.data[0] << 8) | parsed.data[1];
+        const echoCoilValue = (parsed.data[2] << 8) | parsed.data[3];
+
+        return {
+          success: true,
+          host,
+          port,
+          unitId,
+          address: echoAddress,
+          coilValue: echoCoilValue,
+          written: echoCoilValue === 0xFF00,
+          rtt,
+        };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Modbus write coil failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Modbus TCP Write Multiple Registers (function code 0x10)
+ * POST /api/modbus/write/registers
+ *
+ * Writes one or more holding registers starting at a given address.
+ */
+export async function handleModbusWriteRegisters(request: Request): Promise<Response> {
+  try {
+    const { host, port = 502, unitId = 1, address, values, timeout = 5000 } =
+      await request.json<{
+        host: string;
+        port?: number;
+        unitId?: number;
+        address: number;
+        values: number[];
+        timeout?: number;
+      }>();
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (address === undefined || !Array.isArray(values) || values.length === 0) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameters: address and values (non-empty array)',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (values.length > 123) {
+      return new Response(JSON.stringify({
+        error: 'values array too large: maximum 123 registers per request',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        const quantity = values.length;
+        const byteCount = quantity * 2;
+
+        // FC 0x10: startAddress(2BE) + quantity(2BE) + byteCount(1) + values(each 2BE)
+        const data: number[] = [
+          (address >> 8) & 0xFF,
+          address & 0xFF,
+          (quantity >> 8) & 0xFF,
+          quantity & 0xFF,
+          byteCount,
+        ];
+
+        for (const v of values) {
+          data.push((v >> 8) & 0xFF);
+          data.push(v & 0xFF);
+        }
+
+        const frame = buildModbusFrame(unitId, FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS, data);
+        await writer.write(frame);
+
+        const responseBytes = await readModbusResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const parsed = parseModbusResponse(responseBytes);
+
+        await socket.close();
+
+        if (parsed.isException) {
+          return {
+            success: false,
+            error: `Modbus exception: ${parsed.exceptionMessage} (code 0x${parsed.exceptionCode?.toString(16)})`,
+            host,
+            port,
+            unitId,
+            address,
+          };
+        }
+
+        // Response: startAddress(2BE) + quantity(2BE)
+        const startAddress = (parsed.data[0] << 8) | parsed.data[1];
+        const writtenQuantity = (parsed.data[2] << 8) | parsed.data[3];
+
+        return {
+          success: true,
+          host,
+          port,
+          unitId,
+          startAddress,
+          quantity: writtenQuantity,
+          rtt,
+        };
+      } catch (error) {
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Modbus write registers failed',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

@@ -363,3 +363,164 @@ export async function handleVaultQuery(request: Request): Promise<Response> {
     );
   }
 }
+
+
+/**
+ * Handle Vault KV secret read
+ * POST /api/vault/secret/read
+ * Reads a KV secret from Vault. Supports both KV v1 (/v1/secret/{path})
+ * and KV v2 (/v1/secret/data/{path}). Auto-detects version from response shape.
+ */
+export async function handleVaultSecretRead(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; path: string; token: string;
+      kv_version?: 1 | 2; mount?: string; timeout?: number;
+    };
+    if (!body.host || !body.path || !body.token) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, path, token' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 8200;
+    const timeout = body.timeout || 10000;
+    const mount = body.mount || 'secret';
+    const kvVersion = body.kv_version || 2;
+    const apiPath = kvVersion === 2
+      ? `/v1/${mount}/data/${body.path}`
+      : `/v1/${mount}/${body.path}`;
+
+    const result = await sendHttpGet(host, port, apiPath, body.token, timeout);
+    const httpOk = result.statusCode >= 200 && result.statusCode < 300;
+
+    if (!httpOk) {
+      return new Response(JSON.stringify({ success: false, host, port, httpStatus: result.statusCode, path: body.path, error: result.body || `HTTP ${result.statusCode}` }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    let parsed: Record<string, unknown> = {};
+    try { parsed = JSON.parse(result.body) as Record<string, unknown>; } catch { /* raw */ }
+
+    // KV v2 wraps data under .data.data; KV v1 is under .data
+    const kvv2 = parsed as { data?: { data?: Record<string, unknown>; metadata?: Record<string, unknown> } };
+    const secretData = kvVersion === 2
+      ? (kvv2?.data?.data ?? {})
+      : ((parsed as { data?: Record<string, unknown> })?.data ?? {});
+    const metadata = kvVersion === 2 ? (kvv2?.data?.metadata ?? {}) : {};
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, path: body.path, mount, kvVersion,
+      data: secretData,
+      metadata,
+      keys: Object.keys(secretData as object),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Read failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Vault KV secret write
+ * POST /api/vault/secret/write
+ * Writes a KV secret. KV v2: POST /v1/{mount}/data/{path} with {"data":{...}}.
+ * KV v1: POST /v1/{mount}/{path} with the data directly.
+ */
+export async function handleVaultSecretWrite(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; path: string; token: string;
+      data: Record<string, unknown>; kv_version?: 1 | 2; mount?: string; timeout?: number;
+    };
+    if (!body.host || !body.path || !body.token || !body.data) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, path, token, data' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 8200;
+    const timeout = body.timeout || 10000;
+    const mount = body.mount || 'secret';
+    const kvVersion = body.kv_version || 2;
+    const apiPath = kvVersion === 2
+      ? `/v1/${mount}/data/${body.path}`
+      : `/v1/${mount}/${body.path}`;
+    const payload = kvVersion === 2
+      ? JSON.stringify({ data: body.data })
+      : JSON.stringify(body.data);
+
+    // Build raw HTTP POST over TCP socket
+    const { connect } = await import('cloudflare:sockets');
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    await socket.opened;
+    const reader = socket.readable.getReader();
+    const writer = socket.writable.getWriter();
+
+    try {
+      const payloadBytes = new TextEncoder().encode(payload);
+      const headers = [
+        `POST ${apiPath} HTTP/1.1`,
+        `Host: ${host}:${port}`,
+        `X-Vault-Token: ${body.token}`,
+        'Content-Type: application/json',
+        `Content-Length: ${payloadBytes.length}`,
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n');
+      await writer.write(new TextEncoder().encode(headers));
+      await writer.write(payloadBytes);
+
+      // Read response
+      const chunks: Uint8Array[] = [];
+      const tp = new Promise<void>((_, rej) => setTimeout(() => rej(new Error('Timeout')), timeout));
+      const rp = (async () => {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done || !value) break;
+          chunks.push(value);
+        }
+      })();
+      await Promise.race([rp, tp]).catch(() => {});
+
+      writer.releaseLock(); reader.releaseLock();
+      await socket.close();
+
+      const rtt = Date.now() - startTime;
+      const combined = new Uint8Array(chunks.reduce((s, c) => s + c.length, 0));
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+      const text = new TextDecoder().decode(combined);
+      const headerEnd = text.indexOf('\r\n\r\n');
+      const statusLine = text.split('\r\n')[0];
+      const statusCode = parseInt(statusLine.split(' ')[1] || '0');
+      const respBody = headerEnd >= 0 ? text.slice(headerEnd + 4) : '';
+
+      let parsed: Record<string, unknown> = {};
+      try { parsed = JSON.parse(respBody) as Record<string, unknown>; } catch { /* raw */ }
+
+      const success = statusCode >= 200 && statusCode < 300;
+      return new Response(JSON.stringify({
+        success,
+        host, port, path: body.path, mount, kvVersion, rtt,
+        httpStatus: statusCode,
+        ...(success
+          ? { version: (parsed as { data?: { version?: number } })?.data?.version, keys: Object.keys(body.data) }
+          : { error: (parsed as { errors?: string[] })?.errors?.[0] || `HTTP ${statusCode}` }),
+      }), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      writer.releaseLock(); reader.releaseLock();
+      await socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Write failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

@@ -404,6 +404,234 @@ export async function handleSMPPConnect(request: Request): Promise<Response> {
   }
 }
 
+// submit_sm command IDs
+const SUBMIT_SM      = 0x00000004;
+const SUBMIT_SM_RESP = 0x80000004;
+
+/**
+ * Build an SMPP submit_sm PDU for sending an SMS message
+ */
+function buildSubmitSmPDU(
+  sourceAddr: string,
+  destAddr: string,
+  message: string,
+  sequenceNumber: number,
+  dataCoding: number = 0x00,
+): Uint8Array {
+  const serviceType = encodeCOctet('', 6);
+  const sourceAddrBytes = encodeCOctet(sourceAddr, 21);
+  const destAddrBytes = encodeCOctet(destAddr, 21);
+  const scheduleTime = encodeCOctet('', 17);
+  const validityPeriod = encodeCOctet('', 17);
+  const msgBytes = new TextEncoder().encode(message.substring(0, 160));
+
+  const bodyLen =
+    serviceType.length +
+    1 + 1 + sourceAddrBytes.length +
+    1 + 1 + destAddrBytes.length +
+    1 + 1 + 1 +
+    scheduleTime.length + validityPeriod.length +
+    1 + 1 + 1 + 1 +
+    1 + msgBytes.length;
+
+  const totalLen = 16 + bodyLen;
+  const pdu = new Uint8Array(totalLen);
+  const view = new DataView(pdu.buffer);
+
+  view.setUint32(0, totalLen, false);
+  view.setUint32(4, SUBMIT_SM, false);
+  view.setUint32(8, 0, false);
+  view.setUint32(12, sequenceNumber, false);
+
+  let offset = 16;
+  pdu.set(serviceType, offset);       offset += serviceType.length;
+  pdu[offset++] = 0x00;               // source_addr_ton
+  pdu[offset++] = 0x00;               // source_addr_npi
+  pdu.set(sourceAddrBytes, offset);   offset += sourceAddrBytes.length;
+  pdu[offset++] = 0x01;               // dest_addr_ton (International)
+  pdu[offset++] = 0x01;               // dest_addr_npi (ISDN)
+  pdu.set(destAddrBytes, offset);     offset += destAddrBytes.length;
+  pdu[offset++] = 0x00;               // esm_class
+  pdu[offset++] = 0x00;               // protocol_id
+  pdu[offset++] = 0x00;               // priority_flag
+  pdu.set(scheduleTime, offset);      offset += scheduleTime.length;
+  pdu.set(validityPeriod, offset);    offset += validityPeriod.length;
+  pdu[offset++] = 0x01;               // registered_delivery
+  pdu[offset++] = 0x00;               // replace_if_present_flag
+  pdu[offset++] = dataCoding;
+  pdu[offset++] = 0x00;               // sm_default_msg_id
+  pdu[offset++] = msgBytes.length;
+  pdu.set(msgBytes, offset);
+
+  return pdu;
+}
+
+/**
+ * Handle SMPP submit_sm — authenticate and send an SMS message
+ * POST /api/smpp/submit
+ */
+export async function handleSMPPSubmit(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      system_id: string;
+      password: string;
+      source_addr?: string;
+      destination_addr: string;
+      message: string;
+      data_coding?: number;
+      timeout?: number;
+    };
+
+    if (!body.host || !body.system_id || !body.password || !body.destination_addr || !body.message) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Missing required: host, system_id, password, destination_addr, message',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (body.message.length > 160) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Message too long (max 160 characters)',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const host = body.host;
+    const port = body.port || 2775;
+    const timeout = body.timeout || 15000;
+    const sourceAddr = body.source_addr || 'portofcall';
+    const dataCoding = body.data_coding ?? 0x00;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      const readBytes = async (n: number, timeoutMs: number): Promise<Uint8Array> => {
+        const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Read timeout')), timeoutMs));
+        const rp = (async () => {
+          const chunks: Uint8Array[] = [];
+          let total = 0;
+          while (total < n) {
+            const { value, done } = await reader.read();
+            if (done || !value) throw new Error('Connection closed');
+            chunks.push(value); total += value.length;
+          }
+          const combined = new Uint8Array(total);
+          let off = 0;
+          for (const c of chunks) { combined.set(c, off); off += c.length; }
+          return combined;
+        })();
+        return Promise.race([rp, tp]);
+      };
+
+      const readPDU = async (timeoutMs: number) => {
+        const hdr = await readBytes(16, timeoutMs);
+        const view = new DataView(hdr.buffer);
+        const length = view.getUint32(0, false);
+        const commandId = view.getUint32(4, false);
+        const commandStatus = view.getUint32(8, false);
+        const sequenceNumber = view.getUint32(12, false);
+        const bodyData = length > 16 ? await readBytes(length - 16, timeoutMs) : new Uint8Array(0);
+        return { length, commandId, commandStatus, sequenceNumber, body: bodyData };
+      };
+
+      try {
+        const bindPDU = buildBindTransceiverPDU(body.system_id, body.password);
+        await writer.write(bindPDU);
+
+        const bindResp = await readPDU(5000);
+        const connectTime = Date.now() - startTime;
+
+        if (bindResp.commandStatus !== 0) {
+          throw new Error(`Bind failed: ${getStatusName(bindResp.commandStatus)}`);
+        }
+
+        let boundSystemId = '';
+        if (bindResp.body.length > 0) {
+          boundSystemId = decodeCOctet(bindResp.body, 0).value;
+        }
+
+        // Send submit_sm
+        const submitPDU = buildSubmitSmPDU(sourceAddr, body.destination_addr, body.message, 2, dataCoding);
+        await writer.write(submitPDU);
+
+        const submitResp = await readPDU(5000);
+        const rtt = Date.now() - startTime;
+
+        let messageId = '';
+        let submitError = '';
+
+        if (submitResp.commandId === SUBMIT_SM_RESP) {
+          if (submitResp.commandStatus === 0) {
+            if (submitResp.body.length > 0) {
+              messageId = decodeCOctet(submitResp.body, 0).value;
+            }
+          } else {
+            submitError = getStatusName(submitResp.commandStatus);
+          }
+        }
+
+        // Unbind
+        await writer.write(buildUnbindPDU(3));
+        try { await readPDU(2000); } catch { /* ignore */ }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        if (submitError) {
+          return { success: false, host, port, rtt, connectTime, boundSystemId, error: `submit_sm failed: ${submitError}`, commandStatus: submitResp.commandStatus };
+        }
+
+        return {
+          success: true,
+          message: 'SMS submitted successfully',
+          host, port, rtt, connectTime, boundSystemId,
+          messageId: messageId || '(no message_id returned)',
+          sourceAddr,
+          destinationAddr: body.destination_addr,
+          messageLength: body.message.length,
+          dataCoding,
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Submit failed' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
 /**
  * Handle SMPP enquire_link (keepalive/probe)
  * POST /api/smpp/probe

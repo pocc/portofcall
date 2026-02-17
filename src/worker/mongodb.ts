@@ -193,6 +193,86 @@ function decodeBSON(data: Uint8Array, startOffset: number = 0): Record<string, u
 }
 
 /**
+ * Recursive BSON field encoder supporting null, nested objects, and arrays.
+ * Used by encodeBSONFull for user-supplied documents.
+ */
+function encodeField(parts: number[], keyBytes: Uint8Array, value: unknown): void {
+  if (value === null || value === undefined) {
+    parts.push(BSON_NULL);
+    parts.push(...keyBytes, 0);
+  } else if (typeof value === 'boolean') {
+    parts.push(BSON_BOOLEAN);
+    parts.push(...keyBytes, 0);
+    parts.push(value ? 1 : 0);
+  } else if (typeof value === 'number' && Number.isInteger(value) && value >= -2147483648 && value <= 2147483647) {
+    parts.push(BSON_INT32);
+    parts.push(...keyBytes, 0);
+    const buf = new ArrayBuffer(4);
+    new DataView(buf).setInt32(0, value, true);
+    parts.push(...new Uint8Array(buf));
+  } else if (typeof value === 'number') {
+    parts.push(BSON_DOUBLE);
+    parts.push(...keyBytes, 0);
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setFloat64(0, value, true);
+    parts.push(...new Uint8Array(buf));
+  } else if (typeof value === 'string') {
+    const strBytes = new TextEncoder().encode(value);
+    parts.push(BSON_STRING);
+    parts.push(...keyBytes, 0);
+    const lenBuf = new ArrayBuffer(4);
+    new DataView(lenBuf).setInt32(0, strBytes.length + 1, true);
+    parts.push(...new Uint8Array(lenBuf));
+    parts.push(...strBytes, 0);
+  } else if (Array.isArray(value)) {
+    parts.push(BSON_ARRAY);
+    parts.push(...keyBytes, 0);
+    const arrDoc = encodeBSONFull(Object.fromEntries(value.map((v, i) => [String(i), v])));
+    parts.push(...arrDoc);
+  } else if (typeof value === 'object') {
+    parts.push(BSON_DOCUMENT);
+    parts.push(...keyBytes, 0);
+    const subdoc = encodeBSONFull(value as Record<string, unknown>);
+    parts.push(...subdoc);
+  }
+}
+
+/**
+ * Full BSON encoder supporting null, nested objects, and arrays.
+ * Use this for user-supplied documents (filter, insert docs, etc.).
+ */
+function encodeBSONFull(doc: Record<string, unknown>): Uint8Array {
+  const parts: number[] = [];
+  for (const [key, value] of Object.entries(doc)) {
+    encodeField(parts, new TextEncoder().encode(key), value);
+  }
+  const totalSize = 4 + parts.length + 1;
+  const result = new Uint8Array(totalSize);
+  new DataView(result.buffer).setInt32(0, totalSize, true);
+  result.set(new Uint8Array(parts), 4);
+  result[totalSize - 1] = 0;
+  return result;
+}
+
+/**
+ * Build a MongoDB OP_MSG using the full recursive BSON encoder.
+ */
+function buildOpMsgFull(document: Record<string, unknown>, requestId: number): Uint8Array {
+  const bsonDoc = encodeBSONFull(document);
+  const messageLength = 16 + 4 + 1 + bsonDoc.length;
+  const message = new Uint8Array(messageLength);
+  const view = new DataView(message.buffer);
+  view.setInt32(0, messageLength, true);
+  view.setInt32(4, requestId, true);
+  view.setInt32(8, 0, true);
+  view.setInt32(12, OP_MSG, true);
+  view.setUint32(16, 0, true);
+  message[20] = 0;
+  message.set(bsonDoc, 21);
+  return message;
+}
+
+/**
  * Build a MongoDB OP_MSG message
  */
 function buildOpMsg(document: Record<string, unknown>, requestId: number): Uint8Array {
@@ -501,5 +581,172 @@ export async function handleMongoDBPing(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+}
+
+/**
+ * Handle MongoDB find — query documents from a collection
+ * POST /api/mongodb/find
+ */
+export async function handleMongoDBFind(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number;
+      database: string; collection: string;
+      filter?: Record<string, unknown>;
+      projection?: Record<string, unknown>;
+      limit?: number;
+      skip?: number;
+      timeout?: number;
+    };
+    const { host, port = 27017, database, collection, timeout = 10000 } = body;
+    const filter = body.filter ?? {};
+    const limit = Math.min(body.limit ?? 20, 100);
+    const skip = body.skip ?? 0;
+
+    if (!host || !database || !collection) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, database, collection',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Timeout')), timeout)
+    );
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        await writer.write(buildOpMsg({ hello: 1, $db: database }, 1));
+        const helloRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const helloResp = parseResponse(helloRaw);
+        if (!helloResp.ok) throw new Error('MongoDB hello failed');
+
+        const findCmd: Record<string, unknown> = {
+          find: collection, filter, limit, skip, $db: database,
+        };
+        if (body.projection) findCmd['projection'] = body.projection;
+
+        await writer.write(buildOpMsgFull(findCmd, 2));
+        const findRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const rtt = Date.now() - startTime;
+        const findResp = parseResponse(findRaw);
+
+        if (!findResp.ok) {
+          return new Response(JSON.stringify({
+            success: false, host, port, database, collection,
+            error: findResp.errmsg || 'Find failed', code: findResp.code,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        const cursor = findResp.cursor as { firstBatch?: unknown[]; id?: unknown } | undefined;
+        const documents = cursor?.firstBatch ?? [];
+
+        return new Response(JSON.stringify({
+          success: true, host, port, rtt, database, collection,
+          documentCount: documents.length, documents,
+          hasMore: cursor?.id !== undefined && cursor.id !== 0,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'MongoDB find failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle MongoDB insert — insert documents into a collection
+ * POST /api/mongodb/insert
+ */
+export async function handleMongoDBInsert(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number;
+      database: string; collection: string;
+      documents: Record<string, unknown>[];
+      ordered?: boolean;
+      timeout?: number;
+    };
+    const { host, port = 27017, database, collection, timeout = 10000 } = body;
+    const ordered = body.ordered !== false;
+
+    if (!host || !database || !collection || !Array.isArray(body.documents) || body.documents.length === 0) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Missing required: host, database, collection, documents[]',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (body.documents.length > 100) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Maximum 100 documents per insert',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Timeout')), timeout)
+    );
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        await writer.write(buildOpMsg({ hello: 1, $db: database }, 1));
+        const helloRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const helloResp = parseResponse(helloRaw);
+        if (!helloResp.ok) throw new Error('MongoDB hello failed');
+
+        const insertCmd: Record<string, unknown> = {
+          insert: collection, documents: body.documents, ordered, $db: database,
+        };
+
+        await writer.write(buildOpMsgFull(insertCmd, 2));
+        const insertRaw = await Promise.race([readFullResponse(reader), timeoutPromise]);
+        const rtt = Date.now() - startTime;
+        const insertResp = parseResponse(insertRaw);
+
+        if (!insertResp.ok) {
+          return new Response(JSON.stringify({
+            success: false, host, port, database, collection,
+            error: insertResp.errmsg || 'Insert failed',
+            code: insertResp.code,
+            writeErrors: insertResp.writeErrors,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        return new Response(JSON.stringify({
+          success: true, host, port, rtt, database, collection,
+          inserted: insertResp.n ?? body.documents.length,
+          message: `${String(insertResp.n ?? body.documents.length)} document(s) inserted`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'MongoDB insert failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

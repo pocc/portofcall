@@ -1,11 +1,18 @@
 /**
  * AMQP 0-9-1 Protocol Support for Cloudflare Workers
- * Implements AMQP connectivity testing via the RabbitMQ-style handshake
+ * Implements AMQP connectivity testing and message publishing
  *
- * Connection flow:
+ * Connection flow (connect):
  * 1. Client sends protocol header: "AMQP\x00\x00\x09\x01"
  * 2. Server responds with Connection.Start METHOD frame
  * 3. We parse server-properties, mechanisms, and version info
+ *
+ * Connection flow (publish):
+ * 1. Full handshake: Start -> StartOk -> Tune -> TuneOk -> Open -> OpenOk
+ * 2. Channel: Open -> OpenOk
+ * 3. Optional Exchange.Declare -> DeclareOk
+ * 4. Basic.Publish + Content Header + Content Body
+ * 5. Channel.Close + Connection.Close
  *
  * Spec: https://www.rabbitmq.com/amqp-0-9-1-reference.html
  */
@@ -13,7 +20,7 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
-// const encoder = new TextEncoder(); // Reserved for future use
+const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** AMQP 0-9-1 protocol header */
@@ -26,13 +33,114 @@ const AMQP_PROTOCOL_HEADER = new Uint8Array([
 ]);
 
 const FRAME_METHOD = 1;
-const FRAME_END = 0xce;
+const FRAME_HEADER = 2;
+const FRAME_BODY   = 3;
+const FRAME_END    = 0xce;
 
-// Connection class = 10, Start method = 10
-const CONNECTION_START_CLASS = 10;
-const CONNECTION_START_METHOD = 10;
+// Connection class = 10
+const CLASS_CONNECTION           = 10;
+const METHOD_CONNECTION_START    = 10;
+const METHOD_CONNECTION_START_OK = 11;
+const METHOD_CONNECTION_TUNE     = 30;
+const METHOD_CONNECTION_TUNE_OK  = 31;
+const METHOD_CONNECTION_OPEN     = 40;
+const METHOD_CONNECTION_OPEN_OK  = 41;
+const METHOD_CONNECTION_CLOSE    = 50;
+const METHOD_CONNECTION_CLOSE_OK = 51;
 
-/** Read exactly N bytes from a socket */
+// Channel class = 20
+const CLASS_CHANNEL           = 20;
+const METHOD_CHANNEL_OPEN     = 10;
+const METHOD_CHANNEL_OPEN_OK  = 11;
+const METHOD_CHANNEL_CLOSE    = 40;
+const METHOD_CHANNEL_CLOSE_OK = 41;
+
+// Exchange class = 40
+const CLASS_EXCHANGE             = 40;
+const METHOD_EXCHANGE_DECLARE    = 10;
+const METHOD_EXCHANGE_DECLARE_OK = 11;
+
+// Basic class = 60
+const CLASS_BASIC          = 60;
+const METHOD_BASIC_PUBLISH = 40;
+
+// ---- Frame Building Helpers --------------------------------------------------
+
+/** Wrap a payload in an AMQP frame: [type][channel 2B][size 4B][payload][0xCE] */
+function buildFrame(frameType: number, channel: number, payload: Uint8Array): Uint8Array {
+  const frame = new Uint8Array(7 + payload.length + 1);
+  const view = new DataView(frame.buffer);
+  frame[0] = frameType;
+  view.setUint16(1, channel, false);
+  view.setUint32(3, payload.length, false);
+  frame.set(payload, 7);
+  frame[7 + payload.length] = FRAME_END;
+  return frame;
+}
+
+/** Prepend 2-byte class-id + 2-byte method-id to args */
+function buildMethodPayload(classId: number, methodId: number, args: Uint8Array): Uint8Array {
+  const payload = new Uint8Array(4 + args.length);
+  const view = new DataView(payload.buffer);
+  view.setUint16(0, classId, false);
+  view.setUint16(2, methodId, false);
+  payload.set(args, 4);
+  return payload;
+}
+
+/** Encode a short string (1-byte length + UTF-8 bytes) */
+function encodeShortString(s: string): Uint8Array {
+  const bytes = encoder.encode(s);
+  if (bytes.length > 255) throw new Error(`Short string too long: ${bytes.length} bytes`);
+  const out = new Uint8Array(1 + bytes.length);
+  out[0] = bytes.length;
+  out.set(bytes, 1);
+  return out;
+}
+
+/** Encode a field table from a flat string->string map (values as AMQP long strings) */
+function encodeFieldTable(fields: Record<string, string>): Uint8Array {
+  const parts: Uint8Array[] = [];
+  for (const [key, val] of Object.entries(fields)) {
+    const keyBytes = encodeShortString(key);
+    const valBytes = encoder.encode(val);
+    // Type 'S' = long string
+    const entry = new Uint8Array(keyBytes.length + 1 + 4 + valBytes.length);
+    let pos = 0;
+    entry.set(keyBytes, pos);
+    pos += keyBytes.length;
+    entry[pos++] = 0x53; // 'S'
+    new DataView(entry.buffer).setUint32(pos, valBytes.length, false);
+    pos += 4;
+    entry.set(valBytes, pos);
+    parts.push(entry);
+  }
+  const totalLen = parts.reduce((acc, p) => acc + p.length, 0);
+  const out = new Uint8Array(4 + totalLen);
+  new DataView(out.buffer).setUint32(0, totalLen, false);
+  let pos = 4;
+  for (const p of parts) {
+    out.set(p, pos);
+    pos += p.length;
+  }
+  return out;
+}
+
+/** Concatenate multiple Uint8Arrays */
+function concat(...arrays: Uint8Array[]): Uint8Array {
+  const total = arrays.reduce((acc, a) => acc + a.length, 0);
+  const out = new Uint8Array(total);
+  let pos = 0;
+  for (const a of arrays) {
+    out.set(a, pos);
+    pos += a.length;
+  }
+  return out;
+}
+
+// ---- Read Helpers ------------------------------------------------------------
+
+/** Read exactly N bytes from a socket reader */
 async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number): Promise<Uint8Array> {
   const buffer = new Uint8Array(n);
   let offset = 0;
@@ -42,7 +150,7 @@ async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: num
     const toCopy = Math.min(n - offset, value.length);
     buffer.set(value.subarray(0, toCopy), offset);
     offset += toCopy;
-    // If we got more than needed, we lose the extra bytes — acceptable for a one-shot handshake
+    // If we got more than needed, we lose the extra bytes -- acceptable for a one-shot handshake
   }
   return buffer;
 }
@@ -62,7 +170,7 @@ function readLongString(data: Uint8Array, offset: number): { value: string; byte
   return { value, bytesRead: 4 + len };
 }
 
-/** Parse an AMQP field table into a Record<string, string> (simplified — extracts string values) */
+/** Parse an AMQP field table into a Record<string, string> (simplified -- extracts string values) */
 function readFieldTable(data: Uint8Array, offset: number): { value: Record<string, string>; bytesRead: number } {
   const view = new DataView(data.buffer, data.byteOffset + offset, 4);
   const tableLen = view.getUint32(0, false);
@@ -116,9 +224,9 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         break;
       }
       default: {
-        // Skip unknown types — bail out of table parsing
+        // Skip unknown types -- bail out of table parsing
         table[nameResult.value] = `<type:${type}>`;
-        pos = end; // break out
+        pos = end;
         break;
       }
     }
@@ -126,6 +234,281 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
 
   return { value: table, bytesRead: 4 + tableLen };
 }
+
+/**
+ * Read and validate one complete AMQP frame.
+ * Returns { frameType, channel, payload } with the frame-end byte consumed.
+ */
+async function readFrame(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<{
+  frameType: number;
+  channel: number;
+  payload: Uint8Array;
+}> {
+  const header    = await readExact(reader, 7);
+  const frameType = header[0];
+  const channel   = (header[1] << 8) | header[2];
+  const frameSize = new DataView(header.buffer, 3, 4).getUint32(0, false);
+  const payload   = await readExact(reader, frameSize);
+  const end       = await readExact(reader, 1);
+  if (end[0] !== FRAME_END) {
+    throw new Error(`Invalid frame-end marker: 0x${end[0].toString(16)}`);
+  }
+  return { frameType, channel, payload };
+}
+
+/**
+ * Read a METHOD frame and assert class/method IDs.
+ * Returns the argument bytes (payload after the 4-byte class+method header).
+ */
+async function expectMethod(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  expectedClass: number,
+  expectedMethod: number,
+): Promise<Uint8Array> {
+  const { frameType, payload } = await readFrame(reader);
+  if (frameType !== FRAME_METHOD) {
+    throw new Error(`Expected METHOD frame, got type ${frameType}`);
+  }
+  const classId  = (payload[0] << 8) | payload[1];
+  const methodId = (payload[2] << 8) | payload[3];
+  if (classId !== expectedClass || methodId !== expectedMethod) {
+    throw new Error(
+      `Expected method (${expectedClass}, ${expectedMethod}), got (${classId}, ${methodId})`
+    );
+  }
+  return payload.subarray(4);
+}
+
+// ---- Per-method Frame Builders -----------------------------------------------
+
+function buildConnectionStartOk(username: string, password: string): Uint8Array {
+  const clientProps = encodeFieldTable({ product: 'PortOfCall', version: '1.0' });
+  const mechanism   = encodeShortString('PLAIN');
+
+  // PLAIN response: NUL + username + NUL + password (raw bytes, not a string)
+  const userBytes = encoder.encode(username);
+  const passBytes = encoder.encode(password);
+  const saslBytes = new Uint8Array(1 + userBytes.length + 1 + passBytes.length);
+  saslBytes[0] = 0x00;
+  saslBytes.set(userBytes, 1);
+  saslBytes[1 + userBytes.length] = 0x00;
+  saslBytes.set(passBytes, 2 + userBytes.length);
+
+  // Encode as AMQP long string (4-byte length prefix + raw bytes)
+  const responseLong = new Uint8Array(4 + saslBytes.length);
+  new DataView(responseLong.buffer).setUint32(0, saslBytes.length, false);
+  responseLong.set(saslBytes, 4);
+
+  const locale = encodeShortString('en_US');
+  const args   = concat(clientProps, mechanism, responseLong, locale);
+  return buildFrame(FRAME_METHOD, 0, buildMethodPayload(CLASS_CONNECTION, METHOD_CONNECTION_START_OK, args));
+}
+
+function buildConnectionTuneOk(channelMax: number, frameMax: number, heartbeat: number): Uint8Array {
+  // channel_max (uint16) + frame_max (uint32) + heartbeat (uint16) = 8 bytes
+  const args = new Uint8Array(8);
+  const view = new DataView(args.buffer);
+  view.setUint16(0, channelMax, false);
+  view.setUint32(2, frameMax,   false);
+  view.setUint16(6, heartbeat,  false);
+  return buildFrame(FRAME_METHOD, 0, buildMethodPayload(CLASS_CONNECTION, METHOD_CONNECTION_TUNE_OK, args));
+}
+
+function buildConnectionOpen(vhost: string): Uint8Array {
+  const args = concat(
+    encodeShortString(vhost),
+    encodeShortString(''),  // reserved1
+    new Uint8Array([0x00]), // reserved2 (boolean)
+  );
+  return buildFrame(FRAME_METHOD, 0, buildMethodPayload(CLASS_CONNECTION, METHOD_CONNECTION_OPEN, args));
+}
+
+function buildChannelOpen(): Uint8Array {
+  // reserved1: long string "" = 4 zero bytes
+  const reserved1 = new Uint8Array([0x00, 0x00, 0x00, 0x00]);
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_CHANNEL, METHOD_CHANNEL_OPEN, reserved1));
+}
+
+function buildExchangeDeclare(exchange: string): Uint8Array {
+  const args = concat(
+    new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
+    encodeShortString(exchange),
+    encodeShortString('direct'),
+    new Uint8Array([0x00]),        // flags byte: passive|durable|auto-delete|internal|no-wait = 0
+    encodeFieldTable({}),          // arguments (empty table)
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE, args));
+}
+
+function buildBasicPublish(exchange: string, routingKey: string): Uint8Array {
+  const args = concat(
+    new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
+    encodeShortString(exchange),
+    encodeShortString(routingKey),
+    new Uint8Array([0x00]),         // mandatory (boolean)
+    new Uint8Array([0x00]),         // immediate (boolean)
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_BASIC, METHOD_BASIC_PUBLISH, args));
+}
+
+function buildContentHeader(bodySize: number): Uint8Array {
+  // Payload: class-id (2) + weight (2) + body-size (8) + property-flags (2) + content-type short string
+  const contentType   = encodeShortString('text/plain');
+  const propertyFlags = 0x8000; // bit 15 set = content-type present
+  const headerPayload = new Uint8Array(2 + 2 + 8 + 2 + contentType.length);
+  const view = new DataView(headerPayload.buffer);
+  view.setUint16(0, CLASS_BASIC, false);   // class-id = 60
+  view.setUint16(2, 0, false);              // weight (always 0)
+  view.setUint32(4, 0, false);              // body-size high 32 bits
+  view.setUint32(8, bodySize, false);       // body-size low 32 bits
+  view.setUint16(12, propertyFlags, false);
+  headerPayload.set(contentType, 14);
+  return buildFrame(FRAME_HEADER, 1, headerPayload);
+}
+
+function buildContentBody(message: string): Uint8Array {
+  return buildFrame(FRAME_BODY, 1, encoder.encode(message));
+}
+
+function buildChannelClose(): Uint8Array {
+  // reply-code (uint16) + reply-text (short string) + class-id (uint16) + method-id (uint16)
+  const args = concat(
+    new Uint8Array([0x00, 0xc8]),   // reply-code 200
+    encodeShortString('Normal shutdown'),
+    new Uint8Array([0x00, 0x00]),   // class-id 0
+    new Uint8Array([0x00, 0x00]),   // method-id 0
+  );
+  return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_CHANNEL, METHOD_CHANNEL_CLOSE, args));
+}
+
+function buildConnectionClose(): Uint8Array {
+  const args = concat(
+    new Uint8Array([0x00, 0xc8]),   // reply-code 200
+    encodeShortString('Normal shutdown'),
+    new Uint8Array([0x00, 0x00]),   // class-id 0
+    new Uint8Array([0x00, 0x00]),   // method-id 0
+  );
+  return buildFrame(FRAME_METHOD, 0, buildMethodPayload(CLASS_CONNECTION, METHOD_CONNECTION_CLOSE, args));
+}
+
+// ---- Core Publish Logic (shared with amqps.ts) -------------------------------
+
+export interface AMQPPublishParams {
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  vhost: string;
+  exchange: string;
+  routingKey: string;
+  message: string;
+  timeout: number;
+  secureTransport?: 'on' | 'off';
+}
+
+export interface AMQPPublishResult {
+  success: boolean;
+  host: string;
+  port: number;
+  exchange: string;
+  routingKey: string;
+  messageSize: number;
+  message: string;
+}
+
+export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPublishResult> {
+  const {
+    host, port, username, password, vhost,
+    exchange, routingKey, message: msgText,
+    secureTransport = 'off',
+  } = params;
+
+  const connectOptions = secureTransport === 'on'
+    ? { secureTransport: 'on' as const, allowHalfOpen: false }
+    : { allowHalfOpen: false };
+
+  const socket = connect(`${host}:${port}`, connectOptions);
+  await socket.opened;
+
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+
+  try {
+    // Step 1: Send protocol header
+    await writer.write(AMQP_PROTOCOL_HEADER);
+
+    // Step 2: Receive Connection.Start (ignore version/properties)
+    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+
+    // Step 3: Send Connection.StartOk
+    await writer.write(buildConnectionStartOk(username, password));
+
+    // Step 4: Receive Connection.Tune -- echo back the same values
+    const tuneArgs   = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+    const tuneView   = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
+    const channelMax = tuneView.getUint16(0, false);
+    const frameMax   = tuneView.getUint32(2, false);
+    const heartbeat  = tuneView.getUint16(6, false);
+
+    // Step 5: Send Connection.TuneOk
+    await writer.write(buildConnectionTuneOk(channelMax, frameMax, heartbeat));
+
+    // Step 6: Send Connection.Open
+    await writer.write(buildConnectionOpen(vhost));
+
+    // Step 7: Receive Connection.OpenOk
+    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+
+    // Step 8: Send Channel.Open on channel 1
+    await writer.write(buildChannelOpen());
+
+    // Step 9: Receive Channel.OpenOk
+    await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+
+    // Step 10: Optionally declare exchange (skip for default "")
+    if (exchange !== '') {
+      await writer.write(buildExchangeDeclare(exchange));
+      await expectMethod(reader, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK);
+    }
+
+    // Step 11: Publish message (Basic.Publish + Content Header + Content Body)
+    const bodyBytes = encoder.encode(msgText);
+    await writer.write(buildBasicPublish(exchange, routingKey));
+    await writer.write(buildContentHeader(bodyBytes.length));
+    await writer.write(buildContentBody(msgText));
+
+    // Step 12: Graceful close
+    await writer.write(buildChannelClose());
+    try {
+      await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK);
+    } catch {
+      // Server may close immediately; not fatal
+    }
+
+    await writer.write(buildConnectionClose());
+    try {
+      await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK);
+    } catch {
+      // Server may close immediately; not fatal
+    }
+
+    return {
+      success: true,
+      host,
+      port,
+      exchange,
+      routingKey,
+      messageSize: bodyBytes.length,
+      message: 'Message published successfully',
+    };
+  } finally {
+    try { await writer.close();  } catch { /* ignore */ }
+    try { await reader.cancel(); } catch { /* ignore */ }
+    try { await socket.close();  } catch { /* ignore */ }
+  }
+}
+
+// ---- Public Handlers --------------------------------------------------------
 
 /**
  * Handle AMQP connectivity test
@@ -136,7 +519,7 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
  */
 export async function handleAMQPConnect(request: Request): Promise<Response> {
   try {
-    const { host, port = 5672, timeout = 10000 } = await request.json<{ // eslint-disable-line @typescript-eslint/no-unused-vars
+    const { host, port = 5672, timeout = 10000 } = await request.json<{
       host: string;
       port?: number;
       timeout?: number;
@@ -175,17 +558,16 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
 
         // Step 2: Read the response frame header (7 bytes)
         const frameHeader = await readExact(reader, 7);
-        const frameType = frameHeader[0];
-        // const frameChannel = (frameHeader[1] << 8) | frameHeader[2]; // Reserved for future use
-        const frameSize = new DataView(frameHeader.buffer, 3, 4).getUint32(0, false);
+        const frameType   = frameHeader[0];
+        const frameSize   = new DataView(frameHeader.buffer, 3, 4).getUint32(0, false);
 
         if (frameType !== FRAME_METHOD) {
           // Server may have rejected with its own protocol header (version mismatch)
           if (frameHeader[0] === 0x41 && frameHeader[1] === 0x4d) {
-            // "AM" — server sent back AMQP header with different version
-            const rest = await readExact(reader, 1); // read remaining byte
-            const serverMajor = frameHeader[5];
-            const serverMinor = frameHeader[6];
+            // "AM" -- server sent back AMQP header with different version
+            const rest           = await readExact(reader, 1);
+            const serverMajor    = frameHeader[5];
+            const serverMinor    = frameHeader[6];
             const serverRevision = rest[0];
             throw new Error(
               `Version mismatch: server supports AMQP ${serverMajor}.${serverMinor}.${serverRevision}`
@@ -204,26 +586,23 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
         }
 
         // Step 4: Parse Connection.Start method
-        const classId = (payload[0] << 8) | payload[1];
+        const classId  = (payload[0] << 8) | payload[1];
         const methodId = (payload[2] << 8) | payload[3];
 
-        if (classId !== CONNECTION_START_CLASS || methodId !== CONNECTION_START_METHOD) {
+        if (classId !== CLASS_CONNECTION || methodId !== METHOD_CONNECTION_START) {
           throw new Error(`Unexpected method: class=${classId} method=${methodId}`);
         }
 
         const versionMajor = payload[4];
         const versionMinor = payload[5];
 
-        // Server properties (field table)
         let offset = 6;
-        const propsResult = readFieldTable(payload, offset);
+        const propsResult  = readFieldTable(payload, offset);
         offset += propsResult.bytesRead;
 
-        // Mechanisms (long string)
-        const mechResult = readLongString(payload, offset);
+        const mechResult   = readLongString(payload, offset);
         offset += mechResult.bytesRead;
 
-        // Locales (long string)
         const localeResult = readLongString(payload, offset);
 
         await socket.close();
@@ -232,13 +611,13 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
           success: true,
           host,
           port,
-          protocol: `AMQP ${versionMajor}-${versionMinor}`,
+          protocol:         `AMQP ${versionMajor}-${versionMinor}`,
           serverProperties: propsResult.value,
-          mechanisms: mechResult.value.trim().split(/\s+/),
-          locales: localeResult.value.trim().split(/\s+/),
-          product: propsResult.value['product'] || 'Unknown',
-          version: propsResult.value['version'] || 'Unknown',
-          platform: propsResult.value['platform'] || 'Unknown',
+          mechanisms:       mechResult.value.trim().split(/\s+/),
+          locales:          localeResult.value.trim().split(/\s+/),
+          product:          propsResult.value['product']  || 'Unknown',
+          version:          propsResult.value['version']  || 'Unknown',
+          platform:         propsResult.value['platform'] || 'Unknown',
         };
       } catch (error) {
         await socket.close();
@@ -258,6 +637,85 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Connection failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle AMQP message publishing
+ * POST /api/amqp/publish
+ *
+ * Performs a full AMQP 0-9-1 connection, opens a channel, optionally declares
+ * an exchange, publishes a message, then closes cleanly.
+ *
+ * Request body: { host, port, username, password, vhost, exchange, routingKey, message, timeout }
+ */
+export async function handleAMQPPublish(request: Request): Promise<Response> {
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      exchange?: string;
+      routingKey?: string;
+      message?: string;
+      timeout?: number;
+    }>();
+
+    const {
+      host,
+      port       = 5672,
+      username   = 'guest',
+      password   = 'guest',
+      vhost      = '/',
+      exchange   = '',
+      routingKey = '',
+      message    = '',
+      timeout    = 15000,
+    } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const publishPromise = doAMQPPublish({
+      host, port, username, password, vhost,
+      exchange, routingKey, message, timeout,
+      secureTransport: 'off',
+    });
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Publish timeout')), timeout)
+    );
+
+    const result = await Promise.race([publishPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Publish failed',
     }), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },

@@ -92,7 +92,9 @@ const ERROR_CODES: Record<number, string> = {
   3: 'UNKNOWN_TOPIC_OR_PARTITION',
   5: 'LEADER_NOT_AVAILABLE',
   6: 'NOT_LEADER_OR_FOLLOWER',
+  9: 'REPLICA_NOT_AVAILABLE',
   35: 'UNSUPPORTED_VERSION',
+  87: 'CORRUPT_MESSAGE', // CRC mismatch — expected when CRC=0
 };
 
 interface KafkaRequest {
@@ -534,6 +536,329 @@ export async function handleKafkaApiVersions(request: Request): Promise<Response
       JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : 'Connection failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Varint encoding (signed zigzag, used in RecordBatch Record fields)
+// ---------------------------------------------------------------------------
+
+/**
+ * Encode a signed integer as a zigzag varint (used in Kafka record batch records).
+ * Zigzag: n >= 0 -> (n * 2), n < 0 -> ((-n) * 2 - 1)
+ * Then encode as unsigned LEB128.
+ */
+function encodeVarint(n: number): number[] {
+  const zigzag = n >= 0 ? (n * 2) : ((-n) * 2 - 1);
+  const result: number[] = [];
+  let v = zigzag;
+  do {
+    let byte = v & 0x7F;
+    v >>>= 7;
+    if (v !== 0) byte |= 0x80;
+    result.push(byte);
+  } while (v !== 0);
+  return result;
+}
+
+/**
+ * Build a Produce request (apiKey=0, apiVersion=3)
+ * Note: CRC32C is zeroed out — brokers may return errorCode=2 (CORRUPT_MESSAGE) for CRC mismatch.
+ */
+function buildProduceRequest(
+  correlationId: number,
+  clientId: string,
+  topic: string,
+  partition: number,
+  key: Uint8Array | null,
+  value: Uint8Array,
+  acks: number,
+  timeoutMs: number
+): Uint8Array {
+  const encoder = new TextEncoder();
+
+  // Build the Record body
+  const recordAttributes = [0x00]; // int8 attributes = 0
+  const timestampDelta = encodeVarint(0);
+  const offsetDelta = encodeVarint(0);
+
+  const keyBytes: number[] = key
+    ? [...encodeVarint(key.length), ...Array.from(key)]
+    : encodeVarint(-1); // null key
+
+  const valueBytes: number[] = [
+    ...encodeVarint(value.length),
+    ...Array.from(value),
+  ];
+
+  const headersCount = encodeVarint(0);
+
+  const recordBody = [
+    ...recordAttributes,
+    ...timestampDelta,
+    ...offsetDelta,
+    ...keyBytes,
+    ...valueBytes,
+    ...headersCount,
+  ];
+
+  const recordLengthVarint = encodeVarint(recordBody.length);
+  const record = [...recordLengthVarint, ...recordBody];
+
+  // Build RecordBatch fields starting from attributes (CRC covers these)
+  const now = BigInt(Date.now());
+  const batchFieldsBuffer = new ArrayBuffer(
+    2 + // attributes int16
+    4 + // lastOffsetDelta int32
+    8 + // baseTimestamp int64
+    8 + // maxTimestamp int64
+    8 + // producerId int64
+    2 + // producerEpoch int16
+    4 + // baseSequence int32
+    4 + // numRecords int32
+    record.length
+  );
+  const bfView = new DataView(batchFieldsBuffer);
+  const bfArr = new Uint8Array(batchFieldsBuffer);
+  let bfOff = 0;
+  bfView.setInt16(bfOff, 0); bfOff += 2;             // attributes
+  bfView.setInt32(bfOff, 0); bfOff += 4;             // lastOffsetDelta
+  bfView.setBigInt64(bfOff, now); bfOff += 8;        // baseTimestamp
+  bfView.setBigInt64(bfOff, now); bfOff += 8;        // maxTimestamp
+  bfView.setBigInt64(bfOff, BigInt(-1)); bfOff += 8; // producerId = -1
+  bfView.setInt16(bfOff, -1); bfOff += 2;            // producerEpoch = -1
+  bfView.setInt32(bfOff, -1); bfOff += 4;            // baseSequence = -1
+  bfView.setInt32(bfOff, 1); bfOff += 4;             // numRecords = 1
+  bfArr.set(record, bfOff);
+
+  const batchFields = new Uint8Array(batchFieldsBuffer);
+
+  // batchLength = partitionLeaderEpoch(4) + magic(1) + crc(4) + batchFields
+  const batchLength = 4 + 1 + 4 + batchFields.length;
+
+  const recordBatchBuffer = new ArrayBuffer(8 + 4 + 4 + 1 + 4 + batchFields.length);
+  const rbView = new DataView(recordBatchBuffer);
+  const rbArr = new Uint8Array(recordBatchBuffer);
+  let rbOff = 0;
+  rbView.setBigInt64(rbOff, BigInt(0)); rbOff += 8;  // baseOffset
+  rbView.setInt32(rbOff, batchLength); rbOff += 4;   // batchLength
+  rbView.setInt32(rbOff, 0); rbOff += 4;             // partitionLeaderEpoch
+  rbView.setInt8(rbOff, 2); rbOff += 1;              // magic = 2
+  rbView.setInt32(rbOff, 0); rbOff += 4;             // crc = 0 (CRC32C unavailable)
+  rbArr.set(batchFields, rbOff);
+
+  const recordBatch = new Uint8Array(recordBatchBuffer);
+
+  // Build ProduceRequest v3 payload
+  const topicBytes = encoder.encode(topic);
+  const recordSetSize = recordBatch.length;
+
+  const payloadSize =
+    2 +                           // transactionalId null (-1)
+    2 +                           // acks
+    4 +                           // timeoutMs
+    4 +                           // topicData array len (1)
+    2 + topicBytes.length +       // topic name
+    4 +                           // partitionData array len (1)
+    4 +                           // partition
+    4 + recordSetSize;            // recordSet (int32 size + data)
+
+  const payloadBuf = new ArrayBuffer(payloadSize);
+  const pView = new DataView(payloadBuf);
+  const pArr = new Uint8Array(payloadBuf);
+  let pOff = 0;
+
+  pView.setInt16(pOff, -1); pOff += 2;               // transactionalId = null
+  pView.setInt16(pOff, acks); pOff += 2;             // acks
+  pView.setInt32(pOff, timeoutMs); pOff += 4;        // timeout
+  pView.setInt32(pOff, 1); pOff += 4;                // topicData array len = 1
+  pView.setInt16(pOff, topicBytes.length); pOff += 2;
+  pArr.set(topicBytes, pOff); pOff += topicBytes.length;
+  pView.setInt32(pOff, 1); pOff += 4;                // partitionData array len = 1
+  pView.setInt32(pOff, partition); pOff += 4;        // partition
+  pView.setInt32(pOff, recordSetSize); pOff += 4;    // recordSet size prefix
+  pArr.set(recordBatch, pOff);
+
+  return buildKafkaRequest(0, 3, correlationId, clientId, new Uint8Array(payloadBuf));
+}
+
+/**
+ * Parse Produce response v3
+ */
+function parseProduceResponse(view: DataView): {
+  correlationId: number;
+  throttleTimeMs: number;
+  topicName: string;
+  partition: number;
+  errorCode: number;
+  baseOffset: bigint;
+} {
+  const decoder = new TextDecoder();
+  let offset = 0;
+
+  const correlationId = view.getInt32(offset); offset += 4;
+  const throttleTimeMs = view.getInt32(offset); offset += 4;
+
+  const respCount = view.getInt32(offset); offset += 4;
+
+  let topicName = '';
+  let partition = 0;
+  let errorCode = 0;
+  let baseOffset = BigInt(0);
+
+  for (let i = 0; i < respCount && offset + 2 <= view.byteLength; i++) {
+    const nameLen = view.getInt16(offset); offset += 2;
+    topicName = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + offset, nameLen));
+    offset += nameLen;
+
+    const partCount = view.getInt32(offset); offset += 4;
+    for (let p = 0; p < partCount && offset + 2 <= view.byteLength; p++) {
+      partition = view.getInt32(offset); offset += 4;
+      errorCode = view.getInt16(offset); offset += 2;
+      if (offset + 8 <= view.byteLength) { baseOffset = view.getBigInt64(offset); offset += 8; }
+      if (offset + 8 <= view.byteLength) { offset += 8; } // logAppendTimeMs
+      if (offset + 8 <= view.byteLength) { offset += 8; } // logStartOffset
+    }
+  }
+
+  return { correlationId, throttleTimeMs, topicName, partition, errorCode, baseOffset };
+}
+
+/**
+ * Handle Kafka Produce request
+ * Publishes a single message to a topic partition using ProduceRequest v3.
+ *
+ * Known limitation: CRC32C is set to 0. Brokers that validate CRC will return
+ * errorCode=2 (CORRUPT_MESSAGE). This is acceptable for connectivity testing.
+ */
+export async function handleKafkaProduceMessage(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = (await request.json()) as {
+      host: string; port?: number; topic: string; partition?: number;
+      key?: string; value: string; acks?: number; timeoutMs?: number;
+      timeout?: number; clientId?: string;
+    };
+
+    const {
+      host, port = 9092, topic, partition = 0,
+      key, value, acks = 1, timeoutMs = 5000,
+      timeout = 10000, clientId = 'portofcall',
+    } = body;
+
+    if (!host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (!topic) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Topic is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (value === undefined || value === null) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Value is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const enc = new TextEncoder();
+    const valueBytes = enc.encode(value);
+    const keyBytesArr = key ? enc.encode(key) : null;
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const connectionPromise = (async () => {
+      const startTime = Date.now();
+
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      try {
+        const writer = socket.writable.getWriter();
+        const reader = socket.readable.getReader();
+
+        const produceReq = buildProduceRequest(
+          3, clientId, topic, partition, keyBytesArr, valueBytes, acks, timeoutMs
+        );
+        await writer.write(produceReq);
+
+        if (acks === 0) {
+          writer.releaseLock();
+          reader.releaseLock();
+          await socket.close();
+          return {
+            success: true, host, port, topic, partition,
+            errorCode: 0, baseOffset: '0',
+            rtt: Date.now() - startTime,
+            note: 'acks=0: no response expected from broker',
+          };
+        }
+
+        const responseView = await readKafkaResponse(reader, timeout);
+        const parsed = parseProduceResponse(responseView);
+        const rtt = Date.now() - startTime;
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        const errorMessage = parsed.errorCode !== 0
+          ? (ERROR_CODES[parsed.errorCode] || `Unknown error code ${parsed.errorCode}`)
+          : undefined;
+
+        return {
+          success: parsed.errorCode === 0,
+          host, port, topic,
+          partition: parsed.partition,
+          errorCode: parsed.errorCode,
+          errorMessage,
+          baseOffset: parsed.baseOffset.toString(),
+          throttleTimeMs: parsed.throttleTimeMs,
+          rtt,
+        };
+      } catch (err) {
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Produce failed',
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );

@@ -40,6 +40,10 @@ const MSG_PING_REQ = 1;
 const MSG_PING_RESP = 2;
 const MSG_GET_SERVER_INFO_REQ = 7;
 const MSG_GET_SERVER_INFO_RESP = 8;
+const MSG_GET_REQ = 9;
+const MSG_GET_RESP = 10;
+const MSG_PUT_REQ = 11;
+const MSG_PUT_RESP = 12;
 const MSG_ERROR_RESP = 0;
 
 interface RiakRequest {
@@ -215,6 +219,63 @@ function parseErrorResp(payload: Uint8Array): { errmsg: string; errcode: number 
   }
 
   return { errmsg, errcode };
+}
+
+/**
+ * Encode a protobuf varint.
+ */
+function encodeVarint(n: number): number[] {
+  const out: number[] = [];
+  while (n > 127) {
+    out.push((n & 0x7f) | 0x80);
+    n >>>= 7;
+  }
+  out.push(n & 0x7f);
+  return out;
+}
+
+/**
+ * Encode a length-delimited (bytes/string) protobuf field.
+ * wire type 2: tag = (fieldNum << 3) | 2
+ */
+function pbBytesField(fieldNum: number, value: Uint8Array): number[] {
+  const tag = (fieldNum << 3) | 2;
+  return [...encodeVarint(tag), ...encodeVarint(value.length), ...value];
+}
+
+/**
+ * Decode a length-delimited bytes field from a protobuf payload.
+ * Returns the first occurrence of the given field number or undefined.
+ */
+function pbDecodeBytes(data: Uint8Array, fieldNum: number): Uint8Array | undefined {
+  let i = 0;
+  while (i < data.length) {
+    let tag = 0; let shift = 0;
+    while (i < data.length) {
+      const b = data[i]; i++;
+      tag |= (b & 0x7f) << shift; shift += 7;
+      if ((b & 0x80) === 0) break;
+    }
+    const fNum = tag >> 3;
+    const wireType = tag & 0x07;
+
+    if (wireType === 2) {
+      let len = 0; shift = 0;
+      while (i < data.length) {
+        const b = data[i]; i++;
+        len |= (b & 0x7f) << shift; shift += 7;
+        if ((b & 0x80) === 0) break;
+      }
+      if (fNum === fieldNum) return data.slice(i, i + len);
+      i += len;
+    } else if (wireType === 0) {
+      while (i < data.length && (data[i] & 0x80) !== 0) i++;
+      i++;
+    } else {
+      break;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -422,6 +483,201 @@ export async function handleRiakInfo(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Riak get — fetch a value by bucket and key
+ * POST /api/riak/get
+ */
+export async function handleRiakGet(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number;
+      bucket: string; key: string;
+      bucketType?: string;
+      timeout?: number;
+    };
+    const { host, port = 8087, bucket, key, timeout = 8000 } = body;
+
+    if (!host || !bucket || !key) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, bucket, key' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const enc = new TextEncoder();
+    const reqFields: number[] = [
+      ...pbBytesField(1, enc.encode(bucket)),
+      ...pbBytesField(2, enc.encode(key)),
+    ];
+    if (body.bucketType) reqFields.push(...pbBytesField(5, enc.encode(body.bucketType)));
+    const reqPayload = new Uint8Array(reqFields);
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Timeout')), timeout)
+    );
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        await writer.write(buildRiakMessage(MSG_GET_REQ, reqPayload));
+        const resp = await Promise.race([readRiakResponse(reader, timeoutPromise), timeoutPromise]);
+        const rtt = Date.now() - startTime;
+
+        if (resp.msgCode === MSG_ERROR_RESP) {
+          const err = parseErrorResp(resp.payload);
+          return new Response(JSON.stringify({
+            success: false, host, port, bucket, key, rtt,
+            error: err.errmsg || 'Riak error', errorCode: err.errcode,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (resp.msgCode !== MSG_GET_RESP) {
+          return new Response(JSON.stringify({
+            success: false, host, port, bucket, key, rtt,
+            error: `Unexpected response code: ${resp.msgCode}`,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        // Parse RpbGetResp: field 1 = content (RpbContent), field 3 = vclock
+        const contentBytes = pbDecodeBytes(resp.payload, 1);
+        let value: string | undefined;
+        let contentType: string | undefined;
+        if (contentBytes) {
+          const valBytes = pbDecodeBytes(contentBytes, 1);
+          const ctBytes = pbDecodeBytes(contentBytes, 2);
+          if (valBytes) value = new TextDecoder().decode(valBytes);
+          if (ctBytes) contentType = new TextDecoder().decode(ctBytes);
+        }
+
+        const found = contentBytes !== undefined;
+        return new Response(JSON.stringify({
+          success: true, host, port, rtt, bucket, key,
+          found, value, contentType,
+          message: found ? `Key '${key}' found in bucket '${bucket}'` : `Key '${key}' not found`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Riak get failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Riak put — store a value by bucket and key
+ * POST /api/riak/put
+ */
+export async function handleRiakPut(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number;
+      bucket: string; key: string;
+      value: string;
+      contentType?: string;
+      bucketType?: string;
+      timeout?: number;
+    };
+    const { host, port = 8087, bucket, key, value, timeout = 8000 } = body;
+    const contentType = body.contentType ?? 'text/plain';
+
+    if (!host || !bucket || !key || value === undefined) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, bucket, key, value' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const enc = new TextEncoder();
+    // RpbContent: field 1 = value, field 2 = content_type
+    const contentFields = new Uint8Array([
+      ...pbBytesField(1, enc.encode(value)),
+      ...pbBytesField(2, enc.encode(contentType)),
+    ]);
+
+    // RpbPutReq: field 1 = bucket, field 2 = key, field 3 = content
+    const reqFields: number[] = [
+      ...pbBytesField(1, enc.encode(bucket)),
+      ...pbBytesField(2, enc.encode(key)),
+      ...pbBytesField(3, contentFields),
+    ];
+    if (body.bucketType) reqFields.push(...pbBytesField(5, enc.encode(body.bucketType)));
+    const reqPayload = new Uint8Array(reqFields);
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Timeout')), timeout)
+    );
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        await writer.write(buildRiakMessage(MSG_PUT_REQ, reqPayload));
+        const resp = await Promise.race([readRiakResponse(reader, timeoutPromise), timeoutPromise]);
+        const rtt = Date.now() - startTime;
+
+        if (resp.msgCode === MSG_ERROR_RESP) {
+          const err = parseErrorResp(resp.payload);
+          return new Response(JSON.stringify({
+            success: false, host, port, bucket, key, rtt,
+            error: err.errmsg || 'Riak error', errorCode: err.errcode,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (resp.msgCode !== MSG_PUT_RESP) {
+          return new Response(JSON.stringify({
+            success: false, host, port, bucket, key, rtt,
+            error: `Unexpected response code: ${resp.msgCode}`,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        return new Response(JSON.stringify({
+          success: true, host, port, rtt, bucket, key, contentType,
+          valueSize: enc.encode(value).length,
+          message: `Value stored at '${bucket}/${key}'`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Riak put failed',
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

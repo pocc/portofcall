@@ -421,3 +421,500 @@ export async function handleManageSieveList(request: Request): Promise<Response>
     );
   }
 }
+
+interface ManageSievePutScriptRequest {
+  host: string;
+  port?: number;
+  username: string;
+  password: string;
+  scriptName: string;
+  script: string;
+  timeout?: number;
+}
+
+interface ManageSieveGetScriptRequest {
+  host: string;
+  port?: number;
+  username: string;
+  password: string;
+  scriptName: string;
+  timeout?: number;
+}
+
+interface ManageSieveDeleteScriptRequest {
+  host: string;
+  port?: number;
+  username: string;
+  password: string;
+  scriptName: string;
+  timeout?: number;
+}
+
+interface ManageSieveSetActiveRequest {
+  host: string;
+  port?: number;
+  username: string;
+  password: string;
+  scriptName: string;
+  timeout?: number;
+}
+
+/**
+ * Perform PLAIN auth and return connected reader/writer, or throw on failure.
+ * Caller is responsible for LOGOUT and socket.close().
+ */
+async function connectAndAuth(
+  host: string,
+  port: number,
+  username: string,
+  password: string,
+  timeoutPromise: Promise<never>,
+): Promise<{
+  socket: ReturnType<typeof connect>;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  encoder: TextEncoder;
+}> {
+  const socket = connect(`${host}:${port}`);
+  await Promise.race([socket.opened, timeoutPromise]);
+
+  const encoder = new TextEncoder();
+  const writer = socket.writable.getWriter();
+  const reader = socket.readable.getReader();
+
+  // Read capability banner
+  const bannerText = await readFromSocket(reader, timeoutPromise);
+  if (!isOK(bannerText)) {
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+    throw new Error('Server did not send valid capabilities');
+  }
+
+  // SASL PLAIN auth
+  const authStr = `\0${username}\0${password}`;
+  const authBase64 = btoa(authStr);
+  await writer.write(encoder.encode(`AUTHENTICATE "PLAIN" "${authBase64}"\r\n`));
+
+  const authResponse = await readFromSocket(reader, timeoutPromise);
+  if (!isOK(authResponse)) {
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+    throw new Error('Authentication failed');
+  }
+
+  return { socket, writer, reader, encoder };
+}
+
+/**
+ * Handle ManageSieve PUTSCRIPT — upload or replace a Sieve script
+ *
+ * POST /api/managesieve/putscript
+ * Body: { host, port?, username, password, scriptName, script, timeout? }
+ */
+export async function handleManageSievePutScript(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as ManageSievePutScriptRequest;
+    const { host, port = 4190, username, password, scriptName, script, timeout = 10000 } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!username || username.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Username is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!password || password.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!scriptName || scriptName.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Script name is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (script === undefined || script === null) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Script content is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const { socket, writer, reader, encoder } = await connectAndAuth(host, port, username, password, timeoutPromise);
+
+    try {
+      const scriptBytes = new TextEncoder().encode(script).length;
+      await writer.write(encoder.encode(`PUTSCRIPT "${scriptName}" {${scriptBytes}+}\r\n${script}\r\n`));
+
+      const putResponse = await readFromSocket(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      // LOGOUT
+      await writer.write(encoder.encode('LOGOUT\r\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (!isOK(putResponse)) {
+        const errorLine = putResponse.trim().split('\r\n').find((l) => l.startsWith('NO') || l.startsWith('BYE')) || putResponse.trim();
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `PUTSCRIPT failed: ${errorLine}`,
+          } satisfies ManageSieveResponse),
+          { status: 502, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          scriptName,
+          scriptBytes,
+          rtt,
+        } as ManageSieveResponse & { host: string; port: number; scriptName: string; scriptBytes: number; rtt: number }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      } satisfies ManageSieveResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Handle ManageSieve GETSCRIPT — retrieve a Sieve script by name
+ *
+ * POST /api/managesieve/getscript
+ * Body: { host, port?, username, password, scriptName, timeout? }
+ */
+export async function handleManageSieveGetScript(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as ManageSieveGetScriptRequest;
+    const { host, port = 4190, username, password, scriptName, timeout = 10000 } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!username || username.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Username is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!password || password.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!scriptName || scriptName.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Script name is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const { socket, writer, reader, encoder } = await connectAndAuth(host, port, username, password, timeoutPromise);
+
+    try {
+      await writer.write(encoder.encode(`GETSCRIPT "${scriptName}"\r\n`));
+
+      const getResponse = await readFromSocket(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      // LOGOUT
+      await writer.write(encoder.encode('LOGOUT\r\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (!isOK(getResponse)) {
+        const errorLine = getResponse.trim().split('\r\n').find((l) => l.startsWith('NO') || l.startsWith('BYE')) || getResponse.trim();
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `GETSCRIPT failed: ${errorLine}`,
+          } satisfies ManageSieveResponse),
+          { status: 502, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // Parse literal: {<byteLen>}\r\n<content>\r\nOK
+      // The response starts with {N}\r\n<script content>\r\nOK ...
+      const literalMatch = getResponse.match(/^\{(\d+)\}\r\n([\s\S]*?)\r\nOK/);
+      let scriptContent = '';
+      let scriptBytes = 0;
+      if (literalMatch) {
+        scriptBytes = parseInt(literalMatch[1]);
+        scriptContent = literalMatch[2];
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          scriptName,
+          script: scriptContent,
+          scriptBytes,
+          rtt,
+        } as ManageSieveResponse & { host: string; port: number; scriptName: string; script: string; scriptBytes: number; rtt: number }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      } satisfies ManageSieveResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Handle ManageSieve DELETESCRIPT — delete a Sieve script by name
+ *
+ * POST /api/managesieve/deletescript
+ * Body: { host, port?, username, password, scriptName, timeout? }
+ */
+export async function handleManageSieveDeleteScript(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as ManageSieveDeleteScriptRequest;
+    const { host, port = 4190, username, password, scriptName, timeout = 10000 } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!username || username.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Username is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!password || password.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!scriptName || scriptName.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Script name is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const { socket, writer, reader, encoder } = await connectAndAuth(host, port, username, password, timeoutPromise);
+
+    try {
+      await writer.write(encoder.encode(`DELETESCRIPT "${scriptName}"\r\n`));
+
+      const deleteResponse = await readFromSocket(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      // LOGOUT
+      await writer.write(encoder.encode('LOGOUT\r\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (!isOK(deleteResponse)) {
+        const errorLine = deleteResponse.trim().split('\r\n').find((l) => l.startsWith('NO') || l.startsWith('BYE')) || deleteResponse.trim();
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `DELETESCRIPT failed: ${errorLine}`,
+          } satisfies ManageSieveResponse),
+          { status: 502, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          scriptName,
+          rtt,
+        } as ManageSieveResponse & { host: string; port: number; scriptName: string; rtt: number }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      } satisfies ManageSieveResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}
+
+/**
+ * Handle ManageSieve SETACTIVE — activate a script (or deactivate all with empty name)
+ *
+ * POST /api/managesieve/setactive
+ * Body: { host, port?, username, password, scriptName, timeout? }
+ */
+export async function handleManageSieveSetActive(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = (await request.json()) as ManageSieveSetActiveRequest;
+    const { host, port = 4190, username, password, scriptName, timeout = 10000 } = body;
+
+    const validationError = validateInput(host, port);
+    if (validationError) {
+      return new Response(
+        JSON.stringify({ success: false, error: validationError } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!username || username.trim().length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Username is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!password || password.length === 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const startTime = Date.now();
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    const { socket, writer, reader, encoder } = await connectAndAuth(host, port, username, password, timeoutPromise);
+
+    try {
+      // Empty scriptName deactivates all scripts
+      const name = scriptName || '';
+      await writer.write(encoder.encode(`SETACTIVE "${name}"\r\n`));
+
+      const setActiveResponse = await readFromSocket(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      // LOGOUT
+      await writer.write(encoder.encode('LOGOUT\r\n'));
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      if (!isOK(setActiveResponse)) {
+        const errorLine = setActiveResponse.trim().split('\r\n').find((l) => l.startsWith('NO') || l.startsWith('BYE')) || setActiveResponse.trim();
+        return new Response(
+          JSON.stringify({
+            success: false,
+            error: `SETACTIVE failed: ${errorLine}`,
+          } satisfies ManageSieveResponse),
+          { status: 502, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          scriptName: name,
+          rtt,
+        } as ManageSieveResponse & { host: string; port: number; scriptName: string; rtt: number }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      } satisfies ManageSieveResponse),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+}

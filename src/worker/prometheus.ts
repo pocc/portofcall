@@ -435,3 +435,68 @@ export async function handlePrometheusMetrics(request: Request): Promise<Respons
     });
   }
 }
+
+
+/**
+ * Handle Prometheus range query
+ * POST /api/prometheus/range
+ * Executes a PromQL range query against /api/v1/query_range.
+ * Returns time series with values at each step.
+ */
+export async function handlePrometheusRangeQuery(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; query: string;
+      start?: string; end?: string; step?: string; timeout?: number;
+    };
+    if (!body.host || !body.query) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, query' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 9090;
+    const timeout = body.timeout || 15000;
+    const now = Math.floor(Date.now() / 1000);
+    const start = body.start || String(now - 3600);
+    const end = body.end || String(now);
+    const step = body.step || '60';
+    const params = new URLSearchParams({ query: body.query, start, end, step });
+    const path = `/api/v1/query_range?${params.toString()}`;
+
+    const result = await sendHttpGet(host, port, path, timeout);
+    const httpOk = result.statusCode >= 200 && result.statusCode < 300;
+
+    if (!httpOk) {
+      return new Response(JSON.stringify({ success: false, host, port, httpStatus: result.statusCode, error: result.body || `HTTP ${result.statusCode}` }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    interface RangeResult { data?: { resultType?: string; result?: Array<{ metric: Record<string,string>; values: [number, string][] }> }; status?: string }
+    let parsed: RangeResult = {};
+    try { parsed = JSON.parse(result.body) as RangeResult; } catch { /* raw */ }
+
+    const series = parsed?.data?.result ?? [];
+    const resultType = parsed?.data?.resultType ?? 'unknown';
+
+    const formattedSeries = series.map(s => ({
+      metric: s.metric,
+      valueCount: s.values?.length ?? 0,
+      firstValue: s.values?.[0],
+      lastValue: s.values?.[s.values.length - 1],
+      sampleValues: s.values?.slice(0, 5).map(([ts, v]) => ({ ts, value: parseFloat(v) })),
+    }));
+
+    return new Response(JSON.stringify({
+      success: true,
+      host, port, query: body.query, start, end, step, resultType,
+      seriesCount: series.length,
+      series: formattedSeries,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Range query failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

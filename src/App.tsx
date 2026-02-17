@@ -74,9 +74,11 @@ const ConsulClient = lazy(() => import('./components/ConsulClient'));
 const InfluxDBClient = lazy(() => import('./components/InfluxDBClient'));
 const BGPClient = lazy(() => import('./components/BGPClient'));
 const DockerClient = lazy(() => import('./components/DockerClient'));
+const JupyterClient = lazy(() => import('./components/JupyterClient'));
 const PPTPClient = lazy(() => import('./components/PPTPClient'));
 const DICOMClient = lazy(() => import('./components/DICOMClient'));
 const JsonRpcClient = lazy(() => import('./components/JsonRpcClient'));
+const LSPClient = lazy(() => import('./components/LSPClient'));
 const ThriftClient = lazy(() => import('./components/ThriftClient'));
 const SLPClient = lazy(() => import('./components/SLPClient'));
 const BitTorrentClient = lazy(() => import('./components/BitTorrentClient'));
@@ -87,6 +89,7 @@ const SCCPClient = lazy(() => import('./components/SCCPClient'));
 const MatrixClient = lazy(() => import('./components/MatrixClient'));
 const CDPClient = lazy(() => import('./components/CDPClient'));
 const NodeInspectorClient = lazy(() => import('./components/NodeInspectorClient'));
+const DAPClient = lazy(() => import('./components/DAPClient'));
 const ISCSIClient = lazy(() => import('./components/ISCSIClient'));
 const WebSocketClient = lazy(() => import('./components/WebSocketClient'));
 const H323Client = lazy(() => import('./components/H323Client'));
@@ -96,6 +99,7 @@ const OpenVPNClient = lazy(() => import('./components/OpenVPNClient'));
 const AFPClient = lazy(() => import('./components/AFPClient'));
 const NFSClient = lazy(() => import('./components/NFSClient'));
 const MGCPClient = lazy(() => import('./components/MGCPClient'));
+const SFTPClient = lazy(() => import('./components/SFTPClient'));
 const FTPSClient = lazy(() => import('./components/FTPSClient'));
 const DICTClient = lazy(() => import('./components/DICTClient'));
 const SIPClient = lazy(() => import('./components/SIPClient'));
@@ -216,12 +220,19 @@ const IKEClient = lazy(() => import('./components/IKEClient'));
 const L2TPClient = lazy(() => import('./components/L2TPClient'));
 const TURNClient = lazy(() => import('./components/TURNClient'));
 const KubernetesClient = lazy(() => import('./components/KubernetesClient'));
+const ActiveMQClient = lazy(() => import('./components/ActiveMQClient'));
 const UUCPClient = lazy(() => import('./components/UUCPClient'));
 const PerforceClient = lazy(() => import('./components/PerforceClient'));
 const Quake3Client = lazy(() => import('./components/Quake3Client'));
 const CollectdClient = lazy(() => import('./components/CollectdClient'));
 const EthereumClient = lazy(() => import('./components/EthereumClient'));
 const IPFSClient = lazy(() => import('./components/IPFSClient'));
+const CIFSClient = lazy(() => import('./components/CIFSClient'));
+const DOHClient = lazy(() => import('./components/DOHClient'));
+const IPMIClient = lazy(() => import('./components/IPMIClient'));
+const SCPClient = lazy(() => import('./components/SCPClient'));
+const SPDYClient = lazy(() => import('./components/SPDYClient'));
+const ShadowsocksClient = lazy(() => import('./components/ShadowsocksClient'));
 type Protocol =
   | 'echo'
   | 'activeusers'
@@ -235,6 +246,7 @@ type Protocol =
   | 'discard'
   | 'gemini'
   | 'ftp'
+  | 'sftp'
   | 'ssh'
   | 'telnet'
   | 'smtp'
@@ -291,6 +303,7 @@ type Protocol =
   | 'influxdb'
   | 'bgp'
   | 'docker'
+  | 'jupyter'
   | 'pptp'
   | 'dicom'
   | 'jsonrpc'
@@ -304,6 +317,7 @@ type Protocol =
   | 'matrix'
   | 'cdp'
   | 'node-inspector'
+  | 'dap'
   | 'iscsi'
   | 'websocket'
   | 'h323'
@@ -434,6 +448,7 @@ type Protocol =
   | 'l2tp'
   | 'turn'
   | 'kubernetes'
+  | 'activemq'
   | 'uucp'
   | 'perforce'
   | 'quake3'
@@ -441,6 +456,13 @@ type Protocol =
   | 'ethereum'
   | 'ipfs'
   | 'tcp'
+  | 'lsp'
+  | 'cifs'
+  | 'doh'
+  | 'ipmi'
+  | 'scp'
+  | 'spdy'
+  | 'shadowsocks'
   | null;
 
 // Loading fallback component
@@ -492,6 +514,8 @@ function App() {
         return <GeminiClient onBack={handleBack} />;
       case 'ftp':
         return <FTPClient onBack={handleBack} />;
+      case 'sftp':
+        return <SFTPClient onBack={handleBack} />;
       case 'ssh':
         return <SSHClient onBack={handleBack} />;
       case 'telnet':
@@ -604,12 +628,16 @@ function App() {
         return <BGPClient onBack={handleBack} />;
       case 'docker':
         return <DockerClient onBack={handleBack} />;
+      case 'jupyter':
+        return <JupyterClient onBack={handleBack} />;
       case 'pptp':
         return <PPTPClient onBack={handleBack} />;
       case 'dicom':
         return <DICOMClient onBack={handleBack} />;
       case 'jsonrpc':
         return <JsonRpcClient onBack={handleBack} />;
+      case 'lsp':
+        return <LSPClient onBack={handleBack} />;
       case 'thrift':
         return <ThriftClient onBack={handleBack} />;
       case 'slp':
@@ -630,6 +658,8 @@ function App() {
         return <CDPClient onBack={handleBack} />;
       case 'node-inspector':
         return <NodeInspectorClient onBack={handleBack} />;
+      case 'dap':
+        return <DAPClient onBack={handleBack} />;
       case 'iscsi':
         return <ISCSIClient onBack={handleBack} />;
       case 'websocket':
@@ -888,6 +918,8 @@ function App() {
         return <TURNClient onBack={handleBack} />;
       case 'kubernetes':
         return <KubernetesClient onBack={handleBack} />;
+      case 'activemq':
+        return <ActiveMQClient onBack={handleBack} />;
       case 'uucp':
         return <UUCPClient onBack={handleBack} />;
       case 'perforce':
@@ -902,6 +934,18 @@ function App() {
         return <IPFSClient onBack={handleBack} />;
       case 'tcp':
         return <TcpClient onBack={handleBack} />;
+      case 'cifs':
+        return <CIFSClient onBack={handleBack} />;
+      case 'doh':
+        return <DOHClient onBack={handleBack} />;
+      case 'ipmi':
+        return <IPMIClient onBack={handleBack} />;
+      case 'scp':
+        return <SCPClient onBack={handleBack} />;
+      case 'spdy':
+        return <SPDYClient onBack={handleBack} />;
+      case 'shadowsocks':
+        return <ShadowsocksClient onBack={handleBack} />;
       default:
         return <ProtocolSelector onSelect={setSelectedProtocol} />;
     }

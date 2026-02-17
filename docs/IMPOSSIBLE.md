@@ -29,6 +29,11 @@ Cloudflare Workers Sockets API only supports **TCP connections**. All UDP-based 
 - **Reason**: UDP only
 - **Alternative**: Use FTP (already implemented)
 
+#### BACnet/IP (Building Automation and Control Networks)
+- **Port**: 47808/UDP
+- **Reason**: UDP only (ASHRAE 135 BACnet/IP standard)
+- **Alternative**: BACnet/WS uses HTTPS/WebSockets but is rarely deployed
+
 #### DHCP (Dynamic Host Configuration Protocol)
 - **Port**: 67/UDP (server), 68/UDP (client)
 - **Reason**: UDP only
@@ -44,6 +49,28 @@ Cloudflare Workers Sockets API only supports **TCP connections**. All UDP-based 
 - **Reason**: Primarily UDP, requires bidirectional communication
 - **Alternative**: WebRTC for VoIP
 
+#### SSDP (Simple Service Discovery Protocol / UPnP)
+- **Port**: 1900/UDP (multicast 239.255.255.250)
+- **Reason**: UDP-only protocol; there is no TCP mode for SSDP
+- **Note**: The device description XML (LOCATION header) is fetched over HTTP/TCP, but the discovery protocol itself is UDP multicast only
+- **Alternative**: Fetch device description XML directly via HTTP if the LOCATION URL is known
+
+#### LLMNR (Link-Local Multicast Name Resolution)
+- **Port**: 5355/UDP (multicast 224.0.0.252 / FF02::1:3)
+- **Reason**: Primarily UDP multicast; TCP is theoretically defined in RFC 4795 as a truncation fallback but no real implementation uses it
+- **Note**: Even if TCP LLMNR worked, the protocol is link-local — it only functions on the same network segment. Connecting from Cloudflare's edge would never reach a link-local LLMNR responder
+- **Alternative**: Use DNS or mDNS for local name resolution
+
+#### Mosh (Mobile Shell)
+- **Port**: 60000+/UDP
+- **Reason**: UDP only — Mosh uses SSH only for initial authentication, then switches to its own UDP-based protocol (SSP) for the actual session
+- **Alternative**: SSH (already implemented) for remote terminal access
+
+#### StatsD
+- **Port**: 8125/UDP
+- **Reason**: UDP only — StatsD's fire-and-forget design is intentionally UDP-based
+- **Alternative**: Use Graphite (plaintext TCP, already implemented) or Prometheus (HTTP) for metrics ingestion
+
 ### Raw Socket Protocols
 
 #### ICMP (Internet Control Message Protocol)
@@ -55,64 +82,61 @@ Cloudflare Workers Sockets API only supports **TCP connections**. All UDP-based 
 - **Reason**: No raw socket access in Workers runtime
 - **Alternative**: Use TCP/HTTP proxies
 
-### Protocol-Specific Limitations
-
-#### RDP (Remote Desktop Protocol)
-- **Port**: 3389/TCP
-- **Reason**: Complex binary protocol, requires extensive state management, likely violates Workers CPU limits
-- **Complexity**: Very high
-- **Alternative**: Use dedicated RDP gateways
-
-#### VNC (Virtual Network Computing)
-- **Port**: 5900+/TCP
-- **Reason**: Framebuffer protocol, requires extensive processing, likely exceeds Workers CPU/memory limits
-- **Complexity**: Very high
-- **Alternative**: Use HTML5 VNC clients with separate proxy
-
-#### X11 (X Window System)
-- **Port**: 6000+/TCP
-- **Reason**: Complex protocol, requires extensive state management and graphics processing
-- **Alternative**: Use VNC or dedicated X proxies
-
-### Performance-Limited Protocols
-
-These protocols are technically possible but impractical due to Workers limitations:
-
-#### Video Streaming Protocols (RTSP, RTMP)
-- **Port**: 554/TCP (RTSP), 1935/TCP (RTMP)
-- **Reason**: High bandwidth, continuous streaming exceeds Workers request duration limits
-- **Workers Limit**: 30 second CPU time, request duration limits
-- **Alternative**: Use CDN-based streaming services
-
-### Security-Restricted Protocols
-
-#### IRC (Internet Relay Chat)
-- **Port**: 6667/TCP (plain), 6697/TCP (TLS)
-- **Status**: ⚠️ Technically possible but often blocked
-- **Reason**: Many IRC servers block cloud provider IPs (abuse prevention)
-- **Note**: Could implement but may not work with most servers
 
 ### Protocol Negotiation Limitations
 
-Cloudflare Workers TCP sockets do not expose TLS ALPN negotiation, making protocols that depend on it impossible to probe correctly.
+#### HTTP/2 (h2 over TLS)
+- **Port**: 443
+- **Reason**: Requires TLS ALPN negotiation (`h2` token). When using `connect()` with `secureTransport: 'on'`, the TLS handshake is handled opaquely by the Workers runtime — there is no API to set ALPN extensions or read what was negotiated. Without ALPN, a TLS server will fall back to HTTP/1.1.
+- **Alternative**: `fetch()` uses HTTP/2 transparently at the Cloudflare infrastructure level
 
-#### HTTP/2 (h2)
-- **Port**: 443 (via TLS + ALPN), 80 (h2c cleartext — rarely deployed)
-- **Reason**: HTTP/2 requires TLS ALPN negotiation (`h2` token) which is not exposed by the Cloudflare Workers sockets API. h2c (cleartext) is almost never enabled in production.
-- **Alternative**: Use `fetch()` which transparently uses HTTP/2 when negotiated by the CDN layer
+#### HTTP/2 cleartext (h2c over TCP)
+- **Port**: 80
+- **Status**: ⚠️ Technically possible to send the bytes, but impractical
+- **Reason**: h2c requires no ALPN — the connection preface (`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`) is sent over plain TCP, which Workers can do. However, implementing HTTP/2 binary framing (HPACK header compression, multiplexed streams, flow control, SETTINGS negotiation) in Workers JS from scratch is an enormous undertaking, and no suitable library exists for the Workers runtime. Additionally, h2c is almost never enabled on production servers.
+- **Alternative**: `fetch()` for any real HTTP/2 use case
 
-#### gRPC
+#### gRPC (over TLS)
 - **Port**: 50051 (convention, any port)
-- **Reason**: gRPC requires HTTP/2 as its transport (see above). Without ALPN negotiation support in the TCP sockets API, a proper gRPC handshake cannot be established.
-- **Alternative**: Use `fetch()` with `Content-Type: application/grpc` for unary RPCs if the gRPC server supports h2c
+- **Reason**: gRPC requires HTTP/2 as its transport. Over TLS, this hits the same ALPN limitation as h2 above.
+- **Alternative**: `fetch()` with `Content-Type: application/grpc-web` for gRPC-Web endpoints
+
+#### gRPC (over h2c / plaintext)
+- **Port**: 50051 (convention, any port)
+- **Status**: ⚠️ Technically possible to send the bytes, but impractical
+- **Reason**: Same as h2c above — no ALPN needed, but requires a full HTTP/2 framing implementation in JS. Some internal/service-mesh deployments do use gRPC over h2c, so the use case is more realistic than h2c for general HTTP, but the implementation barrier is the same.
+- **Alternative**: `fetch()` with `Content-Type: application/grpc-web` if the server supports gRPC-Web
+
+## Cloudflare Containers
+
+Cloudflare Containers run Docker images inside isolated VMs alongside Workers. They remove several Workers limitations:
+
+- **Full TLS control**: Containers can use Node.js `tls.connect()` with `ALPNProtocols: ['h2']`, enabling HTTP/2 and gRPC over TLS.
+- **h2c with libraries**: Node.js ships a full HTTP/2 implementation; no need to implement framing from scratch.
+- **Long-lived streaming**: Containers are not subject to the Workers 30s request duration limit, making long-lived streaming protocols viable.
+- **No CPU time limit**: Workers have a 30s request duration limit; containers have no such constraint.
+
+### UDP in Containers: unverified
+
+Containers likely have broader networking than Workers, but **whether Cloudflare Containers support arbitrary outbound UDP is not documented**. The docs only mention `enableInternet` to toggle internet access on/off, without specifying protocol support. It is possible that:
+
+- Outbound UDP is fully supported (containers need UDP DNS to resolve hostnames themselves)
+- Or UDP is restricted/tunneled through Cloudflare's network in a way that blocks arbitrary user UDP
+
+Until this is confirmed, UDP-based protocols (NTP, SNMP, TFTP, BACnet, SIP, etc.) should not be assumed to work in Containers.
+
+### Still impossible even with Containers
+
+These remain blocked regardless of Worker vs. Container:
+
+- **SSDP, LLMNR**: Link-local multicast — requires being on the same LAN segment. Unreachable from any cloud provider.
+- **ICMP / RAW IP**: Require `CAP_NET_RAW` kernel capability, which is not granted to unprivileged containers by default.
 
 ## Summary
 
-- **UDP Protocols**: 7 (impossible - no UDP support)
-- **Raw Socket Protocols**: 2 (impossible - no raw socket access)
-- **Too Complex**: 3 (RDP, VNC, X11 - exceed Workers limits)
-- **Performance Limited**: 2 (video streaming - exceed time limits)
-- **Security Restricted**: 1 (IRC - often blocked)
-- **Protocol Negotiation**: 2 (HTTP/2, gRPC - require TLS ALPN not available in sockets API)
+- **UDP Protocols**: 12 (impossible - no UDP support: NTP, SNMP, DNS, TFTP, BACnet/IP, DHCP, RTP/RTCP, SIP, SSDP, LLMNR, Mosh, StatsD)
+- **Raw Socket Protocols**: 2 (impossible - no raw socket access: ICMP, RAW IP)
+- **TLS ALPN limitation**: 2 (h2 over TLS, gRPC over TLS - ALPN not exposed by sockets API)
+- **Impractical (h2c)**: 2 (h2c, gRPC over h2c - TCP bytes sendable but HTTP/2 framing requires full implementation)
 
-**Total Impossible**: 17 protocols
+**Total Impossible/Impractical**: 18 protocols

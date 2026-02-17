@@ -611,3 +611,255 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
     });
   }
 }
+
+/**
+ * Parse a UA String (4-byte length prefix + UTF-8 bytes) from a buffer.
+ * Returns the string value and the next read offset.
+ */
+function parseUAString(view: DataView, data: Uint8Array, offset: number): { value: string | null; nextOffset: number } {
+  if (offset + 4 > data.length) return { value: null, nextOffset: offset };
+  const len = view.getInt32(offset, true);
+  if (len < 0) return { value: null, nextOffset: offset + 4 };
+  if (offset + 4 + len > data.length) return { value: null, nextOffset: offset };
+  const value = new TextDecoder().decode(data.subarray(offset + 4, offset + 4 + len));
+  return { value, nextOffset: offset + 4 + len };
+}
+
+/**
+ * Build a GetEndpoints MSG request.
+ * Sends over the already-opened secure channel.
+ */
+function buildGetEndpointsMsgRequest(endpointUrl: string): Uint8Array {
+  const urlBytes = new TextEncoder().encode(endpointUrl);
+  // NodeId for GetEndpoints request = i=428 (FourByte: 0x01, ns=0, id=0xAC01 LE)
+  const nodeId = new Uint8Array([0x01, 0x00, 0xAC, 0x01]);
+  // Minimal request header: null auth token, timestamp=0, requestHandle=1, returnDiag=0, auditId=null, timeout=0, addHeader=null
+  const reqHeader = new Uint8Array([
+    0x00, 0x00,                               // null auth token (TwoByteNodeId id=0)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // timestamp = 0
+    0x01, 0x00, 0x00, 0x00,                   // requestHandle = 1
+    0x00, 0x00, 0x00, 0x00,                   // returnDiagnostics = 0
+    0xFF, 0xFF, 0xFF, 0xFF,                   // auditEntryId = null string
+    0x00, 0x00, 0x00, 0x00,                   // timeout = 0
+    0x00, 0x00, 0x00,                         // additionalHeader = null
+  ]);
+  // Parameters: endpointUrl, localeIds count=0, profileUris count=0
+  const urlLenBuf = new Uint8Array(4);
+  new DataView(urlLenBuf.buffer).setInt32(0, urlBytes.length, true);
+  const tail = new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // two empty arrays
+
+  const body = new Uint8Array(nodeId.length + reqHeader.length + 4 + urlBytes.length + tail.length);
+  let off = 0;
+  body.set(nodeId, off); off += nodeId.length;
+  body.set(reqHeader, off); off += reqHeader.length;
+  body.set(urlLenBuf, off); off += 4;
+  body.set(urlBytes, off); off += urlBytes.length;
+  body.set(tail, off);
+
+  // MSG header: MSGF + size(4) + channelId(4)=0 + tokenId(4)=0 + seqNum(4)=2 + reqId(4)=2
+  const msgSize = 8 + 4 + 4 + 4 + 4 + body.length;
+  const msg = new Uint8Array(msgSize);
+  const msgView = new DataView(msg.buffer);
+  msg[0] = 0x4D; msg[1] = 0x53; msg[2] = 0x47; msg[3] = 0x46; // MSGF
+  msgView.setUint32(4, msgSize, true);
+  msgView.setUint32(8, 0, true);  // channelId
+  msgView.setUint32(12, 0, true); // tokenId
+  msgView.setUint32(16, 2, true); // sequenceNum
+  msgView.setUint32(20, 2, true); // requestId
+  msg.set(body, 24);
+  return msg;
+}
+
+/**
+ * Parse endpoint URLs and security info from a GetEndpoints response payload.
+ * Best-effort parsing — OPC UA binary is complex and variable-length.
+ */
+function parseEndpointList(payload: Uint8Array): Array<{
+  endpointUrl: string | null;
+  securityMode: string;
+  securityPolicyUri: string | null;
+  securityLevel: number;
+}> {
+  const SECURITY_MODES: Record<number, string> = { 1: 'None', 2: 'Sign', 3: 'SignAndEncrypt' };
+  const endpoints: Array<{ endpointUrl: string | null; securityMode: string; securityPolicyUri: string | null; securityLevel: number }> = [];
+
+  try {
+    const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+    // Skip sequence header (8B), response NodeId (~4B), response header (~32B) — approximate
+    let offset = 44;
+    if (offset + 4 > payload.length) return endpoints;
+
+    const count = view.getInt32(offset, true);
+    offset += 4;
+    if (count <= 0 || count > 50) return endpoints;
+
+    for (let i = 0; i < count && offset < payload.length - 8; i++) {
+      const ep = { endpointUrl: null as string | null, securityMode: 'Unknown', securityPolicyUri: null as string | null, securityLevel: 0 };
+
+      // endpointUrl
+      const urlResult = parseUAString(view, payload, offset);
+      ep.endpointUrl = urlResult.value;
+      offset = urlResult.nextOffset;
+
+      // Skip ApplicationDescription (complex nested struct) — scan for next endpoint
+      // ApplicationUri, ProductUri, ApplicationName(LocalizedText), ApplicationType(4B)
+      // GatewayServerUri, DiscoveryProfileUri, DiscoveryUrls(array)
+      for (let skip = 0; skip < 3 && offset < payload.length; skip++) {
+        const r = parseUAString(view, payload, offset);
+        offset = r.nextOffset;
+      }
+      // ApplicationName (LocalizedText)
+      if (offset < payload.length) {
+        const mask = payload[offset++];
+        if (mask & 0x01) { const r = parseUAString(view, payload, offset); offset = r.nextOffset; }
+        if (mask & 0x02) { const r = parseUAString(view, payload, offset); offset = r.nextOffset; }
+      }
+      if (offset + 4 <= payload.length) offset += 4; // ApplicationType
+      for (let skip = 0; skip < 2 && offset < payload.length; skip++) {
+        const r = parseUAString(view, payload, offset);
+        offset = r.nextOffset;
+      }
+      // DiscoveryUrls array
+      if (offset + 4 <= payload.length) {
+        const duCount = view.getInt32(offset, true);
+        offset += 4;
+        if (duCount > 0 && duCount < 20) {
+          for (let j = 0; j < duCount && offset < payload.length; j++) {
+            const r = parseUAString(view, payload, offset);
+            offset = r.nextOffset;
+          }
+        }
+      }
+
+      // serverCertificate (ByteString)
+      if (offset + 4 <= payload.length) {
+        const certLen = view.getInt32(offset, true);
+        offset += 4;
+        if (certLen > 0 && certLen < 10000) offset += certLen;
+      }
+
+      // securityMode
+      if (offset + 4 <= payload.length) {
+        ep.securityMode = SECURITY_MODES[view.getUint32(offset, true)] || 'Unknown';
+        offset += 4;
+      }
+
+      // securityPolicyUri
+      const spResult = parseUAString(view, payload, offset);
+      ep.securityPolicyUri = spResult.value;
+      offset = spResult.nextOffset;
+
+      // Skip userIdentityTokens
+      if (offset + 4 <= payload.length) {
+        const tokCount = view.getInt32(offset, true);
+        offset += 4;
+        if (tokCount >= 0 && tokCount < 20) {
+          for (let k = 0; k < tokCount && offset < payload.length; k++) {
+            for (let s = 0; s < 4 && offset < payload.length; s++) {
+              const r = parseUAString(view, payload, offset);
+              offset = r.nextOffset;
+            }
+            if (offset + 4 <= payload.length) offset += 4; // tokenType
+          }
+        }
+      }
+
+      // transportProfileUri
+      const tpResult = parseUAString(view, payload, offset);
+      offset = tpResult.nextOffset;
+
+      // securityLevel
+      if (offset < payload.length) ep.securityLevel = payload[offset++];
+
+      endpoints.push(ep);
+    }
+  } catch { /* best-effort */ }
+
+  return endpoints;
+}
+
+/**
+ * Handle OPC UA GetEndpoints with full MSG request and structured response parsing.
+ * POST /api/opcua/read
+ *
+ * Sends Hello → OPN → GetEndpoints MSG and parses the endpoint list.
+ * Accept JSON: {host, port?, endpoint_url?, timeout?}
+ */
+export async function handleOPCUARead(request: Request): Promise<Response> {
+  try {
+    const { host, port = 4840, endpoint_url, timeout = 10000 } = await request.json() as {
+      host: string; port?: number; endpoint_url?: string; timeout?: number;
+    };
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const actualEndpointUrl = endpoint_url || `opc.tcp://${host}:${port}`;
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Hello
+        await writer.write(buildHelloMessage(actualEndpointUrl));
+        const ackBytes = await readOPCUAResponse(reader, 5000);
+        const ackParsed = parseResponse(ackBytes);
+        if (!ackParsed || ackParsed.messageType !== 'ACK') {
+          await socket.close();
+          return { success: false, error: `Expected ACK, got ${ackParsed?.messageType || 'empty'}`, host, port };
+        }
+
+        // OpenSecureChannel
+        await writer.write(buildGetEndpointsRequest(0, 0));
+        const opnBytes = await readOPCUAResponse(reader, 5000);
+        const opnParsed = parseResponse(opnBytes);
+        if (!opnParsed || opnParsed.messageType !== 'OPN') {
+          await socket.close();
+          return {
+            success: false,
+            error: opnParsed?.messageType === 'ERR' ? `Server error: ${opnParsed.errorName}` : `Expected OPN, got ${opnParsed?.messageType || 'empty'}`,
+            host, port,
+          };
+        }
+        const channelId = opnParsed.secureChannelId ?? 0;
+
+        // GetEndpoints MSG
+        await writer.write(buildGetEndpointsMsgRequest(actualEndpointUrl));
+        const msgBytes = await readOPCUAResponse(reader, 5000);
+        await socket.close();
+
+        const msgParsed = parseResponse(msgBytes);
+        const endpoints = msgParsed?.rawPayload ? parseEndpointList(msgParsed.rawPayload) : [];
+
+        return {
+          success: true, host, port, endpointUrl: actualEndpointUrl, channelId,
+          acknowledge: { protocolVersion: ackParsed.protocolVersion, receiveBufferSize: ackParsed.receiveBufferSize, sendBufferSize: ackParsed.sendBufferSize },
+          endpoints, endpointCount: endpoints.length,
+          msgResponseType: msgParsed?.messageType,
+          rawHex: msgParsed?.rawPayload ? toHex(msgParsed.rawPayload, 128) : undefined,
+        };
+      } catch (err) {
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'OPC UA read failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

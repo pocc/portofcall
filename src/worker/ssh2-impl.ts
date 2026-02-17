@@ -243,7 +243,15 @@ function parseOpenSshEd25519(pem: string): Ed25519Keys {
 
   // ciphername
   const [ciphernameB, off1] = readStr(buf, off); off = off1;
-  if (dec.decode(ciphernameB) !== 'none') throw new Error('Encrypted OpenSSH keys are not supported');
+  const ciphername = dec.decode(ciphernameB);
+  if (ciphername !== 'none') {
+    throw new Error(
+      `This key is encrypted (cipher: ${ciphername}). ` +
+      `Web Crypto does not support the bcrypt KDF used by OpenSSH. ` +
+      `To use this key, export an unencrypted copy: ` +
+      `ssh-keygen -p -N "" -f <keyfile>  (removes passphrase in-place)`
+    );
+  }
 
   // kdfname, kdfoptions
   const [, off2] = readStr(buf, off); off = off2;

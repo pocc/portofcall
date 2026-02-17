@@ -532,3 +532,518 @@ export async function handleTarantoolProbe(request: Request): Promise<Response> 
     });
   }
 }
+
+
+// ============================================================
+// Tarantool IPROTO_EVAL and IPROTO_EXECUTE
+// ============================================================
+
+// Request type codes
+const IPROTO_EVAL_CODE  = 0x29;
+const IPROTO_EXEC_CODE  = 0x0b;
+
+// Field keys
+const IPROTO_TUPLE_KEY   = 0x21;
+const IPROTO_EXPR_KEY    = 0x27;
+const IPROTO_SQL_TEXT    = 0x40;
+const IPROTO_SQL_BIND    = 0x41;
+const IPROTO_DATA_KEY    = 0x30;
+const IPROTO_METADATA    = 0x32;
+
+/**
+ * Encode a MessagePack string (fixstr or str8).
+ */
+function mpEncodeString(s: string): Uint8Array {
+  const bytes = new TextEncoder().encode(s);
+  if (bytes.length <= 31) {
+    // fixstr
+    const buf = new Uint8Array(1 + bytes.length);
+    buf[0] = 0xA0 | bytes.length;
+    buf.set(bytes, 1);
+    return buf;
+  }
+  if (bytes.length <= 255) {
+    // str8
+    const buf = new Uint8Array(2 + bytes.length);
+    buf[0] = 0xD9;
+    buf[1] = bytes.length;
+    buf.set(bytes, 2);
+    return buf;
+  }
+  // str16
+  const buf = new Uint8Array(3 + bytes.length);
+  buf[0] = 0xDA;
+  buf[1] = (bytes.length >> 8) & 0xFF;
+  buf[2] = bytes.length & 0xFF;
+  buf.set(bytes, 3);
+  return buf;
+}
+
+/**
+ * Encode a MessagePack array header.
+ */
+function mpEncodeArrayHeader(len: number): Uint8Array {
+  if (len <= 15) return new Uint8Array([0x90 | len]);
+  if (len <= 65535) return new Uint8Array([0xDC, (len >> 8) & 0xFF, len & 0xFF]);
+  return new Uint8Array([0xDD, (len >> 24) & 0xFF, (len >> 16) & 0xFF, (len >> 8) & 0xFF, len & 0xFF]);
+}
+
+/**
+ * Encode a MessagePack map with mixed key/value types.
+ */
+function mpEncodeFullMap(entries: Array<[Uint8Array, Uint8Array]>): Uint8Array {
+  const parts: Uint8Array[] = [];
+  parts.push(new Uint8Array([0x80 | entries.length])); // fixmap
+  for (const [k, v] of entries) {
+    parts.push(k);
+    parts.push(v);
+  }
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const result = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { result.set(p, off); off += p.length; }
+  return result;
+}
+
+/**
+ * Build a 5-byte msgpack uint32 size header.
+ */
+function buildSizeHeader(payloadLen: number): Uint8Array {
+  const buf = new Uint8Array(5);
+  buf[0] = 0xCE;
+  buf[1] = (payloadLen >> 24) & 0xFF;
+  buf[2] = (payloadLen >> 16) & 0xFF;
+  buf[3] = (payloadLen >> 8) & 0xFF;
+  buf[4] = payloadLen & 0xFF;
+  return buf;
+}
+
+/**
+ * Encode a uint value as msgpack.
+ */
+function mpUint(v: number): Uint8Array {
+  if (v <= 0x7F) return new Uint8Array([v]);
+  if (v <= 0xFF) return new Uint8Array([0xCC, v]);
+  if (v <= 0xFFFF) return new Uint8Array([0xCD, (v >> 8) & 0xFF, v & 0xFF]);
+  return new Uint8Array([0xCE, (v >> 24) & 0xFF, (v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF]);
+}
+
+/**
+ * Build IPROTO_EVAL request packet.
+ * Header: {0x00: IPROTO_EVAL_CODE, 0x01: sync}
+ * Body: {IPROTO_EXPR: lua_expression, IPROTO_TUPLE: args_array}
+ */
+function buildEvalPacket(expr: string, _args: unknown[], syncId: number): Uint8Array {
+  const headerMap = mpEncodeFullMap([
+    [mpUint(IPROTO_REQUEST_TYPE), mpUint(IPROTO_EVAL_CODE)],
+    [mpUint(IPROTO_SYNC), mpUint(syncId)],
+  ]);
+
+  // args array (empty if none)
+  const argsArray = mpEncodeArrayHeader(0); // empty tuple for now
+
+  const bodyMap = mpEncodeFullMap([
+    [mpUint(IPROTO_EXPR_KEY), mpEncodeString(expr)],
+    [mpUint(IPROTO_TUPLE_KEY), argsArray],
+  ]);
+
+  const payload = new Uint8Array(headerMap.length + bodyMap.length);
+  payload.set(headerMap, 0);
+  payload.set(bodyMap, headerMap.length);
+
+  const sizeHeader = buildSizeHeader(payload.length);
+  const packet = new Uint8Array(sizeHeader.length + payload.length);
+  packet.set(sizeHeader, 0);
+  packet.set(payload, sizeHeader.length);
+  return packet;
+}
+
+/**
+ * Build IPROTO_EXECUTE request packet.
+ * Header: {0x00: IPROTO_EXEC_CODE, 0x01: sync}
+ * Body: {IPROTO_SQL_TEXT: sql_string, IPROTO_SQL_BIND: []}
+ */
+function buildExecutePacket(sql: string, syncId: number): Uint8Array {
+  const headerMap = mpEncodeFullMap([
+    [mpUint(IPROTO_REQUEST_TYPE), mpUint(IPROTO_EXEC_CODE)],
+    [mpUint(IPROTO_SYNC), mpUint(syncId)],
+  ]);
+
+  const bodyMap = mpEncodeFullMap([
+    [mpUint(IPROTO_SQL_TEXT), mpEncodeString(sql)],
+    [mpUint(IPROTO_SQL_BIND), mpEncodeArrayHeader(0)],
+  ]);
+
+  const payload = new Uint8Array(headerMap.length + bodyMap.length);
+  payload.set(headerMap, 0);
+  payload.set(bodyMap, headerMap.length);
+
+  const sizeHeader = buildSizeHeader(payload.length);
+  const packet = new Uint8Array(sizeHeader.length + payload.length);
+  packet.set(sizeHeader, 0);
+  packet.set(payload, sizeHeader.length);
+  return packet;
+}
+
+/**
+ * Decode msgpack value at offset, returns [value, newOffset].
+ * Handles: nil, bool, uint, int, fixstr, str8/16, fixarray, fixmap.
+ */
+function mpDecode(data: Uint8Array, off: number): [unknown, number] {
+  if (off >= data.length) return [null, off];
+  const b = data[off];
+
+  if (b === 0xC0) return [null, off + 1];                  // nil
+  if (b === 0xC2) return [false, off + 1];                 // false
+  if (b === 0xC3) return [true, off + 1];                  // true
+  if (b <= 0x7F) return [b, off + 1];                      // positive fixint
+  if (b >= 0xE0) return [b - 256, off + 1];               // negative fixint
+
+  // fixstr
+  if ((b & 0xE0) === 0xA0) {
+    const len = b & 0x1F;
+    return [new TextDecoder().decode(data.slice(off + 1, off + 1 + len)), off + 1 + len];
+  }
+
+  // str8
+  if (b === 0xD9) {
+    const len = data[off + 1];
+    return [new TextDecoder().decode(data.slice(off + 2, off + 2 + len)), off + 2 + len];
+  }
+
+  // str16
+  if (b === 0xDA) {
+    const len = (data[off + 1] << 8) | data[off + 2];
+    return [new TextDecoder().decode(data.slice(off + 3, off + 3 + len)), off + 3 + len];
+  }
+
+  // uint8
+  if (b === 0xCC) return [data[off + 1], off + 2];
+  // uint16
+  if (b === 0xCD) return [((data[off + 1] << 8) | data[off + 2]), off + 3];
+  // uint32
+  if (b === 0xCE) {
+    const v = ((data[off+1] << 24) | (data[off+2] << 16) | (data[off+3] << 8) | data[off+4]) >>> 0;
+    return [v, off + 5];
+  }
+
+  // int8
+  if (b === 0xD0) return [data[off + 1] > 127 ? data[off + 1] - 256 : data[off + 1], off + 2];
+
+  // fixarray
+  if ((b & 0xF0) === 0x90) {
+    const len = b & 0x0F;
+    const arr: unknown[] = [];
+    let cur = off + 1;
+    for (let i = 0; i < len; i++) {
+      const [v, next] = mpDecode(data, cur);
+      arr.push(v); cur = next;
+    }
+    return [arr, cur];
+  }
+
+  // array16
+  if (b === 0xDC) {
+    const len = (data[off + 1] << 8) | data[off + 2];
+    const arr: unknown[] = [];
+    let cur = off + 3;
+    for (let i = 0; i < len; i++) {
+      const [v, next] = mpDecode(data, cur);
+      arr.push(v); cur = next;
+    }
+    return [arr, cur];
+  }
+
+  // fixmap
+  if ((b & 0xF0) === 0x80) {
+    const len = b & 0x0F;
+    const obj: Record<string, unknown> = {};
+    let cur = off + 1;
+    for (let i = 0; i < len; i++) {
+      const [k, kEnd] = mpDecode(data, cur);
+      const [v, vEnd] = mpDecode(data, kEnd);
+      obj[String(k)] = v; cur = vEnd;
+    }
+    return [obj, cur];
+  }
+
+  // bin8 (skip)
+  if (b === 0xC4) {
+    const len = data[off + 1];
+    return [null, off + 2 + len];
+  }
+
+  // float32
+  if (b === 0xCA) {
+    const dv = new DataView(data.buffer, data.byteOffset + off + 1, 4);
+    return [dv.getFloat32(0, false), off + 5];
+  }
+
+  // float64
+  if (b === 0xCB) {
+    const dv = new DataView(data.buffer, data.byteOffset + off + 1, 8);
+    return [dv.getFloat64(0, false), off + 9];
+  }
+
+  // Skip unknown
+  return [null, off + 1];
+}
+
+/**
+ * Parse a full IPROTO response frame.
+ * Returns status code, sync, and decoded body.
+ */
+function parseFullIprotoResponse(data: Uint8Array): {
+  status: number;
+  sync: number;
+  body: Record<string, unknown>;
+  raw: Uint8Array;
+} {
+  let off = 0;
+  // Skip size prefix (5 bytes, msgpack uint32)
+  if (data[0] === 0xCE) off = 5;
+  else if (data[0] === 0xCD) off = 3;
+  else if (data[0] <= 0x7F) off = 1;
+
+  // Parse header map
+  let status = 0;
+  let sync = 0;
+  if (off < data.length && (data[off] & 0xF0) === 0x80) {
+    const mapLen = data[off] & 0x0F;
+    off++;
+    for (let i = 0; i < mapLen; i++) {
+      const [k, kEnd] = mpDecode(data, off);
+      const [v, vEnd] = mpDecode(data, kEnd);
+      if (k === 0x00) status = Number(v);
+      else if (k === 0x01) sync = Number(v);
+      off = vEnd;
+    }
+  }
+
+  // Parse body map
+  const body: Record<string, unknown> = {};
+  if (off < data.length && ((data[off] & 0xF0) === 0x80)) {
+    const [decoded] = mpDecode(data, off);
+    if (decoded && typeof decoded === 'object') {
+      Object.assign(body, decoded as Record<string, unknown>);
+    }
+  }
+
+  return { status, sync, body, raw: data };
+}
+
+/**
+ * Read a complete IPROTO response: first reads size prefix, then the full payload.
+ */
+async function readIprotoResponse(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutPromise: Promise<never>,
+): Promise<Uint8Array> {
+  // Read 5 bytes to get size prefix
+  const sizeBytes = await readExact(reader, 5, timeoutPromise);
+  let msgLen = 0;
+  if (sizeBytes[0] === 0xCE) {
+    msgLen = ((sizeBytes[1] << 24) | (sizeBytes[2] << 16) | (sizeBytes[3] << 8) | sizeBytes[4]) >>> 0;
+  } else if (sizeBytes[0] === 0xCD) {
+    // uint16 prefix (very small message)
+    const extra = await readExact(reader, 1, timeoutPromise);
+    msgLen = ((sizeBytes[1] << 8) | sizeBytes[2]);
+    // re-read remaining
+    const payload = await readExact(reader, msgLen, timeoutPromise);
+    const full = new Uint8Array(3 + 1 + msgLen);
+    full.set(sizeBytes.slice(0, 3), 0);
+    full.set(extra, 3);
+    full.set(payload, 4);
+    return full;
+  } else {
+    msgLen = sizeBytes[0] <= 0x7F ? sizeBytes[0] : 0;
+  }
+
+  const payload = await readExact(reader, msgLen, timeoutPromise);
+  const full = new Uint8Array(5 + msgLen);
+  full.set(sizeBytes, 0);
+  full.set(payload, 5);
+  return full;
+}
+
+/**
+ * Execute a Lua expression via IPROTO_EVAL.
+ *
+ * POST /api/tarantool/eval
+ * Body: { host, port?, timeout?, expression, args?, username?, password? }
+ */
+export async function handleTarantoolEval(request: Request, _env: unknown): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      expression: string;
+      args?: unknown[];
+      username?: string;
+      password?: string;
+    };
+    const { host, port = 3301, timeout = 15000, expression, args = [] } = body;
+
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!expression) return new Response(JSON.stringify({ success: false, error: 'Lua expression is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    try {
+      // Read Tarantool greeting (128 bytes)
+      const greetingData = await readExact(reader, GREETING_SIZE, timeoutPromise);
+      const greeting = parseGreeting(greetingData);
+
+      if (!greeting.isTarantool) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({ success: false, host, port, error: 'Server is not Tarantool' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Send IPROTO_EVAL
+      const evalPacket = buildEvalPacket(expression, args, 1);
+      await writer.write(evalPacket);
+
+      const rawResp = await readIprotoResponse(reader, timeoutPromise);
+      const parsed = parseFullIprotoResponse(rawResp);
+      const rtt = Date.now() - startTime;
+
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+
+      if (parsed.status !== 0) {
+        const errMsg = (parsed.body[String(IPROTO_ERROR)] as string) || `IPROTO error code: ${parsed.status}`;
+        return new Response(JSON.stringify({ success: false, host, port, rtt, error: errMsg, iprotoStatus: parsed.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      const data = parsed.body[String(IPROTO_DATA_KEY)];
+      return new Response(JSON.stringify({
+        success: true, host, port, rtt,
+        version: greeting.version,
+        expression,
+        result: data,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Execute a SQL statement via IPROTO_EXECUTE.
+ *
+ * POST /api/tarantool/sql
+ * Body: { host, port?, timeout?, sql, username?, password? }
+ */
+export async function handleTarantoolSQL(request: Request, _env: unknown): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      timeout?: number;
+      sql: string;
+      username?: string;
+      password?: string;
+    };
+    const { host, port = 3301, timeout = 15000, sql } = body;
+
+    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!sql) return new Response(JSON.stringify({ success: false, error: 'SQL statement is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    try {
+      // Read Tarantool greeting (128 bytes)
+      const greetingData = await readExact(reader, GREETING_SIZE, timeoutPromise);
+      const greeting = parseGreeting(greetingData);
+
+      if (!greeting.isTarantool) {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({ success: false, host, port, error: 'Server is not Tarantool' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Send IPROTO_EXECUTE
+      const execPacket = buildExecutePacket(sql, 2);
+      await writer.write(execPacket);
+
+      const rawResp = await readIprotoResponse(reader, timeoutPromise);
+      const parsed = parseFullIprotoResponse(rawResp);
+      const rtt = Date.now() - startTime;
+
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+
+      if (parsed.status !== 0) {
+        const errMsg = (parsed.body[String(IPROTO_ERROR)] as string) || `IPROTO error code: ${parsed.status}`;
+        return new Response(JSON.stringify({ success: false, host, port, rtt, error: errMsg, iprotoStatus: parsed.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // Extract metadata (column info) and data (rows)
+      const metadata = parsed.body[String(IPROTO_METADATA)];
+      const data = parsed.body[String(IPROTO_DATA_KEY)];
+
+      // Build column names from metadata if available
+      let columns: string[] = [];
+      if (Array.isArray(metadata)) {
+        columns = metadata.map((col: unknown) => {
+          if (col && typeof col === 'object') {
+            const c = col as Record<string, unknown>;
+            return String(c['name'] ?? c['0'] ?? 'col');
+          }
+          return String(col);
+        });
+      }
+
+      // Map rows to objects using column names
+      let rows: unknown[] = [];
+      if (Array.isArray(data)) {
+        if (columns.length > 0) {
+          rows = data.map((row: unknown) => {
+            if (!Array.isArray(row)) return row;
+            const obj: Record<string, unknown> = {};
+            columns.forEach((col, i) => { obj[col] = row[i]; });
+            return obj;
+          });
+        } else {
+          rows = data;
+        }
+      }
+
+      return new Response(JSON.stringify({
+        success: true, host, port, rtt,
+        version: greeting.version,
+        sql, columns, rows, rowCount: rows.length,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+      throw err;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

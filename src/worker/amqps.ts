@@ -5,11 +5,18 @@
  * AMQPS is AMQP 0-9-1 with implicit TLS/SSL encryption.
  * Used by RabbitMQ, Azure Service Bus, Amazon MQ for secure message broker connections.
  *
- * Connection flow:
+ * Connection flow (connect):
  * 1. TLS handshake (implicit on connection)
  * 2. Client sends protocol header: "AMQP\x00\x00\x09\x01"
  * 3. Server responds with Connection.Start METHOD frame
  * 4. We parse server-properties, mechanisms, and version info
+ *
+ * Connection flow (publish):
+ * 1. TLS + full handshake: Start -> StartOk -> Tune -> TuneOk -> Open -> OpenOk
+ * 2. Channel: Open -> OpenOk
+ * 3. Optional Exchange.Declare -> DeclareOk
+ * 4. Basic.Publish + Content Header + Content Body
+ * 5. Channel.Close + Connection.Close
  *
  * Spec: https://www.rabbitmq.com/amqp-0-9-1-reference.html
  * RFC 5672: AMQP over TLS
@@ -17,6 +24,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { doAMQPPublish, type AMQPPublishParams, type AMQPPublishResult } from './amqp';
 
 const decoder = new TextDecoder();
 
@@ -30,10 +38,10 @@ const AMQP_PROTOCOL_HEADER = new Uint8Array([
 ]);
 
 const FRAME_METHOD = 1;
-const FRAME_END = 0xce;
+const FRAME_END    = 0xce;
 
 // Connection class = 10, Start method = 10
-const CONNECTION_START_CLASS = 10;
+const CONNECTION_START_CLASS  = 10;
 const CONNECTION_START_METHOD = 10;
 
 /** Read exactly N bytes from a socket */
@@ -74,40 +82,38 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
   const end = offset + 4 + tableLen;
 
   while (pos < end) {
-    // Field name is a short string
     const nameResult = readShortString(data, pos);
     pos += nameResult.bytesRead;
 
-    // Field value type
     const type = String.fromCharCode(data[pos]);
     pos += 1;
 
     switch (type) {
-      case 'S': { // long string
+      case 'S': {
         const strResult = readLongString(data, pos);
         table[nameResult.value] = strResult.value;
         pos += strResult.bytesRead;
         break;
       }
-      case 's': { // short string
+      case 's': {
         const strResult = readShortString(data, pos);
         table[nameResult.value] = strResult.value;
         pos += strResult.bytesRead;
         break;
       }
-      case 'F': { // nested table
+      case 'F': {
         const nestedResult = readFieldTable(data, pos);
         table[nameResult.value] = JSON.stringify(nestedResult.value);
         pos += nestedResult.bytesRead;
         break;
       }
-      case 'I': { // 32-bit int
-        const view = new DataView(data.buffer, data.byteOffset + pos, 4);
-        table[nameResult.value] = view.getInt32(0, false).toString();
+      case 'I': {
+        const intView = new DataView(data.buffer, data.byteOffset + pos, 4);
+        table[nameResult.value] = intView.getInt32(0, false).toString();
         pos += 4;
         break;
       }
-      case 't': { // 8-bit boolean
+      case 't': {
         table[nameResult.value] = data[pos] === 1 ? 'true' : 'false';
         pos += 1;
         break;
@@ -123,7 +129,10 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
 
 /**
  * AMQPS Connect Handler
- * Establishes TLS connection and performs AMQP 0-9-1 handshake
+ * POST /api/amqps/connect
+ *
+ * Establishes a TLS connection and performs the AMQP 0-9-1 handshake to extract
+ * server product, version, platform, and auth mechanisms.
  */
 export async function handleAMQPSConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
@@ -136,7 +145,6 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
       port?: number;
     }>();
 
-    // Validate inputs
     if (!host || typeof host !== 'string' || host.trim() === '') {
       return new Response(
         JSON.stringify({ success: false, error: 'Host is required' }),
@@ -151,7 +159,6 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
       );
     }
 
-    // Check if target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(
@@ -164,7 +171,6 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
       );
     }
 
-    // Connect with TLS
     const socket = connect(`${host}:${port}`, {
       secureTransport: 'on',
       allowHalfOpen: false,
@@ -179,9 +185,8 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
 
       // Read frame header (7 bytes: type + channel + size)
       const frameHeader = await readExact(reader, 7);
-      const frameType = frameHeader[0];
-      // Channel ID is at bytes 1-2 (not used in this probe)
-      const frameSize = (frameHeader[3] << 24) | (frameHeader[4] << 16) | (frameHeader[5] << 8) | frameHeader[6];
+      const frameType   = frameHeader[0];
+      const frameSize   = (frameHeader[3] << 24) | (frameHeader[4] << 16) | (frameHeader[5] << 8) | frameHeader[6];
 
       if (frameType !== FRAME_METHOD) {
         throw new Error(`Expected METHOD frame (1), got ${frameType}`);
@@ -189,15 +194,15 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
 
       // Read frame payload + frame-end byte
       const framePayload = await readExact(reader, frameSize + 1);
-      const frameEnd = framePayload[frameSize];
+      const frameEnd     = framePayload[frameSize];
 
       if (frameEnd !== FRAME_END) {
         throw new Error(`Expected frame-end marker (0xCE), got 0x${frameEnd.toString(16)}`);
       }
 
       // Parse method class-id and method-id
-      const view = new DataView(framePayload.buffer, framePayload.byteOffset, 4);
-      const classId = view.getUint16(0, false);
+      const view     = new DataView(framePayload.buffer, framePayload.byteOffset, 4);
+      const classId  = view.getUint16(0, false);
       const methodId = view.getUint16(2, false);
 
       if (classId !== CONNECTION_START_CLASS || methodId !== CONNECTION_START_METHOD) {
@@ -207,23 +212,18 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
       // Parse Connection.Start arguments
       let offset = 4;
 
-      // version-major (uint8)
       const versionMajor = framePayload[offset];
       offset += 1;
 
-      // version-minor (uint8)
       const versionMinor = framePayload[offset];
       offset += 1;
 
-      // server-properties (field-table)
       const serverPropsResult = readFieldTable(framePayload, offset);
       offset += serverPropsResult.bytesRead;
 
-      // mechanisms (long-string)
       const mechanismsResult = readLongString(framePayload, offset);
       offset += mechanismsResult.bytesRead;
 
-      // locales (long-string)
       const localesResult = readLongString(framePayload, offset);
 
       await writer.close();
@@ -234,28 +234,112 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
         JSON.stringify({
           success: true,
           secure: true,
-          protocol: `AMQP ${versionMajor}.${versionMinor}`,
+          protocol:         `AMQP ${versionMajor}.${versionMinor}`,
           serverProperties: serverPropsResult.value,
-          mechanisms: mechanismsResult.value,
-          locales: localesResult.value,
-          message: 'Successfully connected to AMQPS broker over TLS',
+          mechanisms:       mechanismsResult.value,
+          locales:          localesResult.value,
+          product:          serverPropsResult.value['product']  || 'Unknown',
+          version:          serverPropsResult.value['version']  || 'Unknown',
+          platform:         serverPropsResult.value['platform'] || 'Unknown',
+          message:          'Successfully connected to AMQPS broker over TLS',
         }),
         { headers: { 'Content-Type': 'application/json' } }
       );
     } finally {
-      try {
-        await writer.close();
-        await reader.cancel();
-        await socket.close();
-      } catch {
-        // Ignore cleanup errors
-      }
+      try { await writer.close();  } catch { /* ignore */ }
+      try { await reader.cancel(); } catch { /* ignore */ }
+      try { await socket.close();  } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(
       JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : 'Connection failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
+ * AMQPS Publish Handler
+ * POST /api/amqps/publish
+ *
+ * Performs a full AMQP 0-9-1 connection over TLS, opens a channel, optionally
+ * declares an exchange, publishes a message, then closes cleanly.
+ *
+ * Request body: { host, port, username, password, vhost, exchange, routingKey, message, timeout }
+ */
+export async function handleAMQPSPublish(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
+  }
+
+  try {
+    const body = await request.json<{
+      host: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      vhost?: string;
+      exchange?: string;
+      routingKey?: string;
+      message?: string;
+      timeout?: number;
+    }>();
+
+    const {
+      host,
+      port       = 5671,
+      username   = 'guest',
+      password   = 'guest',
+      vhost      = '/',
+      exchange   = '',
+      routingKey = '',
+      message    = '',
+      timeout    = 15000,
+    } = body;
+
+    if (!host || typeof host !== 'string' || host.trim() === '') {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const params: AMQPPublishParams = {
+      host, port, username, password, vhost,
+      exchange, routingKey, message, timeout,
+      secureTransport: 'on',
+    };
+
+    const publishPromise = doAMQPPublish(params);
+
+    const timeoutPromise = new Promise<AMQPPublishResult>((_, reject) =>
+      setTimeout(() => reject(new Error('Publish timeout')), timeout)
+    );
+
+    const result = await Promise.race([publishPromise, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Publish failed',
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );

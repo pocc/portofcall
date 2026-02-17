@@ -289,3 +289,396 @@ export async function handleConsulServices(request: Request): Promise<Response> 
     });
   }
 }
+
+
+// ============================================================
+// Consul KV Store Operations
+// ============================================================
+
+/**
+ * Send a raw HTTP request (GET/PUT/DELETE) over TCP to Consul's HTTP API.
+ * Reuses the existing sendHttpGet infrastructure pattern but supports all methods.
+ */
+async function sendConsulHttpRequest(
+  host: string,
+  port: number,
+  method: string,
+  path: string,
+  token: string | undefined,
+  body: string | null,
+  timeout = 15000,
+): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  const { connect: tcpConnect } = await import('cloudflare:sockets' as string);
+  const socket = tcpConnect(`${host}:${port}`);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  await Promise.race([socket.opened, timeoutPromise]);
+
+  const writer = socket.writable.getWriter();
+  let req = `${method} ${path} HTTP/1.1\r\n`;
+  req += `Host: ${host}:${port}\r\n`;
+  req += `Accept: application/json\r\n`;
+  req += `Connection: close\r\n`;
+  req += `User-Agent: PortOfCall/1.0\r\n`;
+  if (token) req += `X-Consul-Token: ${token}\r\n`;
+  if (body !== null) {
+    const bodyBytes = new TextEncoder().encode(body);
+    req += `Content-Type: application/json\r\n`;
+    req += `Content-Length: ${bodyBytes.length}\r\n`;
+    req += `\r\n`;
+    await writer.write(new TextEncoder().encode(req));
+    await writer.write(bodyBytes);
+  } else {
+    req += `\r\n`;
+    await writer.write(new TextEncoder().encode(req));
+  }
+  writer.releaseLock();
+
+  const reader = socket.readable.getReader();
+  let response = '';
+  const maxSize = 512000;
+  while (response.length < maxSize) {
+    const res = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
+    if (res.done) break;
+    if (res.value) response += new TextDecoder().decode(res.value, { stream: true });
+  }
+  reader.releaseLock();
+  socket.close();
+
+  const headerEnd = response.indexOf('\r\n\r\n');
+  if (headerEnd === -1) throw new Error('Invalid HTTP response');
+  const headerSection = response.substring(0, headerEnd);
+  let bodySection = response.substring(headerEnd + 4);
+  const statusLine = headerSection.split('\r\n')[0];
+  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const headers: Record<string, string> = {};
+  for (const line of headerSection.split('\r\n').slice(1)) {
+    const idx = line.indexOf(':');
+    if (idx > 0) headers[line.substring(0, idx).trim().toLowerCase()] = line.substring(idx + 1).trim();
+  }
+  if (headers['transfer-encoding']?.includes('chunked')) {
+    bodySection = decodeChunked(bodySection);
+  }
+  return { statusCode, headers, body: bodySection };
+}
+
+/**
+ * GET a key from the Consul KV store.
+ *
+ * POST /api/consul/kv/:key
+ * Body: { host, port?, key, token?, dc? }
+ */
+export async function handleConsulKVGet(request: Request): Promise<Response> {
+  try {
+    const data = await request.json<{
+      host: string; port?: number; key: string; token?: string; dc?: string; timeout?: number;
+    }>();
+    const { host, port = 8500, key, token, dc, timeout = 15000 } = data;
+    if (!host || !key) {
+      return new Response(JSON.stringify({ error: 'Missing required parameters: host, key' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    let path = `/v1/kv/${encodeURIComponent(key)}`;
+    if (dc) path += `?dc=${encodeURIComponent(dc)}`;
+
+    const result = await sendConsulHttpRequest(host, port, 'GET', path, token, null, timeout);
+    let parsed = null;
+    let value: string | null = null;
+    if (result.statusCode === 200) {
+      try {
+        const arr = JSON.parse(result.body);
+        if (Array.isArray(arr) && arr.length > 0) {
+          parsed = arr[0];
+          if (parsed.Value) {
+            value = atob(parsed.Value);
+          }
+        }
+      } catch { /* ignore */ }
+    }
+    return new Response(JSON.stringify({
+      success: result.statusCode === 200,
+      host, port, key,
+      statusCode: result.statusCode,
+      value,
+      metadata: parsed ? {
+        createIndex: parsed.CreateIndex,
+        modifyIndex: parsed.ModifyIndex,
+        lockIndex: parsed.LockIndex,
+        flags: parsed.Flags,
+        session: parsed.Session,
+      } : null,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * PUT a value into the Consul KV store.
+ *
+ * POST /api/consul/kv/:key (with method PUT)
+ * Body: { host, port?, key, value, token?, dc? }
+ */
+export async function handleConsulKVPut(request: Request): Promise<Response> {
+  try {
+    const data = await request.json<{
+      host: string; port?: number; key: string; value: string; token?: string; dc?: string; timeout?: number;
+    }>();
+    const { host, port = 8500, key, value = '', token, dc, timeout = 15000 } = data;
+    if (!host || !key) {
+      return new Response(JSON.stringify({ error: 'Missing required parameters: host, key' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    let path = `/v1/kv/${encodeURIComponent(key)}`;
+    if (dc) path += `?dc=${encodeURIComponent(dc)}`;
+
+    const result = await sendConsulHttpRequest(host, port, 'PUT', path, token, value, timeout);
+    const success = result.statusCode === 200 && result.body.trim() === 'true';
+    return new Response(JSON.stringify({
+      success,
+      host, port, key,
+      statusCode: result.statusCode,
+      message: success ? 'Key written successfully' : 'Write failed',
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * LIST keys under a prefix in the Consul KV store.
+ *
+ * POST /api/consul/kv-list
+ * Body: { host, port?, prefix, token?, dc? }
+ */
+export async function handleConsulKVList(request: Request): Promise<Response> {
+  try {
+    const data = await request.json<{
+      host: string; port?: number; prefix?: string; token?: string; dc?: string; timeout?: number;
+    }>();
+    const { host, port = 8500, prefix = '', token, dc, timeout = 15000 } = data;
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    let path = `/v1/kv/${encodeURIComponent(prefix)}?keys=true&separator=/`;
+    if (dc) path += `&dc=${encodeURIComponent(dc)}`;
+
+    const result = await sendConsulHttpRequest(host, port, 'GET', path, token, null, timeout);
+    let keys: string[] = [];
+    if (result.statusCode === 200) {
+      try { keys = JSON.parse(result.body); } catch { /* ignore */ }
+    }
+    return new Response(JSON.stringify({
+      success: result.statusCode === 200,
+      host, port, prefix,
+      statusCode: result.statusCode,
+      keys,
+      count: keys.length,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * DELETE a key from the Consul KV store.
+ *
+ * POST /api/consul/kv/:key (with method DELETE)
+ * Body: { host, port?, key, token?, dc? }
+ */
+export async function handleConsulKVDelete(request: Request): Promise<Response> {
+  try {
+    const data = await request.json<{
+      host: string; port?: number; key: string; token?: string; dc?: string; timeout?: number;
+    }>();
+    const { host, port = 8500, key, token, dc, timeout = 15000 } = data;
+    if (!host || !key) {
+      return new Response(JSON.stringify({ error: 'Missing required parameters: host, key' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    let path = `/v1/kv/${encodeURIComponent(key)}`;
+    if (dc) path += `?dc=${encodeURIComponent(dc)}`;
+
+    const result = await sendConsulHttpRequest(host, port, 'DELETE', path, token, null, timeout);
+    const success = result.statusCode === 200;
+    return new Response(JSON.stringify({
+      success,
+      host, port, key,
+      statusCode: result.statusCode,
+      message: success ? 'Key deleted successfully' : `Delete failed with status ${result.statusCode}`,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Consul service health check request.
+ * POST /api/consul/service/health
+ *
+ * Returns health status for all instances of a named service.
+ */
+export async function handleConsulServiceHealth(request: Request): Promise<Response> {
+  try {
+    const data = await request.json<{
+      host: string;
+      port?: number;
+      serviceName: string;
+      token?: string;
+      passing?: boolean;
+      dc?: string;
+      timeout?: number;
+    }>();
+    const { host, port = 8500, serviceName, token, passing, dc, timeout = 10000 } = data;
+
+    if (!host || !serviceName) {
+      return new Response(JSON.stringify({ error: 'Missing required parameters: host, serviceName' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    let path = `/v1/health/service/${encodeURIComponent(serviceName)}`;
+    const queryParams: string[] = [];
+    if (passing) queryParams.push('passing=true');
+    if (dc) queryParams.push(`dc=${encodeURIComponent(dc)}`);
+    if (queryParams.length > 0) path += `?${queryParams.join('&')}`;
+
+    const result = await sendConsulHttpRequest(host, port, 'GET', path, token, null, timeout);
+
+    let entries: unknown[] = [];
+    try {
+      entries = JSON.parse(result.body) as unknown[];
+    } catch {
+      entries = [];
+    }
+
+    const instances = Array.isArray(entries) ? entries.map((entry: unknown) => {
+      const e = entry as Record<string, unknown>;
+      const node = e.Node as Record<string, unknown> | undefined;
+      const service = e.Service as Record<string, unknown> | undefined;
+      const checks = e.Checks as unknown[] | undefined;
+      return {
+        node: node?.Node || null,
+        address: node?.Address || null,
+        serviceId: service?.ID || null,
+        serviceAddress: service?.Address || null,
+        servicePort: service?.Port || null,
+        checks: Array.isArray(checks) ? checks.map((c: unknown) => {
+          const chk = c as Record<string, unknown>;
+          return {
+            name: chk.Name || chk.CheckID || null,
+            status: chk.Status || null,
+            output: chk.Output || null,
+          };
+        }) : [],
+      };
+    }) : [];
+
+    return new Response(JSON.stringify({
+      success: result.statusCode >= 200 && result.statusCode < 400,
+      host,
+      port,
+      serviceName,
+      instanceCount: instances.length,
+      passing: !!passing,
+      instances,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Consul session creation request.
+ * POST /api/consul/session/create
+ *
+ * Creates a new Consul session for distributed locking.
+ */
+export async function handleConsulSessionCreate(request: Request): Promise<Response> {
+  try {
+    const data = await request.json<{
+      host: string;
+      port?: number;
+      token?: string;
+      name?: string;
+      ttl?: string;
+      behavior?: string;
+      timeout?: number;
+    }>();
+    const { host, port = 8500, token, name, ttl, behavior = 'release', timeout = 10000 } = data;
+
+    if (!host) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const sessionBody: Record<string, unknown> = { Behavior: behavior };
+    if (name) sessionBody.Name = name;
+    if (ttl) sessionBody.TTL = ttl;
+
+    const startTime = Date.now();
+    const result = await sendConsulHttpRequest(
+      host, port, 'PUT', '/v1/session/create', token, JSON.stringify(sessionBody), timeout
+    );
+    const rtt = Date.now() - startTime;
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(result.body) as Record<string, unknown>;
+    } catch {
+      parsed = null;
+    }
+
+    return new Response(JSON.stringify({
+      success: result.statusCode === 200,
+      host,
+      port,
+      rtt,
+      sessionId: parsed?.ID || null,
+      name: name || null,
+      ttl: ttl || null,
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Connection failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

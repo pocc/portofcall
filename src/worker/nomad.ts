@@ -113,6 +113,92 @@ async function sendHttpGet(
 }
 
 /**
+ * Send a raw HTTP/1.1 POST request over a TCP socket and parse the response.
+ */
+async function sendHttpPost(
+  host: string,
+  port: number,
+  path: string,
+  token: string | undefined,
+  bodyStr: string,
+  timeout = 15000,
+): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  const socket = connect(`${host}:${port}`);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  await Promise.race([socket.opened, timeoutPromise]);
+
+  const writer = socket.writable.getWriter();
+  const bodyBytes = encoder.encode(bodyStr);
+
+  let request = `POST ${path} HTTP/1.1\r\n`;
+  request += `Host: ${host}:${port}\r\n`;
+  request += `Accept: application/json\r\n`;
+  request += `Content-Type: application/json\r\n`;
+  request += `Content-Length: ${bodyBytes.length}\r\n`;
+  request += `Connection: close\r\n`;
+  request += `User-Agent: PortOfCall/1.0\r\n`;
+
+  if (token) {
+    request += `X-Nomad-Token: ${token}\r\n`;
+  }
+
+  request += `\r\n`;
+  await writer.write(encoder.encode(request));
+  await writer.write(bodyBytes);
+  writer.releaseLock();
+
+  // Read response
+  const reader = socket.readable.getReader();
+  let response = '';
+  const maxSize = 512000; // 512KB limit
+
+  while (response.length < maxSize) {
+    const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
+    if (readResult.done) break;
+    if (readResult.value) {
+      response += decoder.decode(readResult.value, { stream: true });
+    }
+  }
+
+  reader.releaseLock();
+  socket.close();
+
+  // Parse HTTP response
+  const headerEnd = response.indexOf('\r\n\r\n');
+  if (headerEnd === -1) {
+    throw new Error('Invalid HTTP response: no header terminator found');
+  }
+
+  const headerSection = response.substring(0, headerEnd);
+  let bodySection = response.substring(headerEnd + 4);
+
+  const statusLine = headerSection.split('\r\n')[0];
+  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+
+  const headers: Record<string, string> = {};
+  const headerLines = headerSection.split('\r\n').slice(1);
+  for (const line of headerLines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx > 0) {
+      const key = line.substring(0, colonIdx).trim().toLowerCase();
+      const value = line.substring(colonIdx + 1).trim();
+      headers[key] = value;
+    }
+  }
+
+  if (headers['transfer-encoding']?.includes('chunked')) {
+    bodySection = decodeChunked(bodySection);
+  }
+
+  return { statusCode, headers, body: bodySection };
+}
+
+/**
  * Decode chunked transfer encoding.
  */
 function decodeChunked(data: string): string {
@@ -442,6 +528,311 @@ export async function handleNomadNodes(request: Request): Promise<Response> {
       JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : 'Nomad nodes query failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
+ * Handle Nomad allocations listing request.
+ * POST /api/nomad/allocations
+ *
+ * Lists all allocations, or allocations for a specific job if jobId is provided.
+ */
+export async function handleNomadAllocations(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      token?: string;
+      jobId?: string;
+      namespace?: string;
+      timeout?: number;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = body.host;
+    const port = body.port || 4646;
+    const token = body.token;
+    const jobId = body.jobId;
+    const namespace = body.namespace;
+    const timeout = body.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let path = jobId ? `/v1/job/${encodeURIComponent(jobId)}/allocations` : '/v1/allocations';
+    if (namespace) {
+      path += `?namespace=${encodeURIComponent(namespace)}`;
+    }
+
+    const startTime = Date.now();
+    const result = await sendHttpGet(host, port, path, token, timeout);
+    const rtt = Date.now() - startTime;
+
+    let allocations: unknown[] = [];
+    try {
+      allocations = JSON.parse(result.body) as unknown[];
+    } catch {
+      allocations = [];
+    }
+
+    const allocationSummaries = Array.isArray(allocations) ? allocations.map((alloc: unknown) => {
+      const a = alloc as Record<string, unknown>;
+      return {
+        id: a.ID || a.id,
+        jobId: a.JobID || a.jobId,
+        taskGroup: a.TaskGroup || a.taskGroup,
+        clientStatus: a.ClientStatus || a.clientStatus,
+        desiredStatus: a.DesiredStatus || a.desiredStatus,
+        createTime: a.CreateTime || a.createTime,
+        modifyTime: a.ModifyTime || a.modifyTime,
+      };
+    }) : [];
+
+    return new Response(
+      JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        host,
+        port,
+        rtt,
+        allocationCount: allocationSummaries.length,
+        allocations: allocationSummaries,
+      }),
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Nomad allocations query failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
+ * Handle Nomad deployments listing request.
+ * POST /api/nomad/deployments
+ *
+ * Lists all deployments, or deployments for a specific job if jobId is provided.
+ */
+export async function handleNomadDeployments(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      token?: string;
+      jobId?: string;
+      namespace?: string;
+      timeout?: number;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = body.host;
+    const port = body.port || 4646;
+    const token = body.token;
+    const jobId = body.jobId;
+    const namespace = body.namespace;
+    const timeout = body.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let path = jobId ? `/v1/job/${encodeURIComponent(jobId)}/deployments` : '/v1/deployments';
+    if (namespace) {
+      path += `?namespace=${encodeURIComponent(namespace)}`;
+    }
+
+    const startTime = Date.now();
+    const result = await sendHttpGet(host, port, path, token, timeout);
+    const rtt = Date.now() - startTime;
+
+    let deployments: unknown[] = [];
+    try {
+      deployments = JSON.parse(result.body) as unknown[];
+    } catch {
+      deployments = [];
+    }
+
+    const deploymentSummaries = Array.isArray(deployments) ? deployments.map((dep: unknown) => {
+      const d = dep as Record<string, unknown>;
+      return {
+        id: d.ID || d.id,
+        jobId: d.JobID || d.jobId,
+        namespace: d.Namespace || d.namespace,
+        status: d.Status || d.status,
+        statusDescription: d.StatusDescription || d.statusDescription,
+        taskGroups: d.TaskGroups || d.taskGroups,
+      };
+    }) : [];
+
+    return new Response(
+      JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        host,
+        port,
+        rtt,
+        deploymentCount: deploymentSummaries.length,
+        deployments: deploymentSummaries,
+      }),
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Nomad deployments query failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } }
+    );
+  }
+}
+
+/**
+ * Handle Nomad job dispatch request.
+ * POST /api/nomad/dispatch
+ *
+ * Dispatches a parameterized job instance.
+ */
+export async function handleNomadJobDispatch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  try {
+    const body = (await request.json()) as {
+      host?: string;
+      port?: number;
+      token?: string;
+      jobId?: string;
+      payload?: string;
+      meta?: Record<string, string>;
+      namespace?: string;
+      timeout?: number;
+    };
+
+    if (!body.host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (!body.jobId) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'jobId is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const host = body.host;
+    const port = body.port || 4646;
+    const token = body.token;
+    const jobId = body.jobId;
+    const timeout = body.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    let path = `/v1/job/${encodeURIComponent(jobId)}/dispatch`;
+    if (body.namespace) {
+      path += `?namespace=${encodeURIComponent(body.namespace)}`;
+    }
+
+    const dispatchBody: Record<string, unknown> = {};
+    if (body.payload) {
+      dispatchBody.Payload = btoa(body.payload);
+    }
+    if (body.meta) {
+      dispatchBody.Meta = body.meta;
+    }
+
+    const startTime = Date.now();
+    const result = await sendHttpPost(host, port, path, token, JSON.stringify(dispatchBody), timeout);
+    const rtt = Date.now() - startTime;
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = JSON.parse(result.body) as Record<string, unknown>;
+    } catch {
+      parsed = null;
+    }
+
+    return new Response(
+      JSON.stringify({
+        success: result.statusCode >= 200 && result.statusCode < 400,
+        host,
+        port,
+        rtt,
+        dispatchedJobId: parsed?.DispatchedJobID || parsed?.dispatchedJobId || null,
+        evalId: parsed?.EvalID || parsed?.evalId || null,
+      }),
+      { headers: { 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Nomad job dispatch failed',
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );

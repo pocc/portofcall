@@ -872,6 +872,23 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Use Cases**: Ethereum node interaction, Bitcoin RPC, custom JSON-RPC services
 - **Spec**: https://www.jsonrpc.org/specification
 
+### Jupyter (Notebook/JupyterLab REST API)
+- **Port**: 8888 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Server health check via `GET /api` (version detection)
+  - Server status and activity metrics (`GET /api/status`)
+  - Kernel specification enumeration (`GET /api/kernelspecs`)
+  - Token-based authentication (`Authorization: token TOKEN`)
+  - Auth requirement detection (401/403 surfaced as `requiresAuth`)
+  - Arbitrary REST API endpoint queries (GET/POST/DELETE/PATCH)
+  - Chunked transfer encoding support
+  - Cloudflare detection
+- **UI**: Yes (connection form with optional token + API query interface)
+- **Tests**: ⚠️ Awaiting deployment (11 integration tests)
+- **Documentation**: docs/protocols/JUPYTER.md
+- **Use Cases**: Jupyter server health monitoring, kernel enumeration, CI/CD data science infrastructure testing
+
 ### Docker API (Engine API)
 - **Port**: 2375 (HTTP), 2376 (HTTPS)
 - **Status**: ✅ Complete (not yet deployed)
@@ -1451,6 +1468,21 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **Documentation**: https://github.com/multiformats/multistream-select
 - **Complexity**: Medium (custom varint framing + multistream protocol)
 
+### Apache ActiveMQ (OpenWire)
+- **Port**: 61616 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - OpenWire WireFormatInfo handshake
+  - Broker detection via "ActiveMQ" magic byte scan
+  - OpenWire protocol version parsing
+  - Capability flags: stack traces, cache, tight encoding
+  - BrokerInfo frame parsing (broker name)
+  - TCP latency measurement
+- **UI**: Yes (host/port + probe button + capabilities display + port reference table)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: https://activemq.apache.org/openwire-version-1-specification
+- **Complexity**: Medium (binary OpenWire frame parsing)
+
 ## 🔒 Security Features
 
 ### Cloudflare Detection
@@ -1461,9 +1493,9 @@ This document tracks all protocols that have been fully implemented in Port of C
 
 ## Summary
 
-- **Total Implemented**: 109 protocols + 1 security feature
+- **Total Implemented**: 111 protocols + 1 security feature
 - **Deployed & Passing**: 14 protocols
-- **Awaiting Deployment**: 69 protocols
+- **Awaiting Deployment**: 70 protocols
 - **Real-World Usage Tests**: 403 integration tests covering all protocols with realistic hosts/ports/parameters
 - **Test Coverage** (by protocol):
   - Source RCON (20), POP3 (18), IMAP (17), Redis (17), CDP (15), Docker (14), SSH (14), SMTP (14), Oracle (13), MaxDB (13), MQTT (13), LDAP (13), MySQL (12), SMB (10), Gadu-Gadu (10), Discard (9), Napster (9), PPTP (9), Echo (9), PostgreSQL (9), Telnet (9), Beanstalkd (8), Syslog (11+11), SOCKS4 (10+7), WHOIS (8+8), LPD (7), 9P (7), SFTP (7), DNS (7), HTTP Proxy (7), BGP (6), Ventrilo (6), Rlogin (6), Finger (6), TCP Ping (6), Memcached (6), Cloudflare Detection (5), RCON (5), Rexec (5), DoT (5), Rsync (5), Modbus (5), LMTP (5), MongoDB (4), Graphite (4), Git (4), ZooKeeper (4), IRC (4), Gopher (4), Daytime (4), Time (4), Gemini (3), NNTP (3), AMQP (3), Kafka (3), RTSP (3), CHARGEN (3), Cassandra (3), STOMP (2), TDS (2), VNC (2), Neo4j (2), RTMP (2), TACACS+ (2), HL7 (2), Elasticsearch (2), AJP (2), XMPP (2), RDP (2), NATS (2), JetDirect (2)

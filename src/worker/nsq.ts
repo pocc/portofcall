@@ -419,3 +419,294 @@ export async function handleNSQPublish(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Handle NSQ subscribe — connect, SUB a topic/channel, collect messages
+ */
+export async function handleNSQSubscribe(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      topic: string;
+      channel?: string;
+      max_messages?: number;
+      collect_ms?: number;
+      timeout?: number;
+    };
+
+    if (!body.host || !body.topic) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, topic' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(body.topic)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid topic name' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = body.host;
+    const port = body.port || 4150;
+    const channel = body.channel || 'portofcall';
+    const maxMessages = body.max_messages || 10;
+    const collectMs = body.collect_ms || 2000;
+    const timeout = body.timeout || 15000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Send V2 magic + IDENTIFY
+        await writer.write(new TextEncoder().encode(NSQ_MAGIC_V2));
+
+        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'portofcall.ross.gg' });
+        const identifyBytes = new TextEncoder().encode(identifyPayload);
+        const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
+        const sizeBuf = new Uint8Array(4);
+        new DataView(sizeBuf.buffer).setInt32(0, identifyBytes.length, false);
+        const identifyFrame = new Uint8Array(identifyCmd.length + sizeBuf.length + identifyBytes.length);
+        identifyFrame.set(identifyCmd); identifyFrame.set(sizeBuf, identifyCmd.length);
+        identifyFrame.set(identifyBytes, identifyCmd.length + sizeBuf.length);
+        await writer.write(identifyFrame);
+
+        // Read IDENTIFY response
+        const identifyResp = await readFrame(reader, 5000);
+        if (identifyResp.frameType === 1) throw new Error(`NSQ IDENTIFY error: ${identifyResp.data}`);
+
+        // Send SUB topic channel
+        await writer.write(new TextEncoder().encode(`SUB ${body.topic} ${channel}\n`));
+        const subResp = await readFrame(reader, 5000);
+        if (subResp.frameType === 1) throw new Error(`NSQ SUB error: ${subResp.data}`);
+
+        // Send RDY 1 to start receiving messages
+        await writer.write(new TextEncoder().encode(`RDY ${maxMessages}\n`));
+
+        // Collect messages for collectMs duration
+        const messages: { messageId: string; attempts: number; body: string; timestamp: number }[] = [];
+        const collectEnd = Date.now() + collectMs;
+
+        while (Date.now() < collectEnd && messages.length < maxMessages) {
+          const remaining = collectEnd - Date.now();
+          if (remaining <= 0) break;
+
+          try {
+            const frame = await readFrame(reader, Math.min(remaining, 1000));
+
+            if (frame.frameType === 0) {
+              // FrameTypeResponse — could be _heartbeat_
+              if (frame.data === '_heartbeat_') {
+                await writer.write(new TextEncoder().encode('NOP\n'));
+              }
+            } else if (frame.frameType === 2) {
+              // FrameTypeMessage — format: [timestamp:8][attempts:2][messageId:16][body]
+              const raw = frame.data;
+              if (raw.length >= 26) {
+                const msgId = raw.slice(10, 26);
+                const msgBody = raw.slice(26);
+                const attemptBytes = raw.charCodeAt(8) * 256 + raw.charCodeAt(9);
+                messages.push({
+                  messageId: msgId,
+                  attempts: attemptBytes,
+                  body: msgBody,
+                  timestamp: Date.now(),
+                });
+                // FIN to acknowledge
+                await writer.write(new TextEncoder().encode(`FIN ${msgId}\n`));
+              }
+            }
+          } catch {
+            // Timeout collecting — that's fine
+            break;
+          }
+        }
+
+        // Send CLS to close gracefully
+        await writer.write(new TextEncoder().encode('CLS\n'));
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          topic: body.topic,
+          channel,
+          messageCount: messages.length,
+          messages: messages.slice(0, 10),
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Subscribe failed' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle NSQ multi-publish — atomically publish multiple messages to a topic (MPUB)
+ */
+export async function handleNSQMultiPublish(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string;
+      port?: number;
+      topic: string;
+      messages: string[];
+      timeout?: number;
+    };
+
+    if (!body.host || !body.topic || !Array.isArray(body.messages) || body.messages.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, topic, messages[]' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(body.topic)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid topic name' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (body.messages.length > 100) {
+      return new Response(JSON.stringify({ success: false, error: 'Maximum 100 messages per MPUB' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = body.host;
+    const port = body.port || 4150;
+    const timeout = body.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const connectionPromise = (async () => {
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Send V2 magic + IDENTIFY
+        await writer.write(new TextEncoder().encode(NSQ_MAGIC_V2));
+
+        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'portofcall.ross.gg' });
+        const identifyBytes = new TextEncoder().encode(identifyPayload);
+        const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
+        const idSizeBuf = new Uint8Array(4);
+        new DataView(idSizeBuf.buffer).setInt32(0, identifyBytes.length, false);
+        const identifyFrame = new Uint8Array(identifyCmd.length + idSizeBuf.length + identifyBytes.length);
+        identifyFrame.set(identifyCmd); identifyFrame.set(idSizeBuf, identifyCmd.length);
+        identifyFrame.set(identifyBytes, identifyCmd.length + idSizeBuf.length);
+        await writer.write(identifyFrame);
+
+        const identifyResp = await readFrame(reader, 5000);
+        if (identifyResp.frameType === 1) throw new Error(`NSQ IDENTIFY error: ${identifyResp.data}`);
+
+        // Build MPUB body: [4B num_messages][for each: [4B msg_size][msg_bytes]]
+        const enc = new TextEncoder();
+        const encodedMsgs = body.messages.map(m => enc.encode(m));
+        const totalBodySize = 4 + encodedMsgs.reduce((sum, m) => sum + 4 + m.length, 0);
+
+        const mpubCmd = enc.encode(`MPUB ${body.topic}\n`);
+        const outerSize = new Uint8Array(4);
+        new DataView(outerSize.buffer).setInt32(0, totalBodySize, false);
+        const numMsgs = new Uint8Array(4);
+        new DataView(numMsgs.buffer).setInt32(0, encodedMsgs.length, false);
+
+        const mpubFrame = new Uint8Array(mpubCmd.length + 4 + totalBodySize);
+        let off = 0;
+        mpubFrame.set(mpubCmd, off); off += mpubCmd.length;
+        mpubFrame.set(outerSize, off); off += 4;
+        mpubFrame.set(numMsgs, off); off += 4;
+
+        for (const msgBytes of encodedMsgs) {
+          const msgSize = new Uint8Array(4);
+          new DataView(msgSize.buffer).setInt32(0, msgBytes.length, false);
+          mpubFrame.set(msgSize, off); off += 4;
+          mpubFrame.set(msgBytes, off); off += msgBytes.length;
+        }
+
+        await writer.write(mpubFrame);
+
+        const mpubResp = await readFrame(reader, 5000);
+        if (mpubResp.frameType === 1) throw new Error(`NSQ MPUB error: ${mpubResp.data}`);
+
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          topic: body.topic,
+          messageCount: body.messages.length,
+          totalBytes: encodedMsgs.reduce((sum, m) => sum + m.length, 0),
+          response: mpubResp.data,
+        };
+      } catch (error) {
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+        throw error;
+      }
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Multi-publish failed' }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

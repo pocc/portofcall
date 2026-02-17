@@ -478,3 +478,147 @@ export async function handleStompSend(request: Request): Promise<Response> {
     });
   }
 }
+
+/**
+ * Connect to a STOMP broker, subscribe to a destination, collect messages, then disconnect.
+ * POST /api/stomp/subscribe
+ */
+export async function handleStompSubscribe(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number;
+      username?: string; password?: string; vhost?: string;
+      destination: string;
+      maxMessages?: number;
+      timeout?: number;
+    };
+    const {
+      host, port = 61613, username, password, vhost, destination,
+      maxMessages = 10, timeout = 10000,
+    } = body;
+
+    const validationError = validateStompInput(host, port);
+    if (validationError) {
+      return new Response(JSON.stringify({ success: false, error: validationError }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!destination) {
+      return new Response(JSON.stringify({ success: false, error: 'Destination is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // CONNECT
+      const connectHeaders: Record<string, string> = {
+        'accept-version': '1.0,1.1,1.2',
+        'host': vhost || host,
+        'heart-beat': '0,0',
+      };
+      if (username) connectHeaders['login'] = username;
+      if (password) connectHeaders['passcode'] = password;
+      await writer.write(new TextEncoder().encode(buildFrame('CONNECT', connectHeaders)));
+
+      // Read CONNECTED frame
+      let buf = '';
+      try {
+        while (!buf.includes(NULL_BYTE)) {
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (done) break;
+          if (value) buf += new TextDecoder().decode(value, { stream: true });
+        }
+      } catch { /* timeout */ }
+
+      const connFrame = parseFrame(buf.split(NULL_BYTE)[0]);
+      if (connFrame.command !== 'CONNECTED') {
+        writer.releaseLock(); reader.releaseLock(); socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: connFrame.command === 'ERROR'
+            ? (connFrame.body || connFrame.headers['message'] || 'Connection rejected')
+            : `Unexpected response: ${connFrame.command}`,
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      // SUBSCRIBE
+      const subId = 'sub-0';
+      await writer.write(new TextEncoder().encode(buildFrame('SUBSCRIBE', {
+        id: subId, destination, ack: 'auto',
+      })));
+
+      // Collect MESSAGE frames up to maxMessages or collectDeadline
+      const messages: Array<{ destination: string; body: string; headers: Record<string, string> }> = [];
+      const collectDeadline = Date.now() + Math.min(timeout - 500, 8000);
+      // Remaining buffer after CONNECTED frame
+      buf = buf.split(NULL_BYTE).slice(1).join(NULL_BYTE);
+      const safeMax = Math.min(maxMessages, 50);
+
+      while (messages.length < safeMax) {
+        if (Date.now() > collectDeadline) break;
+
+        const nullIdx = buf.indexOf(NULL_BYTE);
+        if (nullIdx >= 0) {
+          const rawFrame = buf.substring(0, nullIdx);
+          buf = buf.substring(nullIdx + 1);
+          const frame = parseFrame(rawFrame);
+          if (frame.command === 'MESSAGE') {
+            messages.push({
+              destination: frame.headers['destination'] || destination,
+              body: frame.body,
+              headers: frame.headers,
+            });
+          }
+          continue;
+        }
+
+        try {
+          const remaining = collectDeadline - Date.now();
+          if (remaining <= 0) break;
+          const shortTimeout = new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('collect timeout')), remaining)
+          );
+          const { value, done } = await Promise.race([reader.read(), shortTimeout]);
+          if (done) break;
+          if (value) buf += new TextDecoder().decode(value, { stream: true });
+        } catch { break; }
+      }
+
+      // UNSUBSCRIBE + DISCONNECT
+      try {
+        await writer.write(new TextEncoder().encode(buildFrame('UNSUBSCRIBE', { id: subId })));
+        await writer.write(new TextEncoder().encode(buildFrame('DISCONNECT', { receipt: 'disc-1' })));
+      } catch { /* ignore */ }
+
+      writer.releaseLock(); reader.releaseLock(); socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        destination,
+        messageCount: messages.length,
+        messages,
+        brokerVersion: connFrame.headers['version'] || '1.0',
+        brokerServer: connFrame.headers['server'] || 'Unknown',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

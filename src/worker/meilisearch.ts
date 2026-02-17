@@ -346,3 +346,109 @@ export async function handleMeilisearchSearch(request: Request): Promise<Respons
     });
   }
 }
+
+/**
+ * Handle Meilisearch document add/update
+ * POST /api/meilisearch/documents
+ * Adds or updates documents in a Meilisearch index.
+ * POST /indexes/{uid}/documents (upsert by primary key)
+ */
+export async function handleMeilisearchDocuments(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; index: string;
+      documents: Record<string, unknown>[];
+      primary_key?: string; api_key?: string; timeout?: number;
+    };
+    if (!body.host || !body.index || !Array.isArray(body.documents) || body.documents.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, index, documents[]' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 7700;
+    const timeout = body.timeout || 15000;
+    const qs = body.primary_key ? ('?primaryKey=' + body.primary_key) : '';
+    const path = '/indexes/' + body.index + '/documents' + qs;
+
+    const result = await sendHttpRequest(host, port, 'POST', path, JSON.stringify(body.documents), body.api_key, timeout);
+    const ok = result.statusCode >= 200 && result.statusCode < 300;
+
+    let parsed: Record<string, unknown> = {};
+    try { parsed = JSON.parse(result.body) as Record<string, unknown>; } catch { /* raw */ }
+
+    return new Response(JSON.stringify({
+      success: ok,
+      host, port, index: body.index,
+      documentsSubmitted: body.documents.length,
+      httpStatus: result.statusCode,
+      taskUid: parsed.taskUid,
+      status: parsed.status,
+      ...(ok
+        ? { message: body.documents.length + ' document(s) submitted (task ' + parsed.taskUid + ')' }
+        : { error: (parsed as { message?: string }).message || ('HTTP ' + result.statusCode) }),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Document add failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
+ * Handle Meilisearch document delete
+ * POST /api/meilisearch/delete
+ * Deletes documents by ID list or deletes all documents.
+ */
+export async function handleMeilisearchDelete(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; index: string;
+      ids?: (string | number)[]; all?: boolean;
+      api_key?: string; timeout?: number;
+    };
+    if (!body.host || !body.index || (!body.ids?.length && !body.all)) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, index, and either ids[] or all:true' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const host = body.host;
+    const port = body.port || 7700;
+    const timeout = body.timeout || 10000;
+
+    let path: string;
+    let method: string;
+    let reqBody: string | undefined;
+
+    if (body.all) {
+      path = '/indexes/' + body.index + '/documents';
+      method = 'DELETE';
+    } else {
+      path = '/indexes/' + body.index + '/documents/delete-batch';
+      method = 'POST';
+      reqBody = JSON.stringify(body.ids);
+    }
+
+    const result = await sendHttpRequest(host, port, method, path, reqBody, body.api_key, timeout);
+    const ok = result.statusCode >= 200 && result.statusCode < 300;
+
+    let parsed: Record<string, unknown> = {};
+    try { parsed = JSON.parse(result.body) as Record<string, unknown>; } catch { /* raw */ }
+
+    return new Response(JSON.stringify({
+      success: ok,
+      host, port, index: body.index,
+      mode: body.all ? 'all' : 'by-ids',
+      count: body.ids?.length,
+      httpStatus: result.statusCode,
+      taskUid: parsed.taskUid,
+      ...(ok
+        ? { message: body.all ? 'All documents deleted' : (body.ids?.length + ' document(s) deleted') }
+        : { error: (parsed as { message?: string }).message || ('HTTP ' + result.statusCode) }),
+    }), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Delete failed' }), {
+      status: 500, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

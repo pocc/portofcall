@@ -716,6 +716,362 @@ export async function handleLDAPSConnect(request: Request): Promise<Response> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Shared TLS bind helper
+// ---------------------------------------------------------------------------
+
+async function ldapsTLSBind(
+  host: string,
+  port: number,
+  bindDN: string,
+  password: string,
+  timeoutMs: number
+): Promise<{
+  socket: ReturnType<typeof connect>;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+}> {
+  const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
+  await socket.opened;
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
+
+  const bindRequest = encodeLDAPBindRequest(1, bindDN, password);
+  await writer.write(bindRequest);
+
+  const bindData = await readLDAPResponse(reader, timeoutMs);
+  const bindResult = parseLDAPBindResponse(bindData);
+  if (!bindResult.success) {
+    reader.releaseLock();
+    writer.releaseLock();
+    await socket.close();
+    throw new Error(`Bind failed (code ${bindResult.resultCode}): ${bindResult.message}`);
+  }
+  return { socket, reader, writer };
+}
+
+// ---------------------------------------------------------------------------
+// BER helpers used by add/modify/delete (mirror pattern from ldap.ts)
+// ---------------------------------------------------------------------------
+
+function berTLV_s(tag: number, data: number[]): number[] {
+  return [tag, ...encodeLength(data.length), ...data];
+}
+
+function berEnumerated_s(value: number): number[] {
+  return [0x0A, 0x01, value];
+}
+
+function berInteger_s(value: number): number[] {
+  if (value >= 0 && value < 128) return [0x02, 0x01, value];
+  const bytes: number[] = [];
+  let v = value;
+  while (v > 0) { bytes.unshift(v & 0xFF); v >>= 8; }
+  if (bytes[0] & 0x80) bytes.unshift(0x00);
+  return [0x02, bytes.length, ...bytes];
+}
+
+function berSequence_s(data: number[]): number[] {
+  return berTLV_s(0x30, data);
+}
+
+function ldapsMessage(msgId: number, protocolOp: number[]): Uint8Array {
+  const msg = [...berInteger_s(msgId), ...protocolOp];
+  return new Uint8Array(berSequence_s(msg));
+}
+
+function parseLDAPSResult(data: Uint8Array, expectedTag: number): {
+  success: boolean; resultCode: number; matchedDN: string; message: string;
+} {
+  let offset = 0;
+  if (data[offset] !== 0x30) return { success: false, resultCode: -1, matchedDN: '', message: 'Expected SEQUENCE' };
+  offset++;
+  const seqLen = parseLength(data, offset); offset += seqLen.bytesRead;
+
+  if (data[offset] === 0x02) {
+    offset++;
+    const idLen = parseLength(data, offset); offset += idLen.bytesRead + idLen.length;
+  }
+
+  if (data[offset] !== expectedTag) {
+    return { success: false, resultCode: -1, matchedDN: '', message: `Expected tag 0x${expectedTag.toString(16)}, got 0x${data[offset].toString(16)}` };
+  }
+  offset++;
+  const opLen = parseLength(data, offset); offset += opLen.bytesRead;
+
+  let resultCode = -1;
+  if (data[offset] === 0x0A) {
+    offset++;
+    const rcLen = parseLength(data, offset); offset += rcLen.bytesRead;
+    resultCode = data[offset]; offset += rcLen.length;
+  }
+
+  let matchedDN = '';
+  if (offset < data.length && data[offset] === 0x04) {
+    offset++;
+    const dnLen = parseLength(data, offset); offset += dnLen.bytesRead;
+    if (dnLen.length > 0) matchedDN = new TextDecoder().decode(data.slice(offset, offset + dnLen.length));
+    offset += dnLen.length;
+  }
+
+  let diagMessage = '';
+  if (offset < data.length && data[offset] === 0x04) {
+    offset++;
+    const msgLen = parseLength(data, offset); offset += msgLen.bytesRead;
+    if (msgLen.length > 0) diagMessage = new TextDecoder().decode(data.slice(offset, offset + msgLen.length));
+  }
+
+  const ldapMessages: Record<number, string> = {
+    0: 'Success', 1: 'Operations error', 2: 'Protocol error', 16: 'No such attribute',
+    20: 'Attribute or value exists', 32: 'No such object', 34: 'Invalid DN syntax',
+    48: 'Inappropriate authentication', 49: 'Invalid credentials', 50: 'Insufficient access rights',
+    53: 'Unwilling to perform', 64: 'Naming violation', 65: 'Object class violation',
+    68: 'Entry already exists', 69: 'Object class mods prohibited',
+  };
+  const msg = diagMessage || ldapMessages[resultCode] || `LDAP result code: ${resultCode}`;
+  return { success: resultCode === 0, resultCode, matchedDN, message: msg };
+}
+
+/**
+ * Handle LDAPS Add (Add entry over TLS)
+ */
+export async function handleLDAPSAdd(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDN: string; password: string;
+      entry: { dn: string; attributes: Record<string, string | string[]> };
+      timeout?: number;
+    };
+
+    const { host, port = 636, bindDN, password, entry, timeout = 10000 } = body;
+
+    if (!host || !bindDN || !entry?.dn) {
+      return new Response(JSON.stringify({ success: false, error: 'host, bindDN, and entry.dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapsTLSBind(host, port, bindDN, password, timeout);
+
+      try {
+        const attrListBytes: number[] = [];
+        for (const [attrName, attrVal] of Object.entries(entry.attributes)) {
+          const vals = Array.isArray(attrVal) ? attrVal : [attrVal];
+          const valSet = vals.flatMap(v => encodeOctetString(v));
+          const valSetBer = berTLV_s(0x31, valSet);
+          const attrSeq = berSequence_s([...encodeOctetString(attrName), ...valSetBer]);
+          attrListBytes.push(...attrSeq);
+        }
+
+        const addBody = [...encodeOctetString(entry.dn), ...berSequence_s(attrListBytes)];
+        const addReq = ldapsMessage(2, berTLV_s(0x68, addBody));
+        await writer.write(addReq);
+
+        const respData = await readLDAPResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const result = parseLDAPSResult(respData, 0x69);
+
+        const unbindReq = ldapsMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return { success: result.success, host, port, dn: entry.dn, resultCode: result.resultCode, message: result.message, rtt };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Add failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle LDAPS Modify (Modify entry over TLS)
+ */
+export async function handleLDAPSModify(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDN: string; password: string;
+      dn: string;
+      changes: Array<{ operation: 'add' | 'replace' | 'delete'; attribute: string; values: string[] }>;
+      timeout?: number;
+    };
+
+    const { host, port = 636, bindDN, password, dn, changes, timeout = 10000 } = body;
+
+    if (!host || !bindDN || !dn || !changes) {
+      return new Response(JSON.stringify({ success: false, error: 'host, bindDN, dn, and changes are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapsTLSBind(host, port, bindDN, password, timeout);
+
+      try {
+        const opCodes: Record<string, number> = { add: 0, delete: 1, replace: 2 };
+        const changesBytes: number[] = [];
+        for (const change of changes) {
+          const opCode = opCodes[change.operation] ?? 0;
+          const valSet = change.values.flatMap(v => encodeOctetString(v));
+          const partialAttr = berSequence_s([
+            ...encodeOctetString(change.attribute),
+            ...berTLV_s(0x31, valSet),
+          ]);
+          changesBytes.push(...berSequence_s([...berEnumerated_s(opCode), ...partialAttr]));
+        }
+
+        const modBody = [...encodeOctetString(dn), ...berSequence_s(changesBytes)];
+        const modReq = ldapsMessage(2, berTLV_s(0x66, modBody));
+        await writer.write(modReq);
+
+        const respData = await readLDAPResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const result = parseLDAPSResult(respData, 0x67);
+
+        const unbindReq = ldapsMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return { success: result.success, host, port, dn, resultCode: result.resultCode, message: result.message, rtt };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Modify failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle LDAPS Delete (Delete entry over TLS)
+ */
+export async function handleLDAPSDelete(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bindDN: string; password: string;
+      dn: string; timeout?: number;
+    };
+
+    const { host, port = 636, bindDN, password, dn, timeout = 10000 } = body;
+
+    if (!host || !bindDN || !dn) {
+      return new Response(JSON.stringify({ success: false, error: 'host, bindDN, and dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapsTLSBind(host, port, bindDN, password, timeout);
+
+      try {
+        const dnBytes = Array.from(new TextEncoder().encode(dn));
+        const delReq = ldapsMessage(2, berTLV_s(0x4a, dnBytes));
+        await writer.write(delReq);
+
+        const respData = await readLDAPResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const result = parseLDAPSResult(respData, 0x6b);
+
+        const unbindReq = ldapsMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return { success: result.success, host, port, dn, resultCode: result.resultCode, message: result.message, rtt };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, error: error instanceof Error ? error.message : 'Delete failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
 /**
  * Handle LDAPS Search (Search over TLS)
  */

@@ -435,3 +435,183 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
     });
   }
 }
+
+interface SpamdTellRequest {
+  host: string;
+  port?: number;
+  message: string;
+  messageType?: 'spam' | 'ham';
+  action?: 'learn' | 'forget';
+  timeout?: number;
+}
+
+interface SpamdTellResponse {
+  success: boolean;
+  host?: string;
+  port?: number;
+  messageType?: string;
+  action?: string;
+  didSet?: boolean;
+  didRemove?: boolean;
+  rtt?: number;
+  error?: string;
+}
+
+/**
+ * TELL — Teach SpamAssassin to recognize spam or ham (learn/forget)
+ * Uses the SPAMD TELL command to update Bayes database
+ */
+export async function handleSpamdTell(request: Request): Promise<Response> {
+  try {
+    const body = await request.json() as SpamdTellRequest;
+    const { host, port = 783, message, messageType = 'spam', action = 'learn', timeout = 30000 } = body;
+
+    if (!host) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Host is required',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!message) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Message content is required',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (messageType !== 'spam' && messageType !== 'ham') {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'messageType must be "spam" or "ham"',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (action !== 'learn' && action !== 'forget') {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'action must be "learn" or "forget"',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Size limit: 512KB
+    if (message.length > 524288) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Message too large (max 512KB)',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const startTime = Date.now();
+    const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Build TELL request
+      const messageBytes = new TextEncoder().encode(message);
+      const actionHeader = action === 'learn' ? 'Set: local\r\n' : 'Remove: local\r\n';
+      const requestText =
+        `TELL SPAMC/${SPAMC_VERSION}\r\n` +
+        `Content-length: ${messageBytes.length}\r\n` +
+        `Message-class: ${messageType}\r\n` +
+        actionHeader +
+        `\r\n`;
+
+      await writer.write(new TextEncoder().encode(requestText));
+      await writer.write(messageBytes);
+
+      // Read response
+      const responseText = await readSpamdResponse(reader, timeout);
+      const rtt = Date.now() - startTime;
+
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Parse response status line
+      const firstLine = responseText.split('\r\n')[0];
+      const parsed = parseResponseLine(firstLine);
+
+      if (!parsed || parsed.code !== 0) {
+        return new Response(JSON.stringify({
+          success: false,
+          host,
+          port,
+          messageType,
+          action,
+          error: `TELL failed: ${firstLine}`,
+          rtt,
+        } satisfies SpamdTellResponse), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Parse DidSet/DidRemove from response headers
+      const didSet = /DidSet:\s*local/i.test(responseText);
+      const didRemove = /DidRemove:\s*local/i.test(responseText);
+
+      const result: SpamdTellResponse = {
+        success: true,
+        host,
+        port,
+        messageType,
+        action,
+        didSet,
+        didRemove,
+        rtt,
+      };
+
+      return new Response(JSON.stringify(result), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    } satisfies SpamdTellResponse), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}

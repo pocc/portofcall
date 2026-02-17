@@ -361,3 +361,178 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
     );
   }
 }
+
+/**
+ * Handle Beanstalkd put — enqueue a job into a tube
+ * POST /api/beanstalkd/put
+ */
+export async function handleBeanstalkdPut(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; tube?: string;
+      payload: string; priority?: number; delay?: number; ttr?: number;
+      timeout?: number;
+    };
+    const { host, port = 11300, tube = 'default', payload, timeout = 8000 } = body;
+    const priority = body.priority ?? 1024;
+    const delay = body.delay ?? 0;
+    const ttr = body.ttr ?? 60;
+
+    if (!host || !payload) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, payload' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const enc = new TextEncoder();
+    const socket = connect(`${host}:${port}`);
+    try {
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        if (tube !== 'default') {
+          await writer.write(enc.encode(`use ${tube}\r\n`));
+          const useResp = await readBeanstalkdResponse(reader, timeout);
+          if (!useResp.startsWith(`USING ${tube}`)) {
+            return new Response(JSON.stringify({
+              success: false, host, port, error: `USE failed: ${useResp}`,
+            }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+
+        const jobData = enc.encode(payload);
+        await writer.write(enc.encode(`put ${priority} ${delay} ${ttr} ${jobData.length}\r\n`));
+        await writer.write(jobData);
+        await writer.write(enc.encode('\r\n'));
+        const putResp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+
+        const inserted = putResp.startsWith('INSERTED ');
+        const buried = putResp.startsWith('BURIED ');
+        const idPart = putResp.split(/\s+/)[1];
+        const jobId = (inserted || buried) && idPart ? parseInt(idPart) : undefined;
+
+        return new Response(JSON.stringify({
+          success: inserted || buried,
+          host, port, tube, rtt, jobId,
+          status: putResp.split('\r\n')[0] || putResp,
+          message: inserted
+            ? `Job ${jobId} inserted into tube '${tube}'`
+            : buried ? `Job ${jobId} buried (tube full)` : putResp,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd put failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Beanstalkd reserve — dequeue the next ready job from a tube
+ * POST /api/beanstalkd/reserve
+ */
+export async function handleBeanstalkdReserve(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; tube?: string;
+      reserveTimeout?: number; timeout?: number;
+    };
+    const { host, port = 11300, tube = 'default', timeout = 12000 } = body;
+    const reserveTimeout = body.reserveTimeout ?? 2;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const enc = new TextEncoder();
+    const socket = connect(`${host}:${port}`);
+    try {
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        if (tube !== 'default') {
+          await writer.write(enc.encode(`watch ${tube}\r\n`));
+          const watchResp = await readBeanstalkdResponse(reader, timeout);
+          if (!watchResp.startsWith('WATCHING')) {
+            return new Response(JSON.stringify({
+              success: false, host, port, error: `WATCH failed: ${watchResp}`,
+            }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+
+        await writer.write(enc.encode(`reserve-with-timeout ${reserveTimeout}\r\n`));
+        const resp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+
+        if (resp.startsWith('TIMED_OUT')) {
+          return new Response(JSON.stringify({
+            success: true, host, port, tube, rtt,
+            status: 'TIMED_OUT', message: 'No jobs ready in tube within timeout',
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        if (resp.startsWith('RESERVED ')) {
+          const headerEnd = resp.indexOf('\r\n');
+          const header = headerEnd >= 0 ? resp.substring(0, headerEnd) : resp;
+          const parts = header.split(' ');
+          const jobId = parseInt(parts[1] || '0');
+          const jobBytes = parseInt(parts[2] || '0');
+          const jobData = headerEnd >= 0 ? resp.substring(headerEnd + 2).trim() : '';
+          return new Response(JSON.stringify({
+            success: true, host, port, tube, rtt,
+            status: 'RESERVED', jobId, jobBytes,
+            payload: jobData,
+            message: `Reserved job ${jobId} (${jobBytes} bytes) from tube '${tube}'`,
+          }), { headers: { 'Content-Type': 'application/json' } });
+        }
+
+        return new Response(JSON.stringify({
+          success: false, host, port, tube, rtt,
+          status: resp, message: `Unexpected response: ${resp}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd reserve failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}

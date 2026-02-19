@@ -6,6 +6,17 @@ This directory contains individual changelog files for all protocols reviewed in
 
 **✅ COMPLETE:** All 151 protocol changelogs have been extracted and documented.
 
+## Recent Additions (2026-02-19)
+
+- [submission.md](./submission.md) - Message Submission review
+- [tcp.md](./tcp.md) - Raw TCP review
+- [tftp.md](./tftp.md) - TFTP-over-TCP review
+- [torcontrol.md](./torcontrol.md) - Tor control protocol review
+- [uwsgi.md](./uwsgi.md) - uWSGI review
+- [varnish.md](./varnish.md) - Varnish CLI review
+- [ymsg.md](./ymsg.md) - YMSG review
+
+
 ## Protocol Files
 
 All protocol changelog files are available in this directory. Each file follows a consistent format with:

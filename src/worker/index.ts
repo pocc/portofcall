@@ -267,7 +267,7 @@ import { handleMSNProbe, handleMSNClientVersion, handleMSNLogin, handleMSNMD5Log
 import { handleYMSGProbe, handleYMSGVersionDetect, handleYMSGAuth, handleYMSGLogin } from './ymsg';
 import { handleOSCARProbe, handleOSCARPing, handleOSCARAuth, handleOSCARLogin, handleOSCARSendIM, handleOSCARBuddyList } from './oscar';
 import { handleJabberComponentProbe, handleJabberComponentHandshake, handleJabberComponentSend, handleJabberComponentRoster } from './jabber-component';
-import { handleMMSProbe, handleMMSDescribe } from './mms';
+import { handleMMSProbe, handleMMSNameList, handleMMSRead, handleMMSDescribe } from './mms';
 import { handleRealAudioProbe, handleRealAudioDescribe, handleRealAudioSetup, handleRealAudioSession } from './realaudio';
 import { handleShoutCastProbe, handleShoutCastInfo, handleSHOUTcastAdmin, handleSHOUTcastSource } from './shoutcast';
 import { handleMumbleProbe, handleMumbleVersion, handleMumblePing, handleMumbleAuth, handleMumbleTextMessage } from './mumble';
@@ -291,6 +291,181 @@ import { handleSCPConnect, handleSCPList, handleSCPGet, handleSCPPut } from './s
 import { handleSPDYConnect, handleSPDYH2Probe } from './spdy';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
+const ROUTER_CLOUDFLARE_GUARD_PROTOCOLS = new Set([
+  'activeusers',
+  'afp',
+  'ami',
+  'battlenet',
+  'beats',
+  'chargen',
+  'daytime',
+  'dicom',
+  'discard',
+  'dot',
+  'echo',
+  'elasticsearch',
+  'epmd',
+  'epp',
+  'etcd',
+  'finger',
+  'gemini',
+  'gopher',
+  'h323',
+  'hsrp',
+  'ident',
+  'ike',
+  'influxdb',
+  'informix',
+  'ipp',
+  'jabber-component',
+  'jsonrpc',
+  'l2tp',
+  'matrix',
+  'mdns',
+  'mgcp',
+  'mpd',
+  'msn',
+  'msrp',
+  'napster',
+  'ninep',
+  'nntp',
+  'nsca',
+  'oscar',
+  'portmapper',
+  'qotd',
+  'radsec',
+  'rcon',
+  'realaudio',
+  'rip',
+  'sccp',
+  'sentinel',
+  'shoutcast',
+  'sip',
+  'sips',
+  'snpp',
+  'soap',
+  'socks4',
+  'spamd',
+  'stomp',
+  'svn',
+  'sybase',
+  'syslog',
+  'teamspeak',
+  'tftp',
+  'time',
+  'turn',
+  'varnish',
+  'ventrilo',
+  'x11',
+  'xmpp-s2s',
+  'xmpps2s',
+  'ymsg',
+  'zabbix',
+]);
+
+function getProtocolFromApiPath(pathname: string): string | null {
+  if (!pathname.startsWith('/api/')) {
+    return null;
+  }
+
+  const parts = pathname.split('/');
+  if (parts.length < 3 || !parts[2]) {
+    return null;
+  }
+
+  return parts[2];
+}
+
+function shouldRunRouterCloudflareGuard(pathname: string): boolean {
+  if (pathname === '/api/connect') {
+    return true;
+  }
+
+  const protocol = getProtocolFromApiPath(pathname);
+  return protocol !== null && ROUTER_CLOUDFLARE_GUARD_PROTOCOLS.has(protocol);
+}
+
+function normalizeHost(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const host = value.trim();
+  return host.length > 0 ? host : null;
+}
+
+function isValidPort(value: unknown): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535;
+}
+
+async function parseGuardBody(request: Request): Promise<Record<string, unknown> | null> {
+  try {
+    const body = await request.clone().json<Record<string, unknown>>();
+    if (body && typeof body === 'object') {
+      return body;
+    }
+  } catch {
+    // No JSON body; skip.
+  }
+
+  return null;
+}
+
+function shouldDeferCloudflareGuard(protocol: string | null, body: Record<string, unknown> | null): boolean {
+  if (!body) {
+    return false;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(body, 'port') && !isValidPort(body.port)) {
+    return true;
+  }
+
+  if (protocol === 'ident') {
+    if (!isValidPort(body.serverPort) || !isValidPort(body.clientPort)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function maybeBlockCloudflareTarget(request: Request, url: URL): Promise<Response | null> {
+  if (!shouldRunRouterCloudflareGuard(url.pathname)) {
+    return null;
+  }
+
+  const protocol = getProtocolFromApiPath(url.pathname);
+  const body = await parseGuardBody(request);
+
+  if (shouldDeferCloudflareGuard(protocol, body)) {
+    return null;
+  }
+
+  const host = normalizeHost(url.searchParams.get('host') ?? url.searchParams.get('hostname'))
+    ?? normalizeHost(body?.host)
+    ?? normalizeHost(body?.hostname);
+
+  if (!host) {
+    return null;
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (!cfCheck.isCloudflare || !cfCheck.ip) {
+    return null;
+  }
+
+  const status = protocol === 'etcd' ? 503 : 403;
+
+  return new Response(JSON.stringify({
+    success: false,
+    error: getCloudflareErrorMessage(host, cfCheck.ip),
+    isCloudflare: true,
+  }), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 export interface Env {
   ENVIRONMENT: string;
   ASSETS: Fetcher;
@@ -299,6 +474,11 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    const cloudflareGuardResponse = await maybeBlockCloudflareTarget(request, url);
+    if (cloudflareGuardResponse) {
+      return cloudflareGuardResponse;
+    }
 
     // API endpoint for TCP ping
     if (url.pathname === '/api/ping') {
@@ -624,7 +804,7 @@ export default {
       return handleSSHConnect(request);
     }
 
-    if (url.pathname === '/api/ssh/execute') {
+    if (url.pathname === '/api/ssh/exec') {
       return handleSSHExecute(request);
     }
 
@@ -1655,7 +1835,7 @@ export default {
     }
 
     // WebSocket API endpoint
-    if (url.pathname === '/api/websocket/probe') {
+    if (url.pathname === '/api/websocket/probe' || url.pathname === '/api/websocket') {
       return handleWebSocketProbe(request);
     }
 
@@ -2514,7 +2694,7 @@ export default {
       return handleIEC104Probe(request);
     }
 
-    if (url.pathname === '/api/iec104/read') {
+    if (url.pathname === '/api/iec104/read' || url.pathname === '/api/iec104/read-data') {
       return handleIEC104ReadData(request);
     }
     if (url.pathname === '/api/iec104/write') {
@@ -3260,11 +3440,11 @@ export default {
       return handleGrafanaDashboard(request);
     }
 
-    if (url.pathname === '/api/grafana/dashboard-create') {
+    if (url.pathname === '/api/grafana/dashboard-create' || url.pathname === '/api/grafana/dashboard/create') {
       return handleGrafanaDashboardCreate(request);
     }
 
-    if (url.pathname === '/api/grafana/annotation') {
+    if (url.pathname === '/api/grafana/annotation' || url.pathname === '/api/grafana/annotation/create') {
       return handleGrafanaAnnotationCreate(request);
     }
 
@@ -3747,6 +3927,14 @@ export default {
     // MMS (Microsoft Media Server) API endpoints
     if (url.pathname === '/api/mms/probe') {
       return handleMMSProbe(request);
+    }
+
+    if (url.pathname === '/api/mms/namelist') {
+      return handleMMSNameList(request);
+    }
+
+    if (url.pathname === '/api/mms/read') {
+      return handleMMSRead(request);
     }
 
     if (url.pathname === '/api/mms/describe') {

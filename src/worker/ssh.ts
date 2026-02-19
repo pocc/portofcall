@@ -6,6 +6,7 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 export { handleSSHTerminal } from './ssh2-impl';
+import { openSSHSubsystem, type SSHTerminalOptions } from './ssh2-impl';
 
 /**
  * SSH Authentication Methods
@@ -224,16 +225,207 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 }
 
 /**
- * Handle SSH command execution (simplified for testing)
+ * Handle SSH command execution via exec channel
+ * POST /api/ssh/exec
+ *
+ * Body: {
+ *   host: string,
+ *   port?: number,
+ *   username: string,
+ *   authMethod: 'password' | 'privateKey',
+ *   password?: string,
+ *   privateKey?: string,
+ *   passphrase?: string,
+ *   command?: string,   // Single command to execute
+ *   script?: string,    // Multi-line bash script
+ *   timeout?: number    // Execution timeout in ms (default: 30000)
+ * }
  */
-export async function handleSSHExecute(_request: Request): Promise<Response> {
-  return new Response(JSON.stringify({
-    error: 'SSH command execution requires WebSocket tunnel',
-    message: 'Use WebSocket connection for interactive SSH sessions. This endpoint is for testing connectivity only.',
-  }), {
-    status: 501,
-    headers: { 'Content-Type': 'application/json' },
-  });
+export async function handleSSHExecute(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const startTime = Date.now();
+  let socket: ReturnType<typeof connect> | null = null;
+  let subsystem: Awaited<ReturnType<typeof openSSHSubsystem>> | null = null;
+
+  try {
+    const body = await request.json() as {
+      host?: string;
+      port?: number;
+      username?: string;
+      authMethod?: 'password' | 'privateKey';
+      password?: string;
+      privateKey?: string;
+      passphrase?: string;
+      command?: string;
+      script?: string;
+      timeout?: number;
+    };
+
+    // Validate required fields
+    if (!body.host) {
+      return new Response(JSON.stringify({ error: 'Missing required field: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!body.username) {
+      return new Response(JSON.stringify({ error: 'Missing required field: username' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Auto-detect auth method based on provided credentials if not explicitly specified
+    let authMethod: 'password' | 'privateKey';
+    if (body.authMethod) {
+      authMethod = body.authMethod;
+    } else if (body.privateKey) {
+      authMethod = 'privateKey';
+    } else if (body.password) {
+      authMethod = 'password';
+    } else {
+      return new Response(JSON.stringify({ error: 'Either password or privateKey must be provided' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate credentials match auth method
+    if (authMethod === 'password' && !body.password) {
+      return new Response(JSON.stringify({ error: 'Password required for password authentication' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (authMethod === 'privateKey' && !body.privateKey) {
+      return new Response(JSON.stringify({ error: 'Private key required for publickey authentication' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Get command/script to execute
+    const commandToExec = body.command || body.script;
+    if (!commandToExec) {
+      return new Response(JSON.stringify({ error: 'Missing required field: command or script' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const host = body.host;
+    const port = body.port || 22;
+    const timeout = Math.min(body.timeout || 30000, 120000); // Max 2 minutes
+
+    // Check if target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Open TCP socket
+    socket = connect(`${host}:${port}`);
+    await socket.opened;
+
+    // Build SSH options
+    const sshOpts: SSHTerminalOptions = {
+      host,
+      port,
+      username: body.username,
+      authMethod,
+      password: body.password,
+      privateKey: body.privateKey,
+      passphrase: body.passphrase,
+    };
+
+    // Open SSH subsystem with exec channel
+    subsystem = await openSSHSubsystem(socket, sshOpts, commandToExec, true);
+
+    // Read all output until EOF or timeout
+    const chunks: Uint8Array[] = [];
+    const deadline = Date.now() + timeout;
+
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error('Command execution timeout');
+      }
+
+      // Race between readChannelData and timeout
+      const timeoutPromise = new Promise<null>((resolve) =>
+        setTimeout(() => resolve(null), remaining)
+      );
+
+      const chunk = await Promise.race([
+        subsystem.readChannelData(),
+        timeoutPromise,
+      ]);
+
+      if (chunk === null) {
+        break; // EOF or timeout
+      }
+
+      chunks.push(chunk);
+    }
+
+    // Combine all chunks
+    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+    const output = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      output.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const stdout = new TextDecoder().decode(output);
+    const executionTime = Date.now() - startTime;
+
+    await subsystem.close();
+
+    return new Response(JSON.stringify({
+      success: true,
+      stdout,
+      stderr: '', // SSH exec channel doesn't separate stderr by default
+      executionTime,
+      colo: request.cf?.colo || 'unknown',
+      note: 'SSH exec channel combines stdout and stderr. Use pty-req for separate streams.',
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  } catch (error) {
+    if (subsystem) {
+      try { await subsystem.close(); } catch { /* ignore */ }
+    }
+    if (socket) {
+      try { await socket.close(); } catch { /* ignore */ }
+    }
+
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      executionTime: Date.now() - startTime,
+      colo: request.cf?.colo || 'unknown',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 }
 
 /**

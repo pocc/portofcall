@@ -23,6 +23,16 @@ Plans are organized by category and numbered by priority.
 - [DNS.md](./DNS.md) - DNS queries over TCP (debugging tool)
 - [MEMCACHED.md](./MEMCACHED.md) - Distributed caching (text protocol)
 
+**Newly Added Docs (2026-02-19):**
+- [SUBMISSION.md](./SUBMISSION.md) - SMTP Submission (port 587, STARTTLS workflow)
+- [TCP.md](./TCP.md) - Raw TCP send/receive diagnostics endpoint
+- [TFTP.md](./TFTP.md) - TFTP-over-TCP experimental implementation (Worker-compatible, non-standard)
+- [TORCONTROL.md](./TORCONTROL.md) - Tor control protocol (probe/getinfo/signal)
+- [UWSGI.md](./UWSGI.md) - uWSGI binary wire protocol
+- [VARNISH.md](./VARNISH.md) - Varnish CLI administration protocol
+- [YMSG.md](./YMSG.md) - Yahoo Messenger legacy protocol tooling
+
+
 **Databases (High Priority)**:
 - [REDIS.md](./REDIS.md) - Redis database client (text protocol, high value)
 - [MYSQL.md](./MYSQL.md) - MySQL database client (binary protocol, popular)
@@ -93,7 +103,7 @@ Plans are organized by category and numbered by priority.
 - [FTPS.md](./FTPS.md) - FTP over SSL/TLS (encrypted file transfer, ports 21/990)
 - [SFTP.md](./SFTP.md) - SSH File Transfer Protocol (secure, modern)
 - [SCP.md](./SCP.md) - Secure Copy Protocol (simple SSH-based file copy, port 22)
-- [TFTP.md](./non-tcp/TFTP.md) ⚠️ UDP - Trivial File Transfer Protocol (simple UDP-based)
+- [TFTP.md](./non-tcp/TFTP.md) ⚠️ UDP - Trivial File Transfer Protocol (standard RFC 1350 transport)
 - [GIT.md](./GIT.md) - Git protocol client (repository browsing)
 - [RSYNC.md](./RSYNC.md) - Rsync file synchronization (delta-transfer algorithm)
 - [NFS.md](./NFS.md) - Network File System (Unix/Linux file sharing, port 2049)

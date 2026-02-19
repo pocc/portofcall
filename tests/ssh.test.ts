@@ -79,20 +79,75 @@ describe('SSH Protocol Integration Tests', () => {
   });
 
   describe('SSH Execute Endpoint', () => {
-    it('should return 501 Not Implemented', async () => {
-      const response = await fetch(`${SSH_BASE}/execute`, {
+    it('should require POST method', async () => {
+      const response = await fetch(`${SSH_BASE}/exec`);
+      expect(response.status).toBe(405);
+      const data = await response.json();
+      expect(data.error).toContain('Method not allowed');
+    });
+
+    it('should require host parameter', async () => {
+      const response = await fetch(`${SSH_BASE}/exec`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: SSH_CONFIG.host,
+          username: 'root',
+          password: 'test',
           command: 'ls',
         }),
       });
 
-      expect(response.status).toBe(501);
+      expect(response.status).toBe(400);
       const data = await response.json();
-      expect(data.error).toBeDefined();
-      expect(data.message).toContain('WebSocket');
+      expect(data.error).toContain('host');
+    });
+
+    it('should require username parameter', async () => {
+      const response = await fetch(`${SSH_BASE}/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: SSH_CONFIG.host,
+          password: 'test',
+          command: 'ls',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('username');
+    });
+
+    it('should require authentication credentials', async () => {
+      const response = await fetch(`${SSH_BASE}/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: SSH_CONFIG.host,
+          username: 'root',
+          command: 'ls',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('password or privateKey');
+    });
+
+    it('should require command parameter', async () => {
+      const response = await fetch(`${SSH_BASE}/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: SSH_CONFIG.host,
+          username: 'root',
+          password: 'test',
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const data = await response.json();
+      expect(data.error).toContain('command');
     });
   });
 

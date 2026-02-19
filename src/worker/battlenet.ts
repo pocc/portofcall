@@ -337,6 +337,12 @@ export async function handleBattlenetConnect(request: Request): Promise<Response
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    // Validate protocol ID (0x01 = BNCS Game, 0x02 = BNFTP, 0x03 = BNCS Chat)
+    if (protocolId < 1 || protocolId > 3) {
+      return new Response(JSON.stringify({ success: false, error: 'Protocol ID must be between 1 and 3 (0x01=Game, 0x02=BNFTP, 0x03=Chat)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const socket = connect(`${host}:${port}`);
     const deadline = new Promise<never>((_, reject) =>
@@ -378,10 +384,20 @@ export async function handleBattlenetConnect(request: Request): Promise<Response
         reader.releaseLock();
         writer.releaseLock();
       }
+    } catch (error) {
+      // Connection errors (timeout, unreachable host) return 200 with success:false
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        protocolId,
+        error: error instanceof Error ? error.message : 'Connection failed',
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } finally {
       try { await socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
+    // JSON parsing errors and other request errors return 500
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Request processing failed',

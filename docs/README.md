@@ -198,6 +198,391 @@ docs/
     └── non-tcp/                 # Non-TCP protocols (27 files)
 ```
 
+## 📋 TODO: Documentation Cleanup & Protocol Reviews
+
+### ✅ Priority 1: Fix Alternate Spec Files (142 files) - COMPLETE
+
+**Issue:** All uppercase protocol spec files (e.g., `POSTGRES.md`) were duplicates of lowercase reviewed protocols (e.g., `postgres`). These needed to be converted to redirect stubs.
+
+**Status:** ✅ **COMPLETED** - 142 files converted to redirect stubs
+- **Lines removed:** 78,077 lines of duplicate content
+- **Lines added:** 554 lines (minimal stubs)
+- **Net reduction:** 77,523 lines
+- **Result:** Each uppercase file now redirects to `../changelog/by-protocol/[lowercase-name].md`
+
+<details>
+<summary>Original action plan (click to expand)</summary>
+
+**Action Required:** Convert these uppercase files to stubs that redirect to the canonical lowercase version:
+
+<details>
+<summary>Click to expand full list of 140 alternate spec files to convert</summary>
+
+Each file should be replaced with a stub like:
+```markdown
+# [Protocol Name]
+
+This is an alternate spelling/casing of the protocol specification.
+
+**Canonical specification:** See [protocol-name](PROTOCOL-NAME.md) (lowercase)
+
+This file is kept for backwards compatibility with existing links.
+```
+
+**Files to convert:**
+- 9P.md → redirect to protocols/9p.md
+- AFP.md → redirect to protocols/afp.md
+- AJP.md → redirect to protocols/ajp.md
+- AMQP.md → redirect to protocols/amqp.md
+- AMQPS.md → redirect to protocols/amqps.md
+- BEATS.md → redirect to protocols/beats.md
+- BGP.md → redirect to protocols/bgp.md
+- BITCOIN.md → redirect to protocols/bitcoin.md
+- BITTORRENT.md → redirect to protocols/bittorrent.md
+- CASSANDRA.md → redirect to protocols/cassandra.md
+- CIFS.md → redirect to protocols/cifs.md
+- COAP.md → redirect to protocols/coap.md
+- DIAMETER.md → redirect to protocols/diameter.md
+- DICOM.md → redirect to protocols/dicom.md
+- DNS.md → redirect to protocols/dns.md
+- DOCKER.md → redirect to protocols/docker.md
+- DOH.md → redirect to protocols/doh.md
+- DOT.md → redirect to protocols/dot.md
+- DRDA.md → redirect to protocols/drda.md
+- ECHO.md → redirect to protocols/echo.md
+- ELASTICSEARCH.md → redirect to protocols/elasticsearch.md
+- ETCD.md → redirect to protocols/etcd.md
+- FASTCGI.md → redirect to protocols/fastcgi.md
+- FINGER.md → redirect to protocols/finger.md
+- FLUENTD.md → redirect to protocols/fluentd.md
+- FTP.md → redirect to protocols/ftp.md
+- GOPHER.md → redirect to protocols/gopher.md
+- GRAPHITE.md → redirect to protocols/graphite.md
+- H323.md → redirect to protocols/h323.md
+- HAZELCAST.md → redirect to protocols/hazelcast.md
+- IMAP.md → redirect to protocols/imap.md
+- INFLUXDB.md → redirect to protocols/influxdb.md
+- IPMI.md → redirect to protocols/ipmi.md
+- IRC.md → redirect to protocols/irc.md
+- IRCS.md → redirect to protocols/ircs.md
+- ISCSI.md → redirect to protocols/iscsi.md
+- JETDIRECT.md → redirect to protocols/jetdirect.md
+- KAFKA.md → redirect to protocols/kafka.md
+- KERBEROS.md → redirect to protocols/kerberos.md
+- KIBANA.md → redirect to protocols/kibana.md
+- KUBERNETES.md → redirect to protocols/kubernetes.md
+- LDAP.md → redirect to protocols/ldap.md
+- LDAPS.md → redirect to protocols/ldaps.md
+- LIVESTATUS.md → redirect to protocols/livestatus.md
+- LMTP.md → redirect to protocols/lmtp.md
+- MANAGESIEVE.md → redirect to protocols/managesieve.md
+- MATRIX.md → redirect to protocols/matrix.md
+- MDNS.md → redirect to protocols/mdns.md
+- MEMCACHED.md → redirect to protocols/memcached.md
+- MINECRAFT.md → redirect to protocols/minecraft.md
+- MONGODB.md → redirect to protocols/mongodb.md
+- MPD.md → redirect to protocols/mpd.md
+- MQTT.md → redirect to protocols/mqtt.md
+- MSN.md → redirect to protocols/msn.md
+- MSRP.md → redirect to protocols/msrp.md
+- MUMBLE.md → redirect to protocols/mumble.md
+- MYSQL.md → redirect to protocols/mysql.md
+- NAPSTER.md → redirect to protocols/napster.md
+- NATS.md → redirect to protocols/nats.md
+- NBD.md → redirect to protocols/nbd.md
+- NEO4J.md → redirect to protocols/neo4j.md
+- NETBIOS.md → redirect to protocols/netbios.md
+- NFS.md → redirect to protocols/nfs.md
+- NNTP.md → redirect to protocols/nntp.md
+- NODE-INSPECTOR.md → redirect to protocols/node-inspector.md
+- NRPE.md → redirect to protocols/nrpe.md
+- NSCA.md → redirect to protocols/nsca.md
+- NTP.md → redirect to protocols/ntp.md
+- Nomad.md → redirect to protocols/nomad.md
+- OPCUA.md → redirect to protocols/opcua.md
+- OPENFLOW.md → redirect to protocols/openflow.md
+- OPENTSDB.md → redirect to protocols/opentsdb.md
+- OPENVPN.md → redirect to protocols/openvpn.md
+- ORACLE-TNS.md → redirect to protocols/oracle-tns.md
+- OSCAR.md → redirect to protocols/oscar.md
+- PCEP.md → redirect to protocols/pcep.md
+- PERFORCE.md → redirect to protocols/perforce.md
+- PJLINK.md → redirect to protocols/pjlink.md
+- POP3.md → redirect to protocols/pop3.md
+- POP3S.md → redirect to protocols/pop3s.md
+- PORTMAPPER.md → redirect to protocols/portmapper.md
+- POSTGRES.md → redirect to protocols/postgres.md
+- PPTP.md → redirect to protocols/pptp.md
+- QOTD.md → redirect to protocols/qotd.md
+- QUAKE3.md → redirect to protocols/quake3.md
+- RABBITMQ.md → redirect to protocols/rabbitmq.md
+- RADIUS.md → redirect to protocols/radius.md
+- RADSEC.md → redirect to protocols/radsec.md
+- RCON.md → redirect to protocols/rcon.md
+- RDP.md → redirect to protocols/rdp.md
+- REALAUDIO.md → redirect to protocols/realaudio.md
+- REDIS.md → redirect to protocols/redis.md
+- RELP.md → redirect to protocols/relp.md
+- RETHINKDB.md → redirect to protocols/rethinkdb.md
+- REXEC.md → redirect to protocols/rexec.md
+- RIAK.md → redirect to protocols/riak.md
+- RIP.md → redirect to protocols/rip.md
+- RLOGIN.md → redirect to protocols/rlogin.md
+- RMI.md → redirect to protocols/rmi.md
+- RSERVE.md → redirect to protocols/rserve.md
+- RSH.md → redirect to protocols/rsh.md
+- RSYNC.md → redirect to protocols/rsync.md
+- RTMP.md → redirect to protocols/rtmp.md
+- RTSP.md → redirect to protocols/rtsp.md
+- SANE.md → redirect to protocols/sane.md
+- SCCP.md → redirect to protocols/sccp.md
+- SCP.md → redirect to protocols/scp.md
+- SENTINEL.md → redirect to protocols/sentinel.md
+- SFTP.md → redirect to protocols/sftp.md
+- SHADOWSOCKS.md → redirect to protocols/shadowsocks.md
+- SIP.md → redirect to protocols/sip.md
+- SLP.md → redirect to protocols/slp.md
+- SMB.md → redirect to protocols/smb.md
+- SMTP.md → redirect to protocols/smtp.md
+- SNMP.md → redirect to protocols/snmp.md
+- SNPP.md → redirect to protocols/snpp.md
+- SOCKS4.md → redirect to protocols/socks4.md
+- SOCKS5.md → redirect to protocols/socks5.md
+- SOLR.md → redirect to protocols/solr.md
+- SONIC.md → redirect to protocols/sonic.md
+- SPAMD.md → redirect to protocols/spamd.md
+- SPDY.md → redirect to protocols/spdy.md
+- SPICE.md → redirect to protocols/spice.md
+- SSH.md → redirect to protocols/ssh.md
+- STOMP.md → redirect to protocols/stomp.md
+- SVN.md → redirect to protocols/svn.md
+- SYBASE.md → redirect to protocols/sybase.md
+- SYSLOG.md → redirect to protocols/syslog.md
+- TACACS.md → redirect to protocols/tacacs.md
+- TDS.md → redirect to protocols/tds.md
+- TEAMSPEAK.md → redirect to protocols/teamspeak.md
+- TELNET.md → redirect to protocols/telnet.md
+- THRIFT.md → redirect to protocols/thrift.md
+- TURN.md → redirect to protocols/turn.md
+- UUCP.md → redirect to protocols/uucp.md
+- VAULT.md → redirect to protocols/vault.md
+- VNC.md → redirect to protocols/vnc.md
+- WHOIS.md → redirect to protocols/whois.md
+- WINRM.md → redirect to protocols/winrm.md
+- X11.md → redirect to protocols/x11.md
+- XMPP.md → redirect to protocols/xmpp.md
+- ZABBIX.md → redirect to protocols/zabbix.md
+- ZOOKEEPER.md → redirect to protocols/zookeeper.md
+
+</details>
+
+**Estimated effort:** 2-3 hours with script automation
+
+---
+
+### ✅ Priority 2: Resolve Alternate Spec Naming (4 protocols) - COMPLETE
+
+**Issue:** Some protocols had multiple specs with different names. Needed to consolidate and create redirects.
+
+**Status:** ✅ **COMPLETED** - All 4 conflicts resolved
+
+**Results:**
+1. ✅ **NINEP.md** → Redirect to `9p.md` (no unique content to merge)
+2. ✅ **POSTGRESQL.md** → Redirect to `postgres.md` (no unique content to merge)
+3. ✅ **TACACS+.md** → Redirect to `tacacs.md` (no unique content to merge)
+4. ✅ **ORACLE.md** → Redirect to `oracle-tns.md` (unique content merged successfully)
+
+<details>
+<summary>Original action plan (click to expand)</summary>
+
+**Action Required:**
+
+1. **NINEP.md vs 9P**
+   - ✅ Canonical: Use `9p.md` (already reviewed in changelog/by-protocol/9p.md)
+   - ❌ Make NINEP.md a redirect stub to 9p.md
+   - Merge any unique content from NINEP.md into 9p.md
+
+2. **POSTGRESQL.md vs POSTGRES.md**
+   - ✅ Canonical: Use `postgres.md` (already reviewed in changelog/by-protocol/postgres.md)
+   - ❌ Make POSTGRESQL.md a redirect stub to postgres.md
+   - Merge any unique content from POSTGRESQL.md into postgres.md
+
+3. **TACACS+.md vs TACACS.md**
+   - ✅ Canonical: Use `tacacs.md` (already reviewed in changelog/by-protocol/tacacs.md)
+   - ❌ Make TACACS+.md a redirect stub to tacacs.md
+   - Note: TACACS+ is the modern version, but we use lowercase filename
+
+4. **ORACLE.md vs ORACLE-TNS.md**
+   - ✅ Canonical: Use `oracle-tns.md` (already reviewed in changelog/by-protocol/oracle-tns.md)
+   - ❌ Make ORACLE.md a redirect stub to oracle-tns.md
+   - Oracle TNS is the wire protocol name
+
+**Estimated effort:** 30 minutes
+
+---
+
+### Priority 3: Not-Yet-Implemented Protocols (89 protocols)
+
+**Issue:** These protocols have specification files but no implementation in `src/worker/`. They need to be implemented before they can be reviewed.
+
+**Action Required:** Choose protocols to implement based on demand/priority. After implementation, follow the [ADD_PROTOCOL Guide](guides/ADD_PROTOCOL.md) and conduct code review.
+
+<details>
+<summary>Click to expand full list of 89 not-yet-implemented protocols</summary>
+
+**Messaging & Queues (3):**
+- [ ] ACTIVEMQ - Apache ActiveMQ messaging broker
+- [ ] BEANSTALKD - Beanstalkd work queue
+- [ ] GEARMAN - Gearman job server
+
+**Databases (10):**
+- [ ] AEROSPIKE - Aerospike NoSQL database
+- [ ] CLICKHOUSE - ClickHouse database
+- [ ] COUCHBASE - Couchbase NoSQL database
+- [ ] COUCHDB - Apache CouchDB database
+- [ ] FIREBIRD - Firebird SQL database
+- [ ] INFORMIX - Informix database
+- [ ] MAXDB - SAP MaxDB database
+- [ ] MEILISEARCH - Meilisearch search engine
+- [ ] TARANTOOL - Tarantool in-memory database
+
+**Monitoring & Observability (7):**
+- [ ] COLLECTD - Collectd monitoring daemon
+- [ ] GANGLIA - Ganglia monitoring system
+- [ ] GRAFANA - Grafana monitoring platform
+- [ ] LOKI - Grafana Loki log aggregation
+- [ ] MUNIN - Munin monitoring system
+- [ ] PROMETHEUS - Prometheus monitoring
+
+**DevOps & Infrastructure (7):**
+- [ ] CONSUL - HashiCorp Consul service discovery
+- [ ] CEPH - Ceph distributed storage
+- [ ] GIT - Git version control protocol
+- [ ] HAPROXY - HAProxy stats protocol
+- [ ] IGNITE - Apache Ignite in-memory computing
+- [ ] JUPYTER - Jupyter notebook protocol
+
+**Industrial/SCADA (7):**
+- [ ] CDP - Cisco Discovery Protocol
+- [ ] DNP3 - Distributed Network Protocol 3 (SCADA)
+- [ ] ETHERNETIP - EtherNet/IP industrial protocol
+- [ ] FINS - Omron FINS factory automation
+- [ ] IEC104 - IEC 60870-5-104 SCADA protocol
+- [ ] MODBUS - Modbus industrial protocol
+- [ ] S7COMM - Siemens S7 PLC protocol
+
+**Legacy/Simple Protocols (6):**
+- [ ] ACTIVEUSERS - RFC 866 Active Users Protocol
+- [ ] CHARGEN - RFC 864 Character Generator Protocol
+- [ ] DAYTIME - RFC 867 Daytime Protocol
+- [ ] DICT - Dictionary Server Protocol (RFC 2229)
+- [ ] DISCARD - RFC 863 Discard Protocol
+- [ ] IDENT - Identification Protocol (RFC 1413)
+- [ ] TIME - RFC 868 Time Protocol
+
+**Secure Protocol Variants (5):**
+- [ ] FTPS - FTP over TLS (explicit FTPS)
+- [ ] IMAPS - IMAP over TLS (implicit, port 993)
+- [ ] NNTPS - NNTP over TLS (implicit)
+- [ ] SIPS - SIP over TLS (secure SIP)
+- [ ] SMTPS - SMTP over TLS (implicit, port 465)
+
+**Web & HTTP (5):**
+- [ ] GRPC - gRPC (HTTP/2-based RPC)
+- [ ] HTTP - Hypertext Transfer Protocol
+- [ ] HTTP2 - HTTP/2
+- [ ] HTTPPROXY - HTTP proxy protocol
+- [ ] SOAP - Simple Object Access Protocol
+
+**Voice/Video/Streaming (4):**
+- [ ] ICECAST - Icecast streaming server
+- [ ] MGCP - Media Gateway Control Protocol
+- [ ] SHOUTCAST - Shoutcast streaming protocol
+- [ ] VENTRILO - Ventrilo voice chat
+
+**Network Protocols (8):**
+- [ ] HSRP - Hot Standby Router Protocol
+- [ ] IKE - Internet Key Exchange (IPsec)
+- [ ] L2TP - Layer 2 Tunneling Protocol
+- [ ] LDP - Label Distribution Protocol
+- [ ] LLMNR - Link-Local Multicast Name Resolution
+- [ ] SSDP - Simple Service Discovery Protocol
+- [ ] STUN - Session Traversal Utilities for NAT (already has spec, needs implementation)
+
+**Specialized Protocols (27):**
+- [ ] ADB - Android Debug Bridge
+- [ ] AMI - Asterisk Manager Interface
+- [ ] BATTLENET - Battle.net gaming protocol
+- [ ] CLAMAV - ClamAV antivirus daemon
+- [ ] CVS - Concurrent Versions System
+- [ ] DAP - Data Access Protocol
+- [ ] DCERPC - Distributed Computing Environment RPC
+- [ ] EPMD - Erlang Port Mapper Daemon
+- [ ] EPP - Extensible Provisioning Protocol
+- [ ] ETHEREUM - Ethereum blockchain protocol
+- [ ] GADUGADU - Gadu-Gadu instant messaging
+- [ ] GEMINI - Gemini protocol (alternative to HTTP)
+- [ ] GPSD - GPS daemon protocol
+- [ ] HL7 - Health Level 7 healthcare protocol
+- [ ] IPFS - InterPlanetary File System
+- [ ] IPP - Internet Printing Protocol
+- [ ] JABBER-COMPONENT - Jabber/XMPP component protocol
+- [ ] JDWP - Java Debug Wire Protocol
+- [ ] JSONRPC - JSON-RPC
+- [ ] LPD - Line Printer Daemon (RFC 1179)
+- [ ] LSP - Language Server Protocol
+- [ ] MINECRAFT_RCON - Minecraft Remote Console (distinct from RCON)
+- [ ] MMS - Manufacturing Message Specification
+- [ ] NSQ - NSQ messaging platform (has spec, needs implementation)
+- [ ] SMPP - Short Message Peer-to-Peer
+- [ ] SOURCE_RCON - Source Engine RCON (distinct from RCON)
+- [ ] WEBSOCKET - WebSocket Protocol
+- [ ] XMPP-S2S - XMPP Server-to-Server
+- [ ] ZMTP - ZeroMQ Message Transport Protocol
+
+</details>
+
+**Implementation Priority:**
+1. **High demand:** HTTP, HTTP2, GRPC, WEBSOCKET, GIT, PROMETHEUS
+2. **Security testing:** FTPS, IMAPS, SMTPS, NNTPS, SIPS (TLS variants)
+3. **Legacy/Educational:** CHARGEN, DAYTIME, DISCARD, TIME, IDENT
+4. **Industrial:** MODBUS, DNP3, S7COMM (high-value niche)
+5. **Modern databases:** CLICKHOUSE, COUCHBASE, MEILISEARCH
+
+**Estimated effort:** Varies by protocol complexity (1-8 hours each)
+
+---
+
+### ✅ Priority 4: Documentation-Only Files (5 files) - COMPLETE
+
+**Issue:** Non-protocol files were mixed in with protocol specifications.
+
+**Status:** ✅ **COMPLETED** - All 5 files handled appropriately
+
+**Actions Taken:**
+- ✅ **IMPLEMENTATION_GUIDE.md** - Moved to `guides/IMPLEMENTATION_GUIDE.md` (matches README links)
+- ✅ **QUICK_REFERENCE.md** - Kept in protocols/ (useful cheat sheet)
+- ✅ **README.md** - Kept in protocols/ (directory index)
+- ✅ **SUMMARY.md** - Deleted (redundant historical meta-documentation)
+- ✅ **SHOUTCAST_REVIEW.md** - Moved to `changelog/by-protocol/shoutcast.md`
+
+**Result:** protocols/ directory now contains only protocol specifications, plus README and QUICK_REFERENCE
+
+<details>
+<summary>Original action plan (click to expand)</summary>
+
+**Action Required:** Remove or relocate these non-protocol files from `protocols/`:
+
+- [x] IMPLEMENTATION_GUIDE.md - Moved to `guides/IMPLEMENTATION_GUIDE.md`
+- [x] QUICK_REFERENCE.md - Kept in protocols/ as it's a useful cheat sheet
+- [x] README.md - Kept as protocols/ directory index
+- [x] SUMMARY.md - Deleted (redundant)
+- [x] SHOUTCAST_REVIEW.md - Moved to `changelog/by-protocol/shoutcast.md`
+
+**Time taken:** 15 minutes
+
+---
+
 ## 🤝 Contributing
 
 To contribute to documentation:

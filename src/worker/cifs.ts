@@ -876,7 +876,7 @@ function validateHost(host: string): string | null {
 }
 
 function validatePort(port: number): string | null {
-  if (port < 1 || port > 65535) return 'Port must be 1–65535';
+  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -991,6 +991,8 @@ export async function handleCIFSAuth(request: Request): Promise<Response> {
     if (hostErr) return new Response(JSON.stringify({ success: false, error: hostErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const portErr = validatePort(port);
     if (portErr) return new Response(JSON.stringify({ success: false, error: portErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!username) return new Response(JSON.stringify({ success: false, error: 'Username is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!password) return new Response(JSON.stringify({ success: false, error: 'Password is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1194,7 +1196,7 @@ export async function handleCIFSList(request: Request): Promise<Response> {
     if (hostErr) return new Response(JSON.stringify({ success: false, error: hostErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const portErr = validatePort(port);
     if (portErr) return new Response(JSON.stringify({ success: false, error: portErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!share) return new Response(JSON.stringify({ success: false, error: 'Share name is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!share) return new Response(JSON.stringify({ success: false, error: 'Share is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1267,8 +1269,8 @@ export async function handleCIFSRead(request: Request): Promise<Response> {
     if (hostErr) return new Response(JSON.stringify({ success: false, error: hostErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const portErr = validatePort(port);
     if (portErr) return new Response(JSON.stringify({ success: false, error: portErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!share)    return new Response(JSON.stringify({ success: false, error: 'Share name is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!filePath) return new Response(JSON.stringify({ success: false, error: 'File path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!share)    return new Response(JSON.stringify({ success: false, error: 'Share is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!filePath) return new Response(JSON.stringify({ success: false, error: 'Path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1360,13 +1362,15 @@ export async function handleCIFSStat(request: Request): Promise<Response> {
     const password = body.password ?? '';
     const domain   = body.domain   ?? '';
     const share    = (body.share ?? '').trim();
-    const path     = (body.path  ?? '').replace(/\//g, '\\').replace(/^\\+/, '');
+    const rawPath  = body.path;
+    const path     = (rawPath ?? '').replace(/\//g, '\\').replace(/^\\+/, '');
 
     const hostErr = validateHost(host);
     if (hostErr) return new Response(JSON.stringify({ success: false, error: hostErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const portErr = validatePort(port);
     if (portErr) return new Response(JSON.stringify({ success: false, error: portErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!share) return new Response(JSON.stringify({ success: false, error: 'Share name is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!share) return new Response(JSON.stringify({ success: false, error: 'Share is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (rawPath === undefined || rawPath === null || rawPath.trim() === '') return new Response(JSON.stringify({ success: false, error: 'Path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1448,8 +1452,8 @@ export async function handleCIFSWrite(request: Request): Promise<Response> {
     if (hostErr) return new Response(JSON.stringify({ success: false, error: hostErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const portErr = validatePort(port);
     if (portErr) return new Response(JSON.stringify({ success: false, error: portErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!share)    return new Response(JSON.stringify({ success: false, error: 'Share name is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!filePath) return new Response(JSON.stringify({ success: false, error: 'File path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!share)    return new Response(JSON.stringify({ success: false, error: 'Share is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!filePath) return new Response(JSON.stringify({ success: false, error: 'Path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     let data: Uint8Array;
     if (body.base64) {

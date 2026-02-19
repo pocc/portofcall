@@ -50,7 +50,8 @@
 import { connect } from 'cloudflare:sockets';
 
 // Default OpenNap port (Napster's original was 8875/6699, OpenNap standardized on 8888)
-const DEFAULT_OPENNAP_PORT = 8888;
+// Using 6699 as default since it's the more common historical Napster port
+const DEFAULT_OPENNAP_PORT = 6699;
 
 // OpenNap binary protocol message types
 const OPENNAP_MSG = {
@@ -231,7 +232,7 @@ async function performLogin(
     buf = newBuf;
 
     const decoded = decodeOpenNapMessages(buf);
-    buf = decoded.remaining;
+    buf = decoded.remaining as Uint8Array<ArrayBuffer>;
 
     for (const msg of decoded.messages) {
       if (msg.type === OPENNAP_MSG.LOGIN_ACK) {
@@ -603,7 +604,7 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
       // If credentials provided, login first (required by most servers)
       if (username && password) {
         const loginResult = await performLogin(writer, reader, { username, password }, Math.min(timeout, 8000));
-        buf = loginResult.buf;
+        buf = loginResult.buf as Uint8Array<ArrayBuffer>;
 
         if (!loginResult.ok) {
           writer.releaseLock();
@@ -656,7 +657,7 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
         buf = newBuf;
 
         const decoded = decodeOpenNapMessages(buf);
-        buf = decoded.remaining;
+        buf = decoded.remaining as Uint8Array<ArrayBuffer>;
 
         let gotStats = false;
         for (const msg of decoded.messages) {

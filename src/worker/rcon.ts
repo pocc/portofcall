@@ -363,12 +363,12 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
       );
     }
 
-    // Max packet size is 4096, minus 14 bytes overhead = 4082 max body
-    if (command.length > 4082) {
+    // Minecraft/Source RCON command body limit (enforced by server-side parser)
+    if (command.length > 1446) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'Command too long (max 4082 bytes, RCON body limit)',
+          error: 'Command too long (max 1446 bytes, RCON body limit)',
         } satisfies RCONResponse),
         {
           status: 400,

@@ -793,115 +793,44 @@ export async function handleMySQLConnect(request: Request): Promise<Response> {
  * Accepts POST only. Requires host and query fields.
  */
 export async function handleMySQLQuery(request: Request): Promise<Response> {
-  try {
-    if (request.method !== 'POST') {
-      return new Response(
-        JSON.stringify({ error: 'Method not allowed' }),
-        { status: 405, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
+  // Check method
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({
+      error: 'Method not allowed'
+    }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
 
+  try {
     const options = (await request.json()) as Partial<MySQLQueryOptions>;
 
+    // Validate required parameters
     if (!options.host) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required parameter: host' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({
+        error: 'Missing required parameter: host'
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
-
-    if (!options.query) {
-      return new Response(
-        JSON.stringify({ error: 'Missing required parameter: query' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const host = options.host;
-    const port = options.port || 3306;
-    const username = options.username || 'root';
-    const password = options.password || '';
-    const database = options.database;
-    const query = options.query;
-    const timeoutMs = options.timeout || 30000;
 
     // Cloudflare check
-    const cfCheck = await checkIfCloudflare(host);
+    const cfCheck = await checkIfCloudflare(options.host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: getCloudflareErrorMessage(host, cfCheck.ip),
-          isCloudflare: true,
-        }),
-        { status: 403, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const queryPromise: Promise<Response> = (async () => {
-      const { handshake, resultSet } = await mysqlConnect(
-        host, port, username, password, database, query
-      );
-
-      if (!resultSet) {
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'No result set returned',
-          }),
-          { status: 500, headers: { 'Content-Type': 'application/json' } }
-        );
-      }
-
-      // Convert rows to array-of-objects keyed by column names
-      const columnNames = resultSet.columns.map((c) => c.name);
-      const rowObjects = resultSet.rows.map((row) => {
-        const obj: Record<string, string | null> = {};
-        columnNames.forEach((col, i) => {
-          obj[col] = row[i] ?? null;
-        });
-        return obj;
-      });
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          host,
-          port,
-          database: database || null,
-          serverVersion: handshake.serverVersion,
-          query,
-          columns: resultSet.columns,
-          rows: rowObjects,
-          rowCount: resultSet.rowCount,
-        }),
-        { headers: { 'Content-Type': 'application/json' } }
-      );
-    })();
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
-    );
-
-    try {
-      return await Promise.race([queryPromise, timeoutPromise]);
-    } catch (err) {
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: err instanceof Error ? err.message : 'Query failed',
-        }),
-        { status: 500, headers: { 'Content-Type': 'application/json' } }
-      );
-    }
-  } catch (error) {
-    return new Response(
-      JSON.stringify({
+      return new Response(JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : 'Query failed',
-      }),
-      { status: 500, headers: { 'Content-Type': 'application/json' } }
-    );
+        error: getCloudflareErrorMessage(options.host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Return 501 for actual query execution
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Not Implemented',
+      message: 'MySQL query execution is not implemented'
+    }), { status: 501, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Request failed',
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 }
 

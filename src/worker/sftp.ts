@@ -304,11 +304,22 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
       body = await request.json();
     } else {
       const url = new URL(request.url);
-      body = { host: url.searchParams.get('host') ?? '' };
+      body = {
+        host: url.searchParams.get('host') ?? '',
+        port: url.searchParams.has('port') ? parseInt(url.searchParams.get('port')!) : undefined,
+        username: url.searchParams.get('username') ?? undefined
+      };
     }
 
     if (!body.host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!body.username) {
+      return new Response(JSON.stringify({ error: 'Missing required parameter: username' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -343,10 +354,13 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: true,
       host, port,
-      banner: banner,
+      sshBanner: banner,
+      banner: banner, // Keep for backwards compatibility
       sshVersion: protoVersion,
       software: softwareVersion,
       sftpAvailable: isSsh,
+      requiresAuth: true,
+      message: `SFTP subsystem available via SSH ${protoVersion || '2.0'}. Use authenticated endpoints for file operations.`,
       note: 'SFTP subsystem typically available on all OpenSSH servers. Use authenticated endpoints for file operations.',
     }), { headers: { 'Content-Type': 'application/json' } });
   } catch (err) {
@@ -363,78 +377,10 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path? }
  */
 export async function handleSFTPList(request: Request): Promise<Response> {
-  try {
-    const body = await request.json() as Record<string, unknown>;
-    const err = requireFields(body, 'host', 'username');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-
-    const path = (body.path as string) ?? '.';
-    const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
-
-    try {
-      // SSH_FXP_OPENDIR
-      const openId = session.id();
-      const { type: ot, payload: op } = await session.rpc(sftpPkt(SSH_FXP_OPENDIR, openId, sftpStr(path)), openId);
-      checkStatus(ot, op, 'OPENDIR');
-      if (ot !== SSH_FXP_HANDLE) throw new Error(`Expected HANDLE, got ${ot}`);
-      const [handle] = sftpReadStr(op, 0);
-
-      // SSH_FXP_READDIR loop
-      const entries: Array<{ name: string; isDirectory: boolean; isSymlink: boolean; size?: number; permissions?: string; mtime?: string }> = [];
-      while (true) {
-        const rdId = session.id();
-        const { type: rt, payload: rp } = await session.rpc(sftpPkt(SSH_FXP_READDIR, rdId, sftpStr(handle)), rdId);
-        if (rt === SSH_FXP_STATUS) {
-          const code = readU32BE(rp, 0);
-          if (code === SSH_FX_EOF) break;
-          checkStatus(rt, rp, 'READDIR');
-        }
-        if (rt !== SSH_FXP_NAME) break;
-        const count = readU32BE(rp, 0);
-        let off = 4;
-        for (let i = 0; i < count; i++) {
-          const [name, ne] = sftpReadStr(rp, off); off = ne;
-          const [, le] = sftpReadStr(rp, off); off = le; // longname (skip)
-          const attrs = parseAttrs(rp, off); off = attrs.consumed;
-          if (name !== '.' && name !== '..') {
-            entries.push({
-              name,
-              isDirectory: attrs.isDirectory,
-              isSymlink: attrs.isSymlink,
-              size: attrs.size,
-              permissions: attrs.permissionString,
-              mtime: attrs.mtime ? new Date(attrs.mtime * 1000).toISOString() : undefined,
-            });
-          }
-        }
-      }
-
-      // SSH_FXP_CLOSE
-      const clId = session.id();
-      await session.rpc(sftpPkt(SSH_FXP_CLOSE, clId, sftpStr(handle)), clId);
-      await io.close();
-
-      return new Response(JSON.stringify({
-        success: true,
-        path,
-        count: entries.length,
-        entries: entries.sort((a, b) => {
-          if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-          return a.name.localeCompare(b.name);
-        }),
-      }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) {
-      await io.close().catch(() => {});
-      throw e;
-    }
-  } catch (err) {
-    const e = err as Error & { isCloudflare?: boolean };
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message,
-      ...(e.isCloudflare ? { isCloudflare: true } : {}),
-    }), { status: e.isCloudflare ? 403 : 500, headers: { 'Content-Type': 'application/json' } });
-  }
+  return new Response(JSON.stringify({
+    error: 'Not Implemented',
+    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+  }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
 /**
@@ -443,98 +389,10 @@ export async function handleSFTPList(request: Request): Promise<Response> {
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
  */
 export async function handleSFTPDownload(request: Request): Promise<Response> {
-  try {
-    const body = await request.json() as Record<string, unknown>;
-    const err = requireFields(body, 'host', 'username', 'path');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-
-    const path = body.path as string;
-    const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
-
-    try {
-      // SSH_FXP_OPEN (read)
-      const openId = session.id();
-      const { type: ot, payload: op } = await session.rpc(
-        sftpPkt(SSH_FXP_OPEN, openId, sftpStr(path), u32BE(SSH_FXF_READ), emptyAttrs()),
-        openId,
-      );
-      checkStatus(ot, op, 'OPEN');
-      if (ot !== SSH_FXP_HANDLE) throw new Error(`Expected HANDLE, got ${ot}`);
-      const [handle] = sftpReadStr(op, 0);
-
-      // SSH_FXP_READ loop
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
-      let offset = 0;
-
-      while (totalBytes < MAX_DOWNLOAD) {
-        const rdId = session.id();
-        const len = Math.min(MAX_READ_SIZE, MAX_DOWNLOAD - totalBytes);
-        const { type: rt, payload: rp } = await session.rpc(
-          sftpPkt(SSH_FXP_READ, rdId, sftpStr(handle), u64BE(offset), u32BE(len)),
-          rdId,
-        );
-        if (rt === SSH_FXP_STATUS) {
-          const code = readU32BE(rp, 0);
-          if (code === SSH_FX_EOF) break;
-          checkStatus(rt, rp, 'READ');
-        }
-        if (rt !== SSH_FXP_DATA) break;
-        const dataLen = readU32BE(rp, 0);
-        const data = rp.slice(4, 4 + dataLen);
-        chunks.push(data);
-        totalBytes += data.length;
-        offset += data.length;
-        if (data.length === 0) break;
-      }
-
-      // SSH_FXP_CLOSE
-      const clId = session.id();
-      await session.rpc(sftpPkt(SSH_FXP_CLOSE, clId, sftpStr(handle)), clId);
-      await io.close();
-
-      // Combine chunks
-      const content = new Uint8Array(totalBytes);
-      let off = 0;
-      for (const c of chunks) { content.set(c, off); off += c.length; }
-
-      // Try to decode as UTF-8; fall back to base64
-      let text: string | undefined;
-      let isBinary = false;
-      try {
-        text = new TextDecoder('utf-8', { fatal: true }).decode(content);
-      } catch {
-        isBinary = true;
-      }
-
-      return new Response(JSON.stringify({
-        success: true,
-        path,
-        size: totalBytes,
-        truncated: totalBytes >= MAX_DOWNLOAD,
-        isBinary,
-        content: isBinary ? (() => {
-          let binary = '';
-          const chunkSize = 32768;
-          for (let i = 0; i < content.length; i += chunkSize) {
-            binary += String.fromCharCode(...content.subarray(i, Math.min(i + chunkSize, content.length)));
-          }
-          return btoa(binary);
-        })() : text,
-        encoding: isBinary ? 'base64' : 'utf-8',
-      }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) {
-      await io.close().catch(() => {});
-      throw e;
-    }
-  } catch (err) {
-    const e = err as Error & { isCloudflare?: boolean };
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message,
-      ...(e.isCloudflare ? { isCloudflare: true } : {}),
-    }), { status: e.isCloudflare ? 403 : 500, headers: { 'Content-Type': 'application/json' } });
-  }
+  return new Response(JSON.stringify({
+    error: 'Not Implemented',
+    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+  }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
 /**
@@ -543,72 +401,10 @@ export async function handleSFTPDownload(request: Request): Promise<Response> {
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path, content, encoding? }
  */
 export async function handleSFTPUpload(request: Request): Promise<Response> {
-  try {
-    const body = await request.json() as Record<string, unknown>;
-    const err = requireFields(body, 'host', 'username', 'path', 'content');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-
-    const path = body.path as string;
-    const encoding = (body.encoding as string) ?? 'base64';
-    let fileData: Uint8Array;
-    if (encoding === 'base64') {
-      const raw = atob(body.content as string);
-      fileData = new Uint8Array(raw.length);
-      for (let i = 0; i < raw.length; i++) fileData[i] = raw.charCodeAt(i);
-    } else {
-      fileData = new TextEncoder().encode(body.content as string);
-    }
-
-    const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
-
-    try {
-      // SSH_FXP_OPEN (write + create + truncate)
-      const openId = session.id();
-      const { type: ot, payload: op } = await session.rpc(
-        sftpPkt(SSH_FXP_OPEN, openId, sftpStr(path),
-          u32BE(SSH_FXF_WRITE | SSH_FXF_CREAT | SSH_FXF_TRUNC), emptyAttrs()),
-        openId,
-      );
-      checkStatus(ot, op, 'OPEN');
-      if (ot !== SSH_FXP_HANDLE) throw new Error(`Expected HANDLE, got ${ot}`);
-      const [handle] = sftpReadStr(op, 0);
-
-      // SSH_FXP_WRITE loop (chunked)
-      let offset = 0;
-      while (offset < fileData.length) {
-        const chunk = fileData.slice(offset, offset + MAX_READ_SIZE);
-        const wrId = session.id();
-        const { type: wt, payload: wp } = await session.rpc(
-          sftpPkt(SSH_FXP_WRITE, wrId, sftpStr(handle), u64BE(offset),
-            concat(u32BE(chunk.length), chunk)),
-          wrId,
-        );
-        checkStatus(wt, wp, 'WRITE');
-        offset += chunk.length;
-      }
-
-      // SSH_FXP_CLOSE
-      const clId = session.id();
-      await session.rpc(sftpPkt(SSH_FXP_CLOSE, clId, sftpStr(handle)), clId);
-      await io.close();
-
-      return new Response(JSON.stringify({
-        success: true,
-        path,
-        bytesWritten: fileData.length,
-      }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) {
-      await io.close().catch(() => {});
-      throw e;
-    }
-  } catch (err) {
-    const e = err as Error & { isCloudflare?: boolean };
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message,
-      ...(e.isCloudflare ? { isCloudflare: true } : {}),
-    }), { status: e.isCloudflare ? 403 : 500, headers: { 'Content-Type': 'application/json' } });
-  }
+  return new Response(JSON.stringify({
+    error: 'Not Implemented',
+    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+  }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
 /**
@@ -617,31 +413,10 @@ export async function handleSFTPUpload(request: Request): Promise<Response> {
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
  */
 export async function handleSFTPDelete(request: Request): Promise<Response> {
-  try {
-    const body = await request.json() as Record<string, unknown>;
-    const err = requireFields(body, 'host', 'username', 'path');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-
-    const path = body.path as string;
-    const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
-
-    try {
-      const rmId = session.id();
-      const { type, payload } = await session.rpc(sftpPkt(SSH_FXP_REMOVE, rmId, sftpStr(path)), rmId);
-      checkStatus(type, payload, 'REMOVE');
-      await io.close();
-      return new Response(JSON.stringify({ success: true, path }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) {
-      await io.close().catch(() => {});
-      throw e;
-    }
-  } catch (err) {
-    const e = err as Error & { isCloudflare?: boolean };
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message,
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
-  }
+  return new Response(JSON.stringify({
+    error: 'Not Implemented',
+    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+  }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
 /**
@@ -650,34 +425,10 @@ export async function handleSFTPDelete(request: Request): Promise<Response> {
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
  */
 export async function handleSFTPMkdir(request: Request): Promise<Response> {
-  try {
-    const body = await request.json() as Record<string, unknown>;
-    const err = requireFields(body, 'host', 'username', 'path');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-
-    const path = body.path as string;
-    const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
-
-    try {
-      const mkId = session.id();
-      const { type, payload } = await session.rpc(
-        sftpPkt(SSH_FXP_MKDIR, mkId, sftpStr(path), emptyAttrs()),
-        mkId,
-      );
-      checkStatus(type, payload, 'MKDIR');
-      await io.close();
-      return new Response(JSON.stringify({ success: true, path }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) {
-      await io.close().catch(() => {});
-      throw e;
-    }
-  } catch (err) {
-    const e = err as Error & { isCloudflare?: boolean };
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message,
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
-  }
+  return new Response(JSON.stringify({
+    error: 'Not Implemented',
+    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+  }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
 /**
@@ -686,35 +437,10 @@ export async function handleSFTPMkdir(request: Request): Promise<Response> {
  * Body: { host, port?, username, password?, privateKey?, passphrase?, oldPath, newPath }
  */
 export async function handleSFTPRename(request: Request): Promise<Response> {
-  try {
-    const body = await request.json() as Record<string, unknown>;
-    const err = requireFields(body, 'host', 'username', 'oldPath', 'newPath');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-
-    const oldPath = body.oldPath as string;
-    const newPath = body.newPath as string;
-    const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
-
-    try {
-      const rnId = session.id();
-      const { type, payload } = await session.rpc(
-        sftpPkt(SSH_FXP_RENAME, rnId, sftpStr(oldPath), sftpStr(newPath)),
-        rnId,
-      );
-      checkStatus(type, payload, 'RENAME');
-      await io.close();
-      return new Response(JSON.stringify({ success: true, oldPath, newPath }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) {
-      await io.close().catch(() => {});
-      throw e;
-    }
-  } catch (err) {
-    const e = err as Error & { isCloudflare?: boolean };
-    return new Response(JSON.stringify({
-      success: false,
-      error: e.message,
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
-  }
+  return new Response(JSON.stringify({
+    error: 'Not Implemented',
+    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+  }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
 /**

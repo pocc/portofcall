@@ -8,9 +8,9 @@ export default defineConfig({
     // Environment variables for tests
     // Note: Tests define their own API_BASE defaults
     // Uncomment below only for local Worker testing:
-    // env: {
-    //   API_BASE: 'http://localhost:8787',
-    // },
+    env: {
+      API_BASE: 'http://localhost:8787/api',
+    },
 
     // Globals
     globals: true,

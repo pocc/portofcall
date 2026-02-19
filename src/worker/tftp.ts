@@ -216,7 +216,7 @@ export async function handleTFTPRead(request: Request): Promise<Response> {
     const {
       host,
       port = 69,
-      filename = 'test.txt',
+      filename,
       mode = 'octet' as TFTPMode,
       timeout = 30000,
     } = await request.json<{
@@ -227,6 +227,13 @@ export async function handleTFTPRead(request: Request): Promise<Response> {
     if (!host) {
       return new Response(
         JSON.stringify({ success: false, error: 'Missing host parameter' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (!filename) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Missing filename parameter' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }

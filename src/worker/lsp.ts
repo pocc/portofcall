@@ -168,14 +168,14 @@ async function readLspResponse(
     if (done) throw new Error('Connection closed before receiving response');
 
     if (value) {
-      buffer = concatBytes(buffer, value);
+      buffer = concatBytes(buffer, value) as Uint8Array<ArrayBuffer>;
     }
 
     // Try to parse complete messages from buffer
     let parsed = parseLspMessage(buffer);
     while (parsed) {
       const msg = parsed.message as { id?: number; result?: LspInitializeResult; error?: { message: string } };
-      buffer = parsed.remaining;
+      buffer = parsed.remaining as Uint8Array<ArrayBuffer>;
 
       if (msg.id === targetId) {
         if (msg.error) {

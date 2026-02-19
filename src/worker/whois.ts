@@ -298,11 +298,25 @@ export async function handleWhoisLookup(request: Request): Promise<Response> {
       followReferral?: boolean;
     };
 
-    const { domain, timeout = 10000 } = body;
+    const { domain, timeout = 10000, port } = body;
     const followReferral = body.followReferral !== false; // default true
 
     if (!domain) {
-      return new Response(JSON.stringify({ success: false, error: 'domain is required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Domain is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate domain format - reject consecutive dots, leading/trailing dots
+    if (domain.includes('..') || domain.startsWith('.') || domain.endsWith('.') || !/^[a-zA-Z0-9.-]+$/.test(domain)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid domain format' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate port range if provided
+    if (port !== undefined && (typeof port !== 'number' || port < 1 || port > 65535)) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }

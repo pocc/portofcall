@@ -696,7 +696,7 @@ function parseMMSConfirmedResponse(data: Uint8Array): {
     } else if (tlv.tag >= 0x80) {
       // confirmedServiceResponse CHOICE — the tag tells us which service
       serviceTag = tlv.tag;
-      serviceValue = tlv.value;
+      serviceValue = tlv.value as Uint8Array<ArrayBuffer>;
     }
   }
 

@@ -146,46 +146,6 @@ function buildRequestPacket(type: number, fields: Uint8Array[]): Uint8Array {
 }
 
 /**
- * Read exactly the requested number of bytes from a stream, with timeout.
- * Returns a single combined Uint8Array, or null if the stream ended / timed out.
- */
-async function readExactBytes(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  numBytes: number,
-  deadlineMs: number
-): Promise<{ buf: Uint8Array; extra: Uint8Array | null } | null> {
-  const chunks: Uint8Array[] = [];
-  let totalBytes = 0;
-
-  while (totalBytes < numBytes) {
-    const remaining = deadlineMs - Date.now();
-    if (remaining <= 0) return null;
-
-    const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) => {
-      setTimeout(() => resolve({ done: true, value: undefined }), Math.min(remaining, 3000));
-    });
-
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) return null;
-
-    chunks.push(result.value);
-    totalBytes += result.value.length;
-  }
-
-  const combined = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return {
-    buf: combined.slice(0, numBytes),
-    extra: totalBytes > numBytes ? combined.slice(numBytes) : null,
-  };
-}
-
-/**
  * Read a single binary protocol response packet from the stream.
  * Returns parsed packet type, data bytes, and any extra bytes read past the packet.
  */

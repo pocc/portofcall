@@ -78,9 +78,9 @@ enum TDSPacketType {
   Attention = 0x05,
   BulkLoad = 0x06,
   TransactionManager = 0x07,
-  Login7 = 0x0E,
-  SSPI = 0x10,
-  Prelogin = 0x11,
+  Login7 = 0x10,
+  SSPI = 0x11,
+  Prelogin = 0x12,
 }
 
 // TDS 5.0 token types
@@ -254,38 +254,56 @@ function buildTDSQuery(sql: string): Uint8Array {
 }
 
 /**
- * Build TDS Prelogin packet (Type 0x11)
+ * Build TDS Prelogin packet (Type 0x12)
  * Used in newer TDS versions (7.x+) for initial handshake
  */
 function buildTDSPrelogin(): Uint8Array {
-  const preloginData = new Uint8Array(25);
+  // Option list: VERSION (5B) + ENCRYPTION (5B) + TERMINATOR (1B) = 11 bytes
+  // Data section: VERSION data (6B) + ENCRYPTION data (1B) = 7 bytes
+  // Total payload: 11 + 7 = 18 bytes
+  const optListLen = 11; // 2 options * 5 bytes + 1 terminator
+  const dataLen    = 7;  // 6 (version) + 1 (encryption)
+  const payloadLen = optListLen + dataLen;
+
+  const preloginData = new Uint8Array(payloadLen);
   let offset = 0;
 
-  // Version option (0x00): offset=5, length=6
-  preloginData[offset++] = 0x00; // Token: Version
-  preloginData[offset++] = 0x00; // Offset high byte
-  preloginData[offset++] = 0x05; // Offset low byte
-  preloginData[offset++] = 0x00; // Length high byte
-  preloginData[offset++] = 0x06; // Length low byte
+  // VERSION option (token=0x00): data starts at byte optListLen (11), length 6
+  preloginData[offset++] = 0x00; // Token: VERSION
+  preloginData[offset++] = (optListLen >> 8) & 0xFF;        // Offset high byte
+  preloginData[offset++] = optListLen & 0xFF;                // Offset low byte
+  preloginData[offset++] = 0x00;                             // Length high byte
+  preloginData[offset++] = 0x06;                             // Length low byte (6)
+
+  // ENCRYPTION option (token=0x01): data starts at byte optListLen+6 (17), length 1
+  preloginData[offset++] = 0x01; // Token: ENCRYPTION
+  preloginData[offset++] = ((optListLen + 6) >> 8) & 0xFF;  // Offset high byte
+  preloginData[offset++] = (optListLen + 6) & 0xFF;          // Offset low byte
+  preloginData[offset++] = 0x00;                             // Length high byte
+  preloginData[offset++] = 0x01;                             // Length low byte (1)
+
   preloginData[offset++] = 0xFF; // Terminator
 
-  // Version data: 9.0.0.0 (6 bytes)
-  preloginData[offset++] = 9;
-  preloginData[offset++] = 0;
-  preloginData[offset++] = 0;
-  preloginData[offset++] = 0;
-  preloginData[offset++] = 0;
-  preloginData[offset++] = 0;
+  // VERSION data: 9.0.0.0 (major=9, minor=0, build_hi=0, build_lo=0, subBuild=0)
+  preloginData[offset++] = 9;    // major
+  preloginData[offset++] = 0;    // minor
+  preloginData[offset++] = 0;    // build high
+  preloginData[offset++] = 0;    // build low
+  preloginData[offset++] = 0;    // sub-build high
+  preloginData[offset++] = 0;    // sub-build low
+
+  // ENCRYPTION data: 0x00 = ENCRYPT_OFF (no TLS)
+  preloginData[offset++] = 0x00;
 
   const totalLen = 8 + preloginData.length;
   const packet = new Uint8Array(totalLen);
   const pView = new DataView(packet.buffer);
-  packet[0] = TDSPacketType.Prelogin;
-  packet[1] = 0x01;
-  pView.setUint16(2, totalLen, false);
-  pView.setUint16(4, 0, false);
-  packet[6] = 0x00;
-  packet[7] = 0x00;
+  packet[0] = TDSPacketType.Prelogin; // 0x12
+  packet[1] = 0x01; // EOM
+  pView.setUint16(2, totalLen, false); // big-endian total length
+  pView.setUint16(4, 0, false);        // SPID
+  packet[6] = 0x01; // packet number
+  packet[7] = 0x00; // window
   packet.set(preloginData, 8);
 
   return packet;
@@ -312,7 +330,12 @@ function parseTDSPacket(data: Uint8Array): {
   const spid = view.getUint16(4, false);
   const packetNumber = data[6];
   const window = data[7];
-  const payload = data.slice(8, Math.min(length, data.length));
+  // Slice exactly to the declared packet length so callers see only one packet's payload.
+  // If the buffer contains more data than this packet, the extra bytes are NOT included here
+  // (they belong to the next packet). readAtLeast may return oversized buffers, so always
+  // use the declared length as the upper bound, not data.length.
+  const payloadEnd = Math.min(length, data.length);
+  const payload = data.slice(8, payloadEnd);
 
   return { type, status, length, spid, packetNumber, window, payload };
 }
@@ -379,7 +402,7 @@ function parseTDSTokenStream(payload: Uint8Array): {
       // LOGINACK: length[2B] ack_type[1B] tds_version[4B] server_name_len[1B] server_name[...]
       if (pos + 2 > payload.length) break;
       const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const tokenLen = view.getUint16(pos, false);
+      const tokenLen = view.getUint16(pos, true);  // TDS 5.0: little-endian
       pos += 2;
       if (pos + tokenLen > payload.length) break;
       const ackType = payload[pos];
@@ -394,27 +417,27 @@ function parseTDSTokenStream(payload: Uint8Array): {
       // ERROR: length[2B] msg_number[4B] state[1B] severity[1B] msg_len[2B] msg[...]
       if (pos + 2 > payload.length) break;
       const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const tokenLen = view.getUint16(pos, false);
+      const tokenLen = view.getUint16(pos, true);  // TDS 5.0: little-endian
       pos += 2;
       if (pos + tokenLen > payload.length) break;
-      const msgLen = view.getUint16(pos + 6, false);
+      const msgLen = view.getUint16(pos + 6, true);  // TDS 5.0: little-endian
       const msg = decoder.decode(payload.slice(pos + 8, pos + 8 + msgLen));
       errorMessages.push(msg);
       pos += tokenLen;
 
     } else if (tokenType === TDS_TOKEN_ENVCHANGE) {
-      // ENVCHANGE: length[2B] type[1B] newval[...] oldval[...]
+      // ENVCHANGE: length[2B LE] type[1B] newval[...] oldval[...]
       if (pos + 2 > payload.length) break;
       const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const tokenLen = view.getUint16(pos, false);
+      const tokenLen = view.getUint16(pos, true);  // TDS 5.0: little-endian
       pos += 2;
       pos += tokenLen;
 
     } else if (tokenType === TDS_TOKEN_COLNAME) {
-      // COLNAME: length[2B] then for each column: col_name_len[1B] col_name[...]
+      // COLNAME: length[2B LE] then for each column: col_name_len[1B] col_name[...]
       if (pos + 2 > payload.length) break;
       const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const tokenLen = view.getUint16(pos, false);
+      const tokenLen = view.getUint16(pos, true);  // TDS 5.0: little-endian
       pos += 2;
       const endPos = pos + tokenLen;
       while (pos < endPos) {
@@ -426,10 +449,10 @@ function parseTDSTokenStream(payload: Uint8Array): {
       }
 
     } else if (tokenType === TDS_TOKEN_COLFMT) {
-      // COLFMT: length[2B] column format info — skip
+      // COLFMT: length[2B LE] column format info — skip
       if (pos + 2 > payload.length) break;
       const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      const tokenLen = view.getUint16(pos, false);
+      const tokenLen = view.getUint16(pos, true);  // TDS 5.0: little-endian
       pos += 2;
       pos += tokenLen;
 
@@ -442,7 +465,7 @@ function parseTDSTokenStream(payload: Uint8Array): {
       // DONE: status[2B] curcmd[2B] count[4B]
       if (pos + 8 > payload.length) break;
       const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
-      doneStatus = view.getUint16(pos, false);
+      doneStatus = view.getUint16(pos, true);  // TDS 5.0: little-endian
       pos += 8;
 
     } else {
@@ -551,7 +574,10 @@ export async function handleSybaseProbe(request: Request): Promise<Response> {
         [TDSPacketType.Prelogin]: 'Prelogin',
       };
 
-      const isSybase = parsed.type === TDSPacketType.Response || parsed.type === TDSPacketType.Prelogin;
+      // A Sybase ASE server responds to Pre-Login with a Tabular Result packet (type 0x04).
+      // Type 0x12 (Prelogin) in a server response would be atypical; the definitive
+      // indicator is type 0x04 (Response/Tabular Result).
+      const isSybase = parsed.type === TDSPacketType.Response;
 
       return new Response(JSON.stringify({
         success: true,

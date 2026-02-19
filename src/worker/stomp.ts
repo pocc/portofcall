@@ -399,10 +399,11 @@ export async function handleStompSend(request: Request): Promise<Response> {
       }
 
       // Step 2: SEND message
+      const bodyByteLength = new TextEncoder().encode(messageBody).length;
       const sendHeaders: Record<string, string> = {
         destination,
         'content-type': contentType,
-        'content-length': String(new TextEncoder().encode(messageBody).length),
+        'content-length': String(bodyByteLength),
         receipt: 'send-receipt',
         ...customHeaders,
       };
@@ -455,7 +456,7 @@ export async function handleStompSend(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: true,
         destination,
-        bodyLength: messageBody.length,
+        bodyLength: bodyByteLength,
         receiptReceived,
         brokerVersion: connFrame.headers['version'] || '1.0',
         brokerServer: connFrame.headers['server'] || 'Unknown',

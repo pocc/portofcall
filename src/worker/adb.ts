@@ -1,34 +1,42 @@
 /**
- * ADB (Android Debug Bridge) Protocol Implementation
+ * ADB (Android Debug Bridge) Smart Socket Protocol Implementation
  *
- * ADB is the primary tool for communicating with Android devices. The ADB server
- * listens on TCP port 5037 and uses a simple text-based protocol for commands.
+ * This module implements the ADB **smart socket** (client-to-server) protocol,
+ * which is a text-based protocol used to communicate with the ADB server daemon
+ * on TCP port 5037.
  *
- * Protocol Format:
- * - Client sends: 4-byte hex-encoded length (ASCII) + command string
- *   Example: "000Chost:version" (000C = 12 bytes for "host:version")
+ * NOTE: This is NOT the ADB binary transport protocol (CNXN/AUTH/OPEN/WRTE/CLSE)
+ * used between the ADB server and an Android device on port 5555. For direct
+ * device connections, the binary transport protocol would be required — that is
+ * not implemented here.
+ *
+ * Smart Socket Protocol Format:
+ * - Client sends: 4-byte lowercase hex length (ASCII) + command string
+ *   Example: "000chost:version" (000c = 12 bytes for "host:version")
  * - Server responds with one of:
  *   "OKAY" + optional data (4-byte hex length + payload)
  *   "FAIL" + 4-byte hex length + error message
  *
  * Common Commands:
- * - host:version       — Get ADB server protocol version (hex, e.g. 0x001F = 31)
+ * - host:version       — Get ADB server protocol version (hex, e.g. 0x0029 = 41)
  * - host:devices       — List connected devices with state
  * - host:devices-l     — List devices with extended info (transport_id, product, model)
- * - host:kill          — Kill the ADB server
- * - host:track-devices — Stream device connect/disconnect events
+ * - host:kill          — Kill the ADB server (destructive!)
+ * - host:track-devices — Stream device connect/disconnect events (long-lived)
  *
- * Protocol Flow:
+ * Shell Command Flow (via ADB server):
  * 1. Client connects to ADB server on port 5037
- * 2. Client sends length-prefixed command
- * 3. Server responds OKAY/FAIL
- * 4. For data commands, server sends 4-byte hex length + payload
- * 5. Connection closes (or stays open for track-devices)
+ * 2. Client sends "host:transport:<serial>" (or "host:transport-any")
+ * 3. Server responds OKAY — the connection is now bound to that device
+ * 4. Client sends "shell:<command>"
+ * 5. Server responds OKAY then streams stdout until the shell exits
+ * 6. Server closes the connection
  *
  * Use Cases:
  * - Verify ADB server is running and responsive
  * - Check ADB protocol version for compatibility
  * - List connected Android devices and their states
+ * - Execute shell commands on devices via the ADB server
  * - Mobile development and testing infrastructure monitoring
  */
 
@@ -46,12 +54,20 @@ interface ADBRequest {
 
 /**
  * Encode an ADB command with the 4-byte hex length prefix.
- * Format: "XXXX<command>" where XXXX is the hex-encoded length of the command.
+ * Format: "xxxx<command>" where xxxx is the lowercase hex-encoded byte length.
+ * The ADB protocol uses lowercase hex (printf "%04x" format in the C source).
+ *
+ * Note: The length is the byte length of the command string, not the character
+ * length. For ASCII commands this is the same, but we use TextEncoder to be safe.
  */
 function encodeADBCommand(command: string): Uint8Array {
-  const lengthHex = command.length.toString(16).padStart(4, '0').toUpperCase();
-  const fullMessage = lengthHex + command;
-  return new TextEncoder().encode(fullMessage);
+  const encoded = new TextEncoder().encode(command);
+  const lengthHex = encoded.length.toString(16).padStart(4, '0');
+  const prefix = new TextEncoder().encode(lengthHex);
+  const result = new Uint8Array(prefix.length + encoded.length);
+  result.set(prefix, 0);
+  result.set(encoded, prefix.length);
+  return result;
 }
 
 /**
@@ -155,6 +171,16 @@ export async function handleADBCommand(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!command.trim()) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Command is required',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },

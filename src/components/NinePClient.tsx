@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface NinePClientProps {
   onBack: () => void;
@@ -88,6 +90,7 @@ export default function NinePClient({ onBack }: NinePClientProps) {
 
   return (
     <ProtocolClientLayout title="9P Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.NineP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="9P Server Connection" />
 

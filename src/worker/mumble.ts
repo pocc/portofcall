@@ -15,17 +15,18 @@
  *   4  Reject          — auth rejection with reason
  *   5  ServerSync      — sent when server is done syncing state (auth complete)
  *   7  ChannelState    — channel info (id, parent, name, description)
- *   9  UserState       — user info (session, name, channel, mute/deaf flags)
+ *   9  UserState       — user info (session=1, name=3, channel_id=5, mute=6, deaf=7)
  *  11  TextMessage     — channel/user chat message
  *  15  CryptSetup      — encryption key exchange
  *  21  CodecVersion    — audio codec negotiation
  *  24  ServerConfig    — server-side config (max_bandwidth, welcome_text, etc.)
  *
  * Auth proto fields (Authenticate type=2):
- *   optional string username = 2;
- *   optional string password = 3;
- *   repeated int32  celt_versions = 5;
- *   optional bool   opus = 7;
+ *   optional string username = 1;
+ *   optional string password = 2;
+ *   repeated string tokens   = 3;
+ *   repeated int32  celt_versions = 4;
+ *   optional bool   opus = 5;
  *
  * Connection flow:
  *   1. TLS connect
@@ -54,9 +55,11 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 
 function encodeVarint(value: number): Uint8Array {
   const bytes: number[] = [];
+  // Use Math.floor to ensure positive integer; handle values > 2^32
+  value = Math.floor(Math.abs(value));
   while (value > 0x7f) {
     bytes.push((value & 0x7f) | 0x80);
-    value >>>= 7;
+    value = Math.floor(value / 128);
   }
   bytes.push(value & 0x7f);
   return new Uint8Array(bytes);
@@ -142,22 +145,27 @@ function buildVersion(): Uint8Array {
 }
 
 /**
- * Authenticate proto:
- *   optional string username = 2;
- *   optional string password = 3;
- *   repeated int32  celt_versions = 5;
- *   optional bool   opus = 7;
+ * Authenticate proto (Mumble.proto):
+ *   optional string username = 1;
+ *   optional string password = 2;
+ *   repeated string tokens   = 3;
+ *   repeated int32  celt_versions = 4;
+ *   optional bool   opus = 5;
  */
 function buildAuthenticate(username: string, password: string): Uint8Array {
   return buildMsg(MSG_AUTHENTICATE, cat(
-    pbString(2, username),
-    ...(password ? [pbString(3, password)] : []),
-    pbVarint(7, 1), // opus = true
+    pbString(1, username),
+    ...(password ? [pbString(2, password)] : []),
+    pbVarint(5, 1), // opus = true
   ));
 }
 
-function buildPing(): Uint8Array {
-  return buildMsg(MSG_PING, new Uint8Array(0));
+function buildPing(timestamp?: number): Uint8Array {
+  if (timestamp === undefined) {
+    timestamp = Date.now();
+  }
+  // Ping proto: optional uint64 timestamp = 1
+  return buildMsg(MSG_PING, pbVarint(1, timestamp));
 }
 
 /**
@@ -188,7 +196,7 @@ function parseProto(data: Uint8Array): Map<number, string | number> {
     let tagVal = 0, shift = 0;
     while (i < data.length) {
       const b = data[i++];
-      tagVal |= (b & 0x7f) << shift;
+      tagVal = (tagVal | ((b & 0x7f) << shift)) >>> 0; // >>> 0 ensures unsigned
       if ((b & 0x80) === 0) break;
       shift += 7;
     }
@@ -200,7 +208,7 @@ function parseProto(data: Uint8Array): Map<number, string | number> {
       let val = 0; shift = 0;
       while (i < data.length) {
         const b = data[i++];
-        val |= (b & 0x7f) << shift;
+        val = (val | ((b & 0x7f) << shift)) >>> 0; // >>> 0 ensures unsigned
         if ((b & 0x80) === 0) break;
         shift += 7;
       }
@@ -210,7 +218,7 @@ function parseProto(data: Uint8Array): Map<number, string | number> {
       let len = 0; shift = 0;
       while (i < data.length) {
         const b = data[i++];
-        len |= (b & 0x7f) << shift;
+        len = (len | ((b & 0x7f) << shift)) >>> 0; // >>> 0 ensures unsigned
         if ((b & 0x80) === 0) break;
         shift += 7;
       }
@@ -258,10 +266,11 @@ async function readMumbleMsgs(
     // Extract complete frames from buf
     let offset = 0;
     while (offset + 6 <= buf.length) {
-      const msgType = (buf[offset] << 8) | buf[offset + 1];
-      const msgLen =
+      const msgType = ((buf[offset] << 8) | buf[offset + 1]) >>> 0;
+      const msgLen = (
         (buf[offset + 2] << 24) | (buf[offset + 3] << 16) |
-        (buf[offset + 4] << 8)  | buf[offset + 5];
+        (buf[offset + 4] << 8)  | buf[offset + 5]
+      ) >>> 0;
       if (msgLen > 4_000_000) break; // sanity limit
       if (offset + 6 + msgLen > buf.length) break;
       msgs.push({ type: msgType, payload: new Uint8Array(buf.slice(offset + 6, offset + 6 + msgLen)) });
@@ -348,9 +357,13 @@ export async function handleMumbleProbe(request: Request): Promise<Response> {
       if (vMsg) {
         const f = parseProto(vMsg.payload);
         const ver = f.get(1) as number | undefined;
+        const ver2 = f.get(5) as number | undefined;
         if (ver !== undefined) {
           result.versionHex = `0x${ver.toString(16).padStart(6, '0')}`;
           result.version = `${(ver >> 16) & 0xff}.${(ver >> 8) & 0xff}.${ver & 0xff}`;
+        }
+        if (ver2 !== undefined) {
+          result.versionV2 = ver2;
         }
         if (f.has(2)) result.release = f.get(2);
         if (f.has(3)) result.os = f.get(3);
@@ -454,9 +467,9 @@ export async function handleMumbleAuth(request: Request): Promise<Response> {
           users.push({
             session:  (f.get(1) as number) ?? 0,
             name:     (f.get(3) as string) ?? '',
-            channel:  f.get(6) as number | undefined,
-            muted:    (f.get(7) as number) === 1,
-            deafened: (f.get(8) as number) === 1,
+            channel:  f.get(5) as number | undefined,  // channel_id = field 5
+            muted:    (f.get(6) as number) === 1,       // mute = field 6
+            deafened: (f.get(7) as number) === 1,       // deaf = field 7
           });
         } else if (type === MSG_SERVER_SYNC) {
           serverSync = {

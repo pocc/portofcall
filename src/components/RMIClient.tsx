@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface RMIClientProps {
   onBack: () => void;
@@ -186,6 +188,7 @@ export default function RMIClient({ onBack }: RMIClientProps) {
 
   return (
     <ProtocolClientLayout title="Java RMI Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.RMI || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="RMI Registry Endpoint" />
 

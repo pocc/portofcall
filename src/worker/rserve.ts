@@ -131,7 +131,8 @@ function buildQAP1Command(cmd: number, data?: Uint8Array): Uint8Array {
 function buildDTString(str: string): Uint8Array {
   const encoded = new TextEncoder().encode(str + '\0');
   // Pad to 4-byte boundary
-  const padded = encoded.length + (4 - (encoded.length % 4)) % 4;
+  const remainder = encoded.length % 4;
+  const padded = remainder === 0 ? encoded.length : encoded.length + (4 - remainder);
   const payload = new Uint8Array(4 + padded);
 
   // Type header: type(1) + length(3) in LE
@@ -160,13 +161,12 @@ function parseQAP1Response(data: Uint8Array): {
   const cmd = view.getUint32(0, true);
   const length = view.getUint32(4, true);
 
-  const isResponse = (cmd & 0x10000) !== 0;
   const isError = cmd === 0x10002;
   const isOK = cmd === RESP_OK;
   const errorCode = isError && data.length >= 20 ? view.getUint32(16, true) : 0;
 
   return {
-    cmd: isResponse ? cmd : cmd,
+    cmd,
     length,
     isOK,
     isError,
@@ -229,6 +229,10 @@ function parseSEXP(data: Uint8Array, offset: number): { value: SexpValue; consum
   // Skip attribute SEXP if present (we only care about the data)
   if (hasAttr) {
     const attr = parseSEXP(data, dataStart);
+    if (attr.consumed === 0 || dataStart + attr.consumed > offset + consumed) {
+      // Invalid attribute - don't advance
+      return { value: { type: 'null' }, consumed: 0 };
+    }
     dataStart += attr.consumed;
   }
 
@@ -429,20 +433,24 @@ async function readResponse(
   const maxBytes = 64 * 1024;
   const deadline = Date.now() + timeoutMs;
 
-  while (totalBytes < expectedBytes) {
+  while (totalBytes < expectedBytes && totalBytes < maxBytes) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) => {
-      setTimeout(() => resolve({ done: true, value: undefined }), Math.min(remaining, 3000));
+      timeoutHandle = setTimeout(() => resolve({ done: true, value: undefined }), Math.min(remaining, 3000));
     });
 
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) break;
+    try {
+      const result = await Promise.race([reader.read(), timeoutPromise]);
+      if (result.done || !result.value) break;
 
-    chunks.push(result.value);
-    totalBytes += result.value.length;
-    if (totalBytes >= maxBytes) break;
+      chunks.push(result.value);
+      totalBytes += result.value.length;
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    }
   }
 
   const combined = new Uint8Array(totalBytes);
@@ -472,7 +480,7 @@ export async function handleRserveProbe(request: Request): Promise<Response> {
       timeout?: number;
     };
 
-    if (!body.host) {
+    if (!body.host || body.host.trim() === '') {
       return new Response(
         JSON.stringify({ success: false, error: 'Host is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -486,6 +494,13 @@ export async function handleRserveProbe(request: Request): Promise<Response> {
     if (port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Timeout must be between 1 and 300000 ms' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -505,8 +520,9 @@ export async function handleRserveProbe(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -514,57 +530,65 @@ export async function handleRserveProbe(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
 
-      // Rserve sends 32-byte ID string immediately on connect
-      const responseData = await readResponse(reader, Math.min(timeout, 5000), ID_STRING_LENGTH);
-      const rtt = Date.now() - startTime;
+      try {
+        // Rserve sends 32-byte ID string immediately on connect
+        const responseData = await readResponse(reader, Math.min(timeout, 5000), ID_STRING_LENGTH);
+        const rtt = Date.now() - startTime;
 
-      reader.releaseLock();
-      socket.close();
-
-      if (responseData.length === 0) {
         return new Response(
-          JSON.stringify({
-            success: true,
-            host,
-            port,
-            rtt,
-            isRserve: false,
-            protocol: 'Rserve',
-            message: `TCP connected but no Rserve banner received (${rtt}ms)`,
-          }),
+          JSON.stringify(
+            responseData.length === 0
+              ? {
+                  success: true,
+                  host,
+                  port,
+                  rtt,
+                  isRserve: false,
+                  protocol: 'Rserve',
+                  message: `TCP connected but no Rserve banner received (${rtt}ms)`,
+                }
+              : (() => {
+                  const parsed = parseRserveID(responseData);
+                  return {
+                    success: true,
+                    host,
+                    port,
+                    rtt,
+                    isRserve: parsed.valid,
+                    magic: parsed.magic,
+                    version: parsed.version,
+                    protocolType: parsed.protocol,
+                    attributes: parsed.attributes,
+                    extra: parsed.extra || null,
+                    requiresAuth: parsed.requiresAuth,
+                    supportsTLS: parsed.supportsTLS,
+                    bannerBytes: responseData.length,
+                    bannerHex: toHex(responseData),
+                    protocol: 'Rserve',
+                    message: parsed.valid
+                      ? `Rserve ${parsed.version} (${parsed.protocol}) detected${parsed.requiresAuth ? ' [auth required]' : ''} in ${rtt}ms`
+                      : `Non-Rserve response received in ${rtt}ms`,
+                  };
+                })()
+          ),
           { headers: { 'Content-Type': 'application/json' } }
         );
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore lock release errors
+        }
       }
-
-      const parsed = parseRserveID(responseData);
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          host,
-          port,
-          rtt,
-          isRserve: parsed.valid,
-          magic: parsed.magic,
-          version: parsed.version,
-          protocolType: parsed.protocol,
-          attributes: parsed.attributes,
-          extra: parsed.extra || null,
-          requiresAuth: parsed.requiresAuth,
-          supportsTLS: parsed.supportsTLS,
-          bannerBytes: responseData.length,
-          bannerHex: toHex(responseData),
-          protocol: 'Rserve',
-          message: parsed.valid
-            ? `Rserve ${parsed.version} (${parsed.protocol}) detected${parsed.requiresAuth ? ' [auth required]' : ''} in ${rtt}ms`
-            : `Non-Rserve response received in ${rtt}ms`,
-        }),
-        { headers: { 'Content-Type': 'application/json' } }
-      );
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      try {
+        socket.close();
+      } catch {
+        // Ignore socket close errors
+      }
     }
+
   } catch (error) {
     return new Response(
       JSON.stringify({
@@ -596,7 +620,7 @@ export async function handleRserveEval(request: Request): Promise<Response> {
       timeout?: number;
     };
 
-    if (!body.host) {
+    if (!body.host || body.host.trim() === '') {
       return new Response(
         JSON.stringify({ success: false, error: 'Host is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -611,6 +635,13 @@ export async function handleRserveEval(request: Request): Promise<Response> {
     if (port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Timeout must be between 1 and 300000 ms' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -638,8 +669,9 @@ export async function handleRserveEval(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -648,99 +680,104 @@ export async function handleRserveEval(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Step 1: Read server ID string
-      const idData = await readResponse(reader, Math.min(timeout, 3000), ID_STRING_LENGTH);
-      const idParsed = parseRserveID(idData);
+      try {
+        // Step 1: Read server ID string
+        const idData = await readResponse(reader, Math.min(timeout, 3000), ID_STRING_LENGTH);
+        const idParsed = parseRserveID(idData);
 
-      if (!idParsed.valid) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        if (!idParsed.valid) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: 'Not an Rserve endpoint',
+              bannerHex: toHex(idData),
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
 
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'Not an Rserve endpoint',
-            bannerHex: toHex(idData),
-          }),
-          { headers: { 'Content-Type': 'application/json' } }
-        );
-      }
+        if (idParsed.requiresAuth) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              host,
+              port,
+              rtt: Date.now() - startTime,
+              isRserve: true,
+              version: idParsed.version,
+              requiresAuth: true,
+              protocol: 'Rserve',
+              message: `Rserve ${idParsed.version} requires authentication — cannot evaluate expressions`,
+            }),
+            { headers: { 'Content-Type': 'application/json' } }
+          );
+        }
 
-      if (idParsed.requiresAuth) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        // Step 2: Send CMD_eval with expression
+        const exprPayload = buildDTString(expression);
+        const evalCmd = buildQAP1Command(CMD_eval, exprPayload);
+        await writer.write(evalCmd);
+
+        // Step 3: Read response
+        const evalResponse = await readResponse(reader, Math.min(timeout, 5000), 4096);
+        const rtt = Date.now() - startTime;
+
+        const respHeader = parseQAP1Response(evalResponse);
+        let resultStr: string | null = null;
+        let resultValue: SexpValue | null = null;
+
+        if (respHeader && respHeader.isOK && evalResponse.length > 16) {
+          resultValue = extractSEXPResult(evalResponse);
+          // Also keep legacy string extraction for the message field
+          if (resultValue?.type === 'string') resultStr = resultValue.value;
+          else if (resultValue?.type === 'strings') resultStr = resultValue.values.join(', ');
+          else resultStr = extractStringFromSEXP(evalResponse);
+        }
 
         return new Response(
           JSON.stringify({
             success: true,
             host,
             port,
-            rtt: Date.now() - startTime,
+            rtt,
             isRserve: true,
             version: idParsed.version,
-            requiresAuth: true,
+            protocolType: idParsed.protocol,
+            expression,
+            evalSuccess: respHeader ? respHeader.isOK : false,
+            evalError: respHeader && respHeader.isError ? `Error code: ${respHeader.errorCode}` : null,
+            result: resultValue ?? resultStr,
+            resultString: resultStr,
+            responseBytes: evalResponse.length,
+            responseHex: toHex(evalResponse),
             protocol: 'Rserve',
-            message: `Rserve ${idParsed.version} requires authentication — cannot evaluate expressions`,
+            message: resultStr
+              ? `Eval OK: ${resultStr} (${rtt}ms)`
+              : respHeader && respHeader.isOK
+              ? `Eval OK (binary result, ${evalResponse.length} bytes) in ${rtt}ms`
+              : `Eval failed in ${rtt}ms`,
           }),
           { headers: { 'Content-Type': 'application/json' } }
         );
+      } finally {
+        try {
+          writer.releaseLock();
+        } catch {
+          // Ignore lock release errors
+        }
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore lock release errors
+        }
       }
-
-      // Step 2: Send CMD_eval with expression
-      const exprPayload = buildDTString(expression);
-      const evalCmd = buildQAP1Command(CMD_eval, exprPayload);
-      await writer.write(evalCmd);
-
-      // Step 3: Read response
-      const evalResponse = await readResponse(reader, Math.min(timeout, 5000), 4096);
-      const rtt = Date.now() - startTime;
-
-      const respHeader = parseQAP1Response(evalResponse);
-      let resultStr: string | null = null;
-      let resultValue: SexpValue | null = null;
-
-      if (respHeader && respHeader.isOK && evalResponse.length > 16) {
-        resultValue = extractSEXPResult(evalResponse);
-        // Also keep legacy string extraction for the message field
-        if (resultValue?.type === 'string') resultStr = resultValue.value;
-        else if (resultValue?.type === 'strings') resultStr = resultValue.values.join(', ');
-        else resultStr = extractStringFromSEXP(evalResponse);
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      try {
+        socket.close();
+      } catch {
+        // Ignore socket close errors
       }
-
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          host,
-          port,
-          rtt,
-          isRserve: true,
-          version: idParsed.version,
-          protocolType: idParsed.protocol,
-          expression,
-          evalSuccess: respHeader ? respHeader.isOK : false,
-          evalError: respHeader && respHeader.isError ? `Error code: ${respHeader.errorCode}` : null,
-          result: resultValue ?? resultStr,
-          resultString: resultStr,
-          responseBytes: evalResponse.length,
-          responseHex: toHex(evalResponse),
-          protocol: 'Rserve',
-          message: resultStr
-            ? `Eval OK: ${resultStr} (${rtt}ms)`
-            : respHeader && respHeader.isOK
-            ? `Eval OK (binary result, ${evalResponse.length} bytes) in ${rtt}ms`
-            : `Eval failed in ${rtt}ms`,
-        }),
-        { headers: { 'Content-Type': 'application/json' } }
-      );
-    } catch (error) {
-      socket.close();
-      throw error;
     }
   } catch (error) {
     return new Response(

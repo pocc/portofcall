@@ -113,8 +113,10 @@ function decodeString(data: Uint8Array, offset: number): { value: string; nextOf
   const length = decodeWord(data, offset);
   offset += 4;
   if (length === 0) return { value: '', nextOffset: offset };
-  const end = Math.min(offset + length, data.length);
-  const bytes = data.slice(offset, end);
+  // Validate length is reasonable and doesn't exceed buffer
+  if (length < 0 || length > 1048576) return { value: '', nextOffset: offset };
+  if (offset + length > data.length) return { value: '', nextOffset: offset };
+  const bytes = data.slice(offset, offset + length);
   // Strip null terminator if present
   const nullIdx = bytes.indexOf(0);
   const strBytes = nullIdx >= 0 ? bytes.slice(0, nullIdx) : bytes;
@@ -150,6 +152,13 @@ function buildGetDevicesRequest(): Uint8Array {
 
 /** SANE_NET_OPEN (opcode 2): word(2) + string(deviceName) */
 function buildOpenRequest(deviceName: string): Uint8Array {
+  // Validate device name to prevent path traversal and injection
+  if (deviceName.length > 255) {
+    throw new Error('Device name too long (max 255 characters)');
+  }
+  if (deviceName.includes('\0') || deviceName.includes('..')) {
+    throw new Error('Invalid device name (contains null bytes or path traversal)');
+  }
   const opcode = encodeWord(2);
   const nameStr = encodeString(deviceName);
   const out = new Uint8Array(opcode.length + nameStr.length);
@@ -170,26 +179,39 @@ async function readAtLeast(
   timeoutMs: number,
   maxBytes = 8192,
 ): Promise<Uint8Array> {
+  // Enforce absolute maximum to prevent memory exhaustion
+  const absoluteMax = 10485760; // 10 MB
+  if (maxBytes > absoluteMax) maxBytes = absoluteMax;
+
   const chunks: Uint8Array[] = [];
   let total = 0;
   const deadline = Date.now() + timeoutMs;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
-  while (total < minBytes && Date.now() < deadline) {
-    const remaining = Math.max(deadline - Date.now(), 0);
-    const timer = new Promise<{ value: undefined; done: true }>((resolve) =>
-      setTimeout(() => resolve({ value: undefined, done: true }), remaining),
-    );
-    const { value, done } = await Promise.race([reader.read(), timer]);
-    if (done || !value) break;
-    chunks.push(value);
-    total += value.length;
-    if (total >= maxBytes) break;
+  try {
+    while (total < minBytes && Date.now() < deadline) {
+      const remaining = Math.max(deadline - Date.now(), 0);
+      const timer = new Promise<{ value: undefined; done: true }>((resolve) => {
+        timeoutHandle = setTimeout(() => resolve({ value: undefined, done: true }), remaining);
+      });
+      const { value, done } = await Promise.race([reader.read(), timer]);
+      if (timeoutHandle !== undefined) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = undefined;
+      }
+      if (done || !value) break;
+      chunks.push(value);
+      total += value.length;
+      if (total >= maxBytes) break;
+    }
+
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) { out.set(c, off); off += c.length; }
+    return out;
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
   }
-
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
-  return out;
 }
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -243,6 +265,7 @@ export async function handleSANEProbe(request: Request): Promise<Response> {
     if (guard) return guard;
 
     const startTime = Date.now();
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const work = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -267,6 +290,16 @@ export async function handleSANEProbe(request: Request): Promise<Response> {
         const statusCode = decodeWord(data, 0);
         const versionCode = decodeWord(data, 4);
 
+        if (statusCode !== 0) {
+          return {
+            success: false,
+            host,
+            port,
+            latencyMs,
+            error: `INIT failed: ${SANE_STATUS[statusCode] ?? `status ${statusCode}`}`,
+          };
+        }
+
         return {
           success: true,
           host,
@@ -285,12 +318,17 @@ export async function handleSANEProbe(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([
-      work,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
-
-    return jsonResponse(result);
+    try {
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+        }),
+      ]);
+      return jsonResponse(result);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
     return errorResponse(error);
   }
@@ -322,6 +360,7 @@ export async function handleSANEGetDevices(request: Request): Promise<Response> 
 
     const startTime = Date.now();
     const remaining = () => Math.max(timeout - (Date.now() - startTime), 500);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const work = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -340,6 +379,17 @@ export async function handleSANEGetDevices(request: Request): Promise<Response> 
 
         const initStatus = decodeWord(initData, 0);
         const versionCode = decodeWord(initData, 4);
+
+        if (initStatus !== 0) {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+          return {
+            success: false,
+            latencyMs: Date.now() - startTime,
+            error: `INIT failed: ${SANE_STATUS[initStatus] ?? `status ${initStatus}`}`,
+          };
+        }
 
         // ── Step 2: GET_DEVICES ───────────────────────────────────────────────
         await writer.write(buildGetDevicesRequest());
@@ -403,12 +453,17 @@ export async function handleSANEGetDevices(request: Request): Promise<Response> 
       }
     })();
 
-    const result = await Promise.race([
-      work,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
-
-    return jsonResponse(result);
+    try {
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+        }),
+      ]);
+      return jsonResponse(result);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
     return errorResponse(error);
   }
@@ -544,9 +599,21 @@ function parseOptionDescriptors(data: Uint8Array, startOffset: number): SANEOpti
     };
 
     if (constraintType === 1 && offset + 12 <= data.length) {
-      // RANGE: min, max, quant (signed 32-bit words)
+      // RANGE: min, max, quant (signed 32-bit words, FIXED type uses 16.16 format)
       const dv = new DataView(data.buffer, data.byteOffset + offset);
-      option.range = { min: dv.getInt32(0, false), max: dv.getInt32(4, false), quant: dv.getInt32(8, false) };
+      const minRaw = dv.getInt32(0, false);
+      const maxRaw = dv.getInt32(4, false);
+      const quantRaw = dv.getInt32(8, false);
+      // For FIXED type (type=2), convert 16.16 fixed-point to float
+      if (type === 2) {
+        option.range = {
+          min: minRaw / 65536,
+          max: maxRaw / 65536,
+          quant: quantRaw / 65536,
+        };
+      } else {
+        option.range = { min: minRaw, max: maxRaw, quant: quantRaw };
+      }
       offset += 12;
     } else if (constraintType === 2 && offset + 4 <= data.length) {
       // WORD_LIST: word(count) + count signed words
@@ -554,7 +621,10 @@ function parseOptionDescriptors(data: Uint8Array, startOffset: number): SANEOpti
       const dv = new DataView(data.buffer, data.byteOffset);
       option.wordList = [];
       for (let i = 0; i < count && offset + 4 <= data.length; i++) {
-        option.wordList.push(dv.getInt32(offset, false)); offset += 4;
+        const raw = dv.getInt32(offset, false);
+        // For FIXED type, convert from 16.16 to float
+        option.wordList.push(type === 2 ? raw / 65536 : raw);
+        offset += 4;
       }
     } else if (constraintType === 3) {
       // STRING_LIST: pointer-array of strings
@@ -618,6 +688,7 @@ export async function handleSANEOptions(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const remaining = () => Math.max(timeout - (Date.now() - startTime), 500);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const work = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -628,7 +699,19 @@ export async function handleSANEOptions(request: Request): Promise<Response> {
         await writer.write(buildInitRequest(username));
         const initData = await readAtLeast(reader, 8, Math.min(5000, remaining()));
         if (initData.length < 8) throw new Error('Incomplete INIT response');
+        const initStatus = decodeWord(initData, 0);
         const versionCode = decodeWord(initData, 4);
+
+        if (initStatus !== 0) {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+          return {
+            success: false,
+            latencyMs: Date.now() - startTime,
+            error: `INIT failed: ${SANE_STATUS[initStatus] ?? `status ${initStatus}`}`,
+          };
+        }
 
         await writer.write(buildOpenRequest(deviceName));
         const openData = await readAtLeast(reader, 12, Math.min(5000, remaining()), 4096);
@@ -667,11 +750,17 @@ export async function handleSANEOptions(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([
-      work,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
-    return jsonResponse(result);
+    try {
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+        }),
+      ]);
+      return jsonResponse(result);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) { return errorResponse(error); }
 }
 
@@ -715,6 +804,8 @@ export async function handleSANEScan(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const remaining = () => Math.max(timeout - (Date.now() - startTime), 500);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    let dataTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const work = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -727,7 +818,19 @@ export async function handleSANEScan(request: Request): Promise<Response> {
         await writer.write(buildInitRequest(username));
         const initData = await readAtLeast(reader, 8, Math.min(5000, remaining()));
         if (initData.length < 8) throw new Error('Incomplete INIT response');
+        const initStatus = decodeWord(initData, 0);
         const versionCode = decodeWord(initData, 4);
+
+        if (initStatus !== 0) {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+          return {
+            success: false,
+            latencyMs: Date.now() - startTime,
+            error: `INIT failed: ${SANE_STATUS[initStatus] ?? `status ${initStatus}`}`,
+          };
+        }
 
         // 2. OPEN
         await writer.write(buildOpenRequest(deviceName));
@@ -749,10 +852,18 @@ export async function handleSANEScan(request: Request): Promise<Response> {
         for (const opt of setOptions) {
           let valueBytes: Uint8Array;
           if (opt.valueType === 3) {
+            // STRING
             const enc = new TextEncoder().encode(String(opt.value));
             valueBytes = new Uint8Array(enc.length + 1); // null-terminated
             valueBytes.set(enc);
+          } else if (opt.valueType === 2) {
+            // FIXED (16.16 fixed-point)
+            const floatVal = Number(opt.value);
+            const fixedVal = Math.round(floatVal * 65536);
+            valueBytes = new Uint8Array(4);
+            new DataView(valueBytes.buffer).setInt32(0, fixedVal, false);
           } else {
+            // BOOL, INT
             valueBytes = new Uint8Array(4);
             new DataView(valueBytes.buffer).setInt32(0, Number(opt.value), false);
           }
@@ -807,8 +918,14 @@ export async function handleSANEScan(request: Request): Promise<Response> {
             const dataSocket = connect(`${host}:${dataPort}`);
             await Promise.race([
               dataSocket.opened,
-              new Promise<never>((_, rej) => setTimeout(() => rej(new Error('data port timeout')), 5000)),
+              new Promise<never>((_, rej) => {
+                dataTimeoutHandle = setTimeout(() => rej(new Error('data port timeout')), 5000);
+              }),
             ]);
+            if (dataTimeoutHandle !== undefined) {
+              clearTimeout(dataTimeoutHandle);
+              dataTimeoutHandle = undefined;
+            }
             const dataReader = dataSocket.readable.getReader();
 
             const chunks: Uint8Array[] = [];
@@ -817,10 +934,14 @@ export async function handleSANEScan(request: Request): Promise<Response> {
 
             while (totalRead < maxDataBytes && Date.now() < deadline) {
               const timeLeft = Math.max(deadline - Date.now(), 0);
-              const timer = new Promise<{ value: undefined; done: true }>((res) =>
-                setTimeout(() => res({ value: undefined, done: true }), timeLeft),
-              );
+              const timer = new Promise<{ value: undefined; done: true }>((res) => {
+                dataTimeoutHandle = setTimeout(() => res({ value: undefined, done: true }), timeLeft);
+              });
               const { value, done } = await Promise.race([dataReader.read(), timer]);
+              if (dataTimeoutHandle !== undefined) {
+                clearTimeout(dataTimeoutHandle);
+                dataTimeoutHandle = undefined;
+              }
               if (done || !value || value.length === 0) break;
               const take = Math.min(value.length, maxDataBytes - totalRead);
               chunks.push(value.slice(0, take));
@@ -842,6 +963,8 @@ export async function handleSANEScan(request: Request): Promise<Response> {
             }
           } catch (dataErr) {
             dataPortError = dataErr instanceof Error ? dataErr.message : String(dataErr);
+          } finally {
+            if (dataTimeoutHandle !== undefined) clearTimeout(dataTimeoutHandle);
           }
         }
 
@@ -865,11 +988,17 @@ export async function handleSANEScan(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([
-      work,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
-    return jsonResponse(result);
+    try {
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+        }),
+      ]);
+      return jsonResponse(result);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) { return errorResponse(error); }
 }
 
@@ -892,6 +1021,7 @@ export async function handleSANEOpen(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const remaining = () => Math.max(timeout - (Date.now() - startTime), 500);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
     const work = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -908,7 +1038,19 @@ export async function handleSANEOpen(request: Request): Promise<Response> {
           throw new Error('Incomplete INIT response from SANE daemon');
         }
 
+        const initStatus = decodeWord(initData, 0);
         const versionCode = decodeWord(initData, 4);
+
+        if (initStatus !== 0) {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+          return {
+            success: false,
+            latencyMs: Date.now() - startTime,
+            error: `INIT failed: ${SANE_STATUS[initStatus] ?? `status ${initStatus}`}`,
+          };
+        }
 
         // ── Step 2: OPEN ──────────────────────────────────────────────────────
         await writer.write(buildOpenRequest(deviceName));
@@ -952,12 +1094,17 @@ export async function handleSANEOpen(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([
-      work,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
-
-    return jsonResponse(result);
+    try {
+      const result = await Promise.race([
+        work,
+        new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+        }),
+      ]);
+      return jsonResponse(result);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
     return errorResponse(error);
   }

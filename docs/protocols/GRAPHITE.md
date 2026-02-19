@@ -1,422 +1,288 @@
-# Graphite Protocol Implementation Plan
+# Graphite (2003) — Power-User Reference
 
-## Overview
+Port of Call implementation: `src/worker/graphite.ts`
 
-**Protocol:** Graphite Plaintext Protocol
-**Port:** 2003 (plaintext), 2004 (pickle)
-**Specification:** [Graphite Documentation](https://graphite.readthedocs.io/)
-**Complexity:** Low
-**Purpose:** Metrics collection and time-series storage
+## Endpoints
 
-Graphite enables **sending metrics data** from the browser - collect and visualize application performance, system metrics, and business analytics.
+| # | Route | Method | Transport | Input | Cloudflare check |
+|---|-------|--------|-----------|-------|------------------|
+| 1 | `/api/graphite/send` | POST | TCP socket (plaintext) | JSON body | Yes |
+| 2 | `/api/graphite/query` | GET | HTTP fetch → Graphite render API | Query params | No |
+| 3 | `/api/graphite/find` | GET | HTTP fetch → Graphite metrics/find API | Query params | No |
+| 4 | `/api/graphite/info` | GET | HTTP fetch → Graphite web root + render | Query params | No |
 
-### Use Cases
-- Application performance monitoring
-- System metrics collection
-- Business metrics tracking
-- Real-time dashboards
-- Time-series data visualization
-- Custom monitoring solutions
+Two distinct transports: endpoint 1 opens a raw TCP socket to Carbon's line receiver (port 2003). Endpoints 2-4 issue HTTP `fetch()` requests to Graphite-web's render API (default port 80). This means `/send` targets Carbon while `/query`, `/find`, `/info` target Graphite-web — often different ports, sometimes different hosts.
 
-## Protocol Specification
+---
 
-### Plaintext Format
+## 1. POST `/api/graphite/send`
 
-```
-metric_name value timestamp\n
-```
+Sends metrics to a Graphite Carbon receiver using the plaintext protocol. Fire-and-forget: Carbon does not send a response, so success means "TCP connection established and data written without error".
 
-**That's it!** Three space-separated fields:
-1. **Metric name** (dot-separated path)
-2. **Value** (numeric)
-3. **Timestamp** (Unix epoch, optional - defaults to now)
+### Request
 
-### Example Metrics
-
-```
-servers.web01.cpu.usage 45.2 1640000000
-servers.web01.memory.used 8589934592 1640000000
-app.requests.total 12345 1640000000
-app.response.time.p95 123.45 1640000000
-```
-
-### Metric Naming Convention
-
-Use dot-separated hierarchy:
-```
-<namespace>.<group>.<server>.<metric>
-```
-
-Examples:
-- `app.api.prod.requests.count`
-- `infra.database.db01.connections`
-- `business.sales.revenue.daily`
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/graphite/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface GraphiteConfig {
-  host: string;
-  port: number;
-}
-
-export interface Metric {
-  name: string;
-  value: number;
-  timestamp?: number; // Unix epoch, defaults to now
-}
-
-export class GraphiteClient {
-  constructor(private config: GraphiteConfig) {}
-
-  async send(metric: Metric): Promise<void> {
-    const metrics = [metric];
-    await this.sendBatch(metrics);
-  }
-
-  async sendBatch(metrics: Metric[]): Promise<void> {
-    const socket = connect(`${this.config.host}:${this.config.port}`);
-    await socket.opened;
-
-    const lines: string[] = [];
-
-    for (const metric of metrics) {
-      const timestamp = metric.timestamp || Math.floor(Date.now() / 1000);
-      lines.push(`${metric.name} ${metric.value} ${timestamp}`);
-    }
-
-    const data = lines.join('\n') + '\n';
-
-    const writer = socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(data));
-    writer.releaseLock();
-
-    await socket.close();
-  }
-
-  // Helper methods for common metrics
-
-  async counter(name: string, value: number = 1): Promise<void> {
-    await this.send({ name, value });
-  }
-
-  async gauge(name: string, value: number): Promise<void> {
-    await this.send({ name, value });
-  }
-
-  async timing(name: string, milliseconds: number): Promise<void> {
-    await this.send({ name, value: milliseconds });
-  }
-
-  // Time a function execution
-  async time<T>(name: string, fn: () => Promise<T>): Promise<T> {
-    const start = Date.now();
-    try {
-      const result = await fn();
-      const duration = Date.now() - start;
-      await this.timing(name, duration);
-      return result;
-    } catch (error) {
-      const duration = Date.now() - start;
-      await this.timing(`${name}.error`, duration);
-      throw error;
-    }
-  }
-}
-
-// Metric builder for complex metrics
-
-export class MetricBuilder {
-  private prefix: string[] = [];
-
-  constructor(namespace?: string) {
-    if (namespace) {
-      this.prefix.push(namespace);
-    }
-  }
-
-  with(segment: string): MetricBuilder {
-    const builder = new MetricBuilder();
-    builder.prefix = [...this.prefix, segment];
-    return builder;
-  }
-
-  metric(name: string, value: number): Metric {
-    const fullName = [...this.prefix, name].join('.');
-    return { name: fullName, value };
-  }
-}
-
-// Usage example:
-// const metrics = new MetricBuilder('myapp');
-// const webMetrics = metrics.with('web').with('prod');
-// const metric = webMetrics.metric('requests.total', 100);
-```
-
-## Web UI Design
-
-```typescript
-// src/components/GraphiteMonitor.tsx
-
-export function GraphiteMonitor() {
-  const [host, setHost] = useState('graphite.example.com');
-  const [port, setPort] = useState(2003);
-  const [metricName, setMetricName] = useState('app.test.metric');
-  const [metricValue, setMetricValue] = useState<number>(0);
-  const [history, setHistory] = useState<Metric[]>([]);
-
-  const sendMetric = async () => {
-    const metric: Metric = {
-      name: metricName,
-      value: metricValue,
-      timestamp: Math.floor(Date.now() / 1000),
-    };
-
-    await fetch('/api/graphite/send', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        host,
-        port,
-        metric,
-      }),
-    });
-
-    setHistory([...history, metric]);
-  };
-
-  const sendRandomMetric = () => {
-    setMetricValue(Math.random() * 100);
-    setTimeout(sendMetric, 100);
-  };
-
-  return (
-    <div className="graphite-monitor">
-      <h2>Graphite Metrics</h2>
-
-      <div className="config">
-        <input
-          type="text"
-          placeholder="Graphite Host"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Port"
-          value={port}
-          onChange={(e) => setPort(Number(e.target.value))}
-        />
-      </div>
-
-      <div className="metric-input">
-        <input
-          type="text"
-          placeholder="Metric name (e.g., app.requests.count)"
-          value={metricName}
-          onChange={(e) => setMetricName(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Value"
-          value={metricValue}
-          onChange={(e) => setMetricValue(Number(e.target.value))}
-        />
-        <button onClick={sendMetric}>Send</button>
-        <button onClick={sendRandomMetric}>Send Random</button>
-      </div>
-
-      <div className="history">
-        <h3>Sent Metrics</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Timestamp</th>
-              <th>Metric</th>
-              <th>Value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {history.slice(-10).reverse().map((metric, i) => (
-              <tr key={i}>
-                <td>{new Date(metric.timestamp! * 1000).toLocaleTimeString()}</td>
-                <td>{metric.name}</td>
-                <td>{metric.value.toFixed(2)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      <MetricTemplates onSelect={(name, value) => {
-        setMetricName(name);
-        setMetricValue(value);
-      }} />
-    </div>
-  );
-}
-
-function MetricTemplates({ onSelect }: {
-  onSelect: (name: string, value: number) => void
-}) {
-  const templates = [
-    { name: 'app.requests.count', value: 1, label: 'Request Counter' },
-    { name: 'app.response.time', value: 45.2, label: 'Response Time (ms)' },
-    { name: 'app.errors.count', value: 1, label: 'Error Counter' },
-    { name: 'system.cpu.usage', value: 65.5, label: 'CPU Usage (%)' },
-    { name: 'system.memory.used', value: 8589934592, label: 'Memory Used (bytes)' },
-  ];
-
-  return (
-    <div className="metric-templates">
-      <h3>Templates</h3>
-      {templates.map(template => (
-        <button
-          key={template.name}
-          onClick={() => onSelect(template.name, template.value)}
-        >
-          {template.label}
-        </button>
-      ))}
-    </div>
-  );
+```json
+{
+  "host": "graphite.example.com",
+  "port": 2003,
+  "metrics": [
+    { "name": "app.requests.total", "value": 1234 },
+    { "name": "app.response.p95", "value": 45.2, "timestamp": 1700000000 }
+  ],
+  "timeout": 10000
 }
 ```
 
-## Real-World Integration
+| Field | Type | Default | Required | Notes |
+|-------|------|---------|----------|-------|
+| `host` | string | — | Yes | Carbon receiver hostname |
+| `port` | number | `2003` | No | **Not validated** — negative/zero/65536+ accepted |
+| `metrics` | array | — | Yes | 1-100 metrics |
+| `metrics[].name` | string | — | Yes | `/^[a-zA-Z0-9._-]+$/`, max 512 chars |
+| `metrics[].value` | number | — | Yes | Must be finite (`NaN`/`Infinity` rejected) |
+| `metrics[].timestamp` | number | `now` | No | Unix epoch seconds. **Uses `\|\|` not `??`** — timestamp `0` is replaced with current time |
+| `timeout` | number | `10000` | No | Connection + write timeout in ms |
 
-### Browser Performance Metrics
+### Response (success)
 
-```typescript
-// Send page load time
-const loadTime = performance.timing.loadEventEnd - performance.timing.navigationStart;
-await graphite.timing('app.pageload.home', loadTime);
-
-// Send API response times
-const start = Date.now();
-const response = await fetch('/api/data');
-const duration = Date.now() - start;
-await graphite.timing('app.api.data.response', duration);
-```
-
-### Application Metrics
-
-```typescript
-// Counter
-await graphite.counter('app.button.clicks');
-
-// Gauge
-await graphite.gauge('app.users.active', activeUsers);
-
-// Batch metrics
-await graphite.sendBatch([
-  { name: 'app.requests.total', value: 1000 },
-  { name: 'app.requests.success', value: 950 },
-  { name: 'app.requests.error', value: 50 },
-]);
-```
-
-## Security
-
-### Input Validation
-
-```typescript
-function validateMetricName(name: string): boolean {
-  // Only alphanumeric, dots, underscores, hyphens
-  return /^[a-zA-Z0-9._-]+$/.test(name);
-}
-
-function validateValue(value: number): boolean {
-  return !isNaN(value) && isFinite(value);
+```json
+{
+  "success": true,
+  "message": "Sent 2 metric(s) to Graphite",
+  "host": "graphite.example.com",
+  "port": 2003,
+  "metricsCount": 2,
+  "payload": "app.requests.total 1234 1700000000\napp.response.p95 45.2 1700000000"
 }
 ```
 
-### Rate Limiting
+The `payload` field contains the exact plaintext sent over the wire (trailing newline trimmed in the response). Useful for debugging.
 
-```typescript
-// Limit metrics sent per minute
-const METRIC_RATE_LIMIT = 1000; // metrics per minute
+### Wire format
+
+```
+metric.name value timestamp\n
 ```
 
-## Testing
+Each metric is one line, space-separated: name, value, Unix timestamp. Terminated with `\n`. Multiple metrics are newline-separated. The final line also ends with `\n`.
 
-### Docker Graphite
+### Validation
+
+- Metric name: alphanumeric, dots, underscores, hyphens. Max 512 chars. Empty string rejected.
+- Metric value: `isNaN()` and `isFinite()` checks. `undefined` rejected.
+- Batch size: max 100 metrics. Returns HTTP 400 if exceeded.
+- Host: required (empty string check only). No hostname regex.
+- Port: no validation at all.
+
+### curl
 
 ```bash
-docker run -d \
-  -p 2003:2003 \
-  -p 8080:80 \
+curl -X POST https://portofcall.example/api/graphite/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host": "graphite.example.com",
+    "metrics": [
+      {"name": "test.metric", "value": 42},
+      {"name": "test.gauge", "value": 99.9}
+    ]
+  }'
+```
+
+---
+
+## 2. GET `/api/graphite/query`
+
+Queries Graphite-web's `/render` API for time-series data.
+
+### Request (query params)
+
+| Param | Default | Required | Notes |
+|-------|---------|----------|-------|
+| `host` | — | Yes | Graphite-web hostname |
+| `target` | — | Yes | Graphite target expression (e.g. `servers.web01.cpu.*`, `summarize(app.requests,"1h","sum")`) |
+| `from` | `-1h` | No | Graphite relative time string or epoch |
+| `until` | `now` | No | Graphite relative time string or epoch |
+| `format` | `json` | No | Response format (`json`, `csv`, `raw`, etc.) |
+| `renderPort` | `80` | No | Graphite-web HTTP port. **Parsed with `parseInt`** — non-numeric strings become `NaN` |
+
+### Response
+
+```json
+{
+  "success": true,
+  "host": "graphite.example.com",
+  "renderPort": 80,
+  "target": "servers.web01.cpu.*",
+  "from": "-1h",
+  "until": "now",
+  "seriesCount": 3,
+  "series": [
+    {
+      "target": "servers.web01.cpu.user",
+      "datapoints": [[45.2, 1700000000], [null, 1700000060], [50.1, 1700000120]]
+    }
+  ],
+  "latencyMs": 234
+}
+```
+
+Datapoints are `[value | null, timestamp]` pairs. `null` values indicate missing data.
+
+### Graphite error handling
+
+If Graphite returns a non-200 status, the response is still **HTTP 200** with `success: false`, the Graphite status code in `statusCode`, and the first 256 chars of the error body in `error`. Only internal exceptions produce HTTP 500.
+
+### curl
+
+```bash
+curl "https://portofcall.example/api/graphite/query?host=graphite.local&target=app.requests.total&from=-24h&until=now"
+```
+
+---
+
+## 3. GET `/api/graphite/find`
+
+Searches for metrics matching a query pattern via Graphite-web's `/metrics/find` API.
+
+### Request (query params)
+
+| Param | Default | Required | Notes |
+|-------|---------|----------|-------|
+| `host` | — | Yes | Graphite-web hostname |
+| `query` | — | Yes | Metric path pattern. Supports `*` (wildcard) and `{a,b}` (alternatives) |
+| `renderPort` | `80` | No | Graphite-web HTTP port |
+
+### Response
+
+```json
+{
+  "success": true,
+  "host": "graphite.example.com",
+  "renderPort": 80,
+  "query": "servers.web01.*",
+  "count": 4,
+  "metrics": [
+    { "id": "servers.web01.cpu", "text": "cpu", "leaf": 0, "expandable": 1 },
+    { "id": "servers.web01.memory", "text": "memory", "leaf": 0, "expandable": 1 },
+    { "id": "servers.web01.disk", "text": "disk", "leaf": 0, "expandable": 1 },
+    { "id": "servers.web01.uptime", "text": "uptime", "leaf": 1, "expandable": 0 }
+  ],
+  "latencyMs": 45
+}
+```
+
+- `leaf: 1` = this is a metric (has data). `leaf: 0` = this is a branch (has children).
+- `expandable: 1` = can be drilled into with `query=servers.web01.cpu.*`.
+
+### curl
+
+```bash
+curl "https://portofcall.example/api/graphite/find?host=graphite.local&query=servers.*"
+```
+
+---
+
+## 4. GET `/api/graphite/info`
+
+Health check against Graphite-web. Makes two sequential HTTP requests to probe the web interface.
+
+### Request (query params)
+
+| Param | Default | Required | Notes |
+|-------|---------|----------|-------|
+| `host` | — | Yes | Graphite-web hostname |
+| `renderPort` | `80` | No | Graphite-web HTTP port |
+
+### Probe sequence
+
+1. `GET http://{host}:{renderPort}/` — checks if the web interface is up. Body truncated to 512 chars.
+2. `GET http://{host}:{renderPort}/render?format=json&target=test&from=-1min` — checks if the render API is responding. Status 200 **or 400** both count as healthy (400 means the API is responding but the metric doesn't exist).
+
+### Response
+
+```json
+{
+  "success": true,
+  "host": "graphite.example.com",
+  "renderPort": 80,
+  "rootStatus": 200,
+  "rootBodyPreview": "<!DOCTYPE html>...",
+  "renderStatus": 200,
+  "renderHealthy": true,
+  "latencyMs": 123
+}
+```
+
+`success` = `rootStatus` in range 200-499 (anything except 5xx or connection failure).
+
+### curl
+
+```bash
+curl "https://portofcall.example/api/graphite/info?host=graphite.local"
+```
+
+---
+
+## Cross-endpoint comparison
+
+| | `/send` | `/query` | `/find` | `/info` |
+|---|---------|---------|--------|---------|
+| Method | POST | GET | GET | GET |
+| Transport | TCP socket | HTTP fetch | HTTP fetch | HTTP fetch |
+| Target service | Carbon (2003) | Graphite-web (80) | Graphite-web (80) | Graphite-web (80) |
+| Port param | `port` (body) | `renderPort` (query) | `renderPort` (query) | `renderPort` (query) |
+| Default port | 2003 | 80 | 80 | 80 |
+| CF detection | Yes | No | No | No |
+| Timeout | Configurable | None | None | None |
+| Host validation | Required + regex-free | Required + regex-free | Required + regex-free | Required + regex-free |
+| Port validation | None | None | None | None |
+| Error HTTP status | 400/403/500 | 200 (with `success: false`) or 500 | 200 (with `success: false`) or 500 | 200 or 500 |
+
+---
+
+## Known quirks and limitations
+
+1. **Timestamp `0` replaced with current time** — `/send` uses `m.timestamp || now` (JavaScript `||` operator). Since `0` is falsy, `timestamp: 0` (Unix epoch) is silently replaced with the current time. Use `timestamp: 1` as the minimum if you need near-epoch timestamps.
+
+2. **No port validation on `/send`** — the `port` field is not range-checked. Values like `0`, `-1`, or `99999` are passed directly to `connect()`. This will fail at the socket level, not with a helpful validation error.
+
+3. **HTTP only for render API** — endpoints 2-4 construct URLs with `http://` hardcoded. No HTTPS option for communicating with Graphite-web. If your Graphite-web is HTTPS-only, these endpoints won't reach it.
+
+4. **No timeout on HTTP endpoints** — only `/send` has a configurable timeout (default 10s). The HTTP `fetch()` calls in `/query`, `/find`, and `/info` have no timeout and rely on Cloudflare's default request timeout.
+
+5. **No Cloudflare detection on HTTP endpoints** — only `/send` (TCP) runs `checkIfCloudflare()`. The HTTP endpoints use `fetch()` which routes through Cloudflare's network differently and doesn't need the same check, but the inconsistency is notable.
+
+6. **`renderPort` `parseInt` edge case** — `parseInt('abc', 10)` returns `NaN`, which gets embedded in the URL as `http://host:NaN/render?...`. This will cause a `fetch()` error, not a clean validation message.
+
+7. **`rootBodyPreview` truncation** — `/info` truncates the root page body to 512 chars. HTML content may be cut mid-tag, producing invalid markup in the response.
+
+8. **`renderHealthy` treats 400 as healthy** — in `/info`, HTTP 400 from the render endpoint is considered healthy. This is intentional: a 400 means the API is responding (the `target=test` metric just doesn't exist). But it could mask a misconfigured Graphite-web that always returns 400.
+
+9. **No method restriction** — none of the 4 endpoints check `request.method`. `/send` effectively requires POST (since `request.json()` needs a body), but `/query`, `/find`, `/info` work with any HTTP method (GET, POST, PUT, etc.).
+
+10. **SSRF potential in HTTP endpoints** — the `host` and `renderPort` params in `/query`, `/find`, `/info` are not restricted. They construct URLs like `http://{host}:{renderPort}/render?...` and issue `fetch()` calls. There's no hostname allowlist or private-IP blocking beyond what Cloudflare Workers enforce at the platform level.
+
+---
+
+## Local testing
+
+```bash
+# Start Graphite + StatsD in Docker
+docker run -d --name graphite \
+  -p 2003:2003 -p 80:80 \
   graphiteapp/graphite-statsd
 
-# Send test metric
-echo "test.metric 42 $(date +%s)" | nc localhost 2003
+# Send a metric via the API
+curl -X POST http://localhost:8787/api/graphite/send \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","metrics":[{"name":"test.metric","value":42}]}'
 
-# View in browser
-open http://localhost:8080
+# Query the metric
+curl "http://localhost:8787/api/graphite/query?host=localhost&target=test.metric&from=-5min"
+
+# Browse metrics
+curl "http://localhost:8787/api/graphite/find?host=localhost&query=test.*"
+
+# Health check
+curl "http://localhost:8787/api/graphite/info?host=localhost"
 ```
-
-### Test with Netcat
-
-```bash
-# Send metrics
-echo "test.cpu.usage 45.2 $(date +%s)" | nc graphite.example.com 2003
-echo "test.memory.used 1024 $(date +%s)" | nc graphite.example.com 2003
-```
-
-## Resources
-
-- **Graphite Docs**: [Official Documentation](https://graphite.readthedocs.io/)
-- **Carbon**: [Graphite storage backend](https://github.com/graphite-project/carbon)
-- **Grafana**: [Visualization tool](https://grafana.com/) (integrates with Graphite)
-
-## Common Metric Patterns
-
-### Counters (cumulative)
-```
-app.requests.total 12345
-app.errors.total 42
-```
-
-### Gauges (current value)
-```
-system.cpu.usage 65.5
-system.memory.free 2048000000
-app.users.active 150
-```
-
-### Timers (milliseconds)
-```
-app.response.time.p50 45.2
-app.response.time.p95 123.4
-app.response.time.p99 256.7
-```
-
-### Rates (per second)
-```
-app.requests.rate 100.5
-app.bytes.sent.rate 1048576
-```
-
-## Next Steps
-
-1. Implement Graphite client
-2. Add metric batching
-3. Create metric builder DSL
-4. Build real-time dashboard
-5. Add Grafana integration
-6. Support pickle protocol (more efficient)
-7. Create metric aggregation
-
-## Notes
-
-- **Extremely simple** protocol - just text lines
-- **Fire and forget** - no response from server
-- **UDP option** available for even lower overhead
-- Works great with **StatsD** as a frontend
-- **Grafana** is the most popular visualization tool
-- Metric names are **hierarchical** (dot-separated)

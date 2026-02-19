@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface ClamAVClientProps {
   onBack: () => void;
@@ -101,6 +103,7 @@ export default function ClamAVClient({ onBack }: ClamAVClientProps) {
 
   return (
     <ProtocolClientLayout title="ClamAV Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.ClamAV || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="ClamAV Daemon Configuration" />
 

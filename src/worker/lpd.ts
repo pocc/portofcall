@@ -205,6 +205,13 @@ export async function handleLPDPrint(request: Request): Promise<Response> {
     const jobName = body.jobName || 'portofcall-job';
     const user = body.user || 'portofcall';
 
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -226,7 +233,7 @@ export async function handleLPDPrint(request: Request): Promise<Response> {
 
     // Data file name and control file name (RFC 1179 §7.2)
     // dfA{job_number}{hostname} for data, cfA{job_number}{hostname} for control
-    const jobNumber = String(Math.floor(1 + Math.random() * 998)).padStart(3, '0');
+    const jobNumber = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
     const dataFileName = `dfA${jobNumber}${localHostname}`;
     const ctrlFileName = `cfA${jobNumber}${localHostname}`;
 

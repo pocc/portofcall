@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface ManageSieveClientProps {
   onBack: () => void;
@@ -158,6 +160,7 @@ export default function ManageSieveClient({ onBack }: ManageSieveClientProps) {
 
   return (
     <ProtocolClientLayout title="ManageSieve Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.ManageSieve || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 

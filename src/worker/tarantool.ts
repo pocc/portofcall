@@ -179,13 +179,21 @@ function buildIprotoRequest(requestType: number, syncId: number): Uint8Array {
 
   const payloadLen = headerMap.length + bodyMap.length;
 
-  // Size header: MessagePack uint32 encoding of payload length
-  const sizeHeader = mpEncodeUint(payloadLen);
+  // Size header: always a 5-byte MessagePack uint32 (0xCE prefix).
+  // Tarantool decodes the size with mp_decode_uint and accepts any msgpack
+  // uint encoding, but using a fixed 5-byte uint32 is conventional and
+  // avoids parser edge cases in strict server implementations.
+  const sizeHeader = new Uint8Array(5);
+  sizeHeader[0] = 0xCE;
+  sizeHeader[1] = (payloadLen >> 24) & 0xFF;
+  sizeHeader[2] = (payloadLen >> 16) & 0xFF;
+  sizeHeader[3] = (payloadLen >> 8) & 0xFF;
+  sizeHeader[4] = payloadLen & 0xFF;
 
-  const packet = new Uint8Array(sizeHeader.length + payloadLen);
+  const packet = new Uint8Array(5 + payloadLen);
   packet.set(sizeHeader, 0);
-  packet.set(headerMap, sizeHeader.length);
-  packet.set(bodyMap, sizeHeader.length + headerMap.length);
+  packet.set(headerMap, 5);
+  packet.set(bodyMap, 5 + headerMap.length);
 
   return packet;
 }
@@ -231,6 +239,69 @@ function mpDecodeUint(data: Uint8Array, offset: number): [number, number] {
   }
 
   return [0, offset + 1];
+}
+
+/**
+ * Skip a single MessagePack value at offset and return the new offset.
+ * Used to advance past body fields that are not of interest without
+ * corrupting the parse position. Handles the types Tarantool commonly
+ * returns: nil, bool, uint, int, fixstr, str8/16, fixarray, fixmap, bin8.
+ */
+function mpSkipValue(data: Uint8Array, offset: number): number {
+  if (offset >= data.length) return offset;
+  const b = data[offset];
+  // nil, bool
+  if (b === 0xC0 || b === 0xC2 || b === 0xC3) return offset + 1;
+  // positive fixint
+  if (b <= 0x7F) return offset + 1;
+  // negative fixint
+  if (b >= 0xE0) return offset + 1;
+  // fixstr
+  if ((b & 0xE0) === 0xA0) return offset + 1 + (b & 0x1F);
+  // fixarray
+  if ((b & 0xF0) === 0x90) {
+    const len = b & 0x0F;
+    let off = offset + 1;
+    for (let i = 0; i < len; i++) off = mpSkipValue(data, off);
+    return off;
+  }
+  // fixmap
+  if ((b & 0xF0) === 0x80) {
+    const len = b & 0x0F;
+    let off = offset + 1;
+    for (let i = 0; i < len; i++) { off = mpSkipValue(data, off); off = mpSkipValue(data, off); }
+    return off;
+  }
+  // uint8 / int8
+  if (b === 0xCC || b === 0xD0) return offset + 2;
+  // uint16 / int16
+  if (b === 0xCD || b === 0xD1) return offset + 3;
+  // uint32 / int32 / float32
+  if (b === 0xCE || b === 0xD2 || b === 0xCA) return offset + 5;
+  // uint64 / int64 / float64
+  if (b === 0xCF || b === 0xD3 || b === 0xCB) return offset + 9;
+  // str8 / bin8
+  if (b === 0xD9 || b === 0xC4) return offset + 2 + data[offset + 1];
+  // str16 / bin16
+  if (b === 0xDA || b === 0xC5) return offset + 3 + ((data[offset + 1] << 8) | data[offset + 2]);
+  // str32 / bin32
+  if (b === 0xDB || b === 0xC6) return offset + 5 + ((data[offset + 1] << 24) | (data[offset + 2] << 16) | (data[offset + 3] << 8) | data[offset + 4]) >>> 0;
+  // array16
+  if (b === 0xDC) {
+    const len = (data[offset + 1] << 8) | data[offset + 2];
+    let off = offset + 3;
+    for (let i = 0; i < len; i++) off = mpSkipValue(data, off);
+    return off;
+  }
+  // map16
+  if (b === 0xDE) {
+    const len = (data[offset + 1] << 8) | data[offset + 2];
+    let off = offset + 3;
+    for (let i = 0; i < len; i++) { off = mpSkipValue(data, off); off = mpSkipValue(data, off); }
+    return off;
+  }
+  // Unknown — advance by 1 to avoid infinite loop
+  return offset + 1;
 }
 
 /**
@@ -299,10 +370,11 @@ function parseIprotoResponse(data: Uint8Array): {
           offset = keyEnd;
         }
       } else {
-        // Skip value
-        offset = keyEnd;
-        const [, vEnd] = mpDecodeUint(data, offset);
-        offset = vEnd;
+        // Skip value using a generic single-value skip so that non-uint
+        // body fields (arrays, strings, maps) do not corrupt the offset.
+        // mpDecodeUint only advances past uint types; for all other types
+        // it returns [0, offset+1], leaving subsequent parses wrong.
+        offset = mpSkipValue(data, keyEnd);
       }
     }
   }
@@ -839,31 +911,47 @@ async function readIprotoResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutPromise: Promise<never>,
 ): Promise<Uint8Array> {
-  // Read 5 bytes to get size prefix
+  // Read 5 bytes. For 0xCE (uint32) all 5 bytes are the size prefix.
+  // For 0xCD (uint16) only bytes 0-2 are the size prefix; bytes 3-4 are
+  // the first 2 bytes of the message payload (over-read during the 5-byte
+  // read). For fixint (byte 0 <= 0x7F) only byte 0 is the size prefix;
+  // bytes 1-4 are the first 4 bytes of the message payload.
   const sizeBytes = await readExact(reader, 5, timeoutPromise);
   let msgLen = 0;
+
   if (sizeBytes[0] === 0xCE) {
+    // 5-byte uint32: no over-read
     msgLen = ((sizeBytes[1] << 24) | (sizeBytes[2] << 16) | (sizeBytes[3] << 8) | sizeBytes[4]) >>> 0;
-  } else if (sizeBytes[0] === 0xCD) {
-    // uint16 prefix (very small message)
-    const extra = await readExact(reader, 1, timeoutPromise);
-    msgLen = ((sizeBytes[1] << 8) | sizeBytes[2]);
-    // re-read remaining
     const payload = await readExact(reader, msgLen, timeoutPromise);
-    const full = new Uint8Array(3 + 1 + msgLen);
-    full.set(sizeBytes.slice(0, 3), 0);
-    full.set(extra, 3);
-    full.set(payload, 4);
+    const full = new Uint8Array(5 + msgLen);
+    full.set(sizeBytes, 0);
+    full.set(payload, 5);
+    return full;
+  } else if (sizeBytes[0] === 0xCD) {
+    // 3-byte uint16: bytes 3-4 of sizeBytes are first 2 payload bytes
+    msgLen = ((sizeBytes[1] << 8) | sizeBytes[2]);
+    const overRead = sizeBytes.slice(3, 5); // first 2 payload bytes already consumed
+    const remaining = msgLen > 2 ? await readExact(reader, msgLen - 2, timeoutPromise) : new Uint8Array(0);
+    const full = new Uint8Array(3 + msgLen);
+    full.set(sizeBytes.slice(0, 3), 0); // 0xCD hi lo
+    full.set(overRead, 3);              // first 2 payload bytes
+    full.set(remaining, 5);             // remainder
+    return full;
+  } else if (sizeBytes[0] <= 0x7F) {
+    // 1-byte fixint: bytes 1-4 of sizeBytes are first 4 payload bytes
+    msgLen = sizeBytes[0];
+    const overReadCount = Math.min(4, msgLen); // how many payload bytes are in sizeBytes[1..4]
+    const overRead = sizeBytes.slice(1, 1 + overReadCount);
+    const remaining = msgLen > 4 ? await readExact(reader, msgLen - 4, timeoutPromise) : new Uint8Array(0);
+    const full = new Uint8Array(1 + msgLen);
+    full[0] = sizeBytes[0];             // fixint size byte
+    full.set(overRead, 1);              // first up-to-4 payload bytes
+    if (remaining.length > 0) full.set(remaining, 1 + overReadCount);
     return full;
   } else {
-    msgLen = sizeBytes[0] <= 0x7F ? sizeBytes[0] : 0;
+    // Unknown size prefix format — return raw bytes and let caller handle
+    return sizeBytes;
   }
-
-  const payload = await readExact(reader, msgLen, timeoutPromise);
-  const full = new Uint8Array(5 + msgLen);
-  full.set(sizeBytes, 0);
-  full.set(payload, 5);
-  return full;
 }
 
 /**

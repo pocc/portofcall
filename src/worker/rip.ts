@@ -99,6 +99,21 @@ enum AddressFamily {
 const RIP_INFINITY = 16;
 
 /**
+ * Validate IPv4 address format and octet ranges
+ */
+function validateIPv4(ip: string): boolean {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return false;
+  for (const part of parts) {
+    const num = parseInt(part, 10);
+    if (isNaN(num) || num < 0 || num > 255) return false;
+    // Check for leading zeros (reject "192.001.002.001")
+    if (part !== num.toString()) return false;
+  }
+  return true;
+}
+
+/**
  * Build RIP request message as a Uint8Array (avoids Node.js Buffer dependency)
  */
 function buildRIPRequestBytes(version: number, networkAddress?: string): Uint8Array {
@@ -115,13 +130,16 @@ function buildRIPRequestBytes(version: number, networkAddress?: string): Uint8Ar
 
   if (networkAddress) {
     // Request a specific route: AFI=2, IP address set, metric=16
+    if (!validateIPv4(networkAddress)) {
+      throw new Error(`Invalid IPv4 address: ${networkAddress}`);
+    }
     const ipParts = networkAddress.split('.').map(p => parseInt(p, 10));
     view.setUint16(4, AddressFamily.IP);                   // AFI
     view.setUint16(6, 0);                                  // Route tag (v2) / reserved (v1)
-    buf[8]  = ipParts[0] || 0;
-    buf[9]  = ipParts[1] || 0;
-    buf[10] = ipParts[2] || 0;
-    buf[11] = ipParts[3] || 0;
+    buf[8]  = ipParts[0];
+    buf[9]  = ipParts[1];
+    buf[10] = ipParts[2];
+    buf[11] = ipParts[3];
     buf[12] = 0; buf[13] = 0; buf[14] = 0; buf[15] = 0;   // Subnet mask (zeros = v1 compat)
     buf[16] = 0; buf[17] = 0; buf[18] = 0; buf[19] = 0;   // Next hop
     view.setUint32(20, RIP_INFINITY);                      // Metric = 16
@@ -181,24 +199,33 @@ function buildRIPEntry(
     entry.writeUInt16BE(0, 2);
   }
 
+  if (!validateIPv4(ipAddress)) {
+    throw new Error(`Invalid IPv4 address: ${ipAddress}`);
+  }
   const ipParts = ipAddress.split('.').map(p => parseInt(p, 10));
-  entry.writeUInt8(ipParts[0] || 0, 4);
-  entry.writeUInt8(ipParts[1] || 0, 5);
-  entry.writeUInt8(ipParts[2] || 0, 6);
-  entry.writeUInt8(ipParts[3] || 0, 7);
+  entry.writeUInt8(ipParts[0], 4);
+  entry.writeUInt8(ipParts[1], 5);
+  entry.writeUInt8(ipParts[2], 6);
+  entry.writeUInt8(ipParts[3], 7);
 
   if (version === 2) {
+    if (!validateIPv4(subnetMask)) {
+      throw new Error(`Invalid subnet mask: ${subnetMask}`);
+    }
     const maskParts = subnetMask.split('.').map(p => parseInt(p, 10));
-    entry.writeUInt8(maskParts[0] || 0, 8);
-    entry.writeUInt8(maskParts[1] || 0, 9);
-    entry.writeUInt8(maskParts[2] || 0, 10);
-    entry.writeUInt8(maskParts[3] || 0, 11);
+    entry.writeUInt8(maskParts[0], 8);
+    entry.writeUInt8(maskParts[1], 9);
+    entry.writeUInt8(maskParts[2], 10);
+    entry.writeUInt8(maskParts[3], 11);
 
+    if (!validateIPv4(nextHop)) {
+      throw new Error(`Invalid next hop: ${nextHop}`);
+    }
     const nhParts = nextHop.split('.').map(p => parseInt(p, 10));
-    entry.writeUInt8(nhParts[0] || 0, 12);
-    entry.writeUInt8(nhParts[1] || 0, 13);
-    entry.writeUInt8(nhParts[2] || 0, 14);
-    entry.writeUInt8(nhParts[3] || 0, 15);
+    entry.writeUInt8(nhParts[0], 12);
+    entry.writeUInt8(nhParts[1], 13);
+    entry.writeUInt8(nhParts[2], 14);
+    entry.writeUInt8(nhParts[3], 15);
   } else {
     entry.fill(0, 8, 16);
   }
@@ -379,12 +406,14 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
       const ripRequest = buildRIPRequest(version, networkAddress);
 
@@ -394,10 +423,13 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
 
-      const { value, done } = await Promise.race([
+      const readResult = await Promise.race([
         reader.read(),
         timeoutPromise,
       ]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
+      const { value, done } = readResult;
 
       if (done || !value) {
         reader.releaseLock();
@@ -466,6 +498,7 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
       });
 
     } catch (error) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
       throw error;
     }
@@ -592,8 +625,9 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     let routes: RouteEntry[] = [];
@@ -604,6 +638,7 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
     try {
       const socket = connect(`${host}:${port}`);
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 
       const writer = socket.writable.getWriter();
@@ -612,19 +647,26 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
       try {
-        const result = await Promise.race([reader.read(), timeoutPromise]);
+        timeoutHandle = setTimeout(() => {}, timeout); // Reset timeout for read
+        const timeoutPromiseRead = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeout);
+        });
+        const result = await Promise.race([reader.read(), timeoutPromiseRead]);
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         if (!result.done && result.value && result.value.length >= 4) {
           responseReceived = true;
           routes = parseRIPv2Response(result.value);
         }
       } catch {
         // No response within timeout — normal for UDP-only routers
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       } finally {
         reader.releaseLock();
       }
 
       socket.close();
     } catch (err) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connectionError = err instanceof Error ? err.message : 'Connection failed';
     }
 
@@ -704,8 +746,11 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
     const enc = new TextEncoder();
 
     const ipBytes = (addr: string): [number, number, number, number] => {
+      if (!validateIPv4(addr)) {
+        throw new Error(`Invalid IPv4 address: ${addr}`);
+      }
       const p = addr.split('.').map(Number);
-      return [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0, p[3] ?? 0];
+      return [p[0], p[1], p[2], p[3]];
     };
 
     const routeCount = routes.length;
@@ -742,9 +787,10 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
 
     const raw = toHexString(pkt);
     const startTime = Date.now();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     let connected = false;
     let responseReceived = false;
@@ -754,6 +800,7 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
     try {
       const socket = connect(`${host}:${port}`);
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 
       const writer = socket.writable.getWriter();
@@ -762,18 +809,24 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
       try {
-        const result = await Promise.race([reader.read(), timeoutPromise]);
+        const timeoutPromiseRead = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeout);
+        });
+        const result = await Promise.race([reader.read(), timeoutPromiseRead]);
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         if (!result.done && result.value && result.value.length >= 4) {
           responseReceived = true;
           responseRoutes = parseRIPv2Response(result.value);
         }
       } catch {
         // No response — expected for UDP-only routers
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       } finally {
         reader.releaseLock();
       }
       socket.close();
     } catch (err) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connectionError = err instanceof Error ? err.message : 'Connection failed';
     }
 
@@ -868,8 +921,9 @@ export async function handleRIPSend(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     let routes: RouteEntry[] = [];
@@ -880,6 +934,7 @@ export async function handleRIPSend(request: Request): Promise<Response> {
     try {
       const socket = connect(`${host}:${port}`);
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 
       const writer = socket.writable.getWriter();
@@ -888,7 +943,11 @@ export async function handleRIPSend(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
       try {
-        const result = await Promise.race([reader.read(), timeoutPromise]);
+        const timeoutPromiseRead = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeout);
+        });
+        const result = await Promise.race([reader.read(), timeoutPromiseRead]);
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         if (!result.done && result.value && result.value.length >= 4) {
           responseReceived = true;
           // Parse as v2 for max field extraction; v1 fields will show zeros for mask/nextHop
@@ -896,12 +955,14 @@ export async function handleRIPSend(request: Request): Promise<Response> {
         }
       } catch {
         // No response — router likely UDP-only
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       } finally {
         reader.releaseLock();
       }
 
       socket.close();
     } catch (err) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connectionError = err instanceof Error ? err.message : 'Connection failed';
     }
 
@@ -1003,12 +1064,15 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
       });
     }
 
-    // Clamp keyId to valid range per RFC 2082 (0-255)
-    const keyIdClamped = Math.max(0, Math.min(255, keyId));
+    // Clamp keyId to valid range per RFC 2082 (1-255, 0 is reserved)
+    const keyIdClamped = Math.max(1, Math.min(255, keyId));
 
     const ipBytes = (addr: string): [number, number, number, number] => {
+      if (!validateIPv4(addr)) {
+        throw new Error(`Invalid IPv4 address: ${addr}`);
+      }
       const p = addr.split('.').map(Number);
-      return [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0, p[3] ?? 0];
+      return [p[0], p[1], p[2], p[3]];
     };
 
     const routeCount = routes.length;
@@ -1076,9 +1140,10 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
 
     // ── Wire up TCP connection and send ─────────────────────────────────────
     const startTime = Date.now();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     let connected = false;
     let responseReceived = false;
@@ -1088,6 +1153,7 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
     try {
       const socket = connect(`${host}:${port}`);
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 
       const writer = socket.writable.getWriter();
@@ -1096,18 +1162,24 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
       try {
-        const result = await Promise.race([reader.read(), timeoutPromise]);
+        const timeoutPromiseRead = new Promise<never>((_, reject) => {
+          timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeout);
+        });
+        const result = await Promise.race([reader.read(), timeoutPromiseRead]);
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
         if (!result.done && result.value && result.value.length >= 4) {
           responseReceived = true;
           responseRoutes = parseRIPv2Response(result.value);
         }
       } catch {
         // No response — expected for UDP-only routers
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       } finally {
         reader.releaseLock();
       }
       socket.close();
     } catch (err) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connectionError = err instanceof Error ? err.message : 'Connection failed';
     }
 

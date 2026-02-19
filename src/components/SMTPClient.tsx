@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { FormField, ActionButton, ResultDisplay, HelpSection } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface SMTPClientProps {
   onBack: () => void;
@@ -148,6 +150,8 @@ export default function SMTPClient({ onBack }: SMTPClientProps) {
           </div>
         )}
       </div>
+
+      <ApiExamples examples={apiExamples.SMTP || []} />
 
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection Panel */}

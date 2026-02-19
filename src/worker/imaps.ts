@@ -4,6 +4,10 @@
  *
  * Identical to IMAP but the entire connection is wrapped in TLS
  * using Cloudflare Workers' secureTransport: 'on' option.
+ *
+ * References:
+ *   RFC 9051 — IMAP4rev2 (command/response format, LOGIN, LIST, SELECT, CAPABILITY)
+ *   RFC 8314 — Implicit TLS for email (port 993, secureTransport: 'on')
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -18,7 +22,36 @@ interface IMAPSConnectionOptions {
 }
 
 /**
- * Read IMAP response with timeout
+ * Quote an IMAP string per RFC 9051 Section 4.3.
+ * If the value contains special characters (spaces, quotes, backslashes,
+ * parens, CTLs, etc.) it must be sent as a quoted-string with internal
+ * backslashes and double-quotes escaped.
+ */
+function quoteIMAPString(value: string): string {
+  // If it contains NUL or CR or LF, we would need a literal, but for
+  // LOGIN args and mailbox names those should never appear. Fall back
+  // to quoted-string with escaping for everything else.
+  const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return `"${escaped}"`;
+}
+
+/**
+ * Check if a line starts with a tagged status response.
+ * Per RFC 9051 Section 7.1, a tagged response is:
+ *   tag SP ("OK" / "NO" / "BAD") SP text CRLF
+ * We check that the tag appears at the start of a line (after CRLF or at pos 0).
+ */
+function hasTaggedResponse(response: string, tag: string): 'OK' | 'NO' | 'BAD' | null {
+  // Build a regex that matches the tag at the start of a line
+  const pattern = new RegExp(`(?:^|\\r\\n)${tag} (OK|NO|BAD)[ \\r]`);
+  const m = response.match(pattern);
+  return m ? (m[1] as 'OK' | 'NO' | 'BAD') : null;
+}
+
+/**
+ * Read IMAP response with timeout.
+ * Accumulates data until a tagged status response line is found.
+ * Uses a streaming TextDecoder to avoid corrupting multi-byte UTF-8.
  */
 async function readIMAPResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -27,14 +60,15 @@ async function readIMAPResponse(
 ): Promise<string> {
   const readPromise = (async () => {
     let response = '';
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
 
-      if (response.includes(`${tag} OK`) || response.includes(`${tag} NO`) || response.includes(`${tag} BAD`)) {
+      if (hasTaggedResponse(response, tag)) {
         break;
       }
     }
@@ -124,14 +158,16 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
 
       try {
-        // Read server greeting (* OK ...)
+        // Read server greeting (RFC 9051 Section 7.1)
+        // Valid greetings: * OK, * PREAUTH, * BYE
         const greetingPromise = (async () => {
           let greeting = '';
+          const decoder = new TextDecoder('utf-8', { fatal: false });
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = new TextDecoder().decode(value);
+            const chunk = decoder.decode(value, { stream: true });
             greeting += chunk;
 
             if (greeting.includes('\r\n')) {
@@ -147,7 +183,14 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
 
         const greeting = await Promise.race([greetingPromise, greetingTimeout]);
 
-        if (!greeting.includes('* OK')) {
+        // Check for * BYE (server refusing connection)
+        if (greeting.includes('* BYE')) {
+          throw new Error(`Server refused connection: ${greeting.trim()}`);
+        }
+
+        // Accept * OK or * PREAUTH
+        const isPreauth = greeting.includes('* PREAUTH');
+        if (!greeting.includes('* OK') && !isPreauth) {
           throw new Error(`Invalid IMAPS greeting: ${greeting.trim()}`);
         }
 
@@ -158,17 +201,17 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
           capabilities = capMatch[1];
         }
 
-        let authenticated = false;
+        let authenticated = isPreauth;
 
-        // Try authentication if credentials provided
-        if (options.username && options.password) {
+        // Try authentication if credentials provided (and not already PREAUTH)
+        if (options.username && options.password && !isPreauth) {
           const loginResp = await sendIMAPCommand(
             reader, writer, 'A001',
-            `LOGIN ${options.username} ${options.password}`,
+            `LOGIN ${quoteIMAPString(options.username)} ${quoteIMAPString(options.password)}`,
             10000
           );
 
-          if (loginResp.includes('A001 OK')) {
+          if (hasTaggedResponse(loginResp, 'A001') === 'OK') {
             authenticated = true;
 
             // Get capabilities after authentication (they may differ)
@@ -176,7 +219,7 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
               reader, writer, 'A002', 'CAPABILITY', 5000
             );
 
-            if (capResp.includes('A002 OK')) {
+            if (hasTaggedResponse(capResp, 'A002') === 'OK') {
               const postCapMatch = capResp.match(/\* CAPABILITY ([^\r\n]+)/);
               if (postCapMatch) {
                 capabilities = postCapMatch[1];
@@ -185,12 +228,12 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
           } else {
             throw new Error(`Authentication failed: ${loginResp.trim()}`);
           }
-        } else {
+        } else if (!isPreauth) {
           // Just request capabilities without login
           const capResp = await sendIMAPCommand(
             reader, writer, 'A001', 'CAPABILITY', 5000
           );
-          if (capResp.includes('A001 OK')) {
+          if (hasTaggedResponse(capResp, 'A001') === 'OK') {
             const capLine = capResp.match(/\* CAPABILITY ([^\r\n]+)/);
             if (capLine) {
               capabilities = capLine[1];
@@ -199,7 +242,8 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
         }
 
         // Send LOGOUT
-        await sendIMAPCommand(reader, writer, 'A099', 'LOGOUT', 5000);
+        const logoutTag = authenticated && options.username ? 'A003' : 'A002';
+        await sendIMAPCommand(reader, writer, logoutTag, 'LOGOUT', 5000);
         await socket.close();
 
         return {
@@ -307,21 +351,26 @@ export async function handleIMAPSList(request: Request): Promise<Response> {
       try {
         // Read greeting
         let greeting = '';
+        const greetingDecoder = new TextDecoder('utf-8', { fatal: false });
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          greeting += new TextDecoder().decode(value);
+          greeting += greetingDecoder.decode(value, { stream: true });
           if (greeting.includes('\r\n')) break;
         }
 
-        // Authenticate
+        if (greeting.includes('* BYE')) {
+          throw new Error(`Server refused connection: ${greeting.trim()}`);
+        }
+
+        // Authenticate (quote credentials per RFC 9051 Section 4.3)
         const loginResp = await sendIMAPCommand(
           reader, writer, 'A001',
-          `LOGIN ${options.username} ${options.password}`,
+          `LOGIN ${quoteIMAPString(options.username!)} ${quoteIMAPString(options.password!)}`,
           10000
         );
 
-        if (!loginResp.includes('A001 OK')) {
+        if (hasTaggedResponse(loginResp, 'A001') !== 'OK') {
           throw new Error(`Authentication failed: ${loginResp.trim()}`);
         }
 
@@ -330,14 +379,23 @@ export async function handleIMAPSList(request: Request): Promise<Response> {
           reader, writer, 'A002', 'LIST "" "*"', 10000
         );
 
-        // Parse mailbox list
+        // Parse mailbox list (RFC 9051 Section 7.2.2)
+        // Format: * LIST (flags) delimiter mailbox
+        // Mailbox can be quoted ("name") or unquoted atom (INBOX)
         const mailboxes: string[] = [];
-        const lines = listResp.split('\n');
+        const lines = listResp.split('\r\n');
 
         for (const line of lines) {
-          const match = line.match(/\* LIST \([^)]*\) "([^"]*)" "([^"]*)"/);
-          if (match) {
-            mailboxes.push(match[2]);
+          // Match: * LIST (flags) "delimiter" "mailbox-name"
+          const quotedMatch = line.match(/^\* LIST \([^)]*\) (?:"[^"]*"|NIL) "([^"]*)"/);
+          if (quotedMatch) {
+            mailboxes.push(quotedMatch[1]);
+            continue;
+          }
+          // Match: * LIST (flags) "delimiter" mailbox-name (unquoted atom like INBOX)
+          const unquotedMatch = line.match(/^\* LIST \([^)]*\) (?:"[^"]*"|NIL) ([^\r\n"]+)/);
+          if (unquotedMatch) {
+            mailboxes.push(unquotedMatch[1].trim());
           }
         }
 
@@ -442,43 +500,50 @@ export async function handleIMAPSSelect(request: Request): Promise<Response> {
       try {
         // Read greeting
         let greeting = '';
+        const greetingDecoder = new TextDecoder('utf-8', { fatal: false });
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          greeting += new TextDecoder().decode(value);
+          greeting += greetingDecoder.decode(value, { stream: true });
           if (greeting.includes('\r\n')) break;
         }
 
-        // Authenticate
+        if (greeting.includes('* BYE')) {
+          throw new Error(`Server refused connection: ${greeting.trim()}`);
+        }
+
+        // Authenticate (quote credentials per RFC 9051 Section 4.3)
         const loginResp = await sendIMAPCommand(
           reader, writer, 'A001',
-          `LOGIN ${options.username} ${options.password}`,
+          `LOGIN ${quoteIMAPString(options.username!)} ${quoteIMAPString(options.password!)}`,
           10000
         );
 
-        if (!loginResp.includes('A001 OK')) {
+        if (hasTaggedResponse(loginResp, 'A001') !== 'OK') {
           throw new Error(`Authentication failed: ${loginResp.trim()}`);
         }
 
-        // Select mailbox
+        // Select mailbox (quote name for mailboxes with spaces/special chars)
         const selectResp = await sendIMAPCommand(
-          reader, writer, 'A002', `SELECT ${mailbox}`, 10000
+          reader, writer, 'A002', `SELECT ${quoteIMAPString(mailbox)}`, 10000
         );
 
-        if (!selectResp.includes('A002 OK')) {
+        if (hasTaggedResponse(selectResp, 'A002') !== 'OK') {
           throw new Error(`SELECT failed: ${selectResp.trim()}`);
         }
 
-        // Parse SELECT response for message count
+        // Parse SELECT response for message count (RFC 9051 Section 7.3.1)
         let exists = 0;
         let recent = 0;
 
-        const lines = selectResp.split('\n');
+        const lines = selectResp.split('\r\n');
         for (const line of lines) {
-          const existsMatch = line.match(/\* (\d+) EXISTS/);
+          const existsMatch = line.match(/^\* (\d+) EXISTS/);
           if (existsMatch) exists = parseInt(existsMatch[1]);
 
-          const recentMatch = line.match(/\* (\d+) RECENT/);
+          // RECENT is from IMAP4rev1 (RFC 3501); not present in IMAP4rev2
+          // but many servers still send it
+          const recentMatch = line.match(/^\* (\d+) RECENT/);
           if (recentMatch) recent = parseInt(recentMatch[1]);
         }
 
@@ -576,24 +641,35 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      // Read server greeting
+      // Read server greeting — wait for full line (CRLF), not just '* OK'
       let greeting = '';
+      const greetingDecoder = new TextDecoder('utf-8', { fatal: false });
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        greeting += new TextDecoder().decode(value);
-        if (greeting.includes('* OK')) break;
+        greeting += greetingDecoder.decode(value, { stream: true });
+        if (greeting.includes('\r\n')) break;
       }
 
-      if (!greeting.includes('* OK')) {
+      if (greeting.includes('* BYE')) {
+        server.send(JSON.stringify({ type: 'error', message: 'Server refused connection: ' + greeting.trim() }));
+        server.close();
+        return;
+      }
+
+      if (!greeting.includes('* OK') && !greeting.includes('* PREAUTH')) {
         server.send(JSON.stringify({ type: 'error', message: 'No IMAPS greeting received' }));
         server.close();
         return;
       }
 
-      // LOGIN
-      const loginResp = await sendIMAPCommand(reader, writer, 'A001', `LOGIN ${username} ${password}`, 10000);
-      if (!loginResp.includes('A001 OK')) {
+      // LOGIN (quote credentials per RFC 9051 Section 4.3)
+      const loginResp = await sendIMAPCommand(
+        reader, writer, 'A001',
+        `LOGIN ${quoteIMAPString(username)} ${quoteIMAPString(password)}`,
+        10000
+      );
+      if (hasTaggedResponse(loginResp, 'A001') !== 'OK') {
         server.send(JSON.stringify({ type: 'error', message: 'Authentication failed: ' + loginResp.trim() }));
         server.close();
         return;
@@ -616,25 +692,34 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
       // Auto-increment tag counter (start from A003 since A001/A002 used above)
       let tagCounter = 3;
 
-      server.addEventListener('message', async (event) => {
-        try {
-          const msg = JSON.parse(event.data as string) as { type: string; command?: string };
-          if (msg.type === 'command' && msg.command) {
-            const tag = `A${String(tagCounter++).padStart(3, '0')}`;
-            const response = await sendIMAPCommand(reader, writer, tag, msg.command.trim(), 30000);
-            server.send(JSON.stringify({
-              type: 'response',
-              tag,
-              response,
-              command: msg.command.trim(),
-            }));
+      // Command queue to prevent concurrent reads on the single IMAP socket.
+      // IMAP is a strictly sequential request/response protocol on one connection,
+      // so we must serialize commands even if multiple WS messages arrive at once.
+      let commandQueue: Promise<void> = Promise.resolve();
+
+      server.addEventListener('message', (event) => {
+        commandQueue = commandQueue.then(async () => {
+          try {
+            const msg = JSON.parse(event.data as string) as { type: string; command?: string };
+            if (msg.type === 'command' && msg.command) {
+              const tag = `A${String(tagCounter++).padStart(3, '0')}`;
+              const response = await sendIMAPCommand(reader, writer, tag, msg.command.trim(), 30000);
+              server.send(JSON.stringify({
+                type: 'response',
+                tag,
+                response,
+                command: msg.command.trim(),
+              }));
+            }
+          } catch (e) {
+            server.send(JSON.stringify({ type: 'error', message: String(e) }));
           }
-        } catch (e) {
-          server.send(JSON.stringify({ type: 'error', message: String(e) }));
-        }
+        });
       });
 
       server.addEventListener('close', async () => {
+        // Wait for any in-flight command to finish before sending LOGOUT
+        await commandQueue.catch(() => {});
         try {
           const tag = `A${String(tagCounter++).padStart(3, '0')}`;
           await sendIMAPCommand(reader, writer, tag, 'LOGOUT', 3000);

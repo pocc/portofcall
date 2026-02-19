@@ -116,84 +116,112 @@ function parseZMTPGreeting(data: Uint8Array): {
 }
 
 /**
- * Build a ZMTP READY command with NULL mechanism
- * Command frame format:
- *   flag byte (0x04 = command, short)
- *   size byte (length of body)
- *   body:
- *     command-name-length (1 byte)
- *     command-name ("READY")
- *     metadata key-value pairs:
- *       key-length (4 bytes BE)
- *       key string
- *       value-length (4 bytes BE)
- *       value string
+ * Encode a ZMTP command frame (short or long).
+ *
+ * Command frame wire format (ZMTP 3.1 §6):
+ *   Short (body <= 255):
+ *     0x04          flags byte (command, short)
+ *     <1 byte>      body length
+ *     <body>
+ *   Long (body > 255):
+ *     0x06          flags byte (command, long)
+ *     <8 bytes BE>  body length
+ *     <body>
+ *
+ * Command body layout:
+ *   <1 byte>   command-name length
+ *   <N bytes>  command-name (ASCII, e.g. "READY")
+ *   <metadata pairs...>
+ *
+ * Metadata property format (ZMTP 3.1 §6.1):
+ *   <1 byte>     property-name length  (1 byte, NOT 4)
+ *   <N bytes>    property-name
+ *   <4 bytes BE> property-value length
+ *   <M bytes>    property-value
  */
-function buildReadyCommand(socketType: string): Uint8Array {
-  const commandName = new TextEncoder().encode('READY');
-  const socketTypeKey = new TextEncoder().encode('Socket-Type');
-  const socketTypeVal = new TextEncoder().encode(socketType);
+function encodeCommandFrame(commandName: string, properties: Array<[string, string]>): Uint8Array {
+  const enc = new TextEncoder();
+  const cmdNameBytes = enc.encode(commandName);
 
-  // Calculate body length
-  const bodyLength =
-    1 + commandName.length + // command name length + name
-    4 + socketTypeKey.length + // key length + key
-    4 + socketTypeVal.length; // value length + value
+  // Body = 1-byte cmd-name-len + cmd-name + property pairs
+  let bodyLen = 1 + cmdNameBytes.length;
+  const propParts: Array<{ keyBytes: Uint8Array; valBytes: Uint8Array }> = [];
+  for (const [key, val] of properties) {
+    const keyBytes = enc.encode(key);
+    const valBytes = enc.encode(val);
+    // 1-byte name-length + name + 4-byte value-length + value
+    bodyLen += 1 + keyBytes.length + 4 + valBytes.length;
+    propParts.push({ keyBytes, valBytes });
+  }
 
-  const frame = new Uint8Array(2 + bodyLength);
-  let offset = 0;
+  const isLong = bodyLen > 255;
+  const headerLen = isLong ? 9 : 2; // 1 flag + (8 or 1) size bytes
+  const frame = new Uint8Array(headerLen + bodyLen);
+  let off = 0;
 
-  // Flag: 0x04 = command, short frame
-  frame[offset++] = 0x04;
-  // Size
-  frame[offset++] = bodyLength;
-  // Command name length
-  frame[offset++] = commandName.length;
-  // Command name
-  frame.set(commandName, offset);
-  offset += commandName.length;
+  // 0x04 = command short, 0x06 = command long
+  frame[off++] = isLong ? 0x06 : 0x04;
+  if (isLong) {
+    new DataView(frame.buffer).setBigUint64(off, BigInt(bodyLen), false);
+    off += 8;
+  } else {
+    frame[off++] = bodyLen;
+  }
 
-  // Metadata: Socket-Type
-  frame[offset++] = (socketTypeKey.length >> 24) & 0xff;
-  frame[offset++] = (socketTypeKey.length >> 16) & 0xff;
-  frame[offset++] = (socketTypeKey.length >> 8) & 0xff;
-  frame[offset++] = socketTypeKey.length & 0xff;
-  frame.set(socketTypeKey, offset);
-  offset += socketTypeKey.length;
+  // Command-name-length (1 byte) + command-name
+  frame[off++] = cmdNameBytes.length;
+  frame.set(cmdNameBytes, off);
+  off += cmdNameBytes.length;
 
-  frame[offset++] = (socketTypeVal.length >> 24) & 0xff;
-  frame[offset++] = (socketTypeVal.length >> 16) & 0xff;
-  frame[offset++] = (socketTypeVal.length >> 8) & 0xff;
-  frame[offset++] = socketTypeVal.length & 0xff;
-  frame.set(socketTypeVal, offset);
+  // Metadata properties: 1-byte name-len + name + 4-byte value-len + value
+  for (const { keyBytes, valBytes } of propParts) {
+    frame[off++] = keyBytes.length;
+    frame.set(keyBytes, off); off += keyBytes.length;
+    frame[off++] = (valBytes.length >>> 24) & 0xff;
+    frame[off++] = (valBytes.length >>> 16) & 0xff;
+    frame[off++] = (valBytes.length >>> 8) & 0xff;
+    frame[off++] = valBytes.length & 0xff;
+    frame.set(valBytes, off); off += valBytes.length;
+  }
 
   return frame;
 }
 
 /**
- * Parse metadata from a READY command body
+ * Build a ZMTP READY command with NULL mechanism
+ */
+function buildReadyCommand(socketType: string): Uint8Array {
+  return encodeCommandFrame('READY', [['Socket-Type', socketType]]);
+}
+
+/**
+ * Parse metadata from a ZMTP command body (after the command-name field).
+ *
+ * Metadata format per ZMTP 3.1 §6.1:
+ *   <1 byte>     property-name length
+ *   <N bytes>    property-name
+ *   <4 bytes BE> property-value length (unsigned)
+ *   <M bytes>    property-value
  */
 function parseMetadata(data: Uint8Array, startOffset: number): Record<string, string> {
   const metadata: Record<string, string> = {};
   let offset = startOffset;
 
-  while (offset < data.length - 4) {
-    // Try to read key length (4 bytes BE) - but ZMTP uses 1-byte key length
-    // Actually ZMTP metadata uses: name-length (1 byte) + name + value-length (4 bytes BE) + value
-    if (offset >= data.length) break;
-
+  while (offset < data.length) {
+    // 1-byte property-name length
     const keyLen = data[offset++];
     if (keyLen === 0 || offset + keyLen > data.length) break;
 
     const key = new TextDecoder().decode(data.slice(offset, offset + keyLen));
     offset += keyLen;
 
+    // 4-byte property-value length (big-endian, unsigned)
+    // Use DataView.getUint32 to avoid the signed-integer hazard of (byte << 24)
     if (offset + 4 > data.length) break;
-    const valLen =
-      (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+    const valLen = new DataView(data.buffer, data.byteOffset + offset, 4).getUint32(0, false);
     offset += 4;
 
-    if (valLen < 0 || offset + valLen > data.length) break;
+    if (offset + valLen > data.length) break;
     const val = new TextDecoder().decode(data.slice(offset, offset + valLen));
     offset += valLen;
 
@@ -378,7 +406,7 @@ export async function handleZMTPProbe(request: Request): Promise<Response> {
   }
 }
 
-/** Build a ZMTP short message frame (data ≤ 255 bytes) */
+/** Build a ZMTP message frame (short or long) */
 function buildMessageFrame(data: Uint8Array, more = false): Uint8Array {
   if (data.length > 255) {
     // Long frame: flags|0x02 + 8-byte BE length
@@ -396,19 +424,74 @@ function buildMessageFrame(data: Uint8Array, more = false): Uint8Array {
   return frame;
 }
 
-/** Build a ZMTP SUBSCRIBE command frame for SUB sockets */
+/**
+ * Build a ZMTP SUBSCRIBE command frame for SUB sockets.
+ *
+ * The SUBSCRIBE command body is: cmd-name-len + "SUBSCRIBE" + topic-bytes.
+ * The topic is a raw byte prefix filter (empty string subscribes to all).
+ * Handles long frames (body > 255 bytes) correctly.
+ */
 function buildSubscribeCommand(topic: string): Uint8Array {
-  const topicBytes = new TextEncoder().encode(topic);
-  const subName = new TextEncoder().encode('SUBSCRIBE');
-  const body = new Uint8Array(1 + subName.length + topicBytes.length);
-  body[0] = subName.length;
-  body.set(subName, 1);
-  body.set(topicBytes, 1 + subName.length);
-  const frame = new Uint8Array(2 + body.length);
-  frame[0] = 0x04; // command flag
-  frame[1] = body.length;
-  frame.set(body, 2);
+  const enc = new TextEncoder();
+  const cmdName = enc.encode('SUBSCRIBE');
+  const topicBytes = enc.encode(topic);
+  // Body = 1-byte cmd-name-len + cmd-name + topic (no metadata encoding)
+  const bodyLen = 1 + cmdName.length + topicBytes.length;
+  const isLong = bodyLen > 255;
+  const headerLen = isLong ? 9 : 2;
+  const frame = new Uint8Array(headerLen + bodyLen);
+  let off = 0;
+  frame[off++] = isLong ? 0x06 : 0x04; // command flag
+  if (isLong) {
+    new DataView(frame.buffer).setBigUint64(off, BigInt(bodyLen), false);
+    off += 8;
+  } else {
+    frame[off++] = bodyLen;
+  }
+  frame[off++] = cmdName.length;
+  frame.set(cmdName, off); off += cmdName.length;
+  frame.set(topicBytes, off);
   return frame;
+}
+
+/**
+ * Parse a single ZMTP frame from a buffer at the given offset.
+ * Handles both short (1-byte size) and long (8-byte size) frames.
+ * Uses data.byteOffset for correct DataView positioning when the
+ * Uint8Array is a view into a larger ArrayBuffer.
+ *
+ * Returns null if there are not enough bytes to parse a complete frame.
+ */
+function parseFrame(data: Uint8Array, offset: number): {
+  isCommand: boolean;
+  more: boolean;
+  payload: Uint8Array;
+  bytesConsumed: number;
+} | null {
+  if (offset >= data.length) return null;
+  const flags = data[offset];
+  const isLong = (flags & 0x02) !== 0;
+  const isCommand = (flags & 0x04) !== 0;
+  const more = (flags & 0x01) !== 0;
+
+  let payloadLen: number;
+  let headerSize: number;
+
+  if (isLong) {
+    if (offset + 9 > data.length) return null;
+    payloadLen = Number(
+      new DataView(data.buffer, data.byteOffset + offset + 1, 8).getBigUint64(0, false)
+    );
+    headerSize = 9;
+  } else {
+    if (offset + 2 > data.length) return null;
+    payloadLen = data[offset + 1];
+    headerSize = 2;
+  }
+
+  if (offset + headerSize + payloadLen > data.length) return null;
+  const payload = data.slice(offset + headerSize, offset + headerSize + payloadLen);
+  return { isCommand, more, payload, bytesConsumed: headerSize + payloadLen };
 }
 
 /**
@@ -437,16 +520,33 @@ export async function handleZMTPSend(request: Request): Promise<Response> {
       await writer.write(buildReadyCommand(socketType.toUpperCase()));
       await readResponse(reader, 3000, 256);
       const enc = new TextEncoder();
+      const upperType = socketType.toUpperCase();
+      // REQ sockets require an empty delimiter frame before the message body
+      // per the ZMTP REQ/REP envelope convention (ZMTP 3.1 §2.2)
+      if (upperType === 'REQ') {
+        await writer.write(new Uint8Array([0x00, 0x00])); // empty delimiter frame
+      }
       // Send message (with topic prefix for PUB)
-      if (socketType.toUpperCase() === 'PUB' && topic) {
+      if (upperType === 'PUB' && topic) {
         await writer.write(buildMessageFrame(enc.encode(topic), true));
       }
       await writer.write(buildMessageFrame(enc.encode(message)));
       // For REQ/DEALER, wait for reply
       let reply: string | null = null;
-      if (['REQ', 'DEALER'].includes(socketType.toUpperCase())) {
+      if (['REQ', 'DEALER'].includes(upperType)) {
         const replyData = await readResponse(reader, Math.min(timeout, 3000), 65536);
-        if (replyData.length > 2) reply = new TextDecoder().decode(replyData.slice(2));
+        // Parse reply frames properly using parseFrame (handles long frames)
+        let off = 0;
+        const parts: string[] = [];
+        while (off < replyData.length) {
+          const parsed = parseFrame(replyData, off);
+          if (!parsed) break;
+          if (!parsed.isCommand && parsed.payload.length > 0) {
+            parts.push(new TextDecoder().decode(parsed.payload));
+          }
+          off += parsed.bytesConsumed;
+        }
+        reply = parts.length > 0 ? parts.join('') : null;
       }
       writer.releaseLock(); reader.releaseLock(); socket.close();
       return new Response(JSON.stringify({ success: true, host, port, socketType, messageSent: message, reply }),
@@ -491,18 +591,15 @@ export async function handleZMTPRecv(request: Request): Promise<Response> {
         if (remaining <= 0) break;
         const chunk = await readResponse(reader, remaining, 65536);
         if (chunk.length === 0) break;
-        // Parse frames: skip flag+length, decode payload
+        // Parse frames using parseFrame (handles long frames and byteOffset correctly)
         let off = 0;
         while (off < chunk.length) {
-          const flags = chunk[off]; off++;
-          const isLong = (flags & 0x02) !== 0;
-          const isCmd = (flags & 0x04) !== 0;
-          let len: number;
-          if (isLong) { if (off + 8 > chunk.length) break; len = Number(new DataView(chunk.buffer.slice(off, off + 8)).getBigUint64(0, false)); off += 8; }
-          else { if (off >= chunk.length) break; len = chunk[off]; off++; }
-          if (off + len > chunk.length) break;
-          if (!isCmd && len > 0) messages.push(new TextDecoder().decode(chunk.slice(off, off + len)));
-          off += len;
+          const frame = parseFrame(chunk, off);
+          if (!frame) break;
+          if (!frame.isCommand && frame.payload.length > 0) {
+            messages.push(new TextDecoder().decode(frame.payload));
+          }
+          off += frame.bytesConsumed;
         }
       }
       writer.releaseLock(); reader.releaseLock(); socket.close();
@@ -621,31 +718,23 @@ export async function handleZMTPHandshake(request: Request): Promise<Response> {
       const cmdResponse = await readResponse(reader, Math.min(timeout, 3000), 256);
       const rtt = Date.now() - startTime;
 
-      // Parse command response
+      // Parse command response using parseFrame (handles both short and long frames)
       let serverSocketType: string | null = null;
       let serverIdentity: string | null = null;
       let commandName: string | null = null;
       const peerMetadata: Record<string, string> = {};
 
-      if (cmdResponse.length > 2) {
-        const flag = cmdResponse[0];
-        const isCommand = (flag & 0x04) !== 0;
-        if (isCommand && cmdResponse.length > 2) {
-          const size = cmdResponse[1];
-          if (size > 0 && cmdResponse.length > 2 + 1) {
-            const nameLen = cmdResponse[2];
-            if (nameLen > 0 && cmdResponse.length >= 3 + nameLen) {
-              commandName = new TextDecoder().decode(cmdResponse.slice(3, 3 + nameLen));
-
-              // Parse metadata after command name
-              const metaStart = 3 + nameLen;
-              if (metaStart < cmdResponse.length) {
-                const meta = parseMetadata(cmdResponse.slice(2, 2 + size), 1 + nameLen);
-                Object.assign(peerMetadata, meta);
-                serverSocketType = meta['Socket-Type'] || null;
-                serverIdentity = meta['Identity'] || null;
-              }
-            }
+      if (cmdResponse.length >= 2) {
+        const frame = parseFrame(cmdResponse, 0);
+        if (frame && frame.isCommand && frame.payload.length >= 1) {
+          const nameLen = frame.payload[0];
+          if (nameLen > 0 && frame.payload.length >= 1 + nameLen) {
+            commandName = new TextDecoder().decode(frame.payload.slice(1, 1 + nameLen));
+            // Parse metadata after the command name
+            const meta = parseMetadata(frame.payload, 1 + nameLen);
+            Object.assign(peerMetadata, meta);
+            serverSocketType = meta['Socket-Type'] || null;
+            serverIdentity = meta['Identity'] || null;
           }
         }
       }

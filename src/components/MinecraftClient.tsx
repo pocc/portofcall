@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface MinecraftClientProps {
   onBack: () => void;
@@ -155,6 +157,7 @@ export default function MinecraftClient({ onBack }: MinecraftClientProps) {
 
   return (
     <ProtocolClientLayout title="Minecraft Server List Ping" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Minecraft || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Address" />
 

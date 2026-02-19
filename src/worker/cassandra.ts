@@ -381,12 +381,267 @@ const CQL_TYPE_NAMES: Record<number, string> = {
   0x0030: 'udt',       0x0031: 'tuple',
 };
 
+/** Type info for CQL column types, supporting nested collections. */
+interface CqlTypeInfo {
+  id: number;
+  name: string;
+  elementType?: CqlTypeInfo;       // for list, set
+  keyType?: CqlTypeInfo;           // for map
+  valueType?: CqlTypeInfo;         // for map
+  fieldTypes?: CqlTypeInfo[];      // for tuple
+}
+
 /** Read a CQL short string (2-byte big-endian length prefix). */
 function readCqlShortString(data: Uint8Array, offset: number): [string, number] {
   const view = new DataView(data.buffer, data.byteOffset);
   const len = view.getInt16(offset, false);
   const str = new TextDecoder().decode(data.slice(offset + 2, offset + 2 + len));
   return [str, offset + 2 + len];
+}
+
+/**
+ * Parse a CQL type option (recursive) from column metadata.
+ * Returns the parsed type info and the new offset.
+ */
+function readCqlTypeOption(data: Uint8Array, offset: number): [CqlTypeInfo, number] {
+  const view = new DataView(data.buffer, data.byteOffset);
+  const typeId = view.getInt16(offset, false);
+  offset += 2;
+  const name = CQL_TYPE_NAMES[typeId] ?? ('0x' + typeId.toString(16));
+  const info: CqlTypeInfo = { id: typeId, name };
+
+  if (typeId === 0x0020 || typeId === 0x0022) {
+    // list or set: one sub-type option
+    let elementType: CqlTypeInfo;
+    [elementType, offset] = readCqlTypeOption(data, offset);
+    info.elementType = elementType;
+  } else if (typeId === 0x0021) {
+    // map: key type option + value type option
+    let keyType: CqlTypeInfo, valueType: CqlTypeInfo;
+    [keyType, offset] = readCqlTypeOption(data, offset);
+    [valueType, offset] = readCqlTypeOption(data, offset);
+    info.keyType = keyType;
+    info.valueType = valueType;
+  } else if (typeId === 0x0030) {
+    // UDT: keyspace string + name string + n fields
+    // Skip keyspace and name
+    const ksLen = view.getInt16(offset, false); offset += 2 + ksLen;
+    const nameLen = view.getInt16(offset, false); offset += 2 + nameLen;
+    const fieldCount = view.getInt16(offset, false); offset += 2;
+    info.fieldTypes = [];
+    for (let f = 0; f < fieldCount; f++) {
+      // skip field name
+      const fNameLen = view.getInt16(offset, false); offset += 2 + fNameLen;
+      let ft: CqlTypeInfo;
+      [ft, offset] = readCqlTypeOption(data, offset);
+      info.fieldTypes.push(ft);
+    }
+  } else if (typeId === 0x0031) {
+    // tuple: n sub-types
+    const n = view.getInt16(offset, false); offset += 2;
+    info.fieldTypes = [];
+    for (let t = 0; t < n; t++) {
+      let ft: CqlTypeInfo;
+      [ft, offset] = readCqlTypeOption(data, offset);
+      info.fieldTypes.push(ft);
+    }
+  }
+
+  return [info, offset];
+}
+
+/**
+ * Format a UUID from 16 raw bytes into the standard 8-4-4-4-12 hex format.
+ */
+function formatUuid(bytes: Uint8Array): string {
+  const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+/**
+ * Decode a CQL cell value based on its type.
+ * Returns a string representation suitable for JSON output.
+ */
+function decodeCqlValue(cellBytes: Uint8Array, typeInfo: CqlTypeInfo): string {
+  const view = new DataView(cellBytes.buffer, cellBytes.byteOffset, cellBytes.length);
+  const len = cellBytes.length;
+
+  switch (typeInfo.id) {
+    // --- Text types: UTF-8 encoded ---
+    case 0x0001: // ascii
+    case 0x000A: // text
+    case 0x000D: // varchar
+      return new TextDecoder().decode(cellBytes);
+
+    // --- Integer types ---
+    case 0x0014: // tinyint (1 byte)
+      return view.getInt8(0).toString();
+    case 0x0013: // smallint (2 bytes)
+      return view.getInt16(0, false).toString();
+    case 0x0009: // int (4 bytes)
+      return view.getInt32(0, false).toString();
+    case 0x0002: // bigint (8 bytes)
+    case 0x0005: // counter (8 bytes)
+      return view.getBigInt64(0, false).toString();
+
+    // --- Floating-point ---
+    case 0x0008: // float (4 bytes)
+      return view.getFloat32(0, false).toString();
+    case 0x0007: // double (8 bytes)
+      return view.getFloat64(0, false).toString();
+
+    // --- Boolean (1 byte) ---
+    case 0x0004:
+      return view.getUint8(0) !== 0 ? 'true' : 'false';
+
+    // --- UUID / TimeUUID (16 bytes) ---
+    case 0x000C: // uuid
+    case 0x000F: // timeuuid
+      return formatUuid(cellBytes);
+
+    // --- Timestamp: 64-bit millis since epoch ---
+    case 0x000B: {
+      const ms = view.getBigInt64(0, false);
+      return new Date(Number(ms)).toISOString();
+    }
+
+    // --- Date: unsigned 32-bit, days since epoch (Jan 1, 1970) with center at 2^31 ---
+    case 0x0011: {
+      const raw = view.getUint32(0, false);
+      const daysSinceEpoch = raw - 2147483648; // 2^31 offset
+      const d = new Date(daysSinceEpoch * 86400000);
+      return d.toISOString().slice(0, 10);
+    }
+
+    // --- Time: 64-bit nanoseconds since midnight ---
+    case 0x0012: {
+      const nanos = view.getBigInt64(0, false);
+      const totalMs = Number(nanos / BigInt(1000000));
+      const hrs = Math.floor(totalMs / 3600000);
+      const mins = Math.floor((totalMs % 3600000) / 60000);
+      const secs = Math.floor((totalMs % 60000) / 1000);
+      const ms = totalMs % 1000;
+      return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}.${String(ms).padStart(3, '0')}`;
+    }
+
+    // --- Inet: 4 bytes (IPv4) or 16 bytes (IPv6) ---
+    case 0x0010:
+      if (len === 4) {
+        return `${view.getUint8(0)}.${view.getUint8(1)}.${view.getUint8(2)}.${view.getUint8(3)}`;
+      } else {
+        // IPv6: 8 groups of 2-byte hex
+        const groups: string[] = [];
+        for (let i = 0; i < 16; i += 2) {
+          groups.push(view.getUint16(i, false).toString(16));
+        }
+        return groups.join(':');
+      }
+
+    // --- Varint: arbitrary-precision signed integer (big-endian two's complement) ---
+    case 0x000E: {
+      if (len === 0) return '0';
+      let val = BigInt(0);
+      for (let i = 0; i < len; i++) {
+        val = (val << BigInt(8)) | BigInt(cellBytes[i]);
+      }
+      // Handle sign: if high bit is set, it's negative
+      if (cellBytes[0] & 0x80) {
+        val -= BigInt(1) << BigInt(len * 8);
+      }
+      return val.toString();
+    }
+
+    // --- Decimal: 4-byte scale (int32) + varint unscaled value ---
+    case 0x0006: {
+      if (len < 4) return '0';
+      const scale = view.getInt32(0, false);
+      const varintBytes = cellBytes.slice(4);
+      if (varintBytes.length === 0) return '0';
+      let unscaled = BigInt(0);
+      for (let i = 0; i < varintBytes.length; i++) {
+        unscaled = (unscaled << BigInt(8)) | BigInt(varintBytes[i]);
+      }
+      if (varintBytes[0] & 0x80) {
+        unscaled -= BigInt(1) << BigInt(varintBytes.length * 8);
+      }
+      if (scale === 0) return unscaled.toString();
+      const str = unscaled.toString();
+      const isNeg = str.startsWith('-');
+      const digits = isNeg ? str.slice(1) : str;
+      if (scale >= digits.length) {
+        const padded = digits.padStart(scale + 1, '0');
+        return (isNeg ? '-' : '') + padded.slice(0, padded.length - scale) + '.' + padded.slice(padded.length - scale);
+      }
+      return (isNeg ? '-' : '') + digits.slice(0, digits.length - scale) + '.' + digits.slice(digits.length - scale);
+    }
+
+    // --- Blob: hex-encode raw bytes ---
+    case 0x0003:
+      return '0x' + Array.from(cellBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+
+    // --- List / Set: [int n][n * [int len][bytes]] ---
+    case 0x0020: // list
+    case 0x0022: { // set
+      const elemType = typeInfo.elementType ?? { id: 0x0003, name: 'blob' };
+      const n = view.getInt32(0, false);
+      let eOff = 4;
+      const elements: string[] = [];
+      for (let i = 0; i < n; i++) {
+        const eLen = new DataView(cellBytes.buffer, cellBytes.byteOffset + eOff).getInt32(0, false);
+        eOff += 4;
+        if (eLen === -1) {
+          elements.push('null');
+        } else {
+          elements.push(decodeCqlValue(cellBytes.slice(eOff, eOff + eLen), elemType));
+          eOff += eLen;
+        }
+      }
+      return '[' + elements.join(', ') + ']';
+    }
+
+    // --- Map: [int n][n * [int kLen][kBytes][int vLen][vBytes]] ---
+    case 0x0021: {
+      const kType = typeInfo.keyType ?? { id: 0x0003, name: 'blob' };
+      const vType = typeInfo.valueType ?? { id: 0x0003, name: 'blob' };
+      const n = view.getInt32(0, false);
+      let mOff = 4;
+      const entries: string[] = [];
+      for (let i = 0; i < n; i++) {
+        const kLen = new DataView(cellBytes.buffer, cellBytes.byteOffset + mOff).getInt32(0, false);
+        mOff += 4;
+        const kVal = kLen === -1 ? 'null' : decodeCqlValue(cellBytes.slice(mOff, mOff + kLen), kType);
+        if (kLen !== -1) mOff += kLen;
+        const vLen = new DataView(cellBytes.buffer, cellBytes.byteOffset + mOff).getInt32(0, false);
+        mOff += 4;
+        const vVal = vLen === -1 ? 'null' : decodeCqlValue(cellBytes.slice(mOff, mOff + vLen), vType);
+        if (vLen !== -1) mOff += vLen;
+        entries.push(`${kVal}: ${vVal}`);
+      }
+      return '{' + entries.join(', ') + '}';
+    }
+
+    // --- Tuple: [n * [int len][bytes]] (field count known from type metadata) ---
+    case 0x0031: {
+      const fields = typeInfo.fieldTypes ?? [];
+      let tOff = 0;
+      const parts: string[] = [];
+      for (let i = 0; i < fields.length; i++) {
+        const fLen = new DataView(cellBytes.buffer, cellBytes.byteOffset + tOff).getInt32(0, false);
+        tOff += 4;
+        if (fLen === -1) {
+          parts.push('null');
+        } else {
+          parts.push(decodeCqlValue(cellBytes.slice(tOff, tOff + fLen), fields[i]));
+          tOff += fLen;
+        }
+      }
+      return '(' + parts.join(', ') + ')';
+    }
+
+    // --- Fallback: hex-encode unknown types ---
+    default:
+      return '0x' + Array.from(cellBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
 }
 
 /** Build AUTH_RESPONSE frame using SASL PLAIN: \0username\0password */
@@ -443,6 +698,7 @@ function parseResultRows(body: Uint8Array): {
     [gTbl, off] = readCqlShortString(body, off);
   }
   const columns: Array<{ keyspace: string; table: string; name: string; type: string }> = [];
+  const typeInfos: CqlTypeInfo[] = [];
   for (let i = 0; i < colCount; i++) {
     let ks = gKs, tbl = gTbl;
     if (!hasGlobal) {
@@ -451,12 +707,12 @@ function parseResultRows(body: Uint8Array): {
     }
     let name: string;
     [name, off] = readCqlShortString(body, off);
-    const typeId = view.getInt16(off, false); off += 2;
-    if (typeId === 0x0020 || typeId === 0x0022) off += 2;  // list/set: skip element type
-    else if (typeId === 0x0021) off += 4;                   // map: skip key+val types
+    let typeInfo: CqlTypeInfo;
+    [typeInfo, off] = readCqlTypeOption(body, off);
+    typeInfos.push(typeInfo);
     columns.push({
       keyspace: ks, table: tbl, name,
-      type: CQL_TYPE_NAMES[typeId] ?? ('0x' + typeId.toString(16)),
+      type: typeInfo.name,
     });
   }
   const rowCount = view.getInt32(off, false); off += 4;
@@ -468,7 +724,8 @@ function parseResultRows(body: Uint8Array): {
       if (cellLen === -1) {
         row[columns[c].name] = null;
       } else {
-        row[columns[c].name] = new TextDecoder().decode(body.slice(off, off + cellLen));
+        const cellBytes = body.slice(off, off + cellLen);
+        row[columns[c].name] = decodeCqlValue(cellBytes, typeInfos[c]);
         off += cellLen;
       }
     }

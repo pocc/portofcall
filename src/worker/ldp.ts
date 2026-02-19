@@ -321,10 +321,6 @@ function parseLDPResponse(data: Uint8Array): {
         }
 
         tlvOffset += 4 + tlvLength;
-        // TLVs are padded to 4-byte boundaries in some implementations
-        if (tlvLength % 4 !== 0) {
-          tlvOffset += 4 - (tlvLength % 4);
-        }
       }
     }
 

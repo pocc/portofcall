@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface ZabbixClientProps {
   onBack: () => void;
@@ -159,6 +161,7 @@ export default function ZabbixClient({ onBack }: ZabbixClientProps) {
 
   return (
     <ProtocolClientLayout title="Zabbix Protocol Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Zabbix || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* Mode Selector */}
         <div className="mb-6">

@@ -162,11 +162,9 @@ function parseProtocolAck(data: Uint8Array): {
     }
   }
 
-  // Read port (4 bytes BE)
+  // Read port (4 bytes BE) — unsigned
   if (offset + 4 <= data.length) {
-    serverPort = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
-    // Handle signed int
-    if (serverPort < 0) serverPort += 0x100000000;
+    serverPort = ((data[offset] << 24) >>> 0) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
   }
 
   return { acknowledged: true, serverHost, serverPort, notSupported: false };
@@ -199,16 +197,21 @@ async function readResponse(
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) => {
-      setTimeout(() => resolve({ done: true, value: undefined }), Math.min(remaining, 3000));
+      timeoutHandle = setTimeout(() => resolve({ done: true, value: undefined }), Math.min(remaining, 3000));
     });
 
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) break;
+    try {
+      const result = await Promise.race([reader.read(), timeoutPromise]);
+      if (result.done || !result.value) break;
 
-    chunks.push(result.value);
-    totalBytes += result.value.length;
-    if (totalBytes >= maxBytes) break;
+      chunks.push(result.value);
+      totalBytes += result.value.length;
+      if (totalBytes >= maxBytes) break;
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    }
   }
 
   const combined = new Uint8Array(totalBytes);
@@ -314,13 +317,13 @@ function extractRemoteRef(data: Uint8Array): {
       const strLen = (data[i + 1] << 8) | data[i + 2];
       if (strLen > 0 && strLen < 256 && i + 3 + strLen <= data.length) {
         const str = new TextDecoder().decode(data.slice(i + 3, i + 3 + strLen));
-        // Looks like a hostname/IP
-        if (/^[a-zA-Z0-9._-]+$/.test(str) && str.length > 1 && !str.startsWith('[L')) {
+        // Looks like a hostname/IP — strict check to avoid class names
+        if (/^[a-zA-Z0-9._-]+$/.test(str) && str.length > 1 && !str.startsWith('[L') && !str.includes('java.') && str.split('.').length <= 4) {
           host = str;
           // Port follows the host string in UnicastRef: 4 bytes BE
           const portOffset = i + 3 + strLen;
           if (portOffset + 4 <= data.length) {
-            const p = (data[portOffset] << 24) | (data[portOffset + 1] << 16) |
+            const p = ((data[portOffset] << 24) >>> 0) | (data[portOffset + 1] << 16) |
                       (data[portOffset + 2] << 8) | data[portOffset + 3];
             if (p > 0 && p <= 65535) {
               port = p;
@@ -376,6 +379,18 @@ export async function handleRMIInvoke(request: Request): Promise<Response> {
     if (!body.objectName) {
       return new Response(
         JSON.stringify({ success: false, error: 'objectName is required (the name bound in the RMI registry)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (body.objectName.length > 255) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'objectName must be 255 characters or less' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (body.methodName && body.methodName.length > 255) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'methodName must be 255 characters or less' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -605,8 +620,9 @@ export async function handleRMIInvoke(request: Request): Promise<Response> {
       };
     })();
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -622,6 +638,8 @@ export async function handleRMIInvoke(request: Request): Promise<Response> {
         }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(
@@ -685,8 +703,9 @@ export async function handleRMIProbe(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -706,6 +725,7 @@ export async function handleRMIProbe(request: Request): Promise<Response> {
       writer.releaseLock();
       reader.releaseLock();
       socket.close();
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
 
       if (responseData.length === 0) {
         return new Response(
@@ -817,8 +837,9 @@ export async function handleRMIList(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -838,6 +859,7 @@ export async function handleRMIList(request: Request): Promise<Response> {
         writer.releaseLock();
         reader.releaseLock();
         socket.close();
+        if (timeoutHandle !== null) clearTimeout(timeoutHandle);
 
         return new Response(
           JSON.stringify({
@@ -900,6 +922,7 @@ export async function handleRMIList(request: Request): Promise<Response> {
       writer.releaseLock();
       reader.releaseLock();
       socket.close();
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
 
       return new Response(
         JSON.stringify({
@@ -930,6 +953,7 @@ export async function handleRMIList(request: Request): Promise<Response> {
       );
     } catch (error) {
       socket.close();
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
       throw error;
     }
   } catch (error) {

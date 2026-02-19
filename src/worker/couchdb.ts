@@ -3,20 +3,25 @@
  *
  * CouchDB is a NoSQL document database that uses HTTP as its native protocol.
  * All operations (CRUD, replication, views) are performed via standard HTTP
- * methods against JSON endpoints.
+ * methods against JSON endpoints. CouchDB also supports the non-standard
+ * COPY method for document duplication.
  *
  * Protocol Flow:
- * 1. Client connects to CouchDB port (default 5984)
- * 2. Client sends HTTP/1.1 requests (GET/PUT/POST/DELETE)
- * 3. Server responds with JSON
+ * 1. Client connects to CouchDB port (default 5984, 6984 for HTTPS)
+ * 2. Client sends HTTP/1.1 requests (GET/PUT/POST/DELETE/COPY)
+ * 3. Server responds with JSON (Content-Type: application/json)
  *
  * Key Endpoints:
- * - GET /          → Server info (version, features, vendor)
- * - GET /_all_dbs  → List all databases
- * - GET /dbname    → Database info (doc_count, disk_size, etc.)
- * - GET /_up       → Health check (200 if operational)
+ * - GET /                     → Server info (version, features, vendor, uuid)
+ * - GET /_all_dbs             → List all databases
+ * - GET /_up                  → Health check ({"status":"ok"} if operational)
+ * - GET /_active_tasks        → List running tasks (replication, compaction, etc.)
+ * - GET /_membership          → Cluster nodes list
+ * - GET /_node/_local/_stats  → Per-node statistics
+ * - GET /dbname               → Database info (doc_count, disk_size, etc.)
+ * - GET/POST /_session        → Session info / Cookie authentication
  *
- * Authentication: Basic Auth or Cookie-based sessions
+ * Authentication: Basic Auth (Authorization header) or Cookie sessions (/_session)
  * Default Port: 5984
  */
 
@@ -143,6 +148,13 @@ async function sendHttpRequest(
 
 /**
  * Decode chunked transfer encoding
+ *
+ * Per RFC 7230 Section 4.1, each chunk is:
+ *   chunk-size [ chunk-ext ] CRLF
+ *   chunk-data CRLF
+ *
+ * Chunk extensions (;name=value) after the size are stripped.
+ * The final chunk has size 0 and may be followed by trailers.
  */
 function decodeChunked(data: string): string {
   let result = '';
@@ -152,18 +164,26 @@ function decodeChunked(data: string): string {
     const lineEnd = remaining.indexOf('\r\n');
     if (lineEnd === -1) break;
 
-    const sizeStr = remaining.substring(0, lineEnd).trim();
+    // Strip any chunk extensions (e.g., "a;ext=val" -> "a")
+    let sizeStr = remaining.substring(0, lineEnd).trim();
+    const semiIdx = sizeStr.indexOf(';');
+    if (semiIdx !== -1) {
+      sizeStr = sizeStr.substring(0, semiIdx).trim();
+    }
+
     const chunkSize = parseInt(sizeStr, 16);
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
     const chunkStart = lineEnd + 2;
     const chunkEnd = chunkStart + chunkSize;
     if (chunkEnd > remaining.length) {
+      // Partial chunk: take what we have
       result += remaining.substring(chunkStart);
       break;
     }
 
     result += remaining.substring(chunkStart, chunkEnd);
+    // Skip past chunk data + trailing CRLF
     remaining = remaining.substring(chunkEnd + 2);
   }
 
@@ -172,10 +192,14 @@ function decodeChunked(data: string): string {
 
 /**
  * Build Basic Auth header
+ *
+ * CouchDB supports Basic Auth with username:password.
+ * Per RFC 7617, the password may be empty (username-only auth),
+ * so we send the header whenever a username is provided.
  */
 function buildAuthHeader(username?: string, password?: string): string | undefined {
-  if (username && password) {
-    return `Basic ${btoa(`${username}:${password}`)}`;
+  if (username) {
+    return `Basic ${btoa(`${username}:${password ?? ''}`)}`;
   }
   return undefined;
 }
@@ -321,7 +345,9 @@ export async function handleCouchDBQuery(request: Request): Promise<Response> {
       );
     }
 
-    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
+    // CouchDB supports COPY in addition to standard HTTP methods
+    // (used for document copying with a Destination header)
+    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'COPY'];
     const upperMethod = method.toUpperCase();
     if (!allowedMethods.includes(upperMethod)) {
       return new Response(

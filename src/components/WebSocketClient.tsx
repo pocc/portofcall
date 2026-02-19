@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface WebSocketProps {
   onBack: () => void;
@@ -79,8 +81,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
-      {/* Header */}
+    <div className="max-w-4xl mx-auto">      {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
@@ -95,6 +96,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" fill="none" className="text-white/40" />
             </svg>
           </div>
+
           <div>
             <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>WebSocket Client</h1>
             <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
@@ -109,6 +111,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
         <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
           WebSocket Handshake Probe
         </h2>
+      <ApiExamples examples={apiExamples.WebSocket || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</label>

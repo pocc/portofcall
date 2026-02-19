@@ -299,12 +299,20 @@ export async function handleNodeInspectorQuery(request: Request): Promise<Respon
 
 /**
  * Create a WebSocket tunnel to Node.js Inspector
- * Reuses CDP WebSocket tunnel code since protocols are identical
+ *
+ * Node.js Inspector WebSocket URLs follow the format:
+ *   ws://host:port/<UUID>
+ * where the UUID comes from the /json session list's webSocketDebuggerUrl field.
+ *
+ * The client can provide the path via either:
+ *   - `path` query param: the full WebSocket path (e.g., /abc-def-123-456)
+ *   - `sessionId` query param: just the UUID (will be prefixed with /)
  */
 export async function handleNodeInspectorTunnel(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const host = url.searchParams.get('host');
   const port = url.searchParams.get('port') || '9229';
+  const path = url.searchParams.get('path');
   const sessionId = url.searchParams.get('sessionId');
 
   if (!host) {
@@ -314,6 +322,17 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(getCloudflareErrorMessage(host, cfCheck.ip), { status: 403 });
+  }
+
+  // Determine WebSocket path from either `path` or `sessionId` param
+  // Node Inspector requires a valid session UUID path (bare "/" won't work)
+  let wsPath: string;
+  if (path) {
+    wsPath = path.startsWith('/') ? path : `/${path}`;
+  } else if (sessionId) {
+    wsPath = sessionId.startsWith('/') ? sessionId : `/${sessionId}`;
+  } else {
+    return new Response('Either path or sessionId parameter is required', { status: 400 });
   }
 
   const pair = new WebSocketPair();
@@ -328,10 +347,7 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
       inspectorSocket = connect(`${host}:${port}`);
       await inspectorSocket.opened;
 
-      // Determine WebSocket path (UUID-based)
-      const wsPath = sessionId ? `/${sessionId}` : '/';
-
-      // Perform WebSocket handshake
+      // Perform WebSocket handshake with the inspector
       const wsKey = generateWebSocketKey();
       const handshakeRequest = buildWebSocketHandshake(host, parseInt(port), wsPath, wsKey);
 
@@ -339,24 +355,35 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
       await writer.write(new TextEncoder().encode(handshakeRequest));
       writer.releaseLock();
 
-      // Read handshake response
+      // Read handshake response, preserving any trailing WebSocket frame data
       const reader = inspectorSocket.readable.getReader();
-      const handshakeResponse = await readUntilDoubleNewline(reader);
-      reader.releaseLock();
+      const { headers: handshakeHeaders, remainder: initialFrameData } =
+        await readHandshakeResponse(reader);
+      // Note: reader stays locked -- reused for the read loop below
 
-      if (!handshakeResponse.includes('101 Switching Protocols')) {
+      if (!handshakeHeaders.includes('101 Switching Protocols')) {
+        reader.releaseLock();
         throw new Error('WebSocket handshake failed');
+      }
+
+      // Validate Sec-WebSocket-Accept per RFC 6455 Section 4.2.2
+      const expectedAccept = await computeWebSocketAccept(wsKey);
+      const acceptMatch = handshakeHeaders.match(/Sec-WebSocket-Accept:\s*(.+)\r\n/i);
+      if (!acceptMatch || acceptMatch[1].trim() !== expectedAccept) {
+        reader.releaseLock();
+        throw new Error('WebSocket handshake failed: invalid Sec-WebSocket-Accept');
       }
 
       server.send(JSON.stringify({
         type: 'connected',
         message: 'Node Inspector WebSocket tunnel established',
-        sessionId,
+        path: wsPath,
       }));
 
       // Bidirectional proxying
       const decoder = new TextDecoder();
 
+      // Client -> Inspector: forward JSON-RPC messages from browser to Node.js
       server.addEventListener('message', async (event) => {
         try {
           const message = event.data;
@@ -371,51 +398,81 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
           }
 
           const frame = buildWebSocketTextFrame(data);
-          const writer = inspectorSocket!.writable.getWriter();
-          await writer.write(frame);
-          writer.releaseLock();
+          const w = inspectorSocket!.writable.getWriter();
+          await w.write(frame);
+          w.releaseLock();
         } catch (error) {
           console.error('Error forwarding to Inspector:', error);
         }
       });
 
+      // Handle client-initiated close
+      server.addEventListener('close', () => {
+        if (inspectorSocket) {
+          inspectorSocket.close().catch(() => {});
+        }
+      });
+
+      // Inspector -> Client: forward responses/events from Node.js to browser
+      // The reader is acquired once (above) and reused for the entire read loop
       (async () => {
         try {
+          let frameBuffer: Uint8Array = new Uint8Array(0); // Buffer for incomplete frames
+
+          // Process any WebSocket frame data that arrived with the handshake response
+          if (initialFrameData && initialFrameData.length > 0) {
+            const combined = new Uint8Array(frameBuffer.length + initialFrameData.length);
+            combined.set(frameBuffer, 0);
+            combined.set(initialFrameData, frameBuffer.length);
+            frameBuffer = combined;
+          }
+
           while (true) {
-            const reader = inspectorSocket!.readable.getReader();
             const { value, done } = await reader.read();
-            reader.releaseLock();
-
             if (done) break;
-            if (!value) continue;
+            if (value) {
+              // Append new data to buffer
+              const combined = new Uint8Array(frameBuffer.length + value.length);
+              combined.set(frameBuffer, 0);
+              combined.set(value, frameBuffer.length);
+              frameBuffer = combined;
+            }
 
-            const frames = parseWebSocketFrames(value);
+            // Try to parse frames from buffer
+            const { frames, remainingBytes } = parseWebSocketFramesWithBuffer(frameBuffer);
+
             for (const frame of frames) {
               if (frame.opcode === 0x1 || frame.opcode === 0x2) {
                 const payload = decoder.decode(frame.payload);
                 server.send(payload);
               } else if (frame.opcode === 0x8) {
                 server.close(1000, 'Inspector connection closed');
-                break;
+                return;
               } else if (frame.opcode === 0x9) {
+                // Validate ping payload size per RFC 6455 §5.5
+                if (frame.payload.length > 125) {
+                  console.warn('Ignoring oversized ping frame (>125 bytes)');
+                  continue;
+                }
                 const pongFrame = buildWebSocketPongFrame(frame.payload);
-                const writer = inspectorSocket!.writable.getWriter();
-                await writer.write(pongFrame);
-                writer.releaseLock();
+                const w = inspectorSocket!.writable.getWriter();
+                await w.write(pongFrame);
+                w.releaseLock();
               }
             }
+
+            // Keep unparsed bytes for next iteration
+            frameBuffer = remainingBytes;
+
+            if (done) break;
           }
         } catch (error) {
           console.error('Error reading from Inspector:', error);
           server.close(1011, 'Inspector read error');
+        } finally {
+          reader.releaseLock();
         }
       })();
-
-      server.addEventListener('close', () => {
-        if (inspectorSocket) {
-          inspectorSocket.close().catch(() => {});
-        }
-      });
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Inspector tunnel failed';
@@ -455,19 +512,80 @@ function buildWebSocketHandshake(host: string, port: number, path: string, wsKey
   return request;
 }
 
-async function readUntilDoubleNewline(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
-  const decoder = new TextDecoder();
-  let data = '';
+/**
+ * Read HTTP handshake response, preserving any trailing WebSocket frame data.
+ * Returns the header text and any remaining bytes that arrived after \r\n\r\n.
+ * The reader is NOT released -- caller retains the lock for subsequent reads.
+ */
+async function readHandshakeResponse(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ headers: string; remainder: Uint8Array | null }> {
+  const chunks: Uint8Array[] = [];
+  let totalLength = 0;
 
-  while (!data.includes('\r\n\r\n')) {
+  while (true) {
     const { value, done } = await reader.read();
     if (done) break;
     if (value) {
-      data += decoder.decode(value, { stream: true });
+      chunks.push(value);
+      totalLength += value.length;
+
+      // Check if we have the full header terminator in the accumulated data
+      const combined = concatUint8Arrays(chunks, totalLength);
+
+      // Search for \r\n\r\n in the byte array directly to avoid UTF-8 decoding issues
+      const headerEnd = findHeaderEnd(combined);
+
+      if (headerEnd !== -1) {
+        // Decode only the header portion to text
+        const headerBytes = combined.slice(0, headerEnd + 4);
+        const headers = new TextDecoder().decode(headerBytes);
+
+        // Preserve remaining bytes as-is (no decode/encode round-trip that corrupts binary data)
+        const remainder = headerEnd + 4 < combined.length
+          ? combined.slice(headerEnd + 4)
+          : null;
+        return { headers, remainder };
+      }
     }
   }
 
-  return data;
+  const combined = concatUint8Arrays(chunks, totalLength);
+  return { headers: new TextDecoder().decode(combined), remainder: null };
+}
+
+/**
+ * Find the position of \r\n\r\n in a byte array.
+ * Returns the index of the first \r, or -1 if not found.
+ */
+function findHeaderEnd(data: Uint8Array): number {
+  for (let i = 0; i < data.length - 3; i++) {
+    if (data[i] === 0x0d && data[i + 1] === 0x0a && data[i + 2] === 0x0d && data[i + 3] === 0x0a) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+function concatUint8Arrays(arrays: Uint8Array[], totalLength: number): Uint8Array {
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
+}
+
+/**
+ * Compute the expected Sec-WebSocket-Accept value per RFC 6455 Section 4.2.2.
+ * accept = base64(SHA-1(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+ */
+async function computeWebSocketAccept(wsKey: string): Promise<string> {
+  const magic = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+  const data = new TextEncoder().encode(wsKey + magic);
+  const hash = await crypto.subtle.digest('SHA-1', data);
+  return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
 
 function buildWebSocketTextFrame(text: string): Uint8Array {
@@ -503,19 +621,19 @@ function buildWebSocketTextFrame(text: string): Uint8Array {
 }
 
 function buildWebSocketPongFrame(payload: Uint8Array): Uint8Array {
+  // Per RFC 6455 §5.5, control frames MUST have payload ≤125 bytes
+  if (payload.length > 125) {
+    throw new Error(`Pong frame payload too large: ${payload.length} bytes (max 125)`);
+  }
+
   const maskKey = new Uint8Array(4);
   crypto.getRandomValues(maskKey);
 
   const frame: number[] = [];
-  frame.push(0x8A);
+  frame.push(0x8A); // FIN=1, opcode=0xA (pong)
 
-  if (payload.length < 126) {
-    frame.push(0x80 | payload.length);
-  } else {
-    frame.push(0x80 | 126);
-    frame.push((payload.length >> 8) & 0xff);
-    frame.push(payload.length & 0xff);
-  }
+  // Control frames always use 7-bit length (never 126 or 127)
+  frame.push(0x80 | payload.length);
 
   frame.push(maskKey[0], maskKey[1], maskKey[2], maskKey[3]);
 
@@ -533,12 +651,19 @@ interface WebSocketFrame {
   payload: Uint8Array;
 }
 
-function parseWebSocketFrames(data: Uint8Array): WebSocketFrame[] {
+/**
+ * Parse WebSocket frames from a buffer, returning parsed frames and any remaining bytes.
+ * This handles partial frames that span multiple TCP reads.
+ */
+function parseWebSocketFramesWithBuffer(data: Uint8Array): { frames: WebSocketFrame[]; remainingBytes: Uint8Array } {
   const frames: WebSocketFrame[] = [];
   let offset = 0;
 
   while (offset < data.length) {
-    if (offset + 2 > data.length) break;
+    if (offset + 2 > data.length) {
+      // Not enough bytes for frame header
+      return { frames, remainingBytes: data.slice(offset) };
+    }
 
     const fin = (data[offset] & 0x80) !== 0;
     const opcode = data[offset] & 0x0f;
@@ -547,27 +672,46 @@ function parseWebSocketFrames(data: Uint8Array): WebSocketFrame[] {
     let headerLength = 2;
 
     if (payloadLength === 126) {
-      if (offset + 4 > data.length) break;
+      if (offset + 4 > data.length) {
+        return { frames, remainingBytes: data.slice(offset) };
+      }
       payloadLength = (data[offset + 2] << 8) | data[offset + 3];
       headerLength = 4;
     } else if (payloadLength === 127) {
-      if (offset + 10 > data.length) break;
-      payloadLength = 
+      if (offset + 10 > data.length) {
+        return { frames, remainingBytes: data.slice(offset) };
+      }
+      const high32 =
+        (data[offset + 2] << 24) |
+        (data[offset + 3] << 16) |
+        (data[offset + 4] << 8) |
+        data[offset + 5];
+      const low32 =
         (data[offset + 6] << 24) |
         (data[offset + 7] << 16) |
         (data[offset + 8] << 8) |
         data[offset + 9];
+
+      if (high32 !== 0) {
+        throw new Error(`WebSocket frame too large: payload exceeds 4GB (high32=${high32})`);
+      }
+      payloadLength = low32 >>> 0;
       headerLength = 10;
     }
 
     let maskKey: Uint8Array | null = null;
     if (masked) {
-      if (offset + headerLength + 4 > data.length) break;
+      if (offset + headerLength + 4 > data.length) {
+        return { frames, remainingBytes: data.slice(offset) };
+      }
       maskKey = data.slice(offset + headerLength, offset + headerLength + 4);
       headerLength += 4;
     }
 
-    if (offset + headerLength + payloadLength > data.length) break;
+    if (offset + headerLength + payloadLength > data.length) {
+      // Incomplete frame payload
+      return { frames, remainingBytes: data.slice(offset) };
+    }
 
     let payload = data.slice(offset + headerLength, offset + headerLength + payloadLength);
 
@@ -583,5 +727,5 @@ function parseWebSocketFrames(data: Uint8Array): WebSocketFrame[] {
     offset += headerLength + payloadLength;
   }
 
-  return frames;
+  return { frames, remainingBytes: new Uint8Array(0) };
 }

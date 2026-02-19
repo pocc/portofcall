@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface OPCUAClientProps {
   onBack: () => void;
@@ -238,9 +240,7 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
           &larr; Back
         </button>
         <h1 className="text-3xl font-bold text-white">OPC UA Client</h1>
-      </div>
-
-      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
+      </div>      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* Warning Banner */}
         <div className="bg-yellow-900/30 border border-yellow-600/50 rounded-lg p-4 mb-6">
           <div className="flex items-start gap-2">
@@ -252,6 +252,8 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
                 This client supports READ-ONLY discovery operations. Only connect to servers you are authorized to access.
               </p>
             </div>
+
+
           </div>
         </div>
 
@@ -263,6 +265,7 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
 
+      <ApiExamples examples={apiExamples.OPCUA || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
           <div>
             <label htmlFor="opcua-host" className="block text-sm font-medium text-slate-300 mb-1">

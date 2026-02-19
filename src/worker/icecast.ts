@@ -206,7 +206,7 @@ function parseIcecastStatus(body: string): {
       for (const src of sourceArray) {
         const mp: MountPoint = {
           name: src.listenurl || src.server_name || 'unknown',
-          listeners: src.listeners || 0,
+          listeners: src.listeners ?? 0,
           peakListeners: src.listener_peak,
           genre: src.genre,
           title: src.title || src.server_name,
@@ -343,11 +343,15 @@ export async function handleIcecastStatus(request: Request): Promise<Response> {
 }
 
 /**
- * Mount a source stream on an Icecast server using the ICY source protocol.
+ * Mount a source stream on an Icecast server using the SOURCE method.
  *
- * The ICY source protocol is used by streaming clients (like Winamp/Liquidsoap)
- * to push an audio stream to an Icecast server. The client authenticates with
- * the source password and streams audio data.
+ * Icecast uses the HTTP SOURCE method (not part of standard HTTP) for source
+ * connections. The client authenticates via HTTP Basic Auth (username "source",
+ * password is the source password configured in icecast.xml). After the server
+ * responds with HTTP 200, the client sends a continuous stream of audio data.
+ *
+ * SHOUTcast v1 DNAS uses a different variant where the server responds with
+ * a bare "OK2" instead of a full HTTP response. Both are handled here.
  *
  * POST /api/icecast/source
  * Body: { host, port?, mountpoint?, password, contentType?, streamName?,
@@ -416,7 +420,9 @@ export async function handleIcecastSource(request: Request): Promise<Response> {
       // ICY source protocol: "source" is the implicit username
       const credentials = btoa(`source:${password}`);
 
-      // Build SOURCE request (Icecast legacy ICY protocol)
+      // Build SOURCE request (Icecast HTTP/1.0 source protocol)
+      // Note: SOURCE uses HTTP/1.0 which does NOT support Transfer-Encoding: chunked.
+      // Audio data is sent as a raw continuous stream until the connection closes.
       const sourceRequest = [
         `SOURCE ${mountpoint} HTTP/1.0`,
         `Authorization: Basic ${credentials}`,
@@ -425,7 +431,6 @@ export async function handleIcecastSource(request: Request): Promise<Response> {
         `ice-description: ${description}`,
         `ice-public: 0`,
         `User-Agent: PortOfCall/1.0`,
-        `Transfer-Encoding: chunked`,
         '',
         '',
       ].join('\r\n');
@@ -439,7 +444,10 @@ export async function handleIcecastSource(request: Request): Promise<Response> {
       try {
         await writer.write(new TextEncoder().encode(sourceRequest));
 
-        // Read server response (OK2 or HTTP 200/401/403)
+        // Read server response.
+        // Icecast responds with a full HTTP response: "HTTP/1.0 200 OK\r\n...\r\n\r\n"
+        // SHOUTcast v1 DNAS responds with a bare "OK2\r\n"
+        // We read until we see the end of HTTP headers (\r\n\r\n) or a bare line (OK2).
         let responseBuf = '';
         const responseDeadline = Date.now() + Math.min(timeout, 5000);
         while (Date.now() < responseDeadline) {
@@ -450,7 +458,10 @@ export async function handleIcecastSource(request: Request): Promise<Response> {
           const { value, done } = await Promise.race([reader.read(), timer]);
           if (done || !value) break;
           responseBuf += new TextDecoder().decode(value);
-          if (responseBuf.includes('\r\n') || responseBuf.includes('\n')) break;
+          // Full HTTP header block received
+          if (responseBuf.includes('\r\n\r\n')) break;
+          // SHOUTcast v1 DNAS bare response (e.g. "OK2\r\n")
+          if (responseBuf.trim().startsWith('OK') && responseBuf.includes('\n')) break;
         }
 
         const latencyMs = Date.now() - startTime;
@@ -578,8 +589,10 @@ export async function handleIcecastAdmin(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
+    // /admin/stats without a mount parameter returns global server stats.
+    // Adding ?mount=/mountpoint returns stats for a specific mount only.
     const response = await httpRequest(
-      host, port, '/admin/stats?mount=/',
+      host, port, '/admin/stats',
       timeout,
       { username, password }
     );

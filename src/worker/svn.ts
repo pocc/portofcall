@@ -381,11 +381,12 @@ function parseSvnRealm(text: string): string | undefined {
 }
 
 /**
- * Encode a string in SVN protocol format: "<len>:<data>"
+ * Encode a string in SVN protocol format: "<len>:<data> "
+ * Note: Trailing space is mandatory per protocol spec
  */
 function svnStr(s: string): string {
   const bytes = new TextEncoder().encode(s);
-  return `${bytes.length}:${s}`;
+  return `${bytes.length}:${s} `;
 }
 
 /**
@@ -434,12 +435,19 @@ export async function handleSVNList(request: Request): Promise<Response> {
       serverVersion = greeting.maxVer;
       capabilities = greeting.caps;
 
+      // Validate protocol version support
+      if (greeting.minVer !== undefined && greeting.maxVer !== undefined) {
+        if (greeting.maxVer < 2) {
+          throw new Error(`Server does not support protocol version 2 (server supports ${greeting.minVer}-${greeting.maxVer})`);
+        }
+      }
+
       // Step 2: Send client greeting
-      // Format: ( version ( capabilities... ) ( ) )
+      // Format: ( version ( capabilities... ) ( url ) )
       const repoUrl = `svn://${host}${repo}`;
       const clientGreeting =
         `( 2 ( edit-pipeline svndiff1 accepts-svndiff2 accepts-svndiff3 ) ` +
-        `( ${svnStr(repoUrl)} ) ) \n`;
+        `( ${svnStr(repoUrl)}) ) `;
       await writer.write(new TextEncoder().encode(clientGreeting));
 
       // Step 3: Read auth challenge from server
@@ -460,10 +468,9 @@ export async function handleSVNList(request: Request): Promise<Response> {
       if (urlMatch) url = urlMatch[0];
 
       // Step 4: Send ANONYMOUS auth
-      // Format: ( ANONYMOUS ( <base64-or-empty> ) )
-      // "anonymous" as the credential string, empty string also works
-      const anonCred = btoa('anonymous');
-      const authResp = `( ANONYMOUS ( ${svnStr(anonCred)} ) ) \n`;
+      // Format: ( ANONYMOUS ( token:string ) )
+      // Empty string or "anonymous" as credential - no base64 encoding needed
+      const authResp = `( ANONYMOUS ( ${svnStr('')}) ) `;
       await writer.write(new TextEncoder().encode(authResp));
 
       // Step 5: Read auth result
@@ -491,28 +498,39 @@ export async function handleSVNList(request: Request): Promise<Response> {
       }
 
       // Step 6: Send reparent to set the repository URL
-      const reparentCmd = `( reparent ( ${svnStr(repoUrl)} ) ) \n`;
+      const reparentCmd = `( reparent ( ${svnStr(repoUrl)}) ) `;
       await writer.write(new TextEncoder().encode(reparentCmd));
 
       // Read reparent response
       await readSvnResponse(reader, timeout - (Date.now() - startTime));
 
-      // Step 7: Send list command
+      // Step 7: Send get-dir command to list directory contents
+      // Format: ( get-dir ( path:string [ rev:number ] ( want-props:bool want-contents:bool ? fields:dirent-fields ) ) )
       const listPath = path || '';
-      const listCmd = `( stat ( ${svnStr(listPath)} ) ) \n`;
+      const listCmd = `( get-dir ( ${svnStr(listPath)}( HEAD ) ( false true ) ) ) `;
       await writer.write(new TextEncoder().encode(listCmd));
 
       // Read list response
       const listResponse = await readSvnResponse(reader, timeout - (Date.now() - startTime));
 
       // Parse directory entries from the response
-      // Entries are strings in the form: "1:name" or similar
+      // get-dir response: ( success ( ( rev:number ) props:proplist ( ( entry:dirent ... ) ) ) )
+      // dirent: ( name:string kind:node-kind size:number has-props:bool created-rev:number [ created-date:string last-author:string ] )
       const entries: string[] = [];
-      const entryRegex = /\d+:([^\s()]+)/g;
+
+      // Extract counted strings that represent entry names
+      // Counted string format: <length>:<data> (with mandatory trailing space)
+      const countedStringRegex = /(\d+):([^\s]+)/g;
       let em;
-      while ((em = entryRegex.exec(listResponse)) !== null) {
-        const entry = em[1];
-        if (entry && !entry.startsWith('svn:') && entry.length > 0) {
+      while ((em = countedStringRegex.exec(listResponse)) !== null) {
+        const length = parseInt(em[1]);
+        const startIdx = em.index + em[1].length + 1; // position after "length:"
+        const entry = listResponse.substring(startIdx, startIdx + length);
+
+        // Filter out protocol keywords and SVN internal names
+        if (entry && !entry.startsWith('svn:') && entry !== 'success' &&
+            entry !== 'failure' && entry !== 'file' && entry !== 'dir' &&
+            entry !== 'none' && entry !== 'unknown' && entry.length > 0) {
           entries.push(entry);
         }
       }
@@ -536,9 +554,9 @@ export async function handleSVNList(request: Request): Promise<Response> {
       });
 
     } catch (innerError) {
-      reader.releaseLock();
-      writer.releaseLock();
-      await socket.close();
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { await socket.close(); } catch { /* ignore */ }
       throw innerError;
     }
 
@@ -589,22 +607,29 @@ export async function handleSVNInfo(request: Request): Promise<Response> {
 
     try {
       // Read server greeting
-      await readSvnResponse(reader, timeout - (Date.now() - startTime));
+      const greetingText = await readSvnResponse(reader, timeout - (Date.now() - startTime));
+      const greeting = parseSvnServerGreeting(greetingText);
+
+      // Validate protocol version support
+      if (greeting.minVer !== undefined && greeting.maxVer !== undefined) {
+        if (greeting.maxVer < 2) {
+          throw new Error(`Server does not support protocol version 2 (server supports ${greeting.minVer}-${greeting.maxVer})`);
+        }
+      }
 
       // Send client greeting
       const repoUrl = `svn://${host}${repo}`;
       const clientGreeting =
         `( 2 ( edit-pipeline svndiff1 accepts-svndiff2 accepts-svndiff3 ) ` +
-        `( ${svnStr(repoUrl)} ) ) \n`;
+        `( ${svnStr(repoUrl)}) ) `;
       await writer.write(new TextEncoder().encode(clientGreeting));
 
       // Read auth challenge
       await readSvnResponse(reader, timeout - (Date.now() - startTime));
 
       // Send ANONYMOUS auth
-      const anonCred = btoa('anonymous');
       await writer.write(new TextEncoder().encode(
-        `( ANONYMOUS ( ${svnStr(anonCred)} ) ) \n`
+        `( ANONYMOUS ( ${svnStr('')}) ) `
       ));
 
       // Read auth result
@@ -614,7 +639,7 @@ export async function handleSVNInfo(request: Request): Promise<Response> {
       }
 
       // Send get-repos-root command
-      await writer.write(new TextEncoder().encode('( get-repos-root ( ) ) \n'));
+      await writer.write(new TextEncoder().encode('( get-repos-root ( ) ) '));
 
       // Read response
       const infoResponse = await readSvnResponse(reader, timeout - (Date.now() - startTime));
@@ -638,9 +663,9 @@ export async function handleSVNInfo(request: Request): Promise<Response> {
       });
 
     } catch (innerError) {
-      reader.releaseLock();
-      writer.releaseLock();
-      await socket.close();
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { await socket.close(); } catch { /* ignore */ }
       throw innerError;
     }
 

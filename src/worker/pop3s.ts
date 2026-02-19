@@ -54,6 +54,11 @@ async function readPOP3Response(
 
 /**
  * Read POP3 multi-line response (ends with ".\r\n")
+ *
+ * Per RFC 1939 §3, POP3 servers "byte-stuff" lines beginning with "."
+ * by prepending an extra ".". After receiving the full response, we
+ * reverse this by removing the leading dot from any line that starts
+ * with ".." (dot-unstuffing).
  */
 async function readPOP3MultiLine(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -67,6 +72,11 @@ async function readPOP3MultiLine(
       response += new TextDecoder().decode(value);
       if (response.includes('\r\n.\r\n')) break;
     }
+
+    // RFC 1939 §3: Dot-unstuffing — remove the extra leading "." from
+    // any line that was byte-stuffed by the server.
+    response = response.replace(/^\.\./gm, '.');
+
     return response;
   })();
 
@@ -333,6 +343,9 @@ export async function handlePOP3SList(request: Request): Promise<Response> {
 
         // Get mailbox status
         const statResp = await sendPOP3Command(reader, writer, 'STAT', 5000);
+        if (!statResp.startsWith('+OK')) {
+          throw new Error(`STAT command failed: ${statResp.trim()}`);
+        }
         const statMatch = statResp.match(/\+OK (\d+) (\d+)/);
         const totalMessages = statMatch ? parseInt(statMatch[1]) : 0;
         const totalSize = statMatch ? parseInt(statMatch[2]) : 0;
@@ -590,7 +603,7 @@ export async function handlePOP3SDele(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise((_, reject) =>
+    const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('DELE timeout')), timeoutMs)
     );
     try {
@@ -663,7 +676,7 @@ export async function handlePOP3SUidl(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise((_, reject) =>
+    const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('UIDL timeout')), timeoutMs)
     );
     try {
@@ -736,7 +749,7 @@ export async function handlePOP3STop(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise((_, reject) =>
+    const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('TOP timeout')), timeoutMs)
     );
     try {
@@ -789,9 +802,17 @@ export async function handlePOP3SCapa(request: Request): Promise<Response> {
         const greeting = await readPOP3Response(reader, 5000);
         if (!greeting.startsWith('+OK')) throw new Error(`Invalid POP3S greeting: ${greeting.trim()}`);
         await writer.write(new TextEncoder().encode('CAPA\r\n'));
-        const capaResp = await readPOP3MultiLine(reader, 10000);
+        const capaResp = await readPOP3Response(reader, 10000);
+        if (!capaResp.startsWith('+OK')) {
+          // Server does not support CAPA (RFC 2449 §5 — optional command)
+          await writer.write(new TextEncoder().encode('QUIT\r\n'));
+          await socket.close();
+          return { success: true, host, port, capabilities: [], tls: true, note: 'Server returned -ERR to CAPA — CAPA not supported' };
+        }
+        // Read the rest of the multi-line CAPA response
+        const capaBody = await readPOP3MultiLine(reader, 10000);
         const capabilities: string[] = [];
-        const lines = capaResp.split('\r\n');
+        const lines = capaBody.split('\r\n');
         for (const line of lines) {
           if (line === '.' || line.startsWith('+OK') || line === '') continue;
           capabilities.push(line);
@@ -804,7 +825,7 @@ export async function handlePOP3SCapa(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise((_, reject) =>
+    const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('CAPA timeout')), 30000)
     );
     try {

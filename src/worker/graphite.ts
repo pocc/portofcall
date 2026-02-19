@@ -112,7 +112,7 @@ export async function handleGraphiteSend(request: Request): Promise<Response> {
         const lines: string[] = [];
 
         for (const m of metrics) {
-          const ts = m.timestamp || now;
+          const ts = m.timestamp ?? now;
           lines.push(`${m.name} ${m.value} ${ts}`);
         }
 

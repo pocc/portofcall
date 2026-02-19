@@ -131,17 +131,18 @@ function buildKeepaliveMessage(): Uint8Array {
 
 /**
  * Read exactly `needed` bytes from a reader with timeout.
+ * The timeoutHandle parameter is unused but kept for API compatibility.
  */
 async function readExact(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   needed: number,
-  timeoutPromise: Promise<never>,
+  _timeoutHandle: { id: ReturnType<typeof setTimeout> | null },
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let total = 0;
 
   while (total < needed) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
+    const result = await reader.read();
     if (result.done || !result.value) {
       throw new Error(`Connection closed after ${total} bytes (expected ${needed})`);
     }
@@ -149,11 +150,14 @@ async function readExact(
     total += result.value.length;
   }
 
-  const combined = new Uint8Array(total);
+  // Combine chunks and return exactly `needed` bytes
+  const combined = new Uint8Array(needed);
   let offset = 0;
   for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
+    const toCopy = Math.min(chunk.length, needed - offset);
+    combined.set(chunk.subarray(0, toCopy), offset);
+    offset += toCopy;
+    if (offset >= needed) break;
   }
   return combined;
 }
@@ -222,8 +226,9 @@ function parseOpenObject(data: Uint8Array, offset: number): {
     const tlvType = view.getUint16(tlvOffset, false);
     const tlvLength = view.getUint16(tlvOffset + 2, false);
     tlvs.push({ type: tlvType, length: tlvLength });
-    // TLV values are padded to 4-byte boundaries
-    tlvOffset += 4 + Math.ceil(tlvLength / 4) * 4;
+    // TLV = 4-byte header + value (padded to 4-byte boundary)
+    const paddedValueLen = Math.ceil(tlvLength / 4) * 4;
+    tlvOffset += 4 + paddedValueLen;
   }
 
   return {
@@ -296,92 +301,103 @@ export async function handlePCEPConnect(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    const timeoutHandle = { id: null as ReturnType<typeof setTimeout> | null };
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle.id = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (error) {
+      if (timeoutHandle.id) clearTimeout(timeoutHandle.id);
+      socket.close();
+      throw error;
+    }
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    // Send OPEN message
-    const openMsg = buildOpenMessage();
-    await writer.write(openMsg);
+    try {
+      // Send OPEN message
+      const openMsg = buildOpenMessage();
+      await writer.write(openMsg);
 
-    // Read response header (4 bytes minimum)
-    const headerData = await readExact(reader, 4, timeoutPromise);
-    const header = parsePCEPHeader(headerData);
+      // Read response header (4 bytes minimum)
+      const headerData = await readExact(reader, 4, timeoutHandle);
+      const header = parsePCEPHeader(headerData);
 
-    let isPCEP = false;
-    let openParams: ReturnType<typeof parseOpenObject> = null;
-    let responseType = 'Unknown';
-    let rawBytesReceived = headerData.length;
+      let isPCEP = false;
+      let openParams: ReturnType<typeof parseOpenObject> = null;
+      let responseType = 'Unknown';
+      let rawBytesReceived = headerData.length;
 
-    if (header && header.version === 1) {
-      isPCEP = true;
-      responseType = header.messageTypeName;
+      if (header && header.version === 1) {
+        isPCEP = true;
+        responseType = header.messageTypeName;
 
-      // If the response is an OPEN message, read the rest and parse
-      if (header.messageType === MSG_OPEN && header.messageLength > 4) {
-        const bodyData = await readExact(reader, header.messageLength - 4, timeoutPromise);
-        rawBytesReceived += bodyData.length;
+        // If the response is an OPEN message, read the rest and parse
+        if (header.messageType === MSG_OPEN && header.messageLength > 4) {
+          const bodyData = await readExact(reader, header.messageLength - 4, timeoutHandle);
+          rawBytesReceived += bodyData.length;
 
-        // Combine header + body for parsing
-        const fullMsg = new Uint8Array(header.messageLength);
-        fullMsg.set(headerData, 0);
-        fullMsg.set(bodyData, 4);
+          // Combine header + body for parsing
+          const fullMsg = new Uint8Array(header.messageLength);
+          fullMsg.set(headerData, 0);
+          fullMsg.set(bodyData, 4);
 
-        openParams = parseOpenObject(fullMsg, 4);
+          openParams = parseOpenObject(fullMsg, 4);
 
-        // Send Keepalive to acknowledge
-        try {
-          const keepalive = buildKeepaliveMessage();
-          await writer.write(keepalive);
-        } catch {
-          // Ignore write errors during handshake completion
+          // Send Keepalive to acknowledge
+          try {
+            const keepalive = buildKeepaliveMessage();
+            await writer.write(keepalive);
+          } catch {
+            // Ignore write errors during handshake completion
+          }
         }
       }
+
+      const rtt = Date.now() - startTime;
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        connectTime,
+        isPCEP,
+        responseType,
+        ...(header ? {
+          protocolVersion: header.version,
+          messageFlags: header.flags,
+        } : {}),
+        ...(openParams ? {
+          peerKeepalive: openParams.keepalive,
+          peerDeadtimer: openParams.deadtimer,
+          peerSessionId: openParams.sid,
+          peerVersion: openParams.version,
+          capabilities: openParams.tlvs.map(t => ({
+            type: t.type,
+            name: TLV_TYPE_NAMES[t.type] || `TLV-${t.type}`,
+            length: t.length,
+          })),
+        } : {}),
+        rawBytesReceived,
+        message: isPCEP
+          ? `PCEP server detected (v${header?.version}). Response: ${responseType}.${openParams ? ` Keepalive=${openParams.keepalive}s, DeadTimer=${openParams.deadtimer}s, ${openParams.tlvs.length} TLV(s).` : ''}`
+          : 'Server responded but does not appear to be a PCEP server.',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+    } finally {
+      if (timeoutHandle.id) clearTimeout(timeoutHandle.id);
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
     }
-
-    const rtt = Date.now() - startTime;
-
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
-
-    return new Response(JSON.stringify({
-      success: true,
-      host,
-      port,
-      rtt,
-      connectTime,
-      isPCEP,
-      responseType,
-      ...(header ? {
-        protocolVersion: header.version,
-        messageFlags: header.flags,
-      } : {}),
-      ...(openParams ? {
-        peerKeepalive: openParams.keepalive,
-        peerDeadtimer: openParams.deadtimer,
-        peerSessionId: openParams.sid,
-        peerVersion: openParams.version,
-        capabilities: openParams.tlvs.map(t => ({
-          type: t.type,
-          name: TLV_TYPE_NAMES[t.type] || `TLV-${t.type}`,
-          length: t.length,
-        })),
-      } : {}),
-      rawBytesReceived,
-      message: isPCEP
-        ? `PCEP server detected (v${header?.version}). Response: ${responseType}.${openParams ? ` Keepalive=${openParams.keepalive}s, DeadTimer=${openParams.deadtimer}s, ${openParams.tlvs.length} TLV(s).` : ''}`
-        : 'Server responded but does not appear to be a PCEP server.',
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
 
   } catch (error) {
     return new Response(JSON.stringify({
@@ -417,6 +433,16 @@ export async function handlePCEPProbe(request: Request): Promise<Response> {
       });
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -433,44 +459,55 @@ export async function handlePCEPProbe(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    const timeoutHandle = { id: null as ReturnType<typeof setTimeout> | null };
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle.id = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (error) {
+      if (timeoutHandle.id) clearTimeout(timeoutHandle.id);
+      socket.close();
+      throw error;
+    }
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    // Send OPEN
-    const openMsg = buildOpenMessage();
-    await writer.write(openMsg);
+    try {
+      // Send OPEN
+      const openMsg = buildOpenMessage();
+      await writer.write(openMsg);
 
-    // Read response header only
-    const headerData = await readExact(reader, 4, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    const header = parsePCEPHeader(headerData);
+      // Read response header only
+      const headerData = await readExact(reader, 4, timeoutHandle);
+      const rtt = Date.now() - startTime;
+      const header = parsePCEPHeader(headerData);
 
-    const isPCEP = header !== null && header.version === 1;
+      const isPCEP = header !== null && header.version === 1;
 
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        isPCEP,
+        responseType: header?.messageTypeName || 'Unknown',
+        message: isPCEP
+          ? `PCEP server detected (response: ${header?.messageTypeName}).`
+          : 'Not a PCEP server.',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
 
-    return new Response(JSON.stringify({
-      success: true,
-      host,
-      port,
-      rtt,
-      isPCEP,
-      responseType: header?.messageTypeName || 'Unknown',
-      message: isPCEP
-        ? `PCEP server detected (response: ${header?.messageTypeName}).`
-        : 'Not a PCEP server.',
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    } finally {
+      if (timeoutHandle.id) clearTimeout(timeoutHandle.id);
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+    }
 
   } catch (error) {
     return new Response(JSON.stringify({
@@ -490,6 +527,9 @@ function buildPCReqMessage(requestId: number, srcAddr: string, dstAddr: string, 
   function ipToBytes(ip: string): Uint8Array {
     const parts = ip.split('.').map(Number);
     if (parts.length !== 4) throw new Error(`Invalid IPv4 address: ${ip}`);
+    if (parts.some(p => p < 0 || p > 255 || !Number.isInteger(p))) {
+      throw new Error(`Invalid IPv4 address octets: ${ip}`);
+    }
     return new Uint8Array(parts);
   }
 
@@ -572,7 +612,7 @@ function parsePCRepBody(data: Uint8Array, bodyOffset: number): {
     const objClass = data[offset];
     const objLen = view.getUint16(offset + 2, false);
 
-    if (objLen < 4 || offset + objLen > data.length) break;
+    if (objLen < 4 || objLen > 65535 || offset + objLen > data.length) break;
 
     if (objClass === OBJ_CLASS_RP && objLen >= 12) {
       requestId = view.getUint32(offset + 8, false);
@@ -607,7 +647,9 @@ function parsePCRepBody(data: Uint8Array, bodyOffset: number): {
       else if (metricType === 2) teCost = metricValue;
     }
 
-    offset += Math.ceil(objLen / 4) * 4;
+    // Objects are padded to 4-byte boundaries per RFC 5440 §7.2
+    const paddedObjLen = Math.ceil(objLen / 4) * 4;
+    offset += paddedObjLen;
   }
 
   return { pathFound, requestId, noPathReason, hops, igpCost, teCost, setupPriority, holdingPriority };
@@ -668,11 +710,18 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    const timeoutHandle = { id: null as ReturnType<typeof setTimeout> | null };
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle.id = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (error) {
+      if (timeoutHandle.id) clearTimeout(timeoutHandle.id);
+      socket.close();
+      throw error;
+    }
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -682,7 +731,7 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       await writer.write(buildOpenMessage());
 
       // Step 2: Read server OPEN
-      const openHdrData = await readExact(reader, 4, timeoutPromise);
+      const openHdrData = await readExact(reader, 4, timeoutHandle);
       const openHdr = parsePCEPHeader(openHdrData);
 
       if (!openHdr || openHdr.version !== 1) {
@@ -690,7 +739,7 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       }
 
       if (openHdr.messageType === MSG_OPEN && openHdr.messageLength > 4) {
-        await readExact(reader, openHdr.messageLength - 4, timeoutPromise);
+        await readExact(reader, openHdr.messageLength - 4, timeoutHandle);
       }
 
       // Step 3: Send Keepalive to confirm session
@@ -702,12 +751,12 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       // Step 5: Read response, skipping any intervening Keepalives
       let pcrepData: Uint8Array | null = null;
       for (let attempts = 0; attempts < 4; attempts++) {
-        const hdrBytes = await readExact(reader, 4, timeoutPromise);
+        const hdrBytes = await readExact(reader, 4, timeoutHandle);
         const hdrParsed = parsePCEPHeader(hdrBytes);
         if (!hdrParsed) break;
 
         if (hdrParsed.messageLength > 4) {
-          const bodyBytes = await readExact(reader, hdrParsed.messageLength - 4, timeoutPromise);
+          const bodyBytes = await readExact(reader, hdrParsed.messageLength - 4, timeoutHandle);
           if (hdrParsed.messageType === MSG_PCREP) {
             pcrepData = new Uint8Array(hdrParsed.messageLength);
             pcrepData.set(hdrBytes, 0);
@@ -722,10 +771,6 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       }
 
       const rtt = Date.now() - startTime;
-
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
 
       if (!pcrepData) {
         return new Response(JSON.stringify({
@@ -768,11 +813,11 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
 
-    } catch (err) {
+    } finally {
+      if (timeoutHandle.id) clearTimeout(timeoutHandle.id);
       writer.releaseLock();
       reader.releaseLock();
       socket.close();
-      throw err;
     }
 
   } catch (error) {

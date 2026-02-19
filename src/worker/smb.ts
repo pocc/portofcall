@@ -599,7 +599,7 @@ function buildSMB2Header(
   command: number,
   messageId: number,
   treeId: number,
-  sessionId: number,
+  sessionId: string,
 ): Uint8Array {
   const h = new Uint8Array(64);
   const v = new DataView(h.buffer);
@@ -610,27 +610,34 @@ function buildSMB2Header(
   v.setUint16(14, 31,        true); // CreditRequest
   v.setUint32(24, messageId, true); // MessageId (lo)
   v.setUint32(36, treeId,    true); // TreeId
-  v.setUint32(40, sessionId, true); // SessionId (lo)
+  // SessionId is 8 bytes (64-bit) at offset 40 [MS-SMB2 §2.2.1]
+  const sid = BigInt(sessionId);
+  v.setUint32(40, Number(sid & 0xFFFFFFFFn), true); // SessionId lo
+  v.setUint32(44, Number(sid >> 32n),        true); // SessionId hi
   return h;
 }
 
 /** Parse SMB2 header fields from a raw TCP buffer (after NetBIOS 4-byte prefix). */
 function parseSMB2ResponseHeader(data: Uint8Array): {
-  valid: boolean; status: number; command: number; treeId: number; sessionId: number;
+  valid: boolean; status: number; command: number; treeId: number; sessionId: string;
 } {
   const offset = 4; // skip NetBIOS header
-  if (data.length < offset + 64) return { valid: false, status: 0, command: 0, treeId: 0, sessionId: 0 };
+  if (data.length < offset + 64) return { valid: false, status: 0, command: 0, treeId: 0, sessionId: '0' };
   if (data[offset] !== 0xFE || data[offset+1] !== 0x53 ||
       data[offset+2] !== 0x4D || data[offset+3] !== 0x42) {
-    return { valid: false, status: 0, command: 0, treeId: 0, sessionId: 0 };
+    return { valid: false, status: 0, command: 0, treeId: 0, sessionId: '0' };
   }
   const v = new DataView(data.buffer, data.byteOffset + offset);
+  // SessionId is 8 bytes (64-bit) at offset 40 [MS-SMB2 §2.2.1]
+  const lo = BigInt(v.getUint32(40, true));
+  const hi = BigInt(v.getUint32(44, true));
+  const sessionId64 = (hi << 32n) | lo;
   return {
     valid:     true,
     status:    v.getUint32(8,  true),
     command:   v.getUint16(12, true),
     treeId:    v.getUint32(36, true),
-    sessionId: v.getUint32(40, true),
+    sessionId: '0x' + sessionId64.toString(16),
   };
 }
 
@@ -728,7 +735,7 @@ function buildNTLMAuthenticateAnonymous(): Uint8Array {
 function buildSessionSetupPacket(
   secBlob: Uint8Array,
   messageId: number,
-  sessionId = 0,
+  sessionId = '0',
 ): Uint8Array {
   const header = buildSMB2Header(SMB2_CMD_SESSION_SETUP, messageId, 0, sessionId);
   const body = new Uint8Array(24);
@@ -754,7 +761,7 @@ function buildSessionSetupPacket(
 function buildTreeConnectPacket(
   uncPath: string,
   messageId: number,
-  sessionId: number,
+  sessionId: string,
 ): Uint8Array {
   const header = buildSMB2Header(SMB2_CMD_TREE_CONNECT, messageId, 0, sessionId);
   const pathBytes = new Uint8Array(uncPath.length * 2);
@@ -814,7 +821,7 @@ export async function handleSMBSession(request: Request): Promise<Response> {
 
         // Round 1: SESSION_SETUP with SPNEGO-wrapped NTLMSSP_NEGOTIATE
         const blob1 = buildSPNEGONegTokenInit(buildNTLMNegotiate());
-        await writer.write(buildSessionSetupPacket(blob1, 1, 0));
+        await writer.write(buildSessionSetupPacket(blob1, 1));
         const ss1 = await readResponse(reader, 68, 5000);
         const ss1Hdr = parseSMB2ResponseHeader(ss1);
         if (!ss1Hdr.valid) throw new Error('SESSION_SETUP round 1: invalid response');
@@ -844,7 +851,7 @@ export async function handleSMBSession(request: Request): Promise<Response> {
             success: false,
             latencyMs: Date.now() - startTime,
             error: `Anonymous session rejected: 0x${(ss2Hdr.status >>> 0).toString(16).padStart(8, '0')}`,
-            sessionId: 0,
+            sessionId: '0x0',
           };
         }
 
@@ -928,7 +935,7 @@ export async function handleSMBTreeConnect(request: Request): Promise<Response> 
 
         // SESSION_SETUP round 1
         const blob1 = buildSPNEGONegTokenInit(buildNTLMNegotiate());
-        await writer.write(buildSessionSetupPacket(blob1, 1, 0));
+        await writer.write(buildSessionSetupPacket(blob1, 1));
         const ss1 = await readResponse(reader, 68, 5000);
         const ss1Hdr = parseSMB2ResponseHeader(ss1);
         if (!ss1Hdr.valid) throw new Error('SESSION_SETUP round 1: invalid response');
@@ -944,7 +951,7 @@ export async function handleSMBTreeConnect(request: Request): Promise<Response> 
           if (!ss2Hdr.valid || ss2Hdr.status !== SMB2_STATUS_SUCCESS) {
             throw new Error(`Session auth failed: 0x${((ss2Hdr.status || 0) >>> 0).toString(16).padStart(8, '0')}`);
           }
-          sessionId = ss2Hdr.sessionId || sessionId;
+          if (ss2Hdr.sessionId !== '0x0') sessionId = ss2Hdr.sessionId;
         } else if (ss1Hdr.status !== SMB2_STATUS_SUCCESS) {
           throw new Error(`Session setup failed: 0x${(ss1Hdr.status >>> 0).toString(16).padStart(8, '0')}`);
         }
@@ -1022,7 +1029,7 @@ function buildCreatePacket(
   filename: string,
   messageId: number,
   treeId: number,
-  sessionId: number,
+  sessionId: string,
 ): Uint8Array {
   const header = buildSMB2Header(SMB2_CMD_CREATE, messageId, treeId, sessionId);
   const nameBytes = new Uint8Array(filename.length * 2);
@@ -1045,7 +1052,7 @@ function buildQueryInfoPacket(
   fileId: Uint8Array,
   messageId: number,
   treeId: number,
-  sessionId: number,
+  sessionId: string,
 ): Uint8Array {
   const header = buildSMB2Header(SMB2_CMD_QUERY_INFO, messageId, treeId, sessionId);
   const body = new Uint8Array(40);
@@ -1063,7 +1070,7 @@ function buildClosePacket(
   fileId: Uint8Array,
   messageId: number,
   treeId: number,
-  sessionId: number,
+  sessionId: string,
 ): Uint8Array {
   const header = buildSMB2Header(SMB2_CMD_CLOSE, messageId, treeId, sessionId);
   const body = new Uint8Array(24);
@@ -1123,7 +1130,7 @@ export async function handleSMBStat(request: Request): Promise<Response> {
 
         // SESSION_SETUP round 1 (NTLMSSP_NEGOTIATE)
         const blob1 = buildSPNEGONegTokenInit(buildNTLMNegotiate());
-        await writer.write(buildSessionSetupPacket(blob1, 1, 0));
+        await writer.write(buildSessionSetupPacket(blob1, 1));
         const ss1 = await readResponse(reader, 68, 5000);
         const ss1Hdr = parseSMB2ResponseHeader(ss1);
         if (!ss1Hdr.valid) throw new Error('SESSION_SETUP round 1: invalid response');
@@ -1137,7 +1144,7 @@ export async function handleSMBStat(request: Request): Promise<Response> {
           if (!ss2Hdr.valid || ss2Hdr.status !== SMB2_STATUS_SUCCESS) {
             throw new Error(`Session auth failed: 0x${((ss2Hdr.status || 0) >>> 0).toString(16).padStart(8, '0')}`);
           }
-          sessionId = ss2Hdr.sessionId || sessionId;
+          if (ss2Hdr.sessionId !== '0x0') sessionId = ss2Hdr.sessionId;
         } else if (ss1Hdr.status !== SMB2_STATUS_SUCCESS) {
           throw new Error(`Session setup failed: 0x${(ss1Hdr.status >>> 0).toString(16).padStart(8, '0')}`);
         }

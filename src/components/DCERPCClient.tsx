@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface DCERPCClientProps {
   onBack: () => void;
@@ -184,17 +186,18 @@ export default function DCERPCClient({ onBack }: DCERPCClientProps) {
           &larr; Back
         </button>
         <h1 className="text-3xl font-bold text-white">DCE/RPC Client</h1>
-      </div>
-
-      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
+      </div>      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* Step 1: Connection */}
         <div className="flex items-center gap-3 mb-4">
           <div className="flex-shrink-0 w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
             <span className="text-white font-bold text-sm">1</span>
           </div>
+
+
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
 
+      <ApiExamples examples={apiExamples.DCERPC || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="dcerpc-host" className="block text-sm font-medium text-slate-300 mb-1">

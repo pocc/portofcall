@@ -45,6 +45,9 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 // HTTP methods we allow
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'HEAD', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'TRACE']);
 
+// Methods that MUST NOT include a request body (RFC 9110 Section 9.3.8)
+const BODYLESS_METHODS = new Set(['GET', 'HEAD', 'DELETE', 'TRACE']);
+
 // Maximum body size to return (64 KiB)
 const MAX_BODY_BYTES = 65536;
 
@@ -212,11 +215,14 @@ function parseRawResponse(data: Uint8Array): {
 /**
  * Read the full HTTP response from the socket.
  * Handles both Content-Length and chunked responses.
+ * The requestMethod parameter is needed to correctly handle HEAD responses,
+ * which include headers (potentially with Content-Length) but no body.
  */
 async function readFullResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
   maxBytes: number,
+  requestMethod: string = 'GET',
 ): Promise<{ data: Uint8Array; timedOut: boolean }> {
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
@@ -273,13 +279,30 @@ async function readFullResponse(
       const bodyStart = headerEndIdx + 4;
       const bodyLen = totalLen - bodyStart;
 
+      // RFC 9110 Section 6.4: Responses to HEAD requests, and 1xx/204/304
+      // responses MUST NOT contain a body regardless of headers present.
+      // Check these first before Content-Length/Transfer-Encoding.
+      const statusMatch = headerStr.match(/^HTTP\/[\d.]+ (\d+)/);
+      if (statusMatch) {
+        const code = parseInt(statusMatch[1], 10);
+        if (code < 200 || code === 204 || code === 304) break;
+      }
+      if (requestMethod === 'HEAD') break;
+
       // Check Transfer-Encoding: chunked
       if (/transfer-encoding:\s*chunked/i.test(headerStr)) {
         const body = current.slice(bodyStart);
-        // Chunked body ends with "0\r\n\r\n"
+        // Chunked body ends with terminal chunk "0\r\n" followed by
+        // optional trailers and final "\r\n". Minimum termination: "0\r\n\r\n" (5 bytes).
         if (body.length >= 5) {
-          const tail = decoder.decode(body.slice(-7));
-          if (tail.includes('0\r\n\r\n')) break;
+          // Scan backwards for the terminal chunk sequence
+          const bodyStr = decoder.decode(body);
+          const termIdx = bodyStr.lastIndexOf('0\r\n');
+          if (termIdx >= 0) {
+            // Check that after "0\r\n" there's eventually a "\r\n" (end of trailers/empty trailers)
+            const afterTerm = bodyStr.slice(termIdx + 3);
+            if (afterTerm.endsWith('\r\n')) break;
+          }
         }
       } else {
         // Check Content-Length
@@ -291,13 +314,6 @@ async function readFullResponse(
           // No Content-Length, no chunked — read until connection close
           // Use a short drain timeout
         }
-      }
-
-      // Check for HEAD / 1xx / 204 / 304 (no body)
-      const statusMatch = headerStr.match(/^HTTP\/[\d.]+ (\d+)/);
-      if (statusMatch) {
-        const code = parseInt(statusMatch[1], 10);
-        if (code < 200 || code === 204 || code === 304) break;
       }
     }
 
@@ -363,8 +379,17 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
       );
     }
 
-    // Sanitize path — must start with /
-    const safePath = path.startsWith('/') ? path : `/${path}`;
+    // RFC 9110 Section 9.3.8: TRACE MUST NOT include a body
+    if (upperMethod === 'TRACE' && requestBody) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'TRACE requests MUST NOT include a body (RFC 9110 Section 9.3.8)' } satisfies HTTPResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Sanitize path — must start with / unless it's the asterisk-form "*"
+    // RFC 9112 Section 3.2.4: OPTIONS allows asterisk-form "OPTIONS * HTTP/1.1"
+    const safePath = path === '*' ? '*' : (path.startsWith('/') ? path : `/${path}`);
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -395,9 +420,13 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Build the request headers map (lowercase keys, our defaults first)
+      // RFC 9112 Section 3.2: Host header MUST include port if non-default
+      const defaultPort = tls ? 443 : 80;
+      const hostHeader = port === defaultPort ? host : `${host}:${port}`;
+
+      // Build the request headers map (our defaults first, caller overrides)
       const reqHeaders: Record<string, string> = {
-        'Host': host,
+        'Host': hostHeader,
         'User-Agent': 'portofcall/1.0 (HTTP/1.1 TCP explorer)',
         'Accept': '*/*',
         'Connection': 'close',
@@ -405,9 +434,13 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
         ...extraHeaders,
       };
 
+      // Determine the effective body: bodyless methods suppress the body
+      // RFC 9110: GET, HEAD, DELETE SHOULD NOT have a body; TRACE MUST NOT (already rejected above)
+      const effectiveBody = (BODYLESS_METHODS.has(upperMethod) || !requestBody) ? '' : requestBody;
+
       // Add Content-Length if there's a body
-      if (requestBody !== undefined && requestBody !== '') {
-        const bodyBytes = new TextEncoder().encode(requestBody);
+      if (effectiveBody) {
+        const bodyBytes = new TextEncoder().encode(effectiveBody);
         reqHeaders['Content-Length'] = String(bodyBytes.length);
         if (!reqHeaders['Content-Type'] && !reqHeaders['content-type']) {
           reqHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
@@ -419,14 +452,14 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
       const headerLines = Object.entries(reqHeaders)
         .map(([k, v]) => `${k}: ${v}`)
         .join('\r\n');
-      const rawRequest = `${requestLine}\r\n${headerLines}\r\n\r\n${requestBody ?? ''}`;
+      const rawRequest = `${requestLine}\r\n${headerLines}\r\n\r\n${effectiveBody}`;
 
       await writer.write(new TextEncoder().encode(rawRequest));
       const sendTime = Date.now();
 
       // Read the full response
       const effectiveTimeout = Math.max(timeout - tcpLatency - (Date.now() - connectStart), 2000);
-      const { data: responseData, timedOut } = await readFullResponse(reader, effectiveTimeout, maxBodyBytes);
+      const { data: responseData, timedOut } = await readFullResponse(reader, effectiveTimeout, maxBodyBytes, upperMethod);
       const ttfb = Date.now() - sendTime; // crude TTFB — time until we got all data back
 
       writer.releaseLock();

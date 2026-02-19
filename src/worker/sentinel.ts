@@ -48,55 +48,87 @@ async function readRESPFull(
   const decoder = new TextDecoder();
   let buffer = '';
   const deadline = Date.now() + timeoutMs;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
-  while (true) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('Read timeout');
+  try {
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Read timeout');
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Read timeout')), Math.min(remaining, 5000));
-    });
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), remaining);
+      });
 
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
 
-    if (done) {
-      if (buffer.length > 0) return buffer;
-      throw new Error('Connection closed by server');
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+
+      if (done) {
+        // Finalize decoder to flush any partial multi-byte sequences
+        const final = decoder.decode(new Uint8Array(0), { stream: false });
+        if (final) buffer += final;
+        if (buffer.length > 0) return buffer;
+        throw new Error('Connection closed by server');
+      }
+
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+
+        // For simple responses (+OK, +PONG, -ERR, :integer)
+        if (buffer.match(/^[+\-:].*\r\n/)) {
+          // Finalize decoder
+          buffer += decoder.decode(new Uint8Array(0), { stream: false });
+          return buffer;
+        }
+
+        // For bulk strings ($len\r\n...\r\n) — check if complete
+        if (buffer.startsWith('$')) {
+          const lenEnd = buffer.indexOf('\r\n');
+          if (lenEnd !== -1) {
+            const len = parseInt(buffer.substring(1, lenEnd));
+            if (isNaN(len)) throw new Error('Invalid bulk string length');
+            if (len === -1) {
+              buffer += decoder.decode(new Uint8Array(0), { stream: false });
+              return buffer;
+            }
+            const dataStart = lenEnd + 2;
+            if (buffer.length >= dataStart + len + 2) {
+              buffer += decoder.decode(new Uint8Array(0), { stream: false });
+              return buffer;
+            }
+          }
+        }
+
+        // For arrays (*count\r\n...) — use heuristic: enough \r\n sequences
+        if (buffer.startsWith('*')) {
+          const countEnd = buffer.indexOf('\r\n');
+          if (countEnd !== -1) {
+            const count = parseInt(buffer.substring(1, countEnd));
+            if (isNaN(count)) throw new Error('Invalid array count');
+            if (count <= 0) {
+              buffer += decoder.decode(new Uint8Array(0), { stream: false });
+              return buffer;
+            }
+            // For SENTINEL responses, wait for enough data
+            // Each array element has at least 2 \r\n (length line + data line)
+            const lines = buffer.split('\r\n');
+            // Rough check: for a flat array of count bulk strings, we need 1 + count*2 lines
+            // For nested arrays (SENTINEL masters), need more: 1 + count*(1+N*2) lines
+            // Conservative check: wait for at least 1 + count*4 lines for nested arrays
+            if (lines.length >= 1 + count * 4) {
+              buffer += decoder.decode(new Uint8Array(0), { stream: false });
+              return buffer;
+            }
+          }
+        }
+      }
     }
-
-    if (value) {
-      buffer += decoder.decode(value, { stream: true });
-
-      // For simple responses (+OK, +PONG, -ERR, :integer)
-      if (buffer.match(/^[+\-:].*\r\n/)) return buffer;
-
-      // For bulk strings ($len\r\n...\r\n) — check if complete
-      if (buffer.startsWith('$')) {
-        const lenEnd = buffer.indexOf('\r\n');
-        if (lenEnd !== -1) {
-          const len = parseInt(buffer.substring(1, lenEnd));
-          if (len === -1) return buffer; // null bulk string
-          const dataStart = lenEnd + 2;
-          if (buffer.length >= dataStart + len + 2) return buffer;
-        }
-      }
-
-      // For arrays (*count\r\n...) — use heuristic: enough \r\n sequences
-      if (buffer.startsWith('*')) {
-        const countEnd = buffer.indexOf('\r\n');
-        if (countEnd !== -1) {
-          const count = parseInt(buffer.substring(1, countEnd));
-          if (count <= 0) return buffer;
-          // For SENTINEL responses, wait for enough data
-          // Each array element has at least 2 \r\n (length line + data line)
-          const lines = buffer.split('\r\n');
-          // Rough check: for a flat array of count bulk strings, we need 1 + count*2 lines
-          if (lines.length >= 1 + count * 2) return buffer;
-          // For nested arrays (SENTINEL masters), need more lines — wait for more data
-          // But also check if we've been waiting a while
-          if (buffer.length > 4096) return buffer; // Return what we have for large responses
-        }
-      }
+  } finally {
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
     }
   }
 }
@@ -112,19 +144,32 @@ function parseRESP(raw: string): unknown {
     if (idx >= lines.length) return null;
     const line = lines[idx++];
 
-    if (line.startsWith('+')) return line.substring(1);
-    if (line.startsWith('-')) return { error: line.substring(1) };
-    if (line.startsWith(':')) return parseInt(line.substring(1));
+    if (!line || line.length === 0) return null;
 
-    if (line.startsWith('$')) {
+    const type = line[0];
+    if (!['+', '-', ':', '$', '*'].includes(type)) {
+      throw new Error(`Invalid RESP type marker: ${type}`);
+    }
+
+    if (type === '+') return line.substring(1);
+    if (type === '-') return { error: line.substring(1) };
+    if (type === ':') {
+      const num = parseInt(line.substring(1));
+      if (isNaN(num)) throw new Error('Invalid RESP integer');
+      return num;
+    }
+
+    if (type === '$') {
       const len = parseInt(line.substring(1));
+      if (isNaN(len)) throw new Error('Invalid RESP bulk string length');
       if (len === -1) return null;
       const data = lines[idx++];
       return data;
     }
 
-    if (line.startsWith('*')) {
+    if (type === '*') {
       const count = parseInt(line.substring(1));
+      if (isNaN(count)) throw new Error('Invalid RESP array count');
       if (count === -1) return null;
       const arr: unknown[] = [];
       for (let i = 0; i < count; i++) {
@@ -146,6 +191,10 @@ function flatArrayToObject(arr: unknown[]): Record<string, string> {
   const obj: Record<string, string> = {};
   for (let i = 0; i < arr.length - 1; i += 2) {
     obj[String(arr[i])] = String(arr[i + 1]);
+  }
+  // Warn if odd-length array (last element dropped)
+  if (arr.length % 2 !== 0) {
+    console.warn(`flatArrayToObject: odd-length array (${arr.length} elements), last element dropped:`, arr[arr.length - 1]);
   }
   return obj;
 }
@@ -285,12 +334,24 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
     });
   }
 
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Invalid host format',
+    } satisfies Partial<SentinelProbeResponse>), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
 
   if (port < 1 || port > 65535) {
     return new Response(JSON.stringify({
       success: false,
+      host,
+      port,
       error: 'Port must be between 1 and 65535',
     } satisfies Partial<SentinelProbeResponse>), {
       status: 400,
@@ -298,12 +359,16 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
     });
   }
 
-  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+  // Cloudflare detection
+  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
     return new Response(JSON.stringify({
       success: false,
-      error: 'Invalid host format',
-    } satisfies Partial<SentinelProbeResponse>), {
-      status: 400,
+      host,
+      port,
+      error: 'Cannot connect to Cloudflare-protected hosts',
+      isCloudflare: true,
+    }), {
+      status: 403,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -317,8 +382,8 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
     const writer = socket.writable.getWriter();
 
     try {
-      // Authenticate if password provided
-      if (password) {
+      // Authenticate if password provided (check !== undefined to allow empty string)
+      if (password !== undefined) {
         await writer.write(encodeRESPArray(['AUTH', password]));
         const authResp = await readRESPFull(reader, timeout);
         if (!authResp.startsWith('+OK')) {
@@ -377,8 +442,6 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
 
       const rtt = Date.now() - startTime;
 
-      await socket.close();
-
       return new Response(JSON.stringify({
         success: true,
         host,
@@ -390,9 +453,10 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
       } satisfies SentinelProbeResponse), {
         headers: { 'Content-Type': 'application/json' },
       });
-    } catch (err) {
+    } finally {
+      try { reader.releaseLock(); } catch {}
+      try { writer.releaseLock(); } catch {}
       try { await socket.close(); } catch {}
-      throw err;
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -423,6 +487,17 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
     });
   }
 
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      transcript: [],
+      error: 'Invalid host format',
+    } satisfies Partial<SentinelQueryResponse>), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   if (!command || !command.trim()) {
     return new Response(JSON.stringify({
       success: false,
@@ -440,6 +515,8 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
   if (port < 1 || port > 65535) {
     return new Response(JSON.stringify({
       success: false,
+      host,
+      port,
       transcript: [],
       error: 'Port must be between 1 and 65535',
     } satisfies Partial<SentinelQueryResponse>), {
@@ -448,13 +525,31 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
     });
   }
 
-  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+  // Validate masterName if provided
+  if (masterName && !/^[a-zA-Z0-9_-]+$/.test(masterName)) {
     return new Response(JSON.stringify({
       success: false,
+      host,
+      port,
       transcript: [],
-      error: 'Invalid host format',
+      error: 'Invalid masterName format (use alphanumeric, hyphen, underscore only)',
     } satisfies Partial<SentinelQueryResponse>), {
       status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Cloudflare detection
+  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      transcript: [],
+      error: 'Cannot connect to Cloudflare-protected hosts',
+      isCloudflare: true,
+    }), {
+      status: 403,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -490,8 +585,8 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
     const writer = socket.writable.getWriter();
 
     try {
-      // Authenticate if password provided
-      if (password) {
+      // Authenticate if password provided (check !== undefined to allow empty string)
+      if (password !== undefined) {
         await writer.write(encodeRESPArray(['AUTH', password]));
         const authResp = await readRESPFull(reader, timeout);
         if (authResp.startsWith('+OK')) {
@@ -541,8 +636,6 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
 
       const rtt = Date.now() - startTime;
 
-      await socket.close();
-
       return new Response(JSON.stringify({
         success: true,
         host,
@@ -556,9 +649,10 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
       } satisfies SentinelQueryResponse), {
         headers: { 'Content-Type': 'application/json' },
       });
-    } catch (err) {
+    } finally {
+      try { reader.releaseLock(); } catch {}
+      try { writer.releaseLock(); } catch {}
       try { await socket.close(); } catch {}
-      throw err;
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -604,6 +698,19 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
     });
   }
 
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port: rawPort || DEFAULT_PORT,
+      masterName: masterName || '',
+      error: 'Invalid host format',
+    } satisfies SentinelGetResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   if (!masterName || !masterName.trim()) {
     return new Response(JSON.stringify({
       success: false,
@@ -617,13 +724,13 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
     });
   }
 
-  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(masterName)) {
     return new Response(JSON.stringify({
       success: false,
       host,
       port: rawPort || DEFAULT_PORT,
       masterName,
-      error: 'Invalid host format',
+      error: 'Invalid masterName format (use alphanumeric, hyphen, underscore only)',
     } satisfies SentinelGetResponse), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -642,6 +749,21 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
       error: 'Port must be between 1 and 65535',
     } satisfies SentinelGetResponse), {
       status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Cloudflare detection
+  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      masterName,
+      error: 'Cannot connect to Cloudflare-protected hosts',
+      isCloudflare: true,
+    }), {
+      status: 403,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -697,8 +819,6 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
 
       const rtt = Date.now() - startTime;
 
-      try { await socket.close(); } catch {}
-
       return new Response(JSON.stringify({
         success: true,
         host,
@@ -710,9 +830,10 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
       } satisfies SentinelGetResponse), {
         headers: { 'Content-Type': 'application/json' },
       });
-    } catch (err) {
+    } finally {
+      try { reader.releaseLock(); } catch {}
+      try { writer.releaseLock(); } catch {}
       try { await socket.close(); } catch {}
-      throw err;
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -756,6 +877,19 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
     });
   }
 
+  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port: rawPort || DEFAULT_PORT,
+      masterName: masterName || '',
+      error: 'Invalid host format',
+    } satisfies SentinelGetMasterAddrResponse), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   if (!masterName || !masterName.trim()) {
     return new Response(JSON.stringify({
       success: false,
@@ -769,13 +903,13 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
     });
   }
 
-  if (!/^[a-zA-Z0-9._:-]+$/.test(host)) {
+  if (!/^[a-zA-Z0-9_-]+$/.test(masterName)) {
     return new Response(JSON.stringify({
       success: false,
       host,
       port: rawPort || DEFAULT_PORT,
       masterName,
-      error: 'Invalid host format',
+      error: 'Invalid masterName format (use alphanumeric, hyphen, underscore only)',
     } satisfies SentinelGetMasterAddrResponse), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -794,6 +928,21 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
       error: 'Port must be between 1 and 65535',
     } satisfies SentinelGetMasterAddrResponse), {
       status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Cloudflare detection
+  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      masterName,
+      error: 'Cannot connect to Cloudflare-protected hosts',
+      isCloudflare: true,
+    }), {
+      status: 403,
       headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -842,8 +991,6 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
 
       const rtt = Date.now() - startTime;
 
-      try { await socket.close(); } catch {}
-
       return new Response(JSON.stringify({
         success: true,
         host,
@@ -856,9 +1003,10 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
       } satisfies SentinelGetMasterAddrResponse), {
         headers: { 'Content-Type': 'application/json' },
       });
-    } catch (err) {
+    } finally {
+      try { reader.releaseLock(); } catch {}
+      try { writer.releaseLock(); } catch {}
       try { await socket.close(); } catch {}
-      throw err;
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -913,7 +1061,7 @@ async function sentinelWriteCommand(
   const writer = socket.writable.getWriter();
 
   try {
-    if (password) {
+    if (password !== undefined) {
       await writer.write(encodeRESPArray(['AUTH', password]));
       const authResp = await readRESPFull(reader, timeout);
       if (!authResp.startsWith('+OK')) {
@@ -926,12 +1074,11 @@ async function sentinelWriteCommand(
     const result = parseRESP(resp);
     const rtt = Date.now() - startTime;
 
-    try { await socket.close(); } catch {}
-
     return { result, rtt };
-  } catch (err) {
+  } finally {
+    try { reader.releaseLock(); } catch {}
+    try { writer.releaseLock(); } catch {}
     try { await socket.close(); } catch {}
-    throw err;
   }
 }
 

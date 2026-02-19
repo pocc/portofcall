@@ -324,6 +324,19 @@ export async function handleJupyterQuery(request: Request): Promise<Response> {
       });
     }
 
+    // Check for Cloudflare protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Validate method
     const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'];
     const upperMethod = method.toUpperCase();
@@ -397,6 +410,23 @@ function jupyterHeaders(token?: string): Record<string, string> {
 }
 
 /**
+ * Encode a Jupyter Contents API path, encoding each segment individually
+ * so that `/` separators are preserved. For example:
+ *   "folder/sub folder/notebook.ipynb"
+ * becomes:
+ *   "folder/sub%20folder/notebook.ipynb"
+ *
+ * Using encodeURIComponent on the whole string would encode `/` to `%2F`,
+ * which Jupyter cannot resolve.
+ */
+function encodeContentsPath(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+/**
  * Create a new Jupyter kernel.
  * POST /api/jupyter/kernels
  */
@@ -405,6 +435,8 @@ export async function handleJupyterKernelCreate(request: Request): Promise<Respo
     const body = await request.json() as { host: string; port?: number; token?: string; kernelName?: string };
     const { host, port = 8888, token, kernelName = 'python3' } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const start = Date.now();
     const resp = await fetch('http://' + host + ':' + String(port) + '/api/kernels', {
       method: 'POST',
@@ -430,6 +462,8 @@ export async function handleJupyterKernelList(request: Request): Promise<Respons
     const port = parseInt(url.searchParams.get('port') || '8888', 10);
     const token = url.searchParams.get('token') || undefined;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const start = Date.now();
     const resp = await fetch('http://' + host + ':' + String(port) + '/api/kernels', { headers: jupyterHeaders(token) });
     const latencyMs = Date.now() - start;
@@ -450,6 +484,8 @@ export async function handleJupyterKernelDelete(request: Request): Promise<Respo
     const { host, port = 8888, token, kernelId } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!kernelId) return new Response(JSON.stringify({ success: false, error: 'kernelId is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const start = Date.now();
     const resp = await fetch('http://' + host + ':' + String(port) + '/api/kernels/' + encodeURIComponent(kernelId), { method: 'DELETE', headers: jupyterHeaders(token) });
     const latencyMs = Date.now() - start;
@@ -471,7 +507,9 @@ export async function handleJupyterNotebooks(request: Request): Promise<Response
     const token = url.searchParams.get('token') || undefined;
     const path = url.searchParams.get('path') || '';
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const apiPath = '/api/contents/' + (path ? encodeURIComponent(path) : '');
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    const apiPath = '/api/contents/' + (path ? encodeContentsPath(path) : '');
     const start = Date.now();
     const resp = await fetch('http://' + host + ':' + String(port) + apiPath, { headers: jupyterHeaders(token) });
     const latencyMs = Date.now() - start;
@@ -500,7 +538,9 @@ export async function handleJupyterNotebookGet(request: Request): Promise<Respon
     const path = url.searchParams.get('path');
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!path) return new Response(JSON.stringify({ success: false, error: 'path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const apiPath = '/api/contents/' + encodeURIComponent(path) + '?content=1';
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    const apiPath = '/api/contents/' + encodeContentsPath(path) + '?content=1';
     const start = Date.now();
     const resp = await fetch('http://' + host + ':' + String(port) + apiPath, { headers: jupyterHeaders(token) });
     const latencyMs = Date.now() - start;

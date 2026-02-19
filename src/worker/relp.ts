@@ -36,8 +36,9 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 /** Build a RELP frame */
 function buildRelpFrame(txnr: number, command: string, data: string): Uint8Array {
   const dataBytes = new TextEncoder().encode(data);
-  const header = `${txnr} ${command} ${dataBytes.length}`;
-  const frame = data.length > 0
+  const datalen = dataBytes.length;
+  const header = `${txnr} ${command} ${datalen}`;
+  const frame = datalen > 0
     ? `${header} ${data}\n`
     : `${header}\n`;
   return new TextEncoder().encode(frame);
@@ -58,6 +59,7 @@ function parseRelpResponse(raw: string): {
   if (firstSpace === -1) throw new Error('Invalid RELP frame: no command');
 
   const txnr = parseInt(trimmed.substring(0, firstSpace), 10);
+  if (isNaN(txnr)) throw new Error('Invalid RELP frame: txnr is not a number');
   const rest = trimmed.substring(firstSpace + 1);
 
   const secondSpace = rest.indexOf(' ');
@@ -72,9 +74,11 @@ function parseRelpResponse(raw: string): {
 
   if (thirdSpace === -1) {
     dataLen = parseInt(afterCommand, 10);
+    if (isNaN(dataLen)) throw new Error('Invalid RELP frame: datalen is not a number');
     data = '';
   } else {
     dataLen = parseInt(afterCommand.substring(0, thirdSpace), 10);
+    if (isNaN(dataLen)) throw new Error('Invalid RELP frame: datalen is not a number');
     data = afterCommand.substring(thirdSpace + 1);
   }
 
@@ -82,7 +86,7 @@ function parseRelpResponse(raw: string): {
   let statusCode: number | undefined;
   let statusMessage: string | undefined;
   if (data.length > 0) {
-    const statusMatch = data.match(/^(\d{3})\s*(.*?)(?:\n|$)/);
+    const statusMatch = data.match(/^(\d{3})(?:\s+(.*))?(?:\n|$)/);
     if (statusMatch) {
       statusCode = parseInt(statusMatch[1], 10);
       statusMessage = statusMatch[2] || undefined;
@@ -97,25 +101,34 @@ async function readRelpResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number
 ): Promise<string> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
-  );
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeoutMs);
+  });
 
   const readPromise = (async () => {
     let buffer = '';
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += new TextDecoder().decode(value);
-      // RELP frames end with LF
-      if (buffer.includes('\n')) {
-        return buffer;
+      buffer += decoder.decode(value, { stream: true });
+      // RELP frames end with LF - return first complete frame
+      const newlineIdx = buffer.indexOf('\n');
+      if (newlineIdx !== -1) {
+        return buffer.substring(0, newlineIdx + 1);
       }
     }
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  try {
+    return await Promise.race([readPromise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 }
 
 /**
@@ -127,11 +140,11 @@ async function readRelpResponse(
  */
 export async function handleRelpConnect(request: Request): Promise<Response> {
   try {
-    const { host, port = 20514, timeout = 10000 } = await request.json<{
+    const { host, port = 20514, timeout = 10000 } = await request.json() as {
       host: string;
       port?: number;
       timeout?: number;
-    }>();
+    };
 
     if (!host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
@@ -186,10 +199,6 @@ export async function handleRelpConnect(request: Request): Promise<Response> {
           // Ignore close errors
         }
 
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
-
         // Parse the open response
         const parsed = parseRelpResponse(responseRaw);
 
@@ -217,11 +226,10 @@ export async function handleRelpConnect(request: Request): Promise<Response> {
           supportedCommands: capabilities['commands'] || 'unknown',
           rawResponse: responseRaw.trim(),
         };
-      } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
-        throw error;
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { await socket.close(); } catch {}
       }
     })();
 
@@ -261,7 +269,7 @@ export async function handleRelpSend(request: Request): Promise<Response> {
       hostname = 'portofcall',
       appName = 'test',
       timeout = 10000,
-    } = await request.json<{
+    } = await request.json() as {
       host: string;
       port?: number;
       message: string;
@@ -270,7 +278,7 @@ export async function handleRelpSend(request: Request): Promise<Response> {
       hostname?: string;
       appName?: string;
       timeout?: number;
-    }>();
+    };
 
     if (!host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
@@ -355,10 +363,6 @@ export async function handleRelpSend(request: Request): Promise<Response> {
         await writer.write(closeFrame);
         await readRelpResponse(reader, 2000).catch(() => {});
 
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
-
         const acknowledged = syslogParsed.statusCode === 200;
 
         return {
@@ -374,11 +378,10 @@ export async function handleRelpSend(request: Request): Promise<Response> {
           facilityName: FACILITY_NAMES[facility] || `facility${facility}`,
           severityName: SEVERITY_NAMES[severity] || `severity${severity}`,
         };
-      } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
-        throw error;
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { await socket.close(); } catch {}
       }
     })();
 
@@ -409,18 +412,20 @@ async function readAllRelpResponses(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number
 ): Promise<string[]> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
-  );
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeoutMs);
+  });
 
   const frames: string[] = [];
 
   const readPromise = (async () => {
     let buffer = '';
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += new TextDecoder().decode(value);
+      buffer += decoder.decode(value, { stream: true });
 
       // Extract all complete frames (each ends with \n)
       let newlineIdx: number;
@@ -433,8 +438,14 @@ async function readAllRelpResponses(
     return frames;
   })();
 
-  await Promise.race([readPromise, timeoutPromise]).catch(() => {});
-  return frames;
+  try {
+    await Promise.race([readPromise, timeoutPromise]).catch(() => {});
+    return frames;
+  } finally {
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
+  }
 }
 
 /**
@@ -453,14 +464,14 @@ export async function handleRELPBatch(request: Request): Promise<Response> {
       messages,
       facility = 1,
       severity = 6,
-    } = await request.json<{
+    } = await request.json() as {
       host: string;
       port?: number;
       timeout?: number;
       messages: string[];
       facility?: number;
       severity?: number;
-    }>();
+    };
 
     if (!host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
@@ -553,10 +564,6 @@ export async function handleRELPBatch(request: Request): Promise<Response> {
         const ackTimeoutMs = Math.max(2000, messages.length * 200);
         const rawFrames = await readAllRelpResponses(reader, ackTimeoutMs);
 
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
-
         const rtt = Date.now() - startTime;
 
         // Parse ACKs and match to txnrs
@@ -589,11 +596,10 @@ export async function handleRELPBatch(request: Request): Promise<Response> {
           facilityName: FACILITY_NAMES[facility] || `facility${facility}`,
           severityName: SEVERITY_NAMES[severity] || `severity${severity}`,
         };
-      } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
-        throw error;
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { await socket.close(); } catch {}
       }
     })();
 

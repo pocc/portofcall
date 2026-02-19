@@ -54,9 +54,15 @@ interface QotdResponse {
  * Server sends the quote immediately upon connection - no request needed.
  */
 export async function handleQotdFetch(request: Request): Promise<Response> {
+  let requestHost = '';
+  let requestPort = 17;
+
   try {
     const body = await request.json() as QotdRequest;
     const { host, port = 17, timeout = 10000 } = body;
+
+    requestHost = host;
+    requestPort = port;
 
     if (!host) {
       return new Response(JSON.stringify({
@@ -86,8 +92,9 @@ export async function handleQotdFetch(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -123,12 +130,22 @@ export async function handleQotdFetch(request: Request): Promise<Response> {
         if (chunks.length === 0) {
           throw new Error('Server closed connection without sending a quote');
         }
+      } finally {
+        // Release reader lock in all cases
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore errors during cleanup
+        }
       }
 
       const rtt = Date.now() - start;
 
+      // Recalculate actual total bytes from chunks
+      const actualBytes = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+
       // Combine chunks
-      const combined = new Uint8Array(totalBytes);
+      const combined = new Uint8Array(actualBytes);
       let offset = 0;
       for (const chunk of chunks) {
         combined.set(chunk, offset);
@@ -137,8 +154,11 @@ export async function handleQotdFetch(request: Request): Promise<Response> {
 
       const quote = new TextDecoder().decode(combined).trim();
 
-      reader.releaseLock();
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore errors during cleanup
+      }
 
       if (!quote) {
         return new Response(JSON.stringify({
@@ -157,7 +177,7 @@ export async function handleQotdFetch(request: Request): Promise<Response> {
         host,
         port,
         quote,
-        byteLength: totalBytes,
+        byteLength: actualBytes,
         rtt,
       } satisfies QotdResponse), {
         status: 200,
@@ -165,15 +185,24 @@ export async function handleQotdFetch(request: Request): Promise<Response> {
       });
 
     } catch (error) {
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore errors during cleanup
+      }
       throw error;
+    } finally {
+      // Clear timeout in all cases
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
     }
 
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
-      host: '',
-      port: 17,
+      host: requestHost,
+      port: requestPort,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies QotdResponse), {
       status: 500,

@@ -128,55 +128,64 @@ function parseResponseHeader(data: Uint8Array): {
 }
 
 /**
- * Read exactly `n` bytes from the reader, with timeout.
+ * Buffered reader that wraps a ReadableStreamDefaultReader.
+ *
+ * TCP delivers data in arbitrary-sized chunks that do not align with protocol
+ * message boundaries.  A single reader.read() may return the 24-byte header
+ * plus part of the body in one chunk, or it may split a header across two
+ * chunks.  This class buffers the raw stream and provides an exact-byte-count
+ * readExact() method so callers never lose data.
  */
-async function readBytes(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  n: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+class BufferedReader {
+  private reader: ReadableStreamDefaultReader<Uint8Array>;
+  private buffer: Uint8Array = new Uint8Array(0);
 
-  while (total < n) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) break;
-    chunks.push(value);
-    total += value.length;
+  constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    this.reader = reader;
   }
 
-  if (total < n) {
-    throw new Error(`Expected ${n} bytes but got ${total}`);
+  /**
+   * Read exactly `n` bytes, buffering any excess for the next call.
+   */
+  async readExact(n: number, timeoutPromise: Promise<never>): Promise<Uint8Array> {
+    // Accumulate data until we have at least n bytes
+    while (this.buffer.length < n) {
+      const { value, done } = await Promise.race([this.reader.read(), timeoutPromise]);
+      if (done || !value) break;
+
+      const merged = new Uint8Array(this.buffer.length + value.length);
+      merged.set(this.buffer, 0);
+      merged.set(value, this.buffer.length);
+      this.buffer = merged;
+    }
+
+    if (this.buffer.length < n) {
+      throw new Error(`Expected ${n} bytes but got ${this.buffer.length}`);
+    }
+
+    const result = this.buffer.slice(0, n);
+    this.buffer = this.buffer.slice(n);
+    return result;
   }
 
-  // Fast path: single chunk with exact size
-  if (chunks.length === 1 && chunks[0].length === n) {
-    return chunks[0];
+  releaseLock(): void {
+    this.reader.releaseLock();
   }
-
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return result.slice(0, n);
 }
 
 /**
  * Read a complete memcached binary response (header + body).
  */
 async function readResponse(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  buffered: BufferedReader,
   timeoutPromise: Promise<never>,
 ): Promise<{ header: ReturnType<typeof parseResponseHeader>; body: Uint8Array }> {
-  const headerBytes = await readBytes(reader, HEADER_SIZE, timeoutPromise);
+  const headerBytes = await buffered.readExact(HEADER_SIZE, timeoutPromise);
   const header = parseResponseHeader(headerBytes);
 
-  let body: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  let body: Uint8Array = new Uint8Array(0);
   if (header.bodyLength > 0) {
-    body = await readBytes(reader, header.bodyLength, timeoutPromise);
+    body = await buffered.readExact(header.bodyLength, timeoutPromise);
   }
 
   return { header, body };
@@ -227,18 +236,18 @@ export async function handleCouchbasePing(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
 
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       // Send NOOP request
       const noopReq = buildRequest(OPCODE_NOOP, 0xDEADBEEF);
       await writer.write(noopReq);
 
       // Read response
-      const { header } = await readResponse(reader, timeoutPromise);
+      const { header } = await readResponse(buffered, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
@@ -320,18 +329,18 @@ export async function handleCouchbaseVersion(request: Request): Promise<Response
       await Promise.race([socket.opened, timeoutPromise]);
 
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       // Send VERSION request
       const versionReq = buildRequest(OPCODE_VERSION, 0x12345678);
       await writer.write(versionReq);
 
       // Read response
-      const { header, body: respBody } = await readResponse(reader, timeoutPromise);
+      const { header, body: respBody } = await readResponse(buffered, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
@@ -416,7 +425,7 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
       await Promise.race([socket.opened, timeoutPromise]);
 
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       // Send STAT request (no key = get all stats)
       const statReq = buildRequest(OPCODE_STAT, 0xAAAAAAAA);
@@ -429,7 +438,7 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
       const maxStats = 500; // Safety limit
 
       while (statCount < maxStats) {
-        const { header, body: respBody } = await readResponse(reader, timeoutPromise);
+        const { header, body: respBody } = await readResponse(buffered, timeoutPromise);
 
         if (header.magic !== MAGIC_RESPONSE) {
           break;
@@ -437,7 +446,7 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
 
         if (header.status !== STATUS_SUCCESS) {
           writer.releaseLock();
-          reader.releaseLock();
+          buffered.releaseLock();
           socket.close();
           return new Response(JSON.stringify({
             success: false, host, port,
@@ -451,8 +460,10 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
           break;
         }
 
-        const key = decoder.decode(respBody.slice(0, header.keyLength));
-        const value = decoder.decode(respBody.slice(header.keyLength));
+        // Body layout: extras + key + value
+        const extOff = header.extrasLength;
+        const key = decoder.decode(respBody.slice(extOff, extOff + header.keyLength));
+        const value = decoder.decode(respBody.slice(extOff + header.keyLength));
         stats[key] = value;
         statCount++;
       }
@@ -460,7 +471,7 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       return new Response(JSON.stringify({
@@ -642,14 +653,14 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       await writer.write(buildGetRequest(key));
-      const { header, body: respBody } = await readResponse(reader, timeoutPromise);
+      const { header, body: respBody } = await readResponse(buffered, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
@@ -664,10 +675,11 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `GET failed: ${STATUS_NAMES[header.status] ?? 'Unknown'} (0x${header.status.toString(16)})`, statusCode: header.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
 
-      // Response body: extras(flags 4B) + value
+      // Response body layout: extras(flags 4B) + key(keyLength) + value
       const extrasLen = header.extrasLength;
       const flags = extrasLen >= 4 ? new DataView(respBody.buffer, respBody.byteOffset).getUint32(0) : 0;
-      const value = new TextDecoder().decode(respBody.slice(extrasLen));
+      const valueOffset = extrasLen + header.keyLength;
+      const value = new TextDecoder().decode(respBody.slice(valueOffset));
 
       return new Response(JSON.stringify({ success: true, host, port, key, rtt, value, flags }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
@@ -710,14 +722,14 @@ export async function handleCouchbaseSet(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       await writer.write(buildSetRequest(key, value));
-      const { header } = await readResponse(reader, timeoutPromise);
+      const { header } = await readResponse(buffered, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
@@ -769,14 +781,14 @@ export async function handleCouchbaseDelete(request: Request): Promise<Response>
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       await writer.write(buildDeleteRequest(key));
-      const { header } = await readResponse(reader, timeoutPromise);
+      const { header } = await readResponse(buffered, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
@@ -864,14 +876,14 @@ export async function handleCouchbaseIncr(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       await writer.write(buildIncrDecrRequest(opcode, key, delta, initialValue, expiry));
-      const { header, body: respBody } = await readResponse(reader, timeoutPromise);
+      const { header, body: respBody } = await readResponse(buffered, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       writer.releaseLock();
-      reader.releaseLock();
+      buffered.releaseLock();
       socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {

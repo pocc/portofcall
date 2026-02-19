@@ -445,7 +445,6 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
         const rtt = Date.now() - startTime;
 
         // Parse X.224 header
-        const x224Length = responseData[0];
         const x224Type = responseData[1];
 
         // Connection Confirm = 0xD0
@@ -461,7 +460,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
         let failureMessage = '';
         let hasNegotiation = false;
 
-        const negOffset = x224Length; // negotiation starts after x224 header
+        const negOffset = 7; // negotiation starts after LI(1) + fixed X.224 CC header(6)
         if (remaining > negOffset) {
           hasNegotiation = true;
           negotiationType = responseData[negOffset];

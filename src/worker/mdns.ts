@@ -26,8 +26,8 @@
  * Special Features:
  * - Known-Answer Suppression: Include known answers to suppress duplicate responses
  * - Continuous Querying: Repeat queries to discover new services
- * - Legacy Unicast: QU (QM=0) bit for unicast responses
- * - Multicast Responses: Share responses with all listeners
+ * - QU (Unicast): Bit 15 set in QCLASS requests a unicast response
+ * - QM (Multicast): Default mode — bit 15 clear, responses sent to multicast group
  *
  * Use Cases:
  * - Local network service discovery (printers, AirPlay, etc.)
@@ -45,6 +45,7 @@ interface MDNSRequest {
   timeout?: number;
   service?: string; // e.g., "_http._tcp.local", "_airplay._tcp.local"
   queryType?: string; // PTR, SRV, TXT, A, AAAA
+  unicastResponse?: boolean; // QU bit: request unicast response (RFC 6762 Section 5.4)
 }
 
 interface MDNSRecord {
@@ -95,21 +96,27 @@ enum RecordClass {
 
 /**
  * Build DNS/mDNS query message
+ * RFC 6762 Section 18.1: Transaction ID SHOULD be zero for multicast queries
+ * RFC 6762 Section 5.4: QU bit (unicast response) in QCLASS
  */
-function buildMDNSQuery(queryName: string, queryType: RecordType): Buffer {
+function buildMDNSQuery(queryName: string, queryType: RecordType, unicastResponse: boolean = false): Buffer {
   // DNS Header (12 bytes)
   const header = Buffer.allocUnsafe(12);
-  const transactionId = Math.floor(Math.random() * 65536);
 
-  header.writeUInt16BE(transactionId, 0); // Transaction ID
+  // RFC 6762 Section 18.1: "In multicast query messages, the Query
+  // Identifier SHOULD be set to zero on transmission."
+  header.writeUInt16BE(0, 0); // Transaction ID (0 for mDNS)
   header.writeUInt16BE(0x0000, 2); // Flags (standard query)
   header.writeUInt16BE(1, 4); // Questions count
   header.writeUInt16BE(0, 6); // Answer RRs
   header.writeUInt16BE(0, 8); // Authority RRs
   header.writeUInt16BE(0, 10); // Additional RRs
 
+  // RFC 6762 Section 5.4: QU bit requests unicast response
+  const qclass = unicastResponse ? 0x8001 : RecordClass.IN;
+
   // Question section
-  const question = buildDNSQuestion(queryName, queryType, RecordClass.IN);
+  const question = buildDNSQuestion(queryName, queryType, qclass);
 
   return Buffer.concat([header, question]);
 }
@@ -137,9 +144,15 @@ function encodeDNSName(name: string): Buffer {
   for (const label of labels) {
     if (label.length === 0) continue;
 
+    // RFC 1035 Section 2.3.1: Labels must be 63 octets or less
+    if (label.length > 63) {
+      throw new Error(`DNS label too long: ${label.length} bytes (max 63)`);
+    }
+
     const labelBuffer = Buffer.allocUnsafe(1 + label.length);
     labelBuffer.writeUInt8(label.length, 0);
-    labelBuffer.write(label, 1, 'ascii');
+    // RFC 1035 uses ASCII, but modern DNS supports UTF-8 for internationalized names
+    labelBuffer.write(label, 1, 'utf8');
     buffers.push(labelBuffer);
   }
 
@@ -151,52 +164,76 @@ function encodeDNSName(name: string): Buffer {
 
 /**
  * Decode DNS name from message
+ * RFC 1035 Section 4.1.4: Message compression via pointers
  */
 function decodeDNSName(data: Buffer, offset: number): { name: string; newOffset: number } {
   const labels: string[] = [];
   let currentOffset = offset;
-  const maxJumps = 20; // Prevent infinite loops
-  let jumps = 0;
+  let jumped = false;
+  let finalOffset = offset;
+  const visited = new Set<number>(); // Detect compression loops
 
   while (true) {
+    // Bounds check before reading
     if (currentOffset >= data.length) break;
 
     const length = data.readUInt8(currentOffset);
 
     if (length === 0) {
+      // End of name
+      if (!jumped) finalOffset = currentOffset + 1;
       currentOffset++;
       break;
     }
 
-    // Check for compression (pointer)
+    // Check for compression (pointer): top 2 bits set (0xC0)
     if ((length & 0xC0) === 0xC0) {
+      // Bounds check for pointer
       if (currentOffset + 1 >= data.length) break;
 
       const pointer = ((length & 0x3F) << 8) | data.readUInt8(currentOffset + 1);
 
-      if (jumps === 0) {
-        currentOffset += 2; // Move past pointer for return value
+      // Validate pointer doesn't point forward or to itself
+      if (pointer >= currentOffset) {
+        throw new Error(`Invalid DNS compression pointer: ${pointer} >= ${currentOffset}`);
       }
 
-      jumps++;
-      if (jumps > maxJumps) break;
+      // Detect compression loops
+      if (visited.has(pointer)) {
+        throw new Error(`DNS compression loop detected at offset ${pointer}`);
+      }
+      visited.add(pointer);
 
-      const result = decodeDNSName(data, pointer);
-      labels.push(result.name);
-      break;
+      // Save position after pointer on first jump
+      if (!jumped) {
+        finalOffset = currentOffset + 2;
+        jumped = true;
+      }
+
+      // Follow pointer
+      currentOffset = pointer;
+      continue;
     }
 
-    // Regular label
+    // Regular label (0-63 bytes)
+    if (length > 63) {
+      throw new Error(`Invalid DNS label length: ${length} (max 63)`);
+    }
+
+    // Bounds check for label data
     if (currentOffset + 1 + length > data.length) break;
 
-    const label = data.toString('ascii', currentOffset + 1, currentOffset + 1 + length);
+    const label = data.toString('utf8', currentOffset + 1, currentOffset + 1 + length);
     labels.push(label);
     currentOffset += 1 + length;
+
+    // Update final offset if we haven't jumped
+    if (!jumped) finalOffset = currentOffset;
   }
 
   return {
     name: labels.join('.'),
-    newOffset: currentOffset,
+    newOffset: finalOffset,
   };
 }
 
@@ -213,7 +250,35 @@ function parseMDNSResponse(data: Buffer): {
   }
 
   const transactionId = data.readUInt16BE(0);
-  // const flags = data.readUInt16BE(2);
+  const flags = data.readUInt16BE(2);
+
+  // RFC 1035 Section 4.1.1: Validate response flags
+  const qr = (flags >> 15) & 0x1;        // Query/Response bit
+  const opcode = (flags >> 11) & 0xF;    // Operation code
+  const rcode = flags & 0xF;              // Response code
+
+  // Must be a response (QR=1)
+  if (qr !== 1) {
+    throw new Error(`Invalid DNS response: QR bit not set (flags: 0x${flags.toString(16)})`);
+  }
+
+  // Must be standard query (OPCODE=0)
+  if (opcode !== 0) {
+    throw new Error(`Unsupported DNS OPCODE: ${opcode}`);
+  }
+
+  // Check for errors
+  if (rcode !== 0) {
+    const rcodeNames: { [key: number]: string } = {
+      1: 'Format error',
+      2: 'Server failure',
+      3: 'Name error (NXDOMAIN)',
+      4: 'Not implemented',
+      5: 'Refused',
+    };
+    throw new Error(`DNS error: ${rcodeNames[rcode] || `RCODE ${rcode}`}`);
+  }
+
   const questionCount = data.readUInt16BE(4);
   const answerCount = data.readUInt16BE(6);
   const authorityCount = data.readUInt16BE(8);
@@ -332,16 +397,27 @@ function parseResourceRecord(data: Buffer, offset: number): {
     [RecordType.A]: 'A',
     [RecordType.NS]: 'NS',
     [RecordType.CNAME]: 'CNAME',
+    [RecordType.SOA]: 'SOA',
     [RecordType.PTR]: 'PTR',
+    [RecordType.MX]: 'MX',
     [RecordType.TXT]: 'TXT',
     [RecordType.AAAA]: 'AAAA',
     [RecordType.SRV]: 'SRV',
+    [RecordType.ANY]: 'ANY',
   };
+
+  // RFC 6762 Section 10.2: Bit 15 of the class field is the cache-flush bit.
+  // Mask it off to get the actual DNS class, but note it for mDNS awareness.
+  const cacheFlush = (rclass & 0x8000) !== 0;
+  const actualClass = rclass & 0x7FFF;
+  const classStr = actualClass === RecordClass.IN
+    ? (cacheFlush ? 'IN (cache-flush)' : 'IN')
+    : `CLASS${actualClass}`;
 
   const record: MDNSRecord = {
     name,
     type: typeNames[rtype] || `TYPE${rtype}`,
-    class: (rclass & 0x7FFF) === RecordClass.IN ? 'IN' : `CLASS${rclass}`,
+    class: classStr,
     ttl,
     data: recordData,
   };
@@ -365,6 +441,7 @@ export async function handleMDNSQuery(request: Request): Promise<Response> {
       timeout = 15000,
       service = '_services._dns-sd._udp.local',
       queryType = 'PTR',
+      unicastResponse = false,
     } = body;
 
     if (!host) {
@@ -415,22 +492,55 @@ export async function handleMDNSQuery(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
 
       // Build mDNS query
-      const query = buildMDNSQuery(service, qtype);
+      const query = buildMDNSQuery(service, qtype, unicastResponse);
 
-      // Send query
+      // DNS over TCP requires a 2-byte length prefix (RFC 1035 Section 4.2.2)
+      const tcpQuery = Buffer.allocUnsafe(2 + query.length);
+      tcpQuery.writeUInt16BE(query.length, 0);
+      query.copy(tcpQuery, 2);
+
+      // Send query with TCP framing
       const writer = socket.writable.getWriter();
-      await writer.write(query);
+      await writer.write(tcpQuery);
       writer.releaseLock();
 
-      // Read response
+      // Read response — accumulate bytes until we have the full TCP-framed message
+      // RFC 1035 Section 4.2.2: DNS over TCP uses 2-byte length prefix
       const reader = socket.readable.getReader();
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      let expectedLength = -1;
 
-      const { value, done } = await Promise.race([
-        reader.read(),
-        timeoutPromise,
-      ]);
+      while (true) {
+        const { value, done } = await Promise.race([
+          reader.read(),
+          timeoutPromise,
+        ]);
 
-      if (done || !value) {
+        if (done || !value) break;
+
+        const chunk = Buffer.from(value);
+        chunks.push(chunk);
+        totalBytes += chunk.length;
+
+        // Once we have at least 2 bytes, read the expected DNS message length
+        if (expectedLength < 0 && totalBytes >= 2) {
+          const first = Buffer.concat(chunks);
+          expectedLength = first.readUInt16BE(0);
+
+          // Validate length is reasonable (max DNS message size is 65535 bytes)
+          if (expectedLength > 65535) {
+            throw new Error(`Invalid TCP DNS message length: ${expectedLength}`);
+          }
+        }
+
+        // We have the full message when total >= 2 (length prefix) + expectedLength
+        if (expectedLength >= 0 && totalBytes >= 2 + expectedLength) {
+          break;
+        }
+      }
+
+      if (totalBytes < 2) {
         reader.releaseLock();
         socket.close();
         return new Response(JSON.stringify({
@@ -444,7 +554,11 @@ export async function handleMDNSQuery(request: Request): Promise<Response> {
         });
       }
 
-      const response = parseMDNSResponse(Buffer.from(value));
+      // Strip the 2-byte TCP length prefix before parsing
+      const fullBuffer = Buffer.concat(chunks);
+      const dnsMessage = fullBuffer.subarray(2, 2 + (expectedLength >= 0 ? expectedLength : fullBuffer.length - 2));
+
+      const response = parseMDNSResponse(dnsMessage);
 
       if (!response) {
         reader.releaseLock();
@@ -533,7 +647,10 @@ function buildMDNSAnnouncement(
   }
 
   // --- Helper: build a resource record ---
-  function buildRR(name: string, rtype: number, rttl: number, rdata: Uint8Array): Uint8Array {
+  // RFC 6762 Section 10.2: The cache-flush bit MUST NOT be set on shared
+  // records. PTR is a shared record (multiple instances per service type).
+  // SRV, TXT, A, AAAA are unique records and MAY have the cache-flush bit set.
+  function buildRR(name: string, rtype: number, rttl: number, rdata: Uint8Array, cacheFlush: boolean = false): Uint8Array {
     const nameBytes = encodeName(name);
     // NAME + TYPE(2) + CLASS(2) + TTL(4) + RDLENGTH(2) + RDATA
     const rec = new Uint8Array(nameBytes.length + 10 + rdata.length);
@@ -541,18 +658,18 @@ function buildMDNSAnnouncement(
     rec.set(nameBytes, 0);
     let o = nameBytes.length;
     view.setUint16(o, rtype);    o += 2;
-    view.setUint16(o, 0x8001);   o += 2; // IN class + flush bit
+    view.setUint16(o, cacheFlush ? 0x8001 : 0x0001);   o += 2; // IN class, cache-flush if unique record
     view.setUint32(o, rttl);     o += 4;
     view.setUint16(o, rdata.length); o += 2;
     rec.set(rdata, o);
     return rec;
   }
 
-  // PTR record: serviceType → instanceName
+  // PTR record: serviceType → instanceName (shared record — no cache-flush)
   const ptrRdata = encodeName(instanceName);
-  const ptrRR = buildRR(serviceType, 12 /* PTR */, ttl, ptrRdata);
+  const ptrRR = buildRR(serviceType, 12 /* PTR */, ttl, ptrRdata, false);
 
-  // SRV record: instanceName → priority(0) + weight(0) + port + hostname
+  // SRV record: instanceName → priority(0) + weight(0) + port + hostname (unique record)
   const hostnameBytes = encodeName(hostname);
   const srvRdata = new Uint8Array(6 + hostnameBytes.length);
   const srvView = new DataView(srvRdata.buffer);
@@ -560,7 +677,7 @@ function buildMDNSAnnouncement(
   srvView.setUint16(2, 0);    // weight
   srvView.setUint16(4, port); // port
   srvRdata.set(hostnameBytes, 6);
-  const srvRR = buildRR(instanceName, 33 /* SRV */, ttl, srvRdata);
+  const srvRR = buildRR(instanceName, 33 /* SRV */, ttl, srvRdata, true);
 
   // TXT record: key=value pairs
   const txtParts: Uint8Array[] = [];
@@ -576,7 +693,7 @@ function buildMDNSAnnouncement(
   const txtRdata = new Uint8Array(txtLen);
   let toff = 0;
   for (const p of txtParts) { txtRdata.set(p, toff); toff += p.length; }
-  const txtRR = buildRR(instanceName, 16 /* TXT */, ttl, txtRdata);
+  const txtRR = buildRR(instanceName, 16 /* TXT */, ttl, txtRdata, true);
 
   // DNS header: QR=1, AA=1, ANCOUNT=3
   const header = new Uint8Array(12);
@@ -645,9 +762,14 @@ export async function handleMDNSAnnounce(request: Request): Promise<Response> {
     const resolvedInstance = instanceName || `portofcall.${serviceType}`;
     const resolvedHostname = hostname || `${host}.local`;
 
-    const packet = buildMDNSAnnouncement(
+    const dnsPacket = buildMDNSAnnouncement(
       serviceType, resolvedInstance, resolvedHostname, servicePort, txtRecords, ttl,
     );
+
+    // DNS over TCP requires a 2-byte length prefix (RFC 1035 Section 4.2.2)
+    const packet = new Uint8Array(2 + dnsPacket.length);
+    new DataView(packet.buffer).setUint16(0, dnsPacket.length);
+    packet.set(dnsPacket, 2);
 
     const toHex = (arr: Uint8Array) =>
       Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -701,7 +823,8 @@ export async function handleMDNSAnnounce(request: Request): Promise<Response> {
       host, port,
       portOpen,
       announcement: {
-        serviceType: resolvedInstance,
+        serviceType,
+        instanceName: resolvedInstance,
         srvTarget: resolvedHostname,
         srvPort: servicePort,
         txtRecords,

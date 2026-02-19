@@ -15,9 +15,11 @@
  * Protocol Flow:
  * 1. Client connects to debug adapter over TCP
  * 2. Client sends `initialize` request with clientID and adapterID
- * 3. Adapter responds with `initialized` event + `initialize` response (capabilities)
- * 4. Client sends `launch` or `attach` request
- * 5. Bidirectional event/request/response exchange during debug session
+ * 3. Adapter responds with `initialize` response (capabilities)
+ * 4. Adapter sends `initialized` event (signals ready for configuration)
+ * 5. Client sends configuration requests (setBreakpoints, configurationDone, etc.)
+ * 6. Client sends `launch` or `attach` request
+ * 7. Bidirectional event/request/response exchange during debug session
  *
  * Use Cases:
  * - Connect to remote debugpy (Python) sessions
@@ -39,11 +41,19 @@ interface DAPRequest {
 interface DAPMessage {
   seq: number;
   type: 'request' | 'response' | 'event';
+  // Present on 'request' and 'response' messages
   command?: string;
+  // Present on 'response' messages — the seq of the corresponding request
+  request_seq?: number;
+  // Present on 'event' messages
   event?: string;
+  // Present on 'response' messages — indicates success/failure
   success?: boolean;
+  // Present on 'response' and 'event' messages
   body?: unknown;
+  // Present on 'request' messages
   arguments?: unknown;
+  // Present on 'response' messages when success is false — short error description
   message?: string;
 }
 
@@ -63,37 +73,73 @@ function encodeDAPMessage(body: unknown): Uint8Array {
 }
 
 /**
- * Parse one or more DAP messages from a string buffer.
- * Returns parsed message objects and any leftover unparsed data.
+ * Parse one or more DAP messages from a byte buffer.
+ *
+ * Content-Length specifies the byte length of the JSON body (not character length),
+ * so we must operate on raw bytes to correctly handle multi-byte UTF-8 characters.
+ * Returns parsed message objects and any leftover unparsed bytes.
  */
-function parseDAPMessages(buffer: string): { messages: DAPMessage[]; remaining: string } {
+function parseDAPMessages(buffer: Uint8Array<ArrayBuffer>): { messages: DAPMessage[]; remaining: Uint8Array<ArrayBuffer> } {
   const messages: DAPMessage[] = [];
-  let remaining = buffer;
+  let offset = 0;
+  const decoder = new TextDecoder();
+  const HEADER_SEPARATOR = new Uint8Array([0x0d, 0x0a, 0x0d, 0x0a]); // \r\n\r\n
 
   while (true) {
-    const headerEnd = remaining.indexOf('\r\n\r\n');
+    const view = new Uint8Array(buffer.buffer, buffer.byteOffset + offset, buffer.length - offset);
+    const headerEnd = findByteSequence(view, HEADER_SEPARATOR);
     if (headerEnd === -1) break;
 
-    const header = remaining.substring(0, headerEnd);
-    const match = header.match(/Content-Length:\s*(\d+)/i);
+    const headerStr = decoder.decode(new Uint8Array(buffer.buffer, buffer.byteOffset + offset, headerEnd));
+    const match = headerStr.match(/Content-Length:\s*(\d+)/i);
     if (!match) break;
 
     const contentLength = parseInt(match[1], 10);
-    const bodyStart = headerEnd + 4;
+    const bodyStart = headerEnd + 4; // skip \r\n\r\n
 
-    if (remaining.length < bodyStart + contentLength) break;
+    if (view.length < bodyStart + contentLength) break;
 
-    const bodyStr = remaining.substring(bodyStart, bodyStart + contentLength);
+    const bodyBytes = new Uint8Array(buffer.buffer, buffer.byteOffset + offset + bodyStart, contentLength);
+    const bodyStr = decoder.decode(bodyBytes);
     try {
       messages.push(JSON.parse(bodyStr) as DAPMessage);
     } catch {
       // skip malformed message
     }
 
-    remaining = remaining.substring(bodyStart + contentLength);
+    offset += bodyStart + contentLength;
   }
 
+  // Copy remaining bytes to a new standalone buffer
+  const remaining = new Uint8Array(buffer.length - offset);
+  remaining.set(new Uint8Array(buffer.buffer, buffer.byteOffset + offset, buffer.length - offset));
+
   return { messages, remaining };
+}
+
+/**
+ * Find the index of a byte sequence within a Uint8Array.
+ * Returns -1 if not found.
+ */
+function findByteSequence(haystack: Uint8Array<ArrayBuffer>, needle: Uint8Array<ArrayBuffer>): number {
+  outer:
+  for (let i = 0; i <= haystack.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (haystack[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+/**
+ * Concatenate two Uint8Arrays into a new Uint8Array backed by ArrayBuffer.
+ */
+function concatBytes(a: Uint8Array<ArrayBuffer>, b: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+  const result = new Uint8Array(a.length + b.length);
+  result.set(a);
+  result.set(b, a.length);
+  return result;
 }
 
 /**
@@ -161,8 +207,7 @@ export async function handleDAPHealth(request: Request): Promise<Response> {
     writer.releaseLock();
 
     const reader = socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let rawBuffer = '';
+    let rawBuffer = new Uint8Array(0);
     const collectedMessages: DAPMessage[] = [];
     const readDeadline = Date.now() + timeout;
 
@@ -179,7 +224,7 @@ export async function handleDAPHealth(request: Request): Promise<Response> {
       const { value, done } = await Promise.race([readPromise, timeoutRead]);
       if (done) break;
       if (value) {
-        rawBuffer += decoder.decode(value, { stream: true });
+        rawBuffer = concatBytes(rawBuffer, value);
         const parsed = parseDAPMessages(rawBuffer);
         collectedMessages.push(...parsed.messages);
         rawBuffer = parsed.remaining;
@@ -265,8 +310,8 @@ export async function handleDAPTunnel(request: Request): Promise<Response> {
         message: `DAP tunnel connected to ${host}:${port}`,
       }));
 
-      const decoder = new TextDecoder();
-      let rawBuffer = '';
+      const wsDecoder = new TextDecoder();
+      let rawBuffer = new Uint8Array(0);
 
       // Browser -> DAP: add Content-Length framing
       server.addEventListener('message', async (event) => {
@@ -276,7 +321,7 @@ export async function handleDAPTunnel(request: Request): Promise<Response> {
           if (typeof msg === 'string') {
             jsonStr = msg;
           } else if (msg instanceof ArrayBuffer) {
-            jsonStr = decoder.decode(msg);
+            jsonStr = wsDecoder.decode(msg);
           } else {
             return;
           }
@@ -296,17 +341,17 @@ export async function handleDAPTunnel(request: Request): Promise<Response> {
       });
 
       // DAP -> Browser: strip Content-Length framing
+      // Acquire the reader once before the loop to avoid re-locking the stream
       (async () => {
+        const reader = dapSocket!.readable.getReader();
         try {
           while (true) {
-            const reader = dapSocket!.readable.getReader();
             const { value, done } = await reader.read();
-            reader.releaseLock();
 
             if (done) break;
             if (!value) continue;
 
-            rawBuffer += decoder.decode(value, { stream: true });
+            rawBuffer = concatBytes(rawBuffer, value);
             const { messages, remaining } = parseDAPMessages(rawBuffer);
             rawBuffer = remaining;
 
@@ -316,6 +361,8 @@ export async function handleDAPTunnel(request: Request): Promise<Response> {
           }
         } catch {
           server.close(1011, 'DAP read error');
+        } finally {
+          reader.releaseLock();
         }
       })();
 

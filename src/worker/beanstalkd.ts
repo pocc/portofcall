@@ -7,31 +7,61 @@
  * Protocol: ASCII text commands terminated by \r\n
  * Default port: 11300
  *
- * Key commands:
- *   stats\r\n                    - Server-wide statistics
- *   list-tubes\r\n               - List all tube names
- *   stats-tube <name>\r\n        - Statistics for a specific tube
- *   use <tube>\r\n               - Select a tube for producing
- *   peek-ready\r\n               - Peek at the next ready job
- *   peek-delayed\r\n             - Peek at the next delayed job
- *   peek-buried\r\n              - Peek at the next buried job
+ * Endpoints:
+ *   /api/beanstalkd/connect    — stats probe (read-only)
+ *   /api/beanstalkd/command    — execute whitelisted commands
+ *   /api/beanstalkd/put        — enqueue a job into a tube
+ *   /api/beanstalkd/reserve    — dequeue the next ready job
  *
- * Response format:
- *   OK <bytes>\r\n<data>\r\n     - Success with YAML body
- *   INSERTED <id>\r\n            - Job inserted
- *   NOT_FOUND\r\n                - No matching job
- *   USING <tube>\r\n             - Tube selected
+ * Response formats handled:
+ *   Single-line:  INSERTED <id>\r\n, USING <tube>\r\n, NOT_FOUND\r\n, etc.
+ *   Multi-line:   OK <bytes>\r\n<data>\r\n          (stats, list-tubes)
+ *                 RESERVED <id> <bytes>\r\n<data>\r\n (reserve)
+ *                 FOUND <id> <bytes>\r\n<data>\r\n    (peek)
  *
- * Security: Read-only operations only. No job put/delete/bury.
+ * Job lifecycle: ready -> reserved -> deleted
+ *                          \-> released -> ready  (re-queue)
+ *                          \-> buried             (held aside)
+ *                delayed -> ready                 (after delay expires)
  */
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 /**
+ * Check if a response line indicates a multi-line body with a byte count.
+ *
+ * Beanstalkd has several response formats with trailing data:
+ *   OK <bytes>\r\n<data>\r\n          — stats, list-tubes, etc.
+ *   RESERVED <id> <bytes>\r\n<data>\r\n — reserve/reserve-with-timeout
+ *   FOUND <id> <bytes>\r\n<data>\r\n   — peek, peek-ready, peek-delayed, peek-buried
+ *
+ * Returns the byte count if the header indicates a body, or -1 for single-line responses.
+ */
+function parseBodyByteCount(headerLine: string): number {
+  if (headerLine.startsWith('OK ')) {
+    return parseInt(headerLine.substring(3));
+  }
+  if (headerLine.startsWith('RESERVED ') || headerLine.startsWith('FOUND ')) {
+    // "RESERVED <id> <bytes>" or "FOUND <id> <bytes>"
+    const parts = headerLine.split(' ');
+    if (parts.length >= 3) {
+      return parseInt(parts[parts.length - 1]);
+    }
+  }
+  return -1;
+}
+
+/**
  * Read a beanstalkd response.
- * Responses are either single-line (e.g. "USING default\r\n")
- * or multi-line with a byte count (e.g. "OK 256\r\n<yaml data>\r\n")
+ *
+ * Responses are either:
+ *   Single-line: "USING default\r\n", "INSERTED 42\r\n", "NOT_FOUND\r\n"
+ *   Multi-line:  "OK <bytes>\r\n<data>\r\n"
+ *                "RESERVED <id> <bytes>\r\n<data>\r\n"
+ *                "FOUND <id> <bytes>\r\n<data>\r\n"
+ *
+ * The reader accumulates bytes until a complete response is detected.
  */
 async function readBeanstalkdResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -66,17 +96,18 @@ async function readBeanstalkdResponse(
     }
     const text = new TextDecoder().decode(combined);
 
-    // Single-line responses end with \r\n and don't start with OK
-    if (!text.startsWith('OK ') && text.includes('\r\n')) break;
+    const headerEnd = text.indexOf('\r\n');
+    if (headerEnd === -1) continue; // No complete line yet
 
-    // Multi-line OK response: "OK <bytes>\r\n<data>\r\n"
-    if (text.startsWith('OK ')) {
-      const headerEnd = text.indexOf('\r\n');
-      if (headerEnd !== -1) {
-        const byteCount = parseInt(text.substring(3, headerEnd));
-        // header + \r\n + data + \r\n
-        if (!isNaN(byteCount) && totalBytes >= headerEnd + 2 + byteCount + 2) break;
-      }
+    const headerLine = text.substring(0, headerEnd);
+    const byteCount = parseBodyByteCount(headerLine);
+
+    if (byteCount >= 0) {
+      // Multi-line response: header\r\n + <byteCount bytes of data> + \r\n
+      if (totalBytes >= headerEnd + 2 + byteCount + 2) break;
+    } else {
+      // Single-line response — we have the first \r\n, that's enough
+      break;
     }
   }
 
@@ -90,19 +121,30 @@ async function readBeanstalkdResponse(
 }
 
 /**
- * Parse a beanstalkd OK response into the YAML body
+ * Parse a beanstalkd response into status line and body.
+ *
+ * Handles all multi-line formats:
+ *   OK <bytes>\r\n<yaml data>\r\n     — stats, list-tubes, etc.
+ *   FOUND <id> <bytes>\r\n<data>\r\n  — peek commands
+ *   RESERVED <id> <bytes>\r\n<data>\r\n — reserve (handled separately)
+ *
+ * Single-line responses have no body: INSERTED, USING, NOT_FOUND, etc.
  */
-function parseOKResponse(raw: string): { status: string; body: string } {
-  if (raw.startsWith('OK ')) {
-    const headerEnd = raw.indexOf('\r\n');
+function parseBeanstalkdResponse(raw: string): { status: string; body: string } {
+  const headerEnd = raw.indexOf('\r\n');
+  const headerLine = headerEnd !== -1 ? raw.substring(0, headerEnd) : raw;
+
+  // Check if this is a response type that carries a body
+  if (headerLine.startsWith('OK ') || headerLine.startsWith('FOUND ') || headerLine.startsWith('RESERVED ')) {
     if (headerEnd !== -1) {
       return {
-        status: 'OK',
+        status: headerLine.split(' ')[0],
         body: raw.substring(headerEnd + 2).trim(),
       };
     }
   }
-  return { status: raw.split('\r\n')[0] || raw, body: '' };
+
+  return { status: headerLine, body: '' };
 }
 
 /**
@@ -172,13 +214,16 @@ export async function handleBeanstalkdConnect(request: Request): Promise<Respons
       const rawResponse = await readBeanstalkdResponse(reader, Math.min(timeout, 5000));
       const rtt = Date.now() - startTime;
 
-      const parsed = parseOKResponse(rawResponse);
+      const parsed = parseBeanstalkdResponse(rawResponse);
 
-      // Parse key stats from the YAML body
+      // Parse key stats from the YAML body.
+      // Beanstalkd stats YAML format: "---\nkey: value\nkey: value\n"
+      // List YAML format: "---\n- item1\n- item2\n"
       const stats: Record<string, string> = {};
       if (parsed.body) {
         for (const line of parsed.body.split('\n')) {
-          const match = line.match(/^(\S+):\s*(.+)$/);
+          if (line === '---' || line.trim() === '') continue;
+          const match = line.match(/^([a-zA-Z][\w-]*):\s*(.*)$/);
           if (match) {
             stats[match[1]] = match[2].trim();
           }
@@ -272,7 +317,10 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
       );
     }
 
-    // Whitelist read-only commands to prevent destructive operations
+    // Whitelist non-destructive commands. Destructive commands (put, delete,
+    // release, bury, kick, pause-tube, quit) are blocked. Commands like use,
+    // watch, and ignore only affect per-connection state and are harmless since
+    // the connection is closed immediately after the response.
     const allowedCommands = [
       'stats',
       'list-tubes',
@@ -285,6 +333,8 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
       'peek-buried',
       'peek',
       'use',
+      'watch',
+      'ignore',
     ];
 
     const cmdName = command.split(/\s+/)[0].toLowerCase();
@@ -328,22 +378,38 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
       const rawResponse = await readBeanstalkdResponse(reader, Math.min(timeout, 5000));
       const rtt = Date.now() - startTime;
 
-      const parsed = parseOKResponse(rawResponse);
+      const parsed = parseBeanstalkdResponse(rawResponse);
 
       writer.releaseLock();
       reader.releaseLock();
       socket.close();
 
+      // For peek commands (FOUND <id> <bytes>\r\n<data>\r\n), extract the job ID
+      const headerLine = rawResponse.split('\r\n')[0] || rawResponse;
+      let jobId: number | undefined;
+      if (headerLine.startsWith('FOUND ')) {
+        const parts = headerLine.split(' ');
+        jobId = parseInt(parts[1] || '0');
+      }
+
+      // Detect error responses that are technically "successful" TCP exchanges
+      // but indicate protocol-level failures
+      const errorStatuses = ['NOT_FOUND', 'BAD_FORMAT', 'UNKNOWN_COMMAND', 'OUT_OF_MEMORY', 'INTERNAL_ERROR', 'DRAINING', 'NOT_IGNORED'];
+      const isProtocolError = errorStatuses.some(s => parsed.status.startsWith(s));
+
       return new Response(
         JSON.stringify({
-          success: true,
+          success: !isProtocolError,
           host,
           port,
           command,
           rtt,
           status: parsed.status,
+          ...(jobId !== undefined && { jobId }),
           response: parsed.body || rawResponse,
-          message: `Command executed in ${rtt}ms`,
+          message: isProtocolError
+            ? `Server returned: ${parsed.status}`
+            : `Command executed in ${rtt}ms`,
         }),
         { headers: { 'Content-Type': 'application/json' } }
       );
@@ -390,10 +456,54 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
       });
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Per protocol: priority is 0..4294967295 (uint32), delay and ttr are integers >= 0
+    if (priority < 0 || priority > 4294967295) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Priority must be 0-4294967295 (0 = most urgent)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (delay < 0) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Delay must be >= 0 seconds' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+    if (ttr < 1) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'TTR (time-to-run) must be >= 1 second' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const enc = new TextEncoder();
     const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
     try {
-      await socket.opened;
+      await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       try {
@@ -409,6 +519,7 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
           }
         }
 
+        // Beanstalkd put format: "put <pri> <delay> <ttr> <bytes>\r\n<data>\r\n"
         const jobData = enc.encode(payload);
         await writer.write(enc.encode(`put ${priority} ${delay} ${ttr} ${jobData.length}\r\n`));
         await writer.write(jobData);
@@ -417,17 +528,23 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
         const rtt = Date.now() - startTime;
 
         const inserted = putResp.startsWith('INSERTED ');
-        const buried = putResp.startsWith('BURIED ');
+        const buried = putResp.startsWith('BURIED');
         const idPart = putResp.split(/\s+/)[1];
         const jobId = (inserted || buried) && idPart ? parseInt(idPart) : undefined;
 
+        // Per the protocol, BURIED means the server ran out of memory trying to
+        // grow the priority queue. The job is stored but in the "buried" state --
+        // it will NOT be processed until explicitly kicked. We report this as a
+        // failure so callers know the job needs attention.
         return new Response(JSON.stringify({
-          success: inserted || buried,
+          success: inserted,
           host, port, tube, rtt, jobId,
           status: putResp.split('\r\n')[0] || putResp,
           message: inserted
             ? `Job ${jobId} inserted into tube '${tube}'`
-            : buried ? `Job ${jobId} buried (tube full)` : putResp,
+            : buried
+              ? `Job ${jobId} buried — server out of memory (use 'kick' to recover)`
+              : putResp,
         }), { headers: { 'Content-Type': 'application/json' } });
       } finally {
         reader.releaseLock();
@@ -471,21 +588,57 @@ export async function handleBeanstalkdReserve(request: Request): Promise<Respons
       });
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const enc = new TextEncoder();
     const socket = connect(`${host}:${port}`);
+
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
     try {
-      await socket.opened;
+      await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       try {
         const startTime = Date.now();
 
         if (tube !== 'default') {
+          // Watch the requested tube
           await writer.write(enc.encode(`watch ${tube}\r\n`));
           const watchResp = await readBeanstalkdResponse(reader, timeout);
           if (!watchResp.startsWith('WATCHING')) {
             return new Response(JSON.stringify({
               success: false, host, port, error: `WATCH failed: ${watchResp}`,
+            }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+          }
+
+          // Ignore the default tube so we only reserve from the requested tube.
+          // New connections watch "default" automatically; without this, reserve
+          // would pull jobs from both "default" and the requested tube.
+          await writer.write(enc.encode('ignore default\r\n'));
+          const ignoreResp = await readBeanstalkdResponse(reader, timeout);
+          if (!ignoreResp.startsWith('WATCHING')) {
+            return new Response(JSON.stringify({
+              success: false, host, port, error: `IGNORE default failed: ${ignoreResp}`,
             }), { status: 500, headers: { 'Content-Type': 'application/json' } });
           }
         }

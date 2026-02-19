@@ -1,650 +1,221 @@
-# Syslog Protocol Implementation Plan
+# Syslog — Power-User Reference
 
-## Overview
+**Port:** 514 (TCP)
+**Implementation:** `src/worker/syslog.ts`
+**Route:** `POST /api/syslog/send`
+**RFCs:** 5424 (modern), 3164 (BSD legacy), 6587 (TCP transport)
 
-**Protocol:** Syslog
-**Port:** 514 (UDP), 6514 (TCP/TLS)
-**RFC:** [RFC 5424](https://tools.ietf.org/html/rfc5424) (New), [RFC 3164](https://tools.ietf.org/html/rfc3164) (Legacy)
-**Complexity:** Low
-**Purpose:** System logging and event forwarding
+Single fire-and-forget endpoint. Formats a syslog message in either RFC 5424 or RFC 3164 format, sends it over a plain TCP socket, and closes. No response is read from the server.
 
-Syslog enables **centralized logging** - send application logs, system events, and security alerts to remote log servers from the browser.
+---
 
-### Use Cases
-- Centralized log aggregation
-- Security information and event management (SIEM)
-- Application monitoring
-- Audit trails
-- Network device logging
-- Cloud application logging
+## Endpoint
 
-## Protocol Specification
+### `POST /api/syslog/send`
 
-### Message Format (RFC 5424)
+**Request body:**
 
-```
-<PRIORITY>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID [STRUCTURED-DATA] MSG
-```
+| Field      | Type   | Default        | Notes |
+|------------|--------|----------------|-------|
+| `host`     | string | *(required)*   | Target syslog server hostname/IP |
+| `port`     | number | `514`          | Must be 1–65535 |
+| `severity` | number | *(required)*   | 0–7 (see table below) |
+| `facility` | number | `16` (Local0)  | 0–23 (see table below) |
+| `message`  | string | *(required)*   | Message body |
+| `hostname` | string | `"portofcall"` | HOSTNAME field in the syslog header |
+| `appName`  | string | `"webapp"`     | APP-NAME (RFC 5424) or TAG (RFC 3164) |
+| `format`   | string | `"rfc5424"`    | `"rfc5424"` or `"rfc3164"` |
+| `timeout`  | number | `10000`        | Connection timeout in ms |
 
-### Priority Calculation
+**Success response (200):**
 
-```
-Priority = (Facility * 8) + Severity
-```
-
-### Facilities (0-23)
-
-| Value | Facility |
-|-------|----------|
-| 0 | kernel messages |
-| 1 | user-level messages |
-| 2 | mail system |
-| 3 | system daemons |
-| 4 | security/authorization |
-| 16 | local use 0 (local0) |
-| 17 | local use 1 (local1) |
-| ... | ... |
-| 23 | local use 7 (local7) |
-
-### Severities (0-7)
-
-| Value | Severity | Description |
-|-------|----------|-------------|
-| 0 | Emergency | System is unusable |
-| 1 | Alert | Action must be taken immediately |
-| 2 | Critical | Critical conditions |
-| 3 | Error | Error conditions |
-| 4 | Warning | Warning conditions |
-| 5 | Notice | Normal but significant condition |
-| 6 | Informational | Informational messages |
-| 7 | Debug | Debug-level messages |
-
-### Example Messages
-
-#### RFC 5424 (New)
-```
-<34>1 2024-01-15T14:30:45.123Z myhost myapp 12345 ID47 - An error occurred
-```
-
-#### RFC 3164 (Legacy/BSD)
-```
-<34>Jan 15 14:30:45 myhost myapp[12345]: An error occurred
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/syslog/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface SyslogConfig {
-  host: string;
-  port?: number;
-  protocol?: 'tcp' | 'udp';
-  facility?: number;
-  hostname?: string;
-  appName?: string;
-  format?: 'rfc5424' | 'rfc3164';
-}
-
-export enum Severity {
-  Emergency = 0,
-  Alert = 1,
-  Critical = 2,
-  Error = 3,
-  Warning = 4,
-  Notice = 5,
-  Informational = 6,
-  Debug = 7,
-}
-
-export enum Facility {
-  Kernel = 0,
-  User = 1,
-  Mail = 2,
-  Daemon = 3,
-  Auth = 4,
-  Syslog = 5,
-  Lpr = 6,
-  News = 7,
-  Uucp = 8,
-  Cron = 9,
-  Authpriv = 10,
-  Ftp = 11,
-  Ntp = 12,
-  Security = 13,
-  Console = 14,
-  Clock = 15,
-  Local0 = 16,
-  Local1 = 17,
-  Local2 = 18,
-  Local3 = 19,
-  Local4 = 20,
-  Local5 = 21,
-  Local6 = 22,
-  Local7 = 23,
-}
-
-export interface SyslogMessage {
-  severity: Severity;
-  message: string;
-  facility?: number;
-  timestamp?: Date;
-  hostname?: string;
-  appName?: string;
-  procId?: string;
-  msgId?: string;
-  structuredData?: Record<string, Record<string, string>>;
-}
-
-export class SyslogClient {
-  private socket: any;
-  private facility: number;
-  private hostname: string;
-  private appName: string;
-  private format: 'rfc5424' | 'rfc3164';
-
-  constructor(private config: SyslogConfig) {
-    this.facility = config.facility ?? Facility.Local0;
-    this.hostname = config.hostname ?? 'localhost';
-    this.appName = config.appName ?? 'app';
-    this.format = config.format ?? 'rfc5424';
-  }
-
-  async connect(): Promise<void> {
-    const port = this.config.port ?? 514;
-
-    // Note: UDP is more common for syslog, but TCP is more reliable
-    // Workers primarily support TCP via connect()
-    this.socket = connect(`${this.config.host}:${port}`);
-    await this.socket.opened;
-  }
-
-  async log(severity: Severity, message: string, options: {
-    facility?: number;
-    procId?: string;
-    msgId?: string;
-    structuredData?: Record<string, Record<string, string>>;
-  } = {}): Promise<void> {
-    const msg: SyslogMessage = {
-      severity,
-      message,
-      facility: options.facility ?? this.facility,
-      timestamp: new Date(),
-      hostname: this.hostname,
-      appName: this.appName,
-      procId: options.procId,
-      msgId: options.msgId,
-      structuredData: options.structuredData,
-    };
-
-    const formatted = this.format === 'rfc5424'
-      ? this.formatRFC5424(msg)
-      : this.formatRFC3164(msg);
-
-    await this.send(formatted);
-  }
-
-  // Convenience methods
-
-  async emergency(message: string): Promise<void> {
-    await this.log(Severity.Emergency, message);
-  }
-
-  async alert(message: string): Promise<void> {
-    await this.log(Severity.Alert, message);
-  }
-
-  async critical(message: string): Promise<void> {
-    await this.log(Severity.Critical, message);
-  }
-
-  async error(message: string): Promise<void> {
-    await this.log(Severity.Error, message);
-  }
-
-  async warning(message: string): Promise<void> {
-    await this.log(Severity.Warning, message);
-  }
-
-  async notice(message: string): Promise<void> {
-    await this.log(Severity.Notice, message);
-  }
-
-  async info(message: string): Promise<void> {
-    await this.log(Severity.Informational, message);
-  }
-
-  async debug(message: string): Promise<void> {
-    await this.log(Severity.Debug, message);
-  }
-
-  private formatRFC5424(msg: SyslogMessage): string {
-    const priority = this.calculatePriority(msg.facility!, msg.severity);
-    const version = 1;
-    const timestamp = this.formatTimestamp(msg.timestamp!);
-    const hostname = msg.hostname || '-';
-    const appName = msg.appName || '-';
-    const procId = msg.procId || '-';
-    const msgId = msg.msgId || '-';
-    const structuredData = this.formatStructuredData(msg.structuredData);
-    const message = msg.message;
-
-    return `<${priority}>${version} ${timestamp} ${hostname} ${appName} ${procId} ${msgId} ${structuredData} ${message}\n`;
-  }
-
-  private formatRFC3164(msg: SyslogMessage): string {
-    const priority = this.calculatePriority(msg.facility!, msg.severity);
-    const timestamp = this.formatLegacyTimestamp(msg.timestamp!);
-    const hostname = msg.hostname || 'localhost';
-    const tag = msg.appName || 'app';
-    const pid = msg.procId ? `[${msg.procId}]` : '';
-    const message = msg.message;
-
-    return `<${priority}>${timestamp} ${hostname} ${tag}${pid}: ${message}\n`;
-  }
-
-  private calculatePriority(facility: number, severity: Severity): number {
-    return (facility * 8) + severity;
-  }
-
-  private formatTimestamp(date: Date): string {
-    // RFC 3339 format: 2024-01-15T14:30:45.123Z
-    return date.toISOString();
-  }
-
-  private formatLegacyTimestamp(date: Date): string {
-    // BSD syslog format: Jan 15 14:30:45
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-
-    const month = months[date.getMonth()];
-    const day = String(date.getDate()).padStart(2, ' ');
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
-    const seconds = String(date.getSeconds()).padStart(2, '0');
-
-    return `${month} ${day} ${hours}:${minutes}:${seconds}`;
-  }
-
-  private formatStructuredData(data?: Record<string, Record<string, string>>): string {
-    if (!data || Object.keys(data).length === 0) {
-      return '-';
-    }
-
-    let result = '';
-
-    for (const [id, params] of Object.entries(data)) {
-      result += `[${id}`;
-      for (const [key, value] of Object.entries(params)) {
-        const escapedValue = value
-          .replace(/\\/g, '\\\\')
-          .replace(/"/g, '\\"')
-          .replace(/]/g, '\\]');
-        result += ` ${key}="${escapedValue}"`;
-      }
-      result += ']';
-    }
-
-    return result;
-  }
-
-  private async send(message: string): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(message));
-    writer.releaseLock();
-  }
-
-  async close(): Promise<void> {
-    if (this.socket) {
-      await this.socket.close();
-    }
-  }
-}
-
-// Logger wrapper for convenient logging
-
-export class SyslogLogger {
-  private client: SyslogClient;
-
-  constructor(config: SyslogConfig) {
-    this.client = new SyslogClient(config);
-  }
-
-  async connect(): Promise<void> {
-    await this.client.connect();
-  }
-
-  log(level: keyof typeof Severity, message: string, metadata?: any): Promise<void> {
-    const fullMessage = metadata
-      ? `${message} ${JSON.stringify(metadata)}`
-      : message;
-
-    const severity = Severity[level];
-    return this.client.log(severity, fullMessage);
-  }
-
-  emergency(message: string, metadata?: any): Promise<void> {
-    return this.log('Emergency', message, metadata);
-  }
-
-  alert(message: string, metadata?: any): Promise<void> {
-    return this.log('Alert', message, metadata);
-  }
-
-  critical(message: string, metadata?: any): Promise<void> {
-    return this.log('Critical', message, metadata);
-  }
-
-  error(message: string, metadata?: any): Promise<void> {
-    return this.log('Error', message, metadata);
-  }
-
-  warning(message: string, metadata?: any): Promise<void> {
-    return this.log('Warning', message, metadata);
-  }
-
-  notice(message: string, metadata?: any): Promise<void> {
-    return this.log('Notice', message, metadata);
-  }
-
-  info(message: string, metadata?: any): Promise<void> {
-    return this.log('Informational', message, metadata);
-  }
-
-  debug(message: string, metadata?: any): Promise<void> {
-    return this.log('Debug', message, metadata);
-  }
-
-  async close(): Promise<void> {
-    await this.client.close();
-  }
+```json
+{
+  "success": true,
+  "message": "Syslog message sent successfully",
+  "formatted": "<134>1 2026-02-17T12:00:00.000Z portofcall webapp - - - Hello world"
 }
 ```
 
-## Web UI Design
+The `formatted` field is the exact wire message sent (minus the trailing `\n`).
 
-```typescript
-// src/components/SyslogClient.tsx
+**Error responses:**
 
-export function SyslogClient() {
-  const [host, setHost] = useState('syslog.example.com');
-  const [port, setPort] = useState(514);
-  const [severity, setSeverity] = useState<Severity>(Severity.Informational);
-  const [message, setMessage] = useState('');
-  const [history, setHistory] = useState<Array<{
-    severity: Severity;
-    message: string;
-    timestamp: Date;
-  }>>([]);
+| HTTP | Condition |
+|------|-----------|
+| 400  | Missing `host`, missing `message`, severity outside 0–7, facility outside 0–23, port outside 1–65535 |
+| 500  | TCP connection failure, timeout |
 
-  const sendLog = async () => {
-    await fetch('/api/syslog/send', {
-      method: 'POST',
-      body: JSON.stringify({
-        host,
-        port,
-        severity,
-        message,
-      }),
-    });
+---
 
-    setHistory([
-      ...history,
-      { severity, message, timestamp: new Date() },
-    ]);
+## Wire Format
 
-    setMessage('');
-  };
+### RFC 5424 (default)
 
-  const severityNames = [
-    'Emergency',
-    'Alert',
-    'Critical',
-    'Error',
-    'Warning',
-    'Notice',
-    'Informational',
-    'Debug',
-  ];
-
-  const getSeverityColor = (sev: Severity): string => {
-    const colors = [
-      '#ff0000', // Emergency - red
-      '#ff3300', // Alert - red-orange
-      '#ff6600', // Critical - orange
-      '#ff9900', // Error - orange-yellow
-      '#ffcc00', // Warning - yellow
-      '#00cc00', // Notice - green
-      '#0099ff', // Informational - blue
-      '#999999', // Debug - gray
-    ];
-    return colors[sev];
-  };
-
-  return (
-    <div className="syslog-client">
-      <h2>Syslog Client</h2>
-
-      <div className="config">
-        <input
-          type="text"
-          placeholder="Syslog Server"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Port"
-          value={port}
-          onChange={(e) => setPort(Number(e.target.value))}
-        />
-      </div>
-
-      <div className="log-input">
-        <select
-          value={severity}
-          onChange={(e) => setSeverity(Number(e.target.value))}
-        >
-          {severityNames.map((name, i) => (
-            <option key={i} value={i}>
-              {name}
-            </option>
-          ))}
-        </select>
-
-        <input
-          type="text"
-          placeholder="Log message..."
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          onKeyPress={(e) => e.key === 'Enter' && sendLog()}
-        />
-
-        <button onClick={sendLog}>Send Log</button>
-      </div>
-
-      <div className="quick-logs">
-        <h3>Quick Logs</h3>
-        <button onClick={() => {
-          setSeverity(Severity.Error);
-          setMessage('Application error occurred');
-        }}>
-          Error
-        </button>
-        <button onClick={() => {
-          setSeverity(Severity.Warning);
-          setMessage('High memory usage detected');
-        }}>
-          Warning
-        </button>
-        <button onClick={() => {
-          setSeverity(Severity.Informational);
-          setMessage('User logged in successfully');
-        }}>
-          Info
-        </button>
-      </div>
-
-      <div className="log-history">
-        <h3>Sent Logs</h3>
-        <div className="logs">
-          {history.slice(-20).reverse().map((log, i) => (
-            <div
-              key={i}
-              className="log-entry"
-              style={{ borderLeftColor: getSeverityColor(log.severity) }}
-            >
-              <span className="timestamp">
-                {log.timestamp.toLocaleTimeString()}
-              </span>
-              <span className="severity" style={{ color: getSeverityColor(log.severity) }}>
-                {severityNames[log.severity]}
-              </span>
-              <span className="message">{log.message}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="info">
-        <h3>Severity Levels</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Level</th>
-              <th>Name</th>
-              <th>Description</th>
-            </tr>
-          </thead>
-          <tbody>
-            {severityNames.map((name, i) => (
-              <tr key={i}>
-                <td>{i}</td>
-                <td style={{ color: getSeverityColor(i) }}>{name}</td>
-                <td>
-                  {i === 0 && 'System is unusable'}
-                  {i === 1 && 'Action must be taken immediately'}
-                  {i === 2 && 'Critical conditions'}
-                  {i === 3 && 'Error conditions'}
-                  {i === 4 && 'Warning conditions'}
-                  {i === 5 && 'Normal but significant'}
-                  {i === 6 && 'Informational messages'}
-                  {i === 7 && 'Debug-level messages'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
+```
+<PRI>1 TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG\n
 ```
 
-## Security
+Concrete example with facility=16, severity=6 (priority = 16×8+6 = 134):
 
-### TLS Encryption
-
-```typescript
-// Use port 6514 for TLS-encrypted syslog
-const config = {
-  host: 'syslog.example.com',
-  port: 6514,
-  protocol: 'tcp',
-};
+```
+<134>1 2026-02-17T14:30:45.123Z portofcall webapp - - - Test message\n
 ```
 
-### Authentication
+Fixed values:
+- **VERSION**: always `1`
+- **PROCID**: always `-` (NILVALUE)
+- **MSGID**: always `-` (NILVALUE)
+- **STRUCTURED-DATA**: always `-` (NILVALUE)
+- **TIMESTAMP**: `new Date().toISOString()` — always UTC, millisecond precision
+
+### RFC 3164 (BSD legacy)
+
+```
+<PRI>TIMESTAMP HOSTNAME TAG: MSG\n
+```
+
+Concrete example:
+
+```
+<134>Feb 17 14:30:45 portofcall webapp: Test message\n
+```
+
+Timestamp format: `Mmm DD HH:MM:SS` — uses `getMonth()`/`getDate()`/`getHours()` etc., which in Cloudflare Workers return **UTC** values (Workers run in UTC). Day is space-padded to 2 chars per the RFC.
+
+---
+
+## Priority Calculation
+
+```
+priority = (facility × 8) + severity
+```
+
+### Severity Codes
+
+| Value | Name          |
+|-------|---------------|
+| 0     | Emergency     |
+| 1     | Alert         |
+| 2     | Critical      |
+| 3     | Error         |
+| 4     | Warning       |
+| 5     | Notice        |
+| 6     | Informational |
+| 7     | Debug         |
+
+### Facility Codes
+
+| Value | Name     | Value | Name   |
+|-------|----------|-------|--------|
+| 0     | Kernel   | 12    | NTP    |
+| 1     | User     | 13    | Security |
+| 2     | Mail     | 14    | Console |
+| 3     | Daemon   | 15    | Clock  |
+| 4     | Auth     | 16    | Local0 |
+| 5     | Syslog   | 17    | Local1 |
+| 6     | Lpr      | 18    | Local2 |
+| 7     | News     | 19    | Local3 |
+| 8     | UUCP     | 20    | Local4 |
+| 9     | Cron     | 21    | Local5 |
+| 10    | Authpriv | 22    | Local6 |
+| 11    | FTP      | 23    | Local7 |
+
+---
+
+## Curl Examples
 
 ```bash
-# Configure syslog server to require authentication
-# This varies by implementation (rsyslog, syslog-ng, etc.)
+# RFC 5424 informational message (default format)
+curl -X POST https://portofcall.ross.gg/api/syslog/send \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"syslog.example.com","severity":6,"message":"App started"}'
+
+# RFC 3164 error with custom facility
+curl -X POST https://portofcall.ross.gg/api/syslog/send \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "host":"10.0.0.1",
+    "port":1514,
+    "severity":3,
+    "facility":4,
+    "message":"auth failure for user root",
+    "hostname":"webserver01",
+    "appName":"sshd",
+    "format":"rfc3164"
+  }'
+
+# Emergency to kernel facility
+curl -X POST https://portofcall.ross.gg/api/syslog/send \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"syslog.example.com","severity":0,"facility":0,"message":"kernel panic"}'
 ```
 
-## Testing
+---
 
-### rsyslog (Docker)
+## Known Limitations and Gotchas
+
+### No Structured Data (RFC 5424 SD-ELEMENTs)
+
+Despite the POWER_USERS_HAPPY.md description mentioning "structured-data," the handler hardcodes STRUCTURED-DATA to `-` (NILVALUE). There is no way to send SD-ELEMENTs like `[exampleSDID@32473 iut="3" eventSource="Application"]`. The planning doc's fictional `SyslogClient` class supported them; the actual handler does not.
+
+### No PROCID or MSGID
+
+Both are hardcoded to `-`. You cannot set a process ID or message ID. If your log aggregator keys on these fields, every message from Port of Call will show `"-"`.
+
+### No TCP Octet-Counting Framing
+
+The handler uses **non-transparent framing** (newline-terminated). RFC 6587 §3.4 defines octet-counting (`MSG-LEN SP SYSLOG-MSG`) as the more reliable option. If your message body contains a bare `\n`, the receiving syslog server using non-transparent framing will split it into two malformed messages. There is no escaping or length-prefixing.
+
+### No TLS (RFC 5425)
+
+Plain TCP only. No support for TLS transport on port 6514. The `connect()` call from `cloudflare:sockets` is unencrypted. Traffic between the Cloudflare Worker and the syslog server is in cleartext.
+
+### No Cloudflare Detection
+
+Unlike most other protocol handlers, `checkIfCloudflare()` is **not** called before connecting. If the target resolves to a Cloudflare IP, the connection attempt proceeds anyway (and will likely fail or behave unexpectedly).
+
+### No Message Size Limit
+
+No cap on message length. RFC 5424 §6.1 says implementations SHOULD support messages up to 2048 bytes, and many servers truncate at 1024 (BSD syslog) or 8192 bytes. Oversized messages may be silently truncated by the receiving server.
+
+### Fire-and-Forget
+
+The handler never reads from the socket after sending. If the syslog server rejects the message or sends an error, you won't know. `success: true` means "the TCP write completed without throwing," not "the server accepted the message."
+
+### No HTTP Method Check
+
+The route in `index.ts` matches any method on `/api/syslog/send`. A GET request will reach `handleSyslogSend`, which calls `request.json()` — this will throw on a GET with no body, returning a 500 error (not a 405).
+
+### Timestamp Behavior
+
+- **RFC 5424**: Uses `new Date().toISOString()` — always UTC, ISO 8601, millisecond precision. Correct per RFC 5424 §6.2.3 which recommends UTC with `Z` suffix.
+- **RFC 3164**: Uses `getHours()`/`getMinutes()`/`getSeconds()` — in Workers these return UTC values. RFC 3164 timestamps are traditionally local time, but since Workers run in UTC, the timestamp is technically UTC presented in BSD format without any timezone indicator (which is what RFC 3164 specifies — no TZ field).
+
+### `severity` is Required but Has No Default
+
+Unlike `facility` (defaults to 16) and most other fields, `severity` has no default. Omitting it will pass the undefined-to-number comparison `severity < 0 || severity > 7` — since `undefined < 0` is `false` and `undefined > 7` is `false`, the validation passes. The priority calculation becomes `(facility * 8) + undefined` = `NaN`, producing a malformed `<NaN>` in the wire message.
+
+---
+
+## Testing Locally
 
 ```bash
-# Docker rsyslog server
-docker run -d \
-  -p 514:514/udp \
-  -p 514:514/tcp \
-  --name rsyslog \
-  rsyslog/syslog_appliance_alpine
+# Start a TCP syslog listener
+nc -lk 1514
 
-# View logs
+# In another terminal, send via the API
+curl -X POST http://localhost:8787/api/syslog/send \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"127.0.0.1","port":1514,"severity":6,"message":"hello from portofcall"}'
+
+# The nc terminal will show:
+# <134>1 2026-02-17T... portofcall webapp - - - hello from portofcall
+```
+
+Or use rsyslog in Docker:
+
+```bash
+docker run -d -p 514:514/tcp --name rsyslog rsyslog/syslog_appliance_alpine
 docker logs -f rsyslog
-
-# Send test message with logger
-logger -n localhost -P 514 "Test syslog message"
 ```
-
-### Netcat Test
-
-```bash
-# Send syslog message via netcat
-echo "<34>Jan 15 14:30:45 myhost myapp: Test message" | nc -u localhost 514
-```
-
-### Python Test
-
-```python
-import socket
-import time
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-
-message = "<34>1 2024-01-15T14:30:45.123Z myhost myapp 12345 ID47 - Test message\n"
-sock.sendto(message.encode(), ('localhost', 514))
-```
-
-## Resources
-
-- **RFC 5424**: [Syslog Protocol](https://tools.ietf.org/html/rfc5424)
-- **RFC 3164**: [BSD Syslog](https://tools.ietf.org/html/rfc3164)
-- **rsyslog**: [rsyslog documentation](https://www.rsyslog.com/doc/)
-- **syslog-ng**: [syslog-ng documentation](https://www.syslog-ng.com/technical-documents/)
-
-## Common Use Cases
-
-### Application Logging
-```typescript
-const logger = new SyslogLogger({
-  host: 'logs.example.com',
-  port: 514,
-  appName: 'myapp',
-});
-
-await logger.info('User logged in', { userId: 123, ip: '192.168.1.1' });
-await logger.error('Database connection failed', { error: 'timeout' });
-```
-
-### Security Events
-```typescript
-await logger.alert('Unauthorized access attempt', {
-  ip: '10.0.0.1',
-  user: 'admin',
-});
-```
-
-### System Monitoring
-```typescript
-await logger.warning('High CPU usage', { cpu: 95, threshold: 80 });
-```
-
-## Notes
-
-- **UDP is traditional** but unreliable (no delivery guarantee)
-- **TCP is more reliable** but less common
-- **TLS** provides encryption (port 6514)
-- **Port 514** requires root privileges on Unix systems
-- **RFC 5424** is modern format with structured data
-- **RFC 3164** is legacy BSD format (still widely used)
-- **Facilities** categorize message source
-- **Severities** indicate message urgency
-- Used by **SIEM systems** for security monitoring
-- Common in **enterprise environments**

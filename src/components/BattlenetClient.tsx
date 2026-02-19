@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface BattlenetClientProps {
   onBack: () => void;
@@ -108,6 +110,7 @@ export default function BattlenetClient({ onBack }: BattlenetClientProps) {
 
   return (
     <ProtocolClientLayout title="Battle.net BNCS Protocol" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Battlenet || []} />
       <SectionHeader stepNumber={1} title="Connection Settings" />
 
       <FormField

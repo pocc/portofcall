@@ -190,6 +190,8 @@ function buildSpiceLinkMess(channelType = 1, channelId = 0): Uint8Array {
 // ─── Response parsers ─────────────────────────────────────────────────────────
 
 interface SpiceLinkReplyParsed {
+  serverMajor: number;
+  serverMinor: number;
   error: number;
   errorName: string;
   hasPubKey: boolean;
@@ -225,7 +227,14 @@ function parseSpiceLinkReply(data: Uint8Array): SpiceLinkReplyParsed {
   // The header is optional depending on server implementation
   // Try with header offset first, then without
   let bodyOffset = 16;
-  if (magic !== 'REQD') {
+  let serverMajor = SPICE_VERSION_MAJOR;
+  let serverMinor = SPICE_VERSION_MINOR;
+  if (magic === 'REQD') {
+    // Extract the server's actual version from the reply header
+    const hv = new DataView(data.buffer, data.byteOffset, 16);
+    serverMajor = hv.getUint32(4, true);
+    serverMinor = hv.getUint32(8, true);
+  } else {
     bodyOffset = 0; // No standard header, body starts at 0
   }
 
@@ -278,6 +287,8 @@ function parseSpiceLinkReply(data: Uint8Array): SpiceLinkReplyParsed {
   }
 
   return {
+    serverMajor,
+    serverMinor,
     error,
     errorName,
     hasPubKey,
@@ -419,7 +430,9 @@ export async function handleSPICEConnect(request: Request): Promise<Response> {
           success: false,
           host,
           port,
-          protocolVersion: `${SPICE_VERSION_MAJOR}.${SPICE_VERSION_MINOR}`,
+          protocolVersion: `${linkReply.serverMajor}.${linkReply.serverMinor}`,
+          serverMajor: linkReply.serverMajor,
+          serverMinor: linkReply.serverMinor,
           linkError: linkReply.error,
           linkErrorName: linkReply.errorName,
           hasPubKey: linkReply.hasPubKey,
@@ -495,9 +508,9 @@ export async function handleSPICEConnect(request: Request): Promise<Response> {
         success: true,
         host,
         port,
-        protocolVersion: `${SPICE_VERSION_MAJOR}.${SPICE_VERSION_MINOR}`,
-        serverMajor: SPICE_VERSION_MAJOR,
-        serverMinor: SPICE_VERSION_MINOR,
+        protocolVersion: `${linkReply.serverMajor}.${linkReply.serverMinor}`,
+        serverMajor: linkReply.serverMajor,
+        serverMinor: linkReply.serverMinor,
         linkError: linkReply.error,
         linkErrorName: linkReply.errorName,
         hasPubKey: linkReply.hasPubKey,

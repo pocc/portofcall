@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface FastCGIProps {
   onBack: () => void;
@@ -112,8 +114,7 @@ export default function FastCGIClient({ onBack }: FastCGIProps) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
-      {/* Header */}
+    <div className="max-w-4xl mx-auto">      {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
@@ -133,6 +134,7 @@ export default function FastCGIClient({ onBack }: FastCGIProps) {
               <path d="M13 17h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="text-white/60" />
             </svg>
           </div>
+
           <div>
             <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>FastCGI Client</h1>
             <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
@@ -164,6 +166,7 @@ export default function FastCGIClient({ onBack }: FastCGIProps) {
         <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
           Connection Settings
         </h2>
+      <ApiExamples examples={apiExamples.FastCGI || []} />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
             <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</label>

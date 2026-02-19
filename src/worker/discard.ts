@@ -8,7 +8,7 @@
  * 1. Client connects to server port 9
  * 2. Client sends data
  * 3. Server silently discards all data (no response)
- * 4. Connection can be closed by either party
+ * 4. Client closes the connection when done
  *
  * Use Cases:
  * - Network connectivity testing
@@ -45,6 +45,10 @@ interface DiscardResponse {
  * Calculate throughput from bytes and duration
  */
 function calculateThroughput(bytes: number, durationMs: number): string {
+  if (durationMs <= 0) {
+    return 'N/A (instant)';
+  }
+
   const bps = (bytes * 8) / (durationMs / 1000);
 
   if (bps < 1024) {
@@ -96,11 +100,14 @@ export async function handleDiscardSend(request: Request): Promise<Response> {
       });
     }
 
-    // Enforce safety limit - max 1MB of data
-    if (data.length > 1048576) {
+    // Enforce safety limit - max 1MB of data (measured in bytes, not characters,
+    // since multi-byte UTF-8 sequences would bypass a character-count check)
+    const encoder = new TextEncoder();
+    const dataBytes = encoder.encode(data);
+    if (dataBytes.length > 1048576) {
       return new Response(JSON.stringify({
         success: false,
-        error: 'Data exceeds maximum size (1MB)',
+        error: `Data exceeds maximum size (1MB). Actual size: ${dataBytes.length} bytes`,
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -124,10 +131,8 @@ export async function handleDiscardSend(request: Request): Promise<Response> {
         timeoutPromise,
       ]);
 
-      // Send data to server
+      // Send data to server (dataBytes already encoded above for size check)
       const writer = socket.writable.getWriter();
-      const encoder = new TextEncoder();
-      const dataBytes = encoder.encode(data);
 
       await writer.write(dataBytes);
       await writer.close();

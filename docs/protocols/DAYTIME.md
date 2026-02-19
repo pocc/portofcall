@@ -1,398 +1,292 @@
-# Daytime Protocol Implementation Plan
+# Daytime Protocol (RFC 867)
 
 ## Overview
 
-**Protocol:** Daytime Protocol
-**Port:** 13 (TCP and UDP)
-**RFC:** [RFC 867](https://tools.ietf.org/html/rfc867)
-**Complexity:** Extremely Low
-**Purpose:** Time synchronization (human-readable)
+| Field | Value |
+|-------|-------|
+| **Protocol** | Daytime |
+| **RFC** | [RFC 867](https://tools.ietf.org/html/rfc867) (May 1983) |
+| **Default Port** | 13 (TCP and UDP) |
+| **Transport** | TCP (implemented), UDP (defined in RFC, not implemented) |
+| **Complexity** | Trivial |
+| **Status** | Obsolete (superseded by NTP) |
+| **IANA Assignment** | [Port 13](https://www.iana.org/assignments/service-names-port-numbers/) |
 
-Daytime provides **human-readable time** - the simplest possible network protocol for getting the current date and time from a remote server.
+Daytime is the simplest human-readable time protocol. A client connects, the server immediately sends the current date/time as an ASCII string, and closes the connection. No request data is sent by the client. The response format is not standardized -- each server implementation may format the string differently.
 
-### Use Cases
-- Educational protocol demonstration
-- Simple time synchronization
-- Network connectivity testing
-- Legacy system integration
-- Learning TCP/IP basics
+## RFC 867 Specification
 
-## Protocol Specification
+RFC 867 is one of the shortest RFCs ever published. The entire protocol is:
 
-### Protocol Description
+### TCP Variant
 
-The Daytime protocol is **the simplest network protocol**:
+1. Client opens a TCP connection to port 13 on the server.
+2. Server sends the current date and time as an ASCII string.
+3. Server closes the connection.
+4. Client reads the data and closes its end.
 
-```
-Client connects to server on port 13
-Server immediately sends current date/time as ASCII text
-Server closes connection
-```
-
-That's it! No commands, no responses, just connect and receive.
-
-### Example Response
+No data is sent from client to server. The server may discard any data received.
 
 ```
-Sunday, January 15, 2024 14:30:45-PST
+Client                          Server
+  |                                |
+  |  ---- TCP SYN --------------> |
+  |  <--- TCP SYN-ACK ----------- |
+  |  ---- TCP ACK --------------> |  (connection established)
+  |                                |
+  |  <--- "Tuesday, February..." - |  (server sends time string)
+  |  <--- FIN -------------------- |  (server closes connection)
+  |  ---- FIN-ACK --------------> |
+  |                                |
 ```
 
-or
+### UDP Variant
+
+1. Client sends an empty UDP datagram to port 13 on the server.
+2. Server responds with a single UDP datagram containing the date/time string.
+
+The UDP variant is not implemented in Port of Call (Cloudflare Workers only support TCP sockets).
+
+### Response Format
+
+RFC 867 does **not** mandate a specific format. It only states the response should be an ASCII string representing the current date and time. Common formats seen in the wild:
+
+| Server | Example Response |
+|--------|-----------------|
+| NIST (time.nist.gov) | `60336 24-01-15 22:30:45 50 0 0 895.5 UTC(NIST) *` |
+| Traditional Unix | `Sun Jan 15 14:30:45 PST 2024` |
+| Verbose | `Sunday, January 15, 2024 14:30:45-PST` |
+| ISO-like | `2024-01-15 14:30:45` |
+
+### NIST Daytime Format Breakdown
+
+NIST servers use a specific format worth understanding:
 
 ```
-2024-01-15 14:30:45
+JJJJJ YY-MM-DD HH:MM:SS TT L H msADV UTC(NIST) OTM
 ```
 
-**Format is not standardized** - each server can format differently.
+| Field | Meaning |
+|-------|---------|
+| JJJJJ | Modified Julian Date |
+| YY-MM-DD | Date (2-digit year) |
+| HH:MM:SS | Time (UTC) |
+| TT | Indicates whether standard or daylight saving time (00=ST, 50=DST) |
+| L | Leap second indicator (0=none, 1=add, 2=subtract) |
+| H | Health indicator (0=healthy) |
+| msADV | Advance in milliseconds the server sends the time |
+| UTC(NIST) | Source identifier |
+| OTM | On-Time Marker (`*` = good, `#` = not locked) |
 
-### TCP Version
+## Port of Call Implementation
 
-```
-Client → Server: [TCP Connection]
-Server → Client: "Sunday, January 15, 2024 14:30:45-PST\r\n"
-Server → Client: [Close connection]
-```
+**File:** `src/worker/daytime.ts`
+**API Endpoint:** `POST /api/daytime/get`
+**Handler:** `handleDaytimeGet(request: Request)`
 
-### UDP Version
+### Request
 
-```
-Client → Server: [Empty UDP packet]
-Server → Client: "Sunday, January 15, 2024 14:30:45-PST"
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/daytime/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface DaytimeConfig {
-  host: string;
-  port?: number;
-}
-
-export class DaytimeClient {
-  constructor(private config: DaytimeConfig) {}
-
-  async getTime(): Promise<string> {
-    const port = this.config.port || 13;
-    const socket = connect(`${this.config.host}:${port}`);
-    await socket.opened;
-
-    // Server sends time immediately upon connection
-    const reader = socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-
-    await socket.close();
-
-    const time = new TextDecoder().decode(value);
-    return time.trim();
-  }
-
-  async getTimeAsDate(): Promise<Date> {
-    const timeString = await this.getTime();
-
-    // Try to parse the time string
-    // Note: Format varies by server
-    try {
-      return new Date(timeString);
-    } catch (error) {
-      throw new Error(`Unable to parse time: ${timeString}`);
-    }
-  }
-}
-
-// Daytime Server
-
-export class DaytimeServer {
-  private server: any;
-
-  constructor(private port: number = 13) {}
-
-  async start(): Promise<void> {
-    // This would require Durable Objects or similar for Workers
-    // Simplified example:
-
-    console.log(`Daytime server started on port ${this.port}`);
-  }
-
-  private handleConnection(socket: any): void {
-    const now = new Date();
-    const timeString = now.toString() + '\r\n';
-
-    const writer = socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    writer.write(encoder.encode(timeString));
-    writer.releaseLock();
-
-    socket.close();
-  }
-}
-
-// Utilities
-
-export function formatDaytime(date: Date = new Date()): string {
-  // RFC 867 suggests format like:
-  // "Weekday, Month DD, YYYY HH:MM:SS-TIMEZONE"
-
-  const weekdays = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const months = ['January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'];
-
-  const weekday = weekdays[date.getDay()];
-  const month = months[date.getMonth()];
-  const day = date.getDate();
-  const year = date.getFullYear();
-  const hours = String(date.getHours()).padStart(2, '0');
-  const minutes = String(date.getMinutes()).padStart(2, '0');
-  const seconds = String(date.getSeconds()).padStart(2, '0');
-
-  // Get timezone offset
-  const offset = -date.getTimezoneOffset();
-  const offsetHours = String(Math.floor(Math.abs(offset) / 60)).padStart(2, '0');
-  const offsetMinutes = String(Math.abs(offset) % 60).padStart(2, '0');
-  const offsetSign = offset >= 0 ? '+' : '-';
-  const timezone = `${offsetSign}${offsetHours}${offsetMinutes}`;
-
-  return `${weekday}, ${month} ${day}, ${year} ${hours}:${minutes}:${seconds}${timezone}`;
-}
-
-export function parseDaytime(timeString: string): Date {
-  // Try multiple common formats
-  const formats = [
-    // "Sunday, January 15, 2024 14:30:45-PST"
-    /(\w+),\s+(\w+)\s+(\d+),\s+(\d+)\s+(\d+):(\d+):(\d+)/,
-    // "2024-01-15 14:30:45"
-    /(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})/,
-  ];
-
-  // Attempt to parse as Date
-  try {
-    return new Date(timeString);
-  } catch {
-    throw new Error(`Unable to parse daytime: ${timeString}`);
-  }
+```json
+{
+  "host": "time.nist.gov",
+  "port": 13,
+  "timeout": 10000
 }
 ```
 
-## Web UI Design
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `host` | string | (required) | Hostname or IP of the Daytime server |
+| `port` | number | `13` | TCP port number (1-65535) |
+| `timeout` | number | `10000` | Connection timeout in milliseconds |
 
-```typescript
-// src/components/DaytimeClient.tsx
+### Response (Success)
 
-export function DaytimeClient() {
-  const [host, setHost] = useState('time.nist.gov');
-  const [port, setPort] = useState(13);
-  const [time, setTime] = useState<string>('');
-  const [localTime, setLocalTime] = useState<string>('');
-  const [offset, setOffset] = useState<number>(0);
-
-  const getTime = async () => {
-    try {
-      const response = await fetch('/api/daytime/get', {
-        method: 'POST',
-        body: JSON.stringify({ host, port }),
-      });
-
-      const data = await response.json();
-      setTime(data.time);
-
-      // Calculate offset from local time
-      const remoteDate = new Date(data.time);
-      const localDate = new Date();
-      const diff = remoteDate.getTime() - localDate.getTime();
-      setOffset(diff);
-      setLocalTime(localDate.toString());
-    } catch (error) {
-      alert(`Error: ${error.message}`);
-    }
-  };
-
-  const formatOffset = (ms: number): string => {
-    const seconds = Math.abs(ms) / 1000;
-    const sign = ms >= 0 ? '+' : '-';
-
-    if (seconds < 1) {
-      return `${sign}${(seconds * 1000).toFixed(0)}ms`;
-    } else {
-      return `${sign}${seconds.toFixed(2)}s`;
-    }
-  };
-
-  return (
-    <div className="daytime-client">
-      <h2>Daytime Protocol Client</h2>
-
-      <div className="config">
-        <input
-          type="text"
-          placeholder="Daytime Server Host"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Port"
-          value={port}
-          onChange={(e) => setPort(Number(e.target.value))}
-        />
-        <button onClick={getTime}>Get Time</button>
-      </div>
-
-      {time && (
-        <div className="results">
-          <div className="time-display">
-            <h3>Remote Time</h3>
-            <div className="time">{time}</div>
-          </div>
-
-          <div className="time-display">
-            <h3>Local Time</h3>
-            <div className="time">{localTime}</div>
-          </div>
-
-          <div className="offset">
-            <h3>Time Difference</h3>
-            <div className={`offset-value ${offset === 0 ? 'synced' : 'diff'}`}>
-              {offset === 0 ? '✓ Synchronized' : formatOffset(offset)}
-            </div>
-            {offset !== 0 && (
-              <p className="note">
-                Your clock is {offset > 0 ? 'behind' : 'ahead'} by {formatOffset(offset)}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      <div className="public-servers">
-        <h3>Public Daytime Servers</h3>
-        <ul>
-          <li onClick={() => setHost('time.nist.gov')}>time.nist.gov (NIST)</li>
-          <li onClick={() => setHost('time-a.nist.gov')}>time-a.nist.gov (NIST A)</li>
-          <li onClick={() => setHost('time-b.nist.gov')}>time-b.nist.gov (NIST B)</li>
-        </ul>
-        <p className="warning">
-          ⚠️ Many public time servers have disabled port 13 (Daytime) in favor of NTP.
-        </p>
-      </div>
-
-      <div className="info">
-        <h3>About Daytime Protocol</h3>
-        <ul>
-          <li>Simplest network protocol (RFC 867, 1983)</li>
-          <li>Connect → Receive time → Disconnect</li>
-          <li>Human-readable format</li>
-          <li>No commands or authentication</li>
-          <li>Largely obsolete (replaced by NTP)</li>
-        </ul>
-      </div>
-    </div>
-  );
+```json
+{
+  "success": true,
+  "host": "time.nist.gov",
+  "port": 13,
+  "time": "60736 25-02-17 14:30:45 00 0 0 50.0 UTC(NIST) *",
+  "localTime": "2025-02-17T14:30:45.123Z",
+  "remoteTimestamp": 1739802645000,
+  "localTimestamp": 1739802645123,
+  "offsetMs": -73,
+  "rtt": 145
 }
 ```
 
-## Security
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | boolean | Whether the query succeeded |
+| `host` | string | The queried host |
+| `port` | number | The queried port |
+| `time` | string | Raw ASCII time string from the server |
+| `localTime` | string | Local time (ISO 8601) when response was received |
+| `remoteTimestamp` | number? | Parsed remote time as Unix epoch ms (if parseable) |
+| `localTimestamp` | number | Local Unix epoch ms when response was received |
+| `offsetMs` | number? | Clock offset in ms, adjusted for network delay (if parseable) |
+| `rtt` | number | Round-trip time in milliseconds |
 
-### No Security
+The `remoteTimestamp` and `offsetMs` fields are only populated when the server's response can be parsed by JavaScript's `Date()` constructor. Many Daytime servers (including NIST) use custom formats that cannot be automatically parsed, so these fields will be absent.
 
-Daytime protocol has **no security features**:
-- No authentication
-- No encryption
-- Plaintext transmission
-- Open to spoofing
+### Response (Error)
 
-**Do not use for critical time synchronization** - use NTP instead.
-
-### Firewall Considerations
-
-```bash
-# Many firewalls block port 13
-# Often disabled on modern servers
-# Consider it deprecated
+```json
+{
+  "success": false,
+  "host": "",
+  "port": 13,
+  "error": "Connection timeout"
+}
 ```
+
+### Clock Offset Calculation
+
+When the server's time string is parseable, the implementation estimates clock offset using:
+
+```
+networkDelay = (localTimeAfter - localTimeBefore) / 2
+offsetMs = remoteTimestamp - (localTimeBefore + networkDelay)
+```
+
+This is a simplified version of the NTP offset formula. For Daytime protocol, accuracy is limited to roughly +/- the RTT, since there is no way to know the actual one-way delay.
+
+## Implementation Details
+
+### Read Strategy
+
+The server is expected to send data and then close the connection. The implementation reads in a loop until:
+- The server closes the connection (`done` flag from readable stream)
+- The response exceeds 1000 bytes (safety limit; typical responses are under 100 bytes)
+- The connection timeout fires
+
+All received chunks are concatenated, decoded as UTF-8, and trimmed of whitespace.
+
+### Error Handling
+
+| Condition | Behavior |
+|-----------|----------|
+| Missing host | 400 Bad Request |
+| Invalid port (outside 1-65535) | 400 Bad Request |
+| Connection timeout | 500 with "Connection timeout" |
+| Server closes without sending data | 500 with "Server closed connection without sending time" |
+| Empty response after trimming | 500 with "Empty response from server" |
+
+### Defense Against Misbehaving Servers
+
+- **Size limit:** Response capped at 1000 bytes to prevent memory abuse from a rogue server.
+- **Timeout:** Configurable (default 10s) applied to both connection and read phases.
+- **No client-to-server data:** The implementation never writes to the socket, consistent with RFC 867.
 
 ## Testing
 
-### Netcat Test
+### Command-Line Testing
 
 ```bash
-# Test daytime server
+# Basic test with netcat
 nc time.nist.gov 13
 
-# Should output something like:
-# 60336 24-01-15 22:30:45 50 0 0 895.5 UTC(NIST) *
+# With timeout (5 seconds)
+nc -w 5 time.nist.gov 13
+
+# Test via the API
+curl -X POST https://your-worker.dev/api/daytime/get \
+  -H 'Content-Type: application/json' \
+  -d '{"host": "time.nist.gov"}'
+
+# Test with custom port
+curl -X POST https://your-worker.dev/api/daytime/get \
+  -H 'Content-Type: application/json' \
+  -d '{"host": "time.nist.gov", "port": 13, "timeout": 5000}'
 ```
 
-### Simple Server
+### Local Test Server
 
 ```bash
-# Create a simple daytime server with netcat
-while true; do
-  echo $(date) | nc -l 13
-done
+# Simple Daytime server using netcat (single connection)
+while true; do echo "$(date)" | nc -l 13; done
+
+# Python Daytime server (multi-connection)
+python3 -c "
+import socket, time
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('0.0.0.0', 13))
+s.listen(1)
+print('Daytime server on port 13')
+while True:
+    conn, addr = s.accept()
+    conn.send((time.strftime('%A, %B %d, %Y %H:%M:%S-%Z') + '\r\n').encode())
+    conn.close()
+"
+
+# Docker test server
+docker run -d -p 13:13 --name daytime \
+  alpine sh -c 'while true; do echo "$(date)" | nc -l -p 13; done'
 ```
 
-### Docker Test Server
+### Verifying RFC Compliance
+
+To verify a Daytime server is RFC 867 compliant:
+
+1. Connect to port 13 via TCP. Send nothing.
+2. Receive an ASCII string. It should be human-readable date/time.
+3. The server should close the connection after sending.
+4. Any data you send should be ignored (or never read).
 
 ```bash
-# Simple daytime server
-docker run -d \
-  -p 13:13 \
-  --name daytime \
-  alpine sh -c "while true; do echo \$(date) | nc -l -p 13; done"
-
-# Test
-nc localhost 13
+# Verify server sends data unprompted and closes
+echo "" | nc -w 5 time.nist.gov 13
 ```
 
-## Resources
+## Public Daytime Servers
 
-- **RFC 867**: [Daytime Protocol](https://tools.ietf.org/html/rfc867)
-- **NIST Time Servers**: [time.nist.gov](https://www.nist.gov/pml/time-and-frequency-division/time-distribution/internet-time-service-its)
-- **Alternative**: Use [NTP](https://en.wikipedia.org/wiki/Network_Time_Protocol) for accurate time synchronization
+Most Daytime servers have been decommissioned. The NIST servers are among the few still running:
+
+| Host | Operator | Notes |
+|------|----------|-------|
+| `time.nist.gov` | NIST | Round-robin to NIST time servers |
+| `time-a-g.nist.gov` | NIST | Individual servers (a through g) |
+| `time-a-wwv.nist.gov` | NIST (WWV) | Colorado facility |
+| `time-b-wwv.nist.gov` | NIST (WWV) | Colorado facility |
+| `time-a-b.nist.gov` | NIST (Boulder) | Boulder facility |
+
+Port 13 is frequently blocked by corporate firewalls and ISPs. If connections fail, this is the most likely cause.
+
+## Security Considerations
+
+The Daytime protocol has **no security features whatsoever**:
+
+- No authentication
+- No encryption
+- No integrity verification
+- Susceptible to spoofing and man-in-the-middle attacks
+- A rogue server can return any string
+
+**Never rely on Daytime for security-sensitive time synchronization.** Use NTP with authentication, or better yet, NTS (Network Time Security, RFC 8915).
 
 ## Comparison with Other Time Protocols
 
-| Protocol | Port | Accuracy | Complexity | Status |
-|----------|------|----------|------------|--------|
-| Daytime | 13 | Seconds | Trivial | Obsolete |
-| Time | 37 | Seconds | Very Low | Obsolete |
-| NTP | 123 | Microseconds | Medium | Active |
-| PTP | - | Nanoseconds | High | Active |
+| Protocol | Port | Format | Precision | Auth | Status |
+|----------|------|--------|-----------|------|--------|
+| **Daytime** | **13** | **ASCII text** | **~seconds** | **None** | **Obsolete** |
+| Time (RFC 868) | 37 | 32-bit binary | ~seconds | None | Obsolete |
+| NTP (RFC 5905) | 123 | 64-bit binary | microseconds | Symmetric key | Active |
+| NTS (RFC 8915) | 4460 | NTP + TLS | microseconds | TLS/AEAD | Active |
+| PTP (IEEE 1588) | 319/320 | Binary | nanoseconds | Optional | Active |
 
-## Example Daytime Responses
+## Historical Context
 
-### NIST Format
-```
-60336 24-01-15 22:30:45 50 0 0 895.5 UTC(NIST) *
-```
+RFC 867 was published in May 1983 by Jon Postel. It is part of a family of "simple services" defined in the early 1980s:
 
-### Standard Format
-```
-Sunday, January 15, 2024 14:30:45-PST
-```
+| RFC | Protocol | Port | Purpose |
+|-----|----------|------|---------|
+| RFC 862 | Echo | 7 | Echo back received data |
+| RFC 863 | Discard | 9 | Discard all received data |
+| RFC 864 | Chargen | 19 | Generate character stream |
+| RFC 865 | QOTD | 17 | Quote of the Day |
+| **RFC 867** | **Daytime** | **13** | **Human-readable time** |
+| RFC 868 | Time | 37 | Binary time value |
 
-### Simple Format
-```
-2024-01-15 14:30:45
-```
-
-### Unix date Format
-```
-Sun Jan 15 14:30:45 PST 2024
-```
-
-## Notes
-
-- **Simplest possible** network protocol
-- **No standardized format** - each server differs
-- **Superseded by NTP** for accurate time synchronization
-- **Educational value** - perfect for learning TCP/IP
-- **Port 13** often filtered by firewalls
-- **No bidirectional** communication needed
-- One of the **original Internet protocols** (1983)
-- Both **TCP and UDP** versions exist
-- Server **closes connection immediately** after sending time
+These protocols were designed as building blocks for testing and as minimal examples of TCP and UDP usage. Today they serve primarily educational purposes.

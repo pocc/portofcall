@@ -58,14 +58,22 @@ async function readLine(
   const chunks: Uint8Array[] = [];
   let total = 0;
 
-  while (total < maxBytes) {
+  while (true) {
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done || !value) break;
-    chunks.push(value);
-    total += value.length;
+
+    // Prevent buffer overflow
+    const available = maxBytes - total;
+    if (available <= 0) break;
+
+    const chunk = value.length > available ? value.slice(0, available) : value;
+    chunks.push(chunk);
+    total += chunk.length;
 
     // Check for \n terminator
-    if (value.includes(0x0A)) break;
+    if (chunk.includes(0x0A)) break;
+
+    if (total >= maxBytes) break;
   }
 
   const combined = new Uint8Array(total);
@@ -126,13 +134,15 @@ async function tryStartMode(
 
 /**
  * Parse Sonic INFO response lines into key-value pairs
- * Format: "key(value) key(value) ..."
+ * Format: "RESULT key(value) key(value) ..."
  */
 function parseInfoLine(line: string): Record<string, string> {
+  // Strip RESULT prefix if present
+  const content = line.startsWith('RESULT ') ? line.substring(7) : line;
   const result: Record<string, string> = {};
   const regex = /(\w[\w.]+)\(([^)]*)\)/g;
   let match;
-  while ((match = regex.exec(line)) !== null) {
+  while ((match = regex.exec(content)) !== null) {
     result[match[1]] = match[2];
   }
   return result;
@@ -143,6 +153,7 @@ function parseInfoLine(line: string): Record<string, string> {
  * POST /api/sonic/probe
  */
 export async function handleSonicProbe(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as SonicRequest;
     const { host, port = 1491, timeout = 10000, password } = body;
@@ -161,6 +172,16 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 60000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 60000 ms',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -188,9 +209,9 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout')), timeout)
-      );
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      });
 
       try {
         // Step 1: Read the CONNECTED banner
@@ -209,10 +230,12 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
         let protocol: number | undefined;
         let bufferSize: number | undefined;
         let stats: Record<string, string> | undefined;
+        const modes = { search: false, ingest: false, control: false };
 
         if (controlResult) {
           protocol = controlResult.protocol;
           bufferSize = controlResult.bufferSize;
+          modes.control = true;
 
           // Step 3: Get server info via INFO command
           const infoResponse = await sendCommand(writer, reader, timeoutPromise, 'INFO');
@@ -226,8 +249,57 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
             // Not critical, just note it
           }
 
-          // Step 5: Clean quit
-          await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+          // Step 5: Clean quit and validate response
+          const quitResponse = await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+          if (!quitResponse.startsWith('ENDED')) {
+            // Non-critical protocol violation
+          }
+        }
+
+        // Step 6: Reconnect to test search mode
+        try {
+          const searchSocket = connect(`${host}:${port}`);
+          await searchSocket.opened;
+          const searchReader = searchSocket.readable.getReader();
+          const searchWriter = searchSocket.writable.getWriter();
+          try {
+            await readLine(searchReader, timeoutPromise);
+            const searchResult = await tryStartMode(searchWriter, searchReader, timeoutPromise, 'search', password);
+            if (searchResult) modes.search = true;
+            await sendCommand(searchWriter, searchReader, timeoutPromise, 'QUIT');
+            searchWriter.releaseLock();
+            searchReader.releaseLock();
+            searchSocket.close();
+          } catch {
+            try { searchWriter.releaseLock(); } catch {}
+            try { searchReader.releaseLock(); } catch {}
+            try { searchSocket.close(); } catch {}
+          }
+        } catch {
+          // Search mode test failed, not critical
+        }
+
+        // Step 7: Reconnect to test ingest mode
+        try {
+          const ingestSocket = connect(`${host}:${port}`);
+          await ingestSocket.opened;
+          const ingestReader = ingestSocket.readable.getReader();
+          const ingestWriter = ingestSocket.writable.getWriter();
+          try {
+            await readLine(ingestReader, timeoutPromise);
+            const ingestResult = await tryStartMode(ingestWriter, ingestReader, timeoutPromise, 'ingest', password);
+            if (ingestResult) modes.ingest = true;
+            await sendCommand(ingestWriter, ingestReader, timeoutPromise, 'QUIT');
+            ingestWriter.releaseLock();
+            ingestReader.releaseLock();
+            ingestSocket.close();
+          } catch {
+            try { ingestWriter.releaseLock(); } catch {}
+            try { ingestReader.releaseLock(); } catch {}
+            try { ingestSocket.close(); } catch {}
+          }
+        } catch {
+          // Ingest mode test failed, not critical
         }
 
         writer.releaseLock();
@@ -242,29 +314,29 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
           instanceId,
           protocol,
           bufferSize,
+          modes,
           stats,
         };
 
         return result;
 
       } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { socket.close(); } catch {}
         throw error;
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     })();
 
-    const globalTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
-    const result = await Promise.race([connectionPromise, globalTimeout]);
+    const result = await connectionPromise;
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -276,22 +348,81 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
 }
 
 /**
+ * Escape text for Sonic protocol (backslashes then quotes)
+ */
+function escapeSonicText(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
+ * Validate Sonic identifier (collection, bucket, objectId)
+ */
+function validateSonicIdentifier(value: string, name: string): string | null {
+  if (!/^[a-zA-Z0-9_-]+$/.test(value)) {
+    return `${name} must contain only alphanumeric, underscore, or hyphen characters`;
+  }
+  if (value.length > 64) {
+    return `${name} must be 64 characters or less`;
+  }
+  return null;
+}
+
+/**
  * Run a search query against a Sonic collection
  * POST /api/sonic/query
  */
 export async function handleSonicQuery(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; timeout?: number;
       collection: string; bucket: string; terms: string; limit?: number;
     };
     const { host, port = 1491, password, timeout = 10000, collection, bucket, terms, limit = 10 } = body;
+
     if (!host || !collection || !bucket || !terms) {
       return new Response(JSON.stringify({ success: false, error: 'host, collection, bucket, and terms are required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (timeout < 1 || timeout > 60000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 1 and 60000 ms' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const collectionErr = validateSonicIdentifier(collection, 'collection');
+    if (collectionErr) {
+      return new Response(JSON.stringify({ success: false, error: collectionErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const bucketErr = validateSonicIdentifier(bucket, 'bucket');
+    if (bucketErr) {
+      return new Response(JSON.stringify({ success: false, error: bucketErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Timeout')), timeout);
+    });
     await Promise.race([socket.opened, timeoutPromise]);
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -303,7 +434,7 @@ export async function handleSonicQuery(request: Request): Promise<Response> {
       const started = await sendCommand(writer, reader, timeoutPromise, startCmd);
       if (!started.startsWith('STARTED')) throw new Error(`Failed to start search mode: ${started}`);
       // QUERY
-      const queryCmd = `QUERY ${collection} ${bucket} "${terms.replace(/"/g, '\\"')}" LIMIT(${limit})`;
+      const queryCmd = `QUERY ${collection} ${bucket} "${escapeSonicText(terms)}" LIMIT(${limit})`;
       const pendingLine = await sendCommand(writer, reader, timeoutPromise, queryCmd);
       let results: string[] = [];
       if (pendingLine.startsWith('PENDING')) {
@@ -311,13 +442,28 @@ export async function handleSonicQuery(request: Request): Promise<Response> {
         const eventLine = await readLine(reader, timeoutPromise);
         const eventMatch = eventLine.match(/^EVENT QUERY \S+ (.+)$/);
         if (eventMatch) results = eventMatch[1].trim().split(' ').filter(Boolean);
+      } else if (pendingLine.startsWith('ERR')) {
+        throw new Error(pendingLine.substring(4));
       }
-      await sendCommand(writer, reader, timeoutPromise, 'QUIT');
-      writer.releaseLock(); reader.releaseLock(); socket.close();
+      const quitResponse = await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+      if (!quitResponse.startsWith('ENDED')) {
+        // Non-critical protocol violation
+      }
+      try { writer.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
       return new Response(JSON.stringify({ success: true, host, port, collection, bucket, terms, results, count: results.length }),
         { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+    } catch (e) {
+      try { writer.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
+      throw e;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
       { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
@@ -328,18 +474,63 @@ export async function handleSonicQuery(request: Request): Promise<Response> {
  * POST /api/sonic/push
  */
 export async function handleSonicPush(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; timeout?: number;
       collection: string; bucket: string; objectId: string; text: string;
     };
     const { host, port = 1491, password, timeout = 10000, collection, bucket, objectId, text } = body;
+
     if (!host || !collection || !bucket || !objectId || !text) {
       return new Response(JSON.stringify({ success: false, error: 'host, collection, bucket, objectId, and text are required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (timeout < 1 || timeout > 60000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 1 and 60000 ms' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const collectionErr = validateSonicIdentifier(collection, 'collection');
+    if (collectionErr) {
+      return new Response(JSON.stringify({ success: false, error: collectionErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const bucketErr = validateSonicIdentifier(bucket, 'bucket');
+    if (bucketErr) {
+      return new Response(JSON.stringify({ success: false, error: bucketErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const objectIdErr = validateSonicIdentifier(objectId, 'objectId');
+    if (objectIdErr) {
+      return new Response(JSON.stringify({ success: false, error: objectIdErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Timeout')), timeout);
+    });
     await Promise.race([socket.opened, timeoutPromise]);
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -348,15 +539,28 @@ export async function handleSonicPush(request: Request): Promise<Response> {
       const startCmd = password ? `START ingest ${password}` : 'START ingest';
       const started = await sendCommand(writer, reader, timeoutPromise, startCmd);
       if (!started.startsWith('STARTED')) throw new Error(`Failed to start ingest mode: ${started}`);
-      const pushCmd = `PUSH ${collection} ${bucket} ${objectId} "${text.replace(/"/g, '\\"')}"`;
+      const pushCmd = `PUSH ${collection} ${bucket} ${objectId} "${escapeSonicText(text)}"`;
       const pushResp = await sendCommand(writer, reader, timeoutPromise, pushCmd);
       const ok = pushResp === 'OK';
-      await sendCommand(writer, reader, timeoutPromise, 'QUIT');
-      writer.releaseLock(); reader.releaseLock(); socket.close();
+      const quitResponse = await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+      if (!quitResponse.startsWith('ENDED')) {
+        // Non-critical protocol violation
+      }
+      try { writer.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
       return new Response(JSON.stringify({ success: ok, host, port, collection, bucket, objectId, response: pushResp }),
         { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+    } catch (e) {
+      try { writer.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
+      throw e;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
       { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
@@ -367,18 +571,57 @@ export async function handleSonicPush(request: Request): Promise<Response> {
  * POST /api/sonic/suggest
  */
 export async function handleSonicSuggest(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; timeout?: number;
       collection: string; bucket: string; word: string; limit?: number;
     };
     const { host, port = 1491, password, timeout = 10000, collection, bucket, word, limit = 5 } = body;
+
     if (!host || !collection || !bucket || !word) {
       return new Response(JSON.stringify({ success: false, error: 'host, collection, bucket, and word are required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (timeout < 1 || timeout > 60000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 1 and 60000 ms' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const collectionErr = validateSonicIdentifier(collection, 'collection');
+    if (collectionErr) {
+      return new Response(JSON.stringify({ success: false, error: collectionErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const bucketErr = validateSonicIdentifier(bucket, 'bucket');
+    if (bucketErr) {
+      return new Response(JSON.stringify({ success: false, error: bucketErr }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Timeout')), timeout);
+    });
     await Promise.race([socket.opened, timeoutPromise]);
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -387,20 +630,35 @@ export async function handleSonicSuggest(request: Request): Promise<Response> {
       const startCmd = password ? `START search ${password}` : 'START search';
       const started = await sendCommand(writer, reader, timeoutPromise, startCmd);
       if (!started.startsWith('STARTED')) throw new Error(`Failed to start search mode: ${started}`);
-      const suggestCmd = `SUGGEST ${collection} ${bucket} "${word.replace(/"/g, '\\"')}" LIMIT(${limit})`;
+      const suggestCmd = `SUGGEST ${collection} ${bucket} "${escapeSonicText(word)}" LIMIT(${limit})`;
       const pendingLine = await sendCommand(writer, reader, timeoutPromise, suggestCmd);
       let suggestions: string[] = [];
       if (pendingLine.startsWith('PENDING')) {
         const eventLine = await readLine(reader, timeoutPromise);
         const eventMatch = eventLine.match(/^EVENT SUGGEST \S+ (.+)$/);
         if (eventMatch) suggestions = eventMatch[1].trim().split(' ').filter(Boolean);
+      } else if (pendingLine.startsWith('ERR')) {
+        throw new Error(pendingLine.substring(4));
       }
-      await sendCommand(writer, reader, timeoutPromise, 'QUIT');
-      writer.releaseLock(); reader.releaseLock(); socket.close();
+      const quitResponse = await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+      if (!quitResponse.startsWith('ENDED')) {
+        // Non-critical protocol violation
+      }
+      try { writer.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
       return new Response(JSON.stringify({ success: true, host, port, collection, bucket, word, suggestions }),
         { headers: { 'Content-Type': 'application/json' } });
-    } catch (e) { writer.releaseLock(); reader.releaseLock(); socket.close(); throw e; }
+    } catch (e) {
+      try { writer.releaseLock(); } catch {}
+      try { reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
+      throw e;
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }),
       { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
@@ -411,6 +669,7 @@ export async function handleSonicSuggest(request: Request): Promise<Response> {
  * POST /api/sonic/ping
  */
 export async function handleSonicPing(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as SonicRequest;
     const { host, port = 1491, timeout = 10000, password } = body;
@@ -429,6 +688,16 @@ export async function handleSonicPing(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 60000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 60000 ms',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -456,9 +725,9 @@ export async function handleSonicPing(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout')), timeout)
-      );
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      });
 
       try {
         // Read CONNECTED banner
@@ -478,11 +747,14 @@ export async function handleSonicPing(request: Request): Promise<Response> {
         const alive = pingResponse === 'PONG';
 
         // Clean quit
-        await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+        const quitResponse = await sendCommand(writer, reader, timeoutPromise, 'QUIT');
+        if (!quitResponse.startsWith('ENDED')) {
+          // Non-critical protocol violation
+        }
 
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { socket.close(); } catch {}
 
         return {
           success: true,
@@ -494,23 +766,22 @@ export async function handleSonicPing(request: Request): Promise<Response> {
         };
 
       } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { socket.close(); } catch {}
         throw error;
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     })();
 
-    const globalTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
-    const result = await Promise.race([connectionPromise, globalTimeout]);
+    const result = await connectionPromise;
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { FormField, ActionButton, HelpSection } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface POP3ClientProps {
   onBack: () => void;
@@ -204,6 +206,8 @@ export default function POP3Client({ onBack }: POP3ClientProps) {
           </div>
         )}
       </div>
+
+      <ApiExamples examples={apiExamples.POP3 || []} />
 
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection Panel */}

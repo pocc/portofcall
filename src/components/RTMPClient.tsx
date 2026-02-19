@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface RTMPClientProps {
   onBack: () => void;
@@ -93,6 +95,7 @@ export default function RTMPClient({ onBack }: RTMPClientProps) {
 
   return (
     <ProtocolClientLayout title="RTMP Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.RTMP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="RTMP Server Configuration" />
 

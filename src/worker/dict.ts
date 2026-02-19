@@ -14,16 +14,26 @@
  * 6. Client sends QUIT
  *
  * Response Codes:
- * - 150: n definitions retrieved
- * - 151: definition follows (word db "desc")
- * - 152: n matches found
- * - 220: banner/greeting
- * - 221: closing connection
+ * - 110: n databases present (SHOW DB)
+ * - 111: n strategies available (SHOW STRAT)
+ * - 150: n definitions retrieved (DEFINE)
+ * - 151: definition follows — word db "desc" (DEFINE)
+ * - 152: n matches found (MATCH)
+ * - 210: (optional) — timing/stat info after command
+ * - 220: banner/greeting (connect)
+ * - 221: closing connection (QUIT)
  * - 250: ok (command completed)
+ * - 330: SASL challenge follows
+ * - 420: server temporarily unavailable
+ * - 421: server shutting down
+ * - 530: access denied
+ * - 531: access denied — auth required
+ * - 532: access denied — auth mechanism rejected
  * - 550: invalid database
  * - 551: invalid strategy
  * - 552: no match
  * - 554: no databases present
+ * - 555: no strategies available
  *
  * Use Cases:
  * - Word definition lookup
@@ -98,13 +108,27 @@ const DEFAULT_PORT = 2628;
 const MAX_RESPONSE_SIZE = 500000; // 500KB
 
 /**
- * Send a command and read the full response until a terminal status line
+ * Tracks leftover bytes from TCP reads that arrived in the same chunk as
+ * a previous logical message.  Shared across reads within a single session
+ * so that data is never silently dropped.
+ */
+interface ReadBuffer {
+  leftover: Uint8Array | null;
+}
+
+/**
+ * Send a command and read the full response until a terminal status line.
+ *
+ * Terminal status codes are 2xx, 3xx, 4xx, and 5xx — but NOT the
+ * intermediate 1xx codes (110, 111, 150, 151, 152) which precede
+ * dot-terminated text bodies.
  */
 async function sendCommand(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   reader: ReadableStreamDefaultReader<Uint8Array>,
   command: string,
-  timeoutMs: number
+  timeoutMs: number,
+  buf: ReadBuffer
 ): Promise<string> {
   const encoder = new TextEncoder();
   await writer.write(encoder.encode(`${command}\r\n`));
@@ -113,9 +137,42 @@ async function sendCommand(
   let totalBytes = 0;
   let fullText = '';
 
+  // Prepend any leftover bytes from a previous read
+  if (buf.leftover) {
+    chunks.push(buf.leftover);
+    totalBytes += buf.leftover.length;
+    buf.leftover = null;
+  }
+
   const deadline = Date.now() + timeoutMs;
 
   while (true) {
+    // Check what we already have before blocking on a read
+    if (totalBytes > 0) {
+      const combined = new Uint8Array(totalBytes);
+      let off = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, off);
+        off += chunk.length;
+      }
+      fullText = new TextDecoder().decode(combined);
+
+      // Check if we have a terminal status code line at the end
+      // Status codes: 2xx (positive completion), 3xx (positive intermediate
+      // for AUTH), 4xx (transient negative), 5xx (permanent negative).
+      // 1xx codes (110, 111, 150, 151, 152) are informational/intermediate
+      // and precede text bodies — they are NOT terminal.
+      const lines = fullText.split('\r\n');
+      const lastNonEmpty = lines.filter(l => l.length > 0).pop() || '';
+
+      if (/^[2345]\d\d /.test(lastNonEmpty)) {
+        const code = parseInt(lastNonEmpty.substring(0, 3));
+        if (code >= 200) {
+          break;
+        }
+      }
+    }
+
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('Command timeout');
 
@@ -137,32 +194,25 @@ async function sendCommand(
       if (totalBytes > MAX_RESPONSE_SIZE) {
         throw new Error('Response too large');
       }
-
-      // Decode what we have so far to check for terminal status
-      const combined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-      fullText = new TextDecoder().decode(combined);
-
-      // Check if we have a terminal status code line at the end
-      // Status codes: 2xx (positive), 4xx/5xx (error)
-      const lines = fullText.split('\r\n');
-      const lastNonEmpty = lines.filter(l => l.length > 0).pop() || '';
-
-      if (/^[2345]\d\d /.test(lastNonEmpty)) {
-        // Check if this is a final status (not 150/151/152 which are intermediate)
-        const code = parseInt(lastNonEmpty.substring(0, 3));
-        if (code >= 200 && code !== 150 && code !== 151 && code !== 152) {
-          break;
-        }
-      }
     }
   }
 
   return fullText;
+}
+
+/**
+ * Reverse dot-stuffing per RFC 2229 Section 2.4.1.
+ *
+ * The DICT protocol uses "dot-stuffing" in text responses: any line that
+ * naturally begins with a period has an extra period prepended by the server.
+ * The client must strip that leading period when reading.  A lone "." on a
+ * line signals end-of-text and is handled separately by callers.
+ */
+function dotUnstuff(line: string): string {
+  if (line.startsWith('..')) {
+    return line.substring(1);
+  }
+  return line;
 }
 
 /**
@@ -201,7 +251,8 @@ function parseDefinitions(response: string): DictDefinition[] {
           i++;
           break;
         }
-        textLines.push(lines[i]);
+        // Reverse dot-stuffing (RFC 2229 Section 2.4.1)
+        textLines.push(dotUnstuff(lines[i]));
         i++;
       }
 
@@ -234,17 +285,20 @@ function parseMatches(response: string): { database: string; word: string }[] {
   const lines = response.split('\r\n');
 
   let inResults = false;
-  for (const line of lines) {
-    if (line.startsWith('152 ')) {
+  for (const rawLine of lines) {
+    if (rawLine.startsWith('152 ')) {
       inResults = true;
       continue;
     }
 
     if (inResults) {
-      if (line === '.') {
+      if (rawLine === '.') {
         inResults = false;
         continue;
       }
+
+      // Reverse dot-stuffing (RFC 2229 Section 2.4.1)
+      const line = dotUnstuff(rawLine);
 
       // Parse: dbname "word" or dbname word
       const matchLine = line.match(/^(\S+)\s+"([^"]+)"/) ||
@@ -275,17 +329,20 @@ function parseDatabases(response: string): { name: string; description: string }
   const lines = response.split('\r\n');
 
   let inResults = false;
-  for (const line of lines) {
-    if (line.startsWith('110 ') || line.startsWith('111 ')) {
+  for (const rawLine of lines) {
+    if (rawLine.startsWith('110 ') || rawLine.startsWith('111 ')) {
       inResults = true;
       continue;
     }
 
     if (inResults) {
-      if (line === '.') {
+      if (rawLine === '.') {
         inResults = false;
         continue;
       }
+
+      // Reverse dot-stuffing (RFC 2229 Section 2.4.1)
+      const line = dotUnstuff(rawLine);
 
       const matchLine = line.match(/^(\S+)\s+"([^"]*)"/) ||
                          line.match(/^(\S+)\s+(.*)/);
@@ -322,10 +379,14 @@ async function dictSession(
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
+    // Shared buffer for leftover bytes between reads
+    const buf: ReadBuffer = { leftover: null };
+
     // Read server banner (220 greeting)
     let banner = '';
     const bannerDeadline = Date.now() + timeout;
-    let bannerText = '';
+    const bannerChunks: Uint8Array[] = [];
+    let bannerBytes = 0;
 
     while (true) {
       const remaining = bannerDeadline - Date.now();
@@ -343,11 +404,28 @@ async function dictSession(
       if (done) throw new Error('Connection closed before banner');
 
       if (value) {
-        bannerText += new TextDecoder().decode(value);
+        bannerChunks.push(value);
+        bannerBytes += value.length;
+
+        // Combine chunks and check for the first complete line
+        const combined = new Uint8Array(bannerBytes);
+        let off = 0;
+        for (const chunk of bannerChunks) {
+          combined.set(chunk, off);
+          off += chunk.length;
+        }
+        const bannerText = new TextDecoder().decode(combined);
+
         if (bannerText.includes('\r\n')) {
-          const firstLine = bannerText.split('\r\n')[0];
+          const crlfIdx = bannerText.indexOf('\r\n');
+          const firstLine = bannerText.substring(0, crlfIdx);
           if (firstLine.startsWith('220 ')) {
             banner = firstLine;
+            // Preserve any bytes received after the banner line
+            const consumed = new TextEncoder().encode(firstLine + '\r\n').length;
+            if (consumed < bannerBytes) {
+              buf.leftover = combined.slice(consumed);
+            }
             break;
           } else {
             throw new Error(`Unexpected server response: ${firstLine.substring(0, 100)}`);
@@ -356,11 +434,11 @@ async function dictSession(
       }
     }
 
-    // Send CLIENT identification
-    await sendCommand(writer, reader, 'CLIENT "Port of Call DICT Client"', timeout);
+    // Send CLIENT identification (RFC 2229 Section 3.1: CLIENT text — no quotes)
+    await sendCommand(writer, reader, 'CLIENT Port of Call DICT Client', timeout, buf);
 
     // Send the actual command
-    const response = await sendCommand(writer, reader, command, timeout);
+    const response = await sendCommand(writer, reader, command, timeout, buf);
 
     // Send QUIT (fire and forget)
     const encoder = new TextEncoder();
@@ -525,7 +603,7 @@ export async function handleDictMatch(request: Request): Promise<Response> {
       port = DEFAULT_PORT,
       word,
       database = '*',
-      strategy = 'prefix',
+      strategy = '.',
       timeout = 15000,
     } = body;
 

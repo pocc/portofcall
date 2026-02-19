@@ -315,12 +315,16 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
         }
 
         // Send email content
+        // RFC 5321 §4.5.2: Dot-stuff the body — any line starting with "."
+        // must have an extra "." prepended to avoid being interpreted as the
+        // end-of-data marker (".\r\n").
+        const dotStuffedBody = options.body!.replace(/^\./gm, '..');
         const emailContent = [
           `From: ${options.from}`,
           `To: ${options.to}`,
           `Subject: ${options.subject}`,
           '',
-          options.body,
+          dotStuffedBody,
           '.',
         ].join('\r\n');
 

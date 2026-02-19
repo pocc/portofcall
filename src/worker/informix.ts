@@ -1,27 +1,53 @@
 /**
  * Informix Protocol Implementation
  *
- * IBM Informix Dynamic Server (IDS) uses the SQLI (SQL Interface) wire protocol.
- * This is a binary protocol with a 4-byte length-prefixed message format.
+ * IBM Informix Dynamic Server (IDS) uses the SQLI (SQL Interface) wire protocol
+ * for client-server communication.  SQLI is a proprietary binary protocol that
+ * predates DRDA; modern Informix also supports DRDA on a separate port, but
+ * native clients (dbaccess, ESQL/C, Informix JDBC type-4) speak SQLI.
  *
- * Connection Flow:
- * 1. Client → Server: SQLI connect packet (with username, database, client info)
- * 2. Server → Client: Server banner (version, capabilities)
- * 3. Client → Server: Authentication credentials
- * 4. Server → Client: Authentication result (accept/reject)
- * 5. Client → Server: SQL query
- * 6. Server → Client: Result set rows
+ * Wire format:
+ *   Every SQLI message is framed as:
+ *     [4 bytes: payload length, big-endian][payload]
+ *   The first message from the client is a connection string — a sequence of
+ *   null-terminated key=value pairs identifying the client, user, database,
+ *   protocol version, etc.
  *
- * Common Ports:
- * - 1526: sqlexec service (default)
- * - 9088: onsoctcp service
- * - 9090: alternative service
+ * Connection Flow (SQLI over onsoctcp):
+ *   1. TCP connect to the onsoctcp listener (default port 9088)
+ *   2. Client -> Server: connection parameters (null-delimited key-value pairs)
+ *      wrapped in a 4-byte length-prefixed frame
+ *   3. Server -> Client: server identification / challenge
+ *   4. Client -> Server: authentication response (password or challenge-response)
+ *   5. Server -> Client: authentication result (SQ_EOT on success, SQ_ERR on failure)
+ *   6. Client -> Server: SQ_PREPARE / SQ_EXECUTE / SQ_COMMAND / etc.
+ *   7. Server -> Client: SQ_DESCRIBE, row data, SQ_EOT
+ *
+ * Well-known Ports:
+ *   - 9088: onsoctcp  — standard TCP listener (SQLI protocol)
+ *   - 9089: onsoctcp_ssl — TLS-wrapped SQLI
+ *   - 1526: sqlexec   — legacy listener (Informix < 7.x, rarely used today)
+ *
+ * SQ_PROTOCOLS Negotiation:
+ *   During the initial handshake the client advertises its supported SQLI
+ *   protocol version (e.g. "SQLI 7.31") and the server responds with the
+ *   version it will use.  The protocol version controls available message
+ *   types, data-type encodings, and features like scrollable cursors.
+ *
+ * Note: This implementation is a *probe*-level client.  It constructs a
+ * connection packet that is close enough to trigger an Informix server response,
+ * then fingerprints the reply.  It does not implement the full SQLI state machine
+ * required for robust query execution — use DRDA (drda.ts) or a proper JDBC/ODBC
+ * driver for production workloads.
  */
 
 import { connect } from 'cloudflare:sockets';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+/** Default port for Informix onsoctcp (SQLI) listener */
+const INFORMIX_DEFAULT_PORT = 9088;
 
 interface InformixRequest {
   host: string;
@@ -46,29 +72,91 @@ interface InformixResponse {
 }
 
 /**
- * Build an Informix SQLI connect packet.
+ * Build an Informix SQLI connection packet.
  *
- * Structure (simplified SQLI connect):
- *   [2 bytes: packet length BE][1 byte: type=0x01][username\0][database\0][client\0]
+ * The SQLI handshake begins with a length-prefixed block of null-terminated
+ * key-value fields.  The server uses these to identify the client, locate the
+ * requested database, and determine the protocol level.
+ *
+ * Observed field order (from JDBC driver traces and Wireshark captures):
+ *   "ol_<servername>\0"      — service name hint (can be blank)
+ *   "<username>\0"           — OS/database user
+ *   "<password_placeholder>\0" — placeholder (actual auth is a later exchange)
+ *   "<database>\0"           — database name (e.g. "sysmaster")
+ *   "SQLI\0"                 — protocol identifier
+ *   "7.31\0"                 — protocol version (client-advertised)
+ *   "<client_app>\0"         — client application name
+ *
+ * The entire payload is prefixed by a 4-byte big-endian length (of just the
+ * payload, not including the 4-byte length field itself).
  */
 function buildSQLIConnect(username: string, database: string): Uint8Array {
-  const userBytes = enc.encode(username + '\0');
-  const dbBytes   = enc.encode(database + '\0');
-  const appBytes  = enc.encode('portofcall\0');
-  // Informix SQLI header: type=0x01 (connect), followed by null-terminated fields
-  const header = new Uint8Array([0x00, 0x01]); // type field
+  // Build null-terminated fields in the order Informix expects
+  const fields = [
+    'ol_portofcall',   // service name hint (arbitrary; server ignores if unknown)
+    username,          // user
+    '',                // password placeholder (empty for initial connect)
+    database,          // database to open
+    'SQLI',            // protocol identifier
+    '7.31',            // advertised SQLI protocol version
+    'portofcall',      // client application name
+  ];
 
-  const payloadLen = header.length + userBytes.length + dbBytes.length + appBytes.length;
-  // Packet: [uint16BE length][payload]
-  const pkt = new Uint8Array(2 + payloadLen);
-  const dv  = new DataView(pkt.buffer);
-  dv.setUint16(0, payloadLen, false); // big-endian length
+  // Each field is null-terminated
+  const fieldBytes = fields.map(f => enc.encode(f + '\0'));
+  const payloadLen = fieldBytes.reduce((sum, b) => sum + b.length, 0);
 
-  let off = 2;
-  pkt.set(header,   off); off += header.length;
-  pkt.set(userBytes, off); off += userBytes.length;
-  pkt.set(dbBytes,  off); off += dbBytes.length;
-  pkt.set(appBytes, off);
+  // Frame: [uint32BE payload length][payload]
+  const pkt = new Uint8Array(4 + payloadLen);
+  const dv = new DataView(pkt.buffer);
+  dv.setUint32(0, payloadLen, false); // big-endian 4-byte length
+
+  let off = 4;
+  for (const fb of fieldBytes) {
+    pkt.set(fb, off);
+    off += fb.length;
+  }
+  return pkt;
+}
+
+/**
+ * Build an SQLI authentication packet.
+ *
+ * After the server responds to the connection string, the client sends the
+ * actual password in a 4-byte length-prefixed frame.  For native (non-PAM,
+ * non-challenge-response) auth this is simply the cleartext password followed
+ * by a null terminator.
+ */
+function buildSQLIAuthPacket(password: string): Uint8Array {
+  const pwBytes = enc.encode(password + '\0');
+  const pkt = new Uint8Array(4 + pwBytes.length);
+  const dv = new DataView(pkt.buffer);
+  dv.setUint32(0, pwBytes.length, false);
+  pkt.set(pwBytes, 4);
+  return pkt;
+}
+
+/**
+ * Build an SQLI command packet.
+ *
+ * SQLI command messages (SQ_COMMAND / SQ_PREPARE) carry a 2-byte command type
+ * after the 4-byte length prefix, followed by the SQL text (null-terminated).
+ *
+ * Known command type codes:
+ *   0x01: SQ_COMMAND  — immediate execution (like a "direct" statement)
+ *   0x02: SQ_PREPARE  — prepare a statement
+ *   0x03: SQ_EXECUTE  — execute a prepared statement
+ *   0x04: SQ_DESCRIBE — describe columns
+ *   0x05: SQ_FETCH    — fetch next row
+ */
+function buildSQLICommandPacket(sql: string, cmdType: number = 0x01): Uint8Array {
+  const sqlBytes = enc.encode(sql + '\0');
+  const payloadLen = 2 + sqlBytes.length; // 2 bytes cmd type + sql
+  const pkt = new Uint8Array(4 + payloadLen);
+  const dv = new DataView(pkt.buffer);
+  dv.setUint32(0, payloadLen, false);
+  dv.setUint16(4, cmdType, false); // command type
+  pkt.set(sqlBytes, 6);
   return pkt;
 }
 
@@ -88,25 +176,40 @@ function parseInformixResponse(data: Uint8Array): {
   // Try to decode printable portion for banner strings
   const printable = dec.decode(data.subarray(0, Math.min(512, data.length)));
 
-  // Informix servers include recognisable strings in their banners
+  // Informix servers include recognisable strings in their responses
   const isInformix =
     printable.includes('Informix') ||
     printable.includes('IDS') ||
     printable.includes('sqlexec') ||
     printable.includes('onsoc') ||
-    printable.includes('IBM');
+    printable.includes('IBM') ||
+    printable.includes('SQLI');
 
   // Try to extract a version string, e.g. "IBM Informix Dynamic Server 14.10"
-  const versionMatch = printable.match(/(?:Informix.*?|IDS)\s+(\d+\.\d+)/i);
+  // Also match "Version 14.10" or standalone "IDS/14.10"
+  const versionMatch = printable.match(
+    /(?:Informix.*?|IDS[/ ])\s*(\d+\.\d+(?:\.\w+)?)/i
+  );
 
-  // Heuristic for binary Informix protocol responses
-  const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  // Heuristic for binary SQLI responses: check for valid 4-byte length prefix
+  // that is consistent with the total response size.  SQLI uses big-endian
+  // uint32 length headers, so we check that the declared length is plausible.
   const binaryHeuristic =
     !isInformix &&
     data.length >= 8 &&
     (() => {
-      const len = dv.getUint16(0, false); // big-endian length field
-      return len > 0 && len < 4096 && data.some(b => b === 0);
+      try {
+        const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
+        const declaredLen = dv.getUint32(0, false);
+        // The declared payload length should be close to (total - 4) and > 0
+        return (
+          declaredLen > 0 &&
+          declaredLen <= data.length &&
+          declaredLen < 65536
+        );
+      } catch {
+        return false;
+      }
     })();
 
   return {
@@ -119,28 +222,32 @@ function parseInformixResponse(data: Uint8Array): {
 
 /**
  * Read all available data from a socket reader with a per-read timeout.
+ *
+ * Reads a single chunk and returns immediately — SQLI servers send their
+ * response in one go and then wait for the next client message, so waiting
+ * for more data would just stall until the read times out.
  */
 async function readAll(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
-  const timeoutErr = new Error('read timeout');
 
   while (true) {
     const result = await Promise.race([
       reader.read(),
-      new Promise<{ done: true; value: undefined }>(resolve =>
-        setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('read timeout')), timeoutMs),
       ),
     ]);
     if (result.done || !result.value || result.value.length === 0) break;
     chunks.push(result.value);
-    // Stop after first chunk if we have data — server sends banner then waits
-    if (chunks.length >= 1) break;
+    // SQLI servers send a complete message and then block; grab the first
+    // chunk and return rather than waiting for a read timeout.
+    break;
   }
 
-  if (chunks.length === 0) throw timeoutErr;
+  if (chunks.length === 0) throw new Error('read timeout');
   const total = chunks.reduce((s, c) => s + c.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
@@ -155,7 +262,7 @@ async function readAll(
 export async function handleInformixProbe(request: Request): Promise<Response> {
   try {
     const body = await request.json() as InformixRequest;
-    const { host, port = 1526, timeout = 15000 } = body;
+    const { host, port = INFORMIX_DEFAULT_PORT, timeout = 15000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({
@@ -226,7 +333,7 @@ export async function handleInformixProbe(request: Request): Promise<Response> {
     }
   } catch (error) {
     return new Response(JSON.stringify({
-      success: false, host: '', port: 1526,
+      success: false, host: '', port: INFORMIX_DEFAULT_PORT,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies InformixResponse), {
       status: 500, headers: { 'Content-Type': 'application/json' },
@@ -244,21 +351,23 @@ export async function handleInformixVersion(request: Request): Promise<Response>
 /**
  * Execute a query against an Informix server.
  *
- * Sends a minimal SQLI connect + authentication packet, then sends a
- * SQLI query packet and collects the result rows.
+ * Sends an SQLI connection packet, authenticates, then sends a command packet
+ * and collects the result.  This is a best-effort implementation — full SQLI
+ * query execution requires handling SQ_DESCRIBE, FDOCA row descriptors, and
+ * proper cursor management.  For production use, prefer DRDA (drda.ts) or
+ * a proper Informix JDBC/ODBC driver.
  *
- * Body: { host, port?, username, password, database?, timeout? }
  * Body: { host, port?, username, password, database?, query?, timeout? }
  */
 export async function handleInformixQuery(request: Request): Promise<Response> {
   try {
     const body = await request.json() as InformixRequest & { query?: string };
     const {
-      host, port = 1526, timeout = 20000,
+      host, port = INFORMIX_DEFAULT_PORT, timeout = 20000,
       username = 'informix', password = '',
       database = 'sysmaster',
     } = body;
-    const query = (body as { query?: string }).query ?? 'SELECT tabname FROM systables WHERE tabid < 10';
+    const query = body.query ?? 'SELECT tabname FROM systables WHERE tabid < 10';
 
     if (!host) {
       return new Response(JSON.stringify({
@@ -280,7 +389,7 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
 
       const writer = socket.writable.getWriter();
 
-      // Step 1: Send connect packet
+      // Step 1: Send SQLI connection packet (key-value pairs)
       await writer.write(buildSQLIConnect(username, database));
 
       // Step 2: Read server banner / challenge
@@ -290,7 +399,7 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
         banner = await Promise.race([readAll(reader, 5000), timeoutPromise]);
       } catch {
         reader.releaseLock();
-        writer.close();
+        writer.releaseLock();
         socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
@@ -303,7 +412,7 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
       const parsed = parseInformixResponse(banner);
       if (!parsed.isInformix) {
         reader.releaseLock();
-        writer.close();
+        writer.releaseLock();
         socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
@@ -314,18 +423,12 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
         });
       }
 
-      // Step 3: Send a SQLI password/auth packet
-      // Type 0x02 = password packet: [uint16BE len][0x00 0x02][password\0]
-      const pwBytes  = enc.encode(password + '\0');
-      const authPkt  = new Uint8Array(2 + 2 + pwBytes.length);
-      const authDv   = new DataView(authPkt.buffer);
-      authDv.setUint16(0, 2 + pwBytes.length, false);
-      authPkt[2] = 0x00;
-      authPkt[3] = 0x02;
-      authPkt.set(pwBytes, 4);
-      await writer.write(authPkt);
+      // Step 3: Send SQLI authentication packet (password in 4-byte-length frame)
+      await writer.write(buildSQLIAuthPacket(password));
 
       // Step 4: Read auth response
+      // SQLI sends SQ_EOT (0x00) on success, SQ_ERR with error code on failure.
+      // The first byte after the 4-byte length header indicates message type.
       let authResp: Uint8Array | null = null;
       try {
         authResp = await Promise.race([readAll(reader, 5000), timeoutPromise]);
@@ -333,16 +436,15 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
         // Some servers close connection on bad auth; treat as auth failure
       }
 
-      const authStr = authResp ? dec.decode(authResp.subarray(0, 128)) : '';
+      // Check for SQ_ERR message type (0x02) or connection close
       const authFailed =
         !authResp ||
-        authStr.includes('error') ||
-        authStr.includes('fail') ||
-        authStr.includes('denied');
+        authResp.length === 0 ||
+        (authResp.length >= 5 && authResp[4] === 0x02);
 
       if (authFailed) {
         reader.releaseLock();
-        writer.close();
+        writer.releaseLock();
         socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
@@ -356,43 +458,60 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
         });
       }
 
-      // Step 5: Send a SQLI query packet
-      // Type 0x05 = execute: [uint16BE len][0x00 0x05][sql\0]
-      const sqlBytes  = enc.encode(query + '\0');
-      const queryPkt  = new Uint8Array(2 + 2 + sqlBytes.length);
-      const queryDv   = new DataView(queryPkt.buffer);
-      queryDv.setUint16(0, 2 + sqlBytes.length, false);
-      queryPkt[2] = 0x00;
-      queryPkt[3] = 0x05;
-      queryPkt.set(sqlBytes, 4);
-      await writer.write(queryPkt);
+      // Step 5: Send SQLI command packet (SQ_COMMAND = 0x01)
+      await writer.write(buildSQLICommandPacket(query, 0x01));
 
-      // Step 6: Collect result rows
+      // Step 6: Collect result messages
+      // SQLI query results are a sequence of messages:
+      //   SQ_DESCRIBE (column metadata), SQ_DATA (row data), SQ_EOT (end of transaction)
+      // Full parsing requires FDOCA/SQLDA decoding which is complex; we collect
+      // raw responses for basic connectivity validation.
       const resultChunks: Uint8Array[] = [];
+      const maxChunks = 10;  // Limit to prevent runaway memory usage
       const readDeadline = Date.now() + 8000;
-      while (Date.now() < readDeadline) {
+
+      while (Date.now() < readDeadline && resultChunks.length < maxChunks) {
         try {
           const chunk = await Promise.race([
             readAll(reader, 2000),
             timeoutPromise,
           ]);
           resultChunks.push(chunk);
-          if (resultChunks.length >= 8) break;
+          // Check for SQ_EOT (0x00) or SQ_ERR (0x02) message type
+          if (chunk.length >= 5 && (chunk[4] === 0x00 || chunk[4] === 0x02)) {
+            break;
+          }
         } catch {
           break;
         }
       }
 
       reader.releaseLock();
-      writer.close();
+      writer.releaseLock();
       socket.close();
 
-      // Parse results: extract printable strings as rows
+      // Parse results: extract printable ASCII strings from response chunks.
+      // NOTE: This is a best-effort heuristic. Proper SQLI result decoding
+      // requires FDOCA descriptor parsing (SQ_DESCRIBE message) and typed
+      // column extraction. For production use, prefer DRDA (drda.ts) or a
+      // real Informix JDBC/ODBC driver.
       const rows: string[][] = [];
       for (const chunk of resultChunks) {
-        const text = dec.decode(chunk);
-        // Split on null bytes and collect non-empty strings
-        const parts = text.split('\0').map(s => s.trim()).filter(s => s.length > 0);
+        // Skip 4-byte length header; check message type
+        if (chunk.length < 5) continue;
+        const msgType = chunk[4];
+        // SQ_ERR (0x02) indicates query error
+        if (msgType === 0x02) {
+          const errText = dec.decode(chunk.subarray(5, Math.min(chunk.length, 256)));
+          rows.push([`ERROR: ${errText.replace(/\0/g, ' ').trim()}`]);
+          break;
+        }
+        // Extract printable content from data messages
+        const text = dec.decode(chunk.subarray(5));
+        const parts = text
+          .split('\0')
+          .map(s => s.trim())
+          .filter(s => s.length > 0 && /^[\x20-\x7E]+$/.test(s)); // printable ASCII
         if (parts.length > 0) rows.push(parts);
       }
 
@@ -414,7 +533,7 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
     }
   } catch (error) {
     return new Response(JSON.stringify({
-      success: false, host: '', port: 1526,
+      success: false, host: '', port: INFORMIX_DEFAULT_PORT,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies InformixResponse), {
       status: 500, headers: { 'Content-Type': 'application/json' },

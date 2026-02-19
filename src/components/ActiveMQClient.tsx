@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface ActiveMQClientProps {
   onBack: () => void;
@@ -377,7 +379,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
 
   return (
     <ProtocolClientLayout title="ActiveMQ Client" onBack={onBack}>
-
+      <ApiExamples examples={apiExamples.ActiveMQ || []} />
       {/* Tab bar */}
       <div className="flex gap-1 mb-6 bg-slate-800 border border-slate-600 rounded-xl p-1">
         {tabs.map(t => (

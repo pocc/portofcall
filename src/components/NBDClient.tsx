@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface NBDResult {
   success: boolean;
@@ -53,8 +55,7 @@ export default function NBDClient({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <button
+    <div className="max-w-4xl mx-auto">      <button
         onClick={onBack}
         className="mb-6 text-slate-400 hover:text-slate-200 flex items-center gap-2"
       >
@@ -68,8 +69,10 @@ export default function NBDClient({ onBack }: { onBack: () => void }) {
             <h2 className="text-xl font-bold text-white">NBD — Network Block Device</h2>
             <p className="text-slate-400 text-sm">Port 10809 · Linux block device over TCP</p>
           </div>
+
         </div>
 
+      <ApiExamples examples={apiExamples.NBD || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-slate-400 text-sm mb-1">Host</label>

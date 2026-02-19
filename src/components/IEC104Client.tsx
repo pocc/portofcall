@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface IEC104ClientProps {
   onBack: () => void;
@@ -112,6 +114,7 @@ export default function IEC104Client({ onBack }: IEC104ClientProps) {
 
   return (
     <ProtocolClientLayout title="IEC 60870-5-104 Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.IEC104 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* SCADA Safety Warning */}
         <div className="bg-red-900/30 border border-red-600/50 rounded-lg p-4 mb-6">

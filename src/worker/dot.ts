@@ -77,7 +77,7 @@ function encodeDomainName(domain: string): number[] {
 /**
  * Build a DNS query packet
  */
-function buildDNSQuery(domain: string, typeCode: number): Uint8Array {
+function buildDNSQuery(domain: string, typeCode: number): { packet: Uint8Array; id: number } {
   const buffer: number[] = [];
 
   // Transaction ID (random)
@@ -104,7 +104,7 @@ function buildDNSQuery(domain: string, typeCode: number): Uint8Array {
   // Class IN = 1
   buffer.push(0x00, 0x01);
 
-  return new Uint8Array(buffer);
+  return { packet: new Uint8Array(buffer), id };
 }
 
 /**
@@ -408,7 +408,7 @@ export async function handleDoTQuery(request: Request): Promise<Response> {
     const startTime = Date.now();
 
     // Build DNS query
-    const queryPacket = buildDNSQuery(domain, typeCode);
+    const { packet: queryPacket, id: queryId } = buildDNSQuery(domain, typeCode);
 
     // DNS over TCP/TLS: prepend 2-byte length
     const tcpPacket = new Uint8Array(2 + queryPacket.length);
@@ -476,6 +476,15 @@ export async function handleDoTQuery(request: Request): Promise<Response> {
 
     // Strip TCP length prefix (first 2 bytes)
     const dnsResponse = new Uint8Array(responseData.slice(2));
+
+    // Verify transaction ID matches (RFC 7858 / RFC 1035)
+    const responseId = (dnsResponse[0] << 8) | dnsResponse[1];
+    if (responseId !== queryId) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'DNS response transaction ID mismatch' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
     // Parse DNS response
     const parsed = parseDNSResponse(dnsResponse);

@@ -1,321 +1,304 @@
-# SOCKS5 Protocol Implementation Plan
+# SOCKS5 Proxy Protocol — Port of Call Reference
 
-## Overview
+**RFC:** [1928](https://tools.ietf.org/html/rfc1928) (SOCKS5), [1929](https://tools.ietf.org/html/rfc1929) (Username/Password auth)
+**Default port:** 1080
+**Source:** `src/worker/socks5.ts`
 
-**Protocol:** SOCKS5 (SOCKet Secure v5)
-**Port:** 1080
-**RFC:** [RFC 1928](https://tools.ietf.org/html/rfc1928)
-**Complexity:** Medium
-**Purpose:** Generic proxy protocol
+---
 
-SOCKS5 is a **protocol-agnostic proxy** that can tunnel any TCP connection. In Port of Call, it enables proxying other protocol connections through a SOCKS5 server.
+## Endpoints
 
-### Use Cases
-- Proxy TCP connections through remote server
-- Bypass network restrictions
-- Test services through different network paths
-- Educational - learn proxy protocols
-- Connect to services behind firewall
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/api/socks5/connect` | POST | Handshake + CONNECT through proxy; reports auth method, reply code, bound address |
+| `/api/socks5/relay` | POST | Full tunnel: SOCKS5 handshake + HTTP/1.0 GET through the tunnel; verifies end-to-end |
 
-## Protocol Specification
+Both endpoints return `405 Method Not Allowed` for non-POST requests.
 
-### SOCKS5 Handshake
+---
 
-```
-1. Client → Server: Authentication methods
-   +----+----------+----------+
-   |VER | NMETHODS | METHODS  |
-   +----+----------+----------+
-   | 1  |    1     | 1 to 255 |
-   +----+----------+----------+
+### `POST /api/socks5/connect` — Proxy handshake + CONNECT
 
-2. Server → Client: Selected method
-   +----+--------+
-   |VER | METHOD |
-   +----+--------+
-   | 1  |   1    |
-   +----+--------+
+Connects to a SOCKS5 proxy, negotiates authentication, sends a CONNECT request for a destination host:port, and reports the result. The tunnel is **not used** — this endpoint only tests whether the proxy will grant the connection.
 
-3. Client → Server: Connection request
-   +----+-----+-------+------+----------+----------+
-   |VER | CMD |  RSV  | ATYP | DST.ADDR | DST.PORT |
-   +----+-----+-------+------+----------+----------+
-   | 1  |  1  | X'00' |  1   | Variable |    2     |
-   +----+-----+-------+------+----------+----------+
+**Request:**
 
-4. Server → Client: Connection response
-   +----+-----+-------+------+----------+----------+
-   |VER | REP |  RSV  | ATYP | BND.ADDR | BND.PORT |
-   +----+-----+-------+------+----------+----------+
-   | 1  |  1  | X'00' |  1   | Variable |    2     |
-   +----+-----+-------+------+----------+----------+
-
-5. Data exchange
+```json
+{
+  "proxyHost": "proxy.example.com",
+  "proxyPort": 1080,
+  "destHost": "target.example.com",
+  "destPort": 80,
+  "username": "user",
+  "password": "pass",
+  "timeout": 15000
+}
 ```
 
-### Authentication Methods
+| Field | Default | Notes |
+|-------|---------|-------|
+| `proxyHost` | **required** | SOCKS5 proxy hostname or IP |
+| `proxyPort` | `1080` | Proxy port |
+| `destHost` | **required** | Target hostname the proxy should CONNECT to |
+| `destPort` | **required** | Target port (validated: 1–65535) |
+| `username` | — | Optional; enables username/password auth method offer |
+| `password` | — | Optional; required if proxy selects username/password |
+| `timeout` | `15000` | Wall-clock timeout in ms |
 
-| Code | Method |
-|------|--------|
-| 0x00 | No authentication |
-| 0x02 | Username/password |
-| 0xFF | No acceptable methods |
+**Response (success):**
 
-### Commands
+```json
+{
+  "success": true,
+  "granted": true,
+  "proxyHost": "proxy.example.com",
+  "proxyPort": 1080,
+  "destHost": "target.example.com",
+  "destPort": 80,
+  "authMethod": "No authentication",
+  "authSuccess": null,
+  "replyCode": 0,
+  "replyMessage": "Succeeded",
+  "boundAddress": "10.0.0.1",
+  "boundPort": 45678,
+  "connectTimeMs": 42,
+  "totalTimeMs": 156
+}
+```
 
-| Code | Command |
+**Key fields:**
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `success` | boolean | Always `true` if the proxy responded — even if CONNECT was denied |
+| `granted` | boolean | `true` only when `replyCode === 0x00` (Succeeded) |
+| `authMethod` | string | Human-readable: `"No authentication"`, `"Username/password"`, or `"No acceptable methods"` |
+| `authSuccess` | boolean \| null | `null` if no auth was used; `true`/`false` if username/password was negotiated |
+| `replyCode` | number | Raw SOCKS5 reply byte (0x00–0x08) |
+| `replyMessage` | string | Human-readable reply name from RFC 1928 §6 |
+| `boundAddress` | string | BND.ADDR from the CONNECT reply; often `0.0.0.0` |
+| `boundPort` | number | BND.PORT from the CONNECT reply |
+| `connectTimeMs` | number | Time to establish TCP connection to proxy |
+| `totalTimeMs` | number | Total wall-clock time including handshake + CONNECT |
+
+**Reply codes (RFC 1928 §6):**
+
+| Code | Meaning |
 |------|---------|
-| 0x01 | CONNECT |
-| 0x02 | BIND |
-| 0x03 | UDP ASSOCIATE |
+| `0x00` | Succeeded |
+| `0x01` | General SOCKS server failure |
+| `0x02` | Connection not allowed by ruleset |
+| `0x03` | Network unreachable |
+| `0x04` | Host unreachable |
+| `0x05` | Connection refused |
+| `0x06` | TTL expired |
+| `0x07` | Command not supported |
+| `0x08` | Address type not supported |
 
-## Worker Implementation
+**Gotcha — `success: true` with `granted: false`:** The proxy communicated successfully but denied the CONNECT. Always check `granted`, not just `success`. A `success: false` response means the proxy itself was unreachable or the handshake failed at the protocol level.
 
-### SOCKS5 Client
+---
 
-```typescript
-// src/worker/protocols/socks5/client.ts
+### `POST /api/socks5/relay` — Tunnel + HTTP GET
 
-import { connect } from 'cloudflare:sockets';
+Establishes a full SOCKS5 tunnel and sends an HTTP/1.0 GET request through it. Verifies end-to-end connectivity by returning the HTTP response status and a preview of the body.
 
-export interface SOCKS5Config {
-  proxyHost: string;
-  proxyPort: number;
-  username?: string;
-  password?: string;
-}
+**Request:**
 
-export class SOCKS5Client {
-  private socket: Socket;
-
-  constructor(private config: SOCKS5Config) {}
-
-  async connectThrough(targetHost: string, targetPort: number): Promise<Socket> {
-    // Connect to SOCKS5 proxy
-    this.socket = connect(`${this.config.proxyHost}:${this.config.proxyPort}`);
-    await this.socket.opened;
-
-    // Handshake
-    await this.sendGreeting();
-    const method = await this.readMethod();
-
-    if (method === 0x02) {
-      // Username/password auth
-      await this.authenticate();
-    }
-
-    // Send connection request
-    await this.sendConnectRequest(targetHost, targetPort);
-    await this.readConnectResponse();
-
-    // Return socket for direct use
-    return this.socket;
-  }
-
-  private async sendGreeting(): Promise<void> {
-    const methods = [0x00]; // No auth
-    if (this.config.username && this.config.password) {
-      methods.push(0x02); // Username/password
-    }
-
-    const greeting = new Uint8Array([
-      0x05, // SOCKS version
-      methods.length,
-      ...methods,
-    ]);
-
-    const writer = this.socket.writable.getWriter();
-    await writer.write(greeting);
-    writer.releaseLock();
-  }
-
-  private async readMethod(): Promise<number> {
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-
-    // Response: [version, method]
-    return value[1];
-  }
-
-  private async authenticate(): Promise<void> {
-    const username = this.config.username!;
-    const password = this.config.password!;
-
-    const usernameBytes = new TextEncoder().encode(username);
-    const passwordBytes = new TextEncoder().encode(password);
-
-    const auth = new Uint8Array([
-      0x01, // Auth version
-      usernameBytes.length,
-      ...usernameBytes,
-      passwordBytes.length,
-      ...passwordBytes,
-    ]);
-
-    const writer = this.socket.writable.getWriter();
-    await writer.write(auth);
-    writer.releaseLock();
-
-    // Read auth response
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-
-    if (value[1] !== 0x00) {
-      throw new Error('Authentication failed');
-    }
-  }
-
-  private async sendConnectRequest(host: string, port: number): Promise<void> {
-    const hostBytes = new TextEncoder().encode(host);
-
-    const request = new Uint8Array([
-      0x05, // SOCKS version
-      0x01, // CONNECT command
-      0x00, // Reserved
-      0x03, // Domain name
-      hostBytes.length,
-      ...hostBytes,
-      (port >> 8) & 0xff,
-      port & 0xff,
-    ]);
-
-    const writer = this.socket.writable.getWriter();
-    await writer.write(request);
-    writer.releaseLock();
-  }
-
-  private async readConnectResponse(): Promise<void> {
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-
-    // Response: [version, reply, reserved, atyp, bind_addr, bind_port]
-    if (value[1] !== 0x00) {
-      const errors = [
-        'General SOCKS server failure',
-        'Connection not allowed by ruleset',
-        'Network unreachable',
-        'Host unreachable',
-        'Connection refused',
-        'TTL expired',
-        'Command not supported',
-        'Address type not supported',
-      ];
-
-      throw new Error(errors[value[1] - 1] || 'Unknown SOCKS error');
-    }
-  }
+```json
+{
+  "proxyHost": "proxy.example.com",
+  "proxyPort": 1080,
+  "destHost": "example.com",
+  "destPort": 80,
+  "path": "/",
+  "username": "user",
+  "password": "pass",
+  "timeout": 15000
 }
 ```
 
-## Use Case: Proxy Other Protocols
+| Field | Default | Notes |
+|-------|---------|-------|
+| `proxyHost` | **required** | SOCKS5 proxy hostname or IP |
+| `proxyPort` | `1080` | Proxy port |
+| `destHost` | **required** | Target HTTP server hostname |
+| `destPort` | `80` | Target port (no validation — unlike `/connect`) |
+| `path` | `"/"` | HTTP request path |
+| `username` | — | Optional SOCKS5 auth |
+| `password` | — | Optional SOCKS5 auth |
+| `timeout` | `15000` | Wall-clock timeout in ms |
 
-```typescript
-// Example: Connect to Redis through SOCKS5 proxy
+**Response (success):**
 
-const socks5 = new SOCKS5Client({
-  proxyHost: 'proxy.example.com',
-  proxyPort: 1080,
-  username: 'user',
-  password: 'pass',
-});
-
-// Establish tunnel through proxy
-const socket = await socks5.connectThrough('redis.server.com', 6379);
-
-// Now use socket for Redis protocol
-const redis = new RedisClient({ socket });
-await redis.query('PING');
-```
-
-## Web UI Design
-
-```typescript
-// src/components/SOCKS5Config.tsx
-
-export function SOCKS5Config() {
-  const [proxyHost, setProxyHost] = useState('');
-  const [proxyPort, setProxyPort] = useState(1080);
-  const [targetHost, setTargetHost] = useState('');
-  const [targetPort, setTargetPort] = useState(80);
-
-  const testConnection = async () => {
-    const response = await fetch('/api/socks5/test', {
-      method: 'POST',
-      body: JSON.stringify({
-        proxyHost,
-        proxyPort,
-        targetHost,
-        targetPort,
-      }),
-    });
-
-    const data = await response.json();
-    alert(data.success ? 'Connected!' : `Failed: ${data.error}`);
-  };
-
-  return (
-    <div className="socks5-config">
-      <h2>SOCKS5 Proxy Configuration</h2>
-
-      <div className="proxy-settings">
-        <h3>Proxy Server</h3>
-        <input
-          type="text"
-          placeholder="Proxy Host"
-          value={proxyHost}
-          onChange={(e) => setProxyHost(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Proxy Port"
-          value={proxyPort}
-          onChange={(e) => setProxyPort(Number(e.target.value))}
-        />
-      </div>
-
-      <div className="target-settings">
-        <h3>Target Server</h3>
-        <input
-          type="text"
-          placeholder="Target Host"
-          value={targetHost}
-          onChange={(e) => setTargetHost(e.target.value)}
-        />
-        <input
-          type="number"
-          placeholder="Target Port"
-          value={targetPort}
-          onChange={(e) => setTargetPort(Number(e.target.value))}
-        />
-      </div>
-
-      <button onClick={testConnection}>Test Connection</button>
-    </div>
-  );
+```json
+{
+  "success": true,
+  "proxyHost": "proxy.example.com",
+  "proxyPort": 1080,
+  "destHost": "example.com",
+  "destPort": 80,
+  "authMethod": "No authentication",
+  "tunnelTimeMs": 87,
+  "totalTimeMs": 234,
+  "httpStatus": 200,
+  "httpStatusText": "OK",
+  "responsePreview": "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n..."
 }
 ```
 
-## Testing
+| Field | Type | Notes |
+|-------|------|-------|
+| `tunnelTimeMs` | number | Time to establish SOCKS5 tunnel (before HTTP request) |
+| `totalTimeMs` | number | Total including HTTP round-trip |
+| `httpStatus` | number | Parsed HTTP status code; `0` if unparseable |
+| `httpStatusText` | string | Status text (e.g., `"OK"`, `"Not Found"`) |
+| `responsePreview` | string | First 500 bytes of the raw HTTP response (headers + body) |
+
+**HTTP request sent through tunnel:**
+
+```
+GET {path} HTTP/1.0\r\n
+Host: {destHost}\r\n
+Connection: close\r\n
+\r\n
+```
+
+HTTP/1.0 is used deliberately — it implies connection close, which makes response collection straightforward through the tunnel.
+
+---
+
+## Implementation Details
+
+### Wire exchange — `/connect`
+
+```
+Client              SOCKS5 Proxy           Destination
+  |                      |                      |
+  |  TCP connect ------> |                      |
+  |  [0x05, N, methods]  |                      |
+  |  <--- [0x05, method] |                      |
+  |                      |                      |
+  |  (if method=0x02)    |                      |
+  |  [0x01, ulen, user,  |                      |
+  |   plen, pass]        |                      |
+  |  <--- [0x01, status] |                      |
+  |                      |                      |
+  |  CONNECT request --> |  TCP connect ------> |
+  |  <--- CONNECT reply  |  <--- connected      |
+  |                      |                      |
+  |  (tunnel established — /connect closes here) |
+```
+
+### Auth method negotiation
+
+When credentials are provided, the greeting offers both methods: `[AUTH_NONE (0x00), AUTH_USERPASS (0x02)]`. The proxy picks whichever it prefers — if the proxy supports both, it typically selects `AUTH_NONE`. To force authentication testing, the proxy must be configured to require it.
+
+When no credentials are provided, only `AUTH_NONE` is offered.
+
+### readBytes vs reader.read()
+
+`/connect` uses bare `reader.read()` calls — a single read per protocol step. This works because SOCKS5 responses are small and typically arrive in a single TCP segment. However, if the proxy sends a fragmented response, the single read may return incomplete data.
+
+`/relay` uses a precise `readBytes(n)` function that accumulates exactly `n` bytes across multiple reads. **Caveat:** if a `reader.read()` returns more bytes than needed, the excess is silently discarded. In practice this means: if the proxy packs the CONNECT reply and the start of the HTTP response into a single TCP segment, the HTTP response bytes will be lost. This is unlikely with most proxies but possible.
+
+### Address types
+
+CONNECT requests always use `ATYP_DOMAIN (0x03)` — the destination hostname is sent as-is to the proxy for DNS resolution. IPv4/IPv6 address types are only parsed in the CONNECT reply's BND.ADDR field, not sent.
+
+**Bound address parsing supports:**
+
+| ATYP | Format | Notes |
+|------|--------|-------|
+| `0x01` (IPv4) | `a.b.c.d` | 4 bytes |
+| `0x03` (Domain) | Length-prefixed string | Variable |
+| `0x04` (IPv6) | Colon-separated hex groups | 16 bytes; no zero-compression (`0:0:0:0:0:0:0:1` not `::1`) |
+
+Bound address parsing is best-effort; failures are silently ignored and return empty strings.
+
+### Cloudflare detection
+
+Both endpoints check `proxyHost` against Cloudflare's IP ranges before connecting. `destHost` is **not** checked — Cloudflare detection only applies to the proxy server, not the tunnel destination.
+
+### Timeout architecture
+
+Both endpoints use a single outer `Promise.race` against a `timeout`-ms wall-clock deadline. There are no per-step inner timeouts.
+
+`/relay` adds an HTTP read deadline: `Math.min(8000, timeout - elapsed)` — the HTTP response collection phase gets at most 8 seconds, regardless of the overall timeout.
+
+### Response size limits
+
+`/relay` reads up to 4096 bytes of HTTP response data. `responsePreview` is further truncated to 500 bytes. For large responses, you only see the beginning.
+
+### destPort validation asymmetry
+
+`/connect` validates `destPort` (1–65535, returns 400 on invalid). `/relay` does **not** validate `destPort` — a port of 0 or >65535 will be sent to the proxy as-is and likely fail at the CONNECT step.
+
+---
+
+## Quick reference — curl
 
 ```bash
-# SSH SOCKS5 tunnel
-ssh -D 1080 user@proxy-server.com
+# Test proxy handshake (no auth, just check if proxy grants CONNECT)
+curl -s -X POST https://portofcall.ross.gg/api/socks5/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"proxyHost":"proxy.example.com","destHost":"example.com","destPort":80}' | jq .
 
-# Test with curl
-curl --socks5 localhost:1080 http://example.com
+# Test with authentication
+curl -s -X POST https://portofcall.ross.gg/api/socks5/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"proxyHost":"proxy.example.com","destHost":"example.com","destPort":443,"username":"user","password":"pass"}' | jq .
+
+# Check which auth method the proxy selected
+curl -s -X POST https://portofcall.ross.gg/api/socks5/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"proxyHost":"proxy.example.com","destHost":"httpbin.org","destPort":80}' | jq '.authMethod,.granted'
+
+# Full relay: tunnel HTTP GET through proxy
+curl -s -X POST https://portofcall.ross.gg/api/socks5/relay \
+  -H 'Content-Type: application/json' \
+  -d '{"proxyHost":"proxy.example.com","destHost":"httpbin.org","destPort":80,"path":"/ip"}' | jq .
+
+# Relay with custom path
+curl -s -X POST https://portofcall.ross.gg/api/socks5/relay \
+  -H 'Content-Type: application/json' \
+  -d '{"proxyHost":"proxy.example.com","destHost":"example.com","destPort":80,"path":"/robots.txt"}' | jq '.httpStatus,.responsePreview'
 ```
 
-## Resources
+---
 
-- **RFC 1928**: [SOCKS5 Protocol](https://tools.ietf.org/html/rfc1928)
-- **RFC 1929**: [Username/Password Auth](https://tools.ietf.org/html/rfc1929)
+## Local testing
 
-## Notes
+**SSH SOCKS5 proxy** (quickest way to get a test proxy):
 
-- SOCKS5 is **protocol-agnostic** - works with any TCP protocol
-- Commonly used for **VPN-like** functionality
-- Can chain multiple SOCKS proxies
-- Consider security implications of proxying user traffic
+```bash
+ssh -D 1080 -N user@some-server.com
+# -D 1080 = SOCKS5 proxy on localhost:1080
+# -N = no remote command
+```
+
+**Dante SOCKS5 server** (Docker, supports auth):
+
+```bash
+docker run -d -p 1080:1080 --name dante wernight/dante
+```
+
+**microsocks** (minimal, no auth):
+
+```bash
+docker run -d -p 1080:1080 --name microsocks vimagick/microsocks
+```
+
+Verify with curl: `curl --socks5 localhost:1080 http://httpbin.org/ip`
+
+---
+
+## What is NOT implemented
+
+- **UDP ASSOCIATE** (CMD 0x03) — Only CONNECT (CMD 0x01) is supported
+- **BIND** (CMD 0x02) — Server-side listen for inbound connections
+- **GSSAPI authentication** (method 0x01) — Only no-auth and username/password
+- **IPv4/IPv6 literal CONNECT** — Destinations are always sent as domain names (ATYP 0x03), even if an IP address is provided; the proxy resolves them
+- **HTTPS relay** — `/relay` sends plaintext HTTP/1.0; no TLS through the tunnel
+- **Proxy chaining** — No support for connecting through multiple SOCKS5 proxies in sequence
+- **SOCKS4 fallback** — If pointed at a SOCKS4-only proxy, the version check fails with "Not a SOCKS5 proxy"

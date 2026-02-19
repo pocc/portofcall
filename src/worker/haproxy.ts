@@ -7,19 +7,25 @@
  * real-time monitoring and configuration changes.
  *
  * Protocol:
- * - Text-based command/response over TCP
- * - Send a command followed by newline
- * - Read response until connection closes or empty line
- * - Some configurations use a prompt ("> ") between commands
+ * - Text-based command/response over TCP (or Unix socket)
+ * - Default mode: one command per connection (send command + LF, read until close)
+ * - Interactive mode: send "prompt" first, then commands; responses end with "\n> "
+ * - All commands are terminated with a single newline (\n)
  *
  * Key Commands:
  * - show info:           Global process info (version, uptime, connections)
  * - show stat:           CSV statistics for all frontends/backends/servers
  * - show servers state:  Backend server states (weight, status, addr)
  * - show backend:        List of backends
- * - show frontend:       (HAProxy 2.4+) List of frontends
  * - show pools:          Memory pool statistics
  * - show sess:           Current sessions
+ *
+ * Write Commands (require admin-level access):
+ * - set server <bk>/<sv> state <ready|drain|maint>
+ * - set server <bk>/<sv> weight <value>
+ * - set server <bk>/<sv> addr <ip> port <port>
+ * - enable server <bk>/<sv>
+ * - disable server <bk>/<sv>
  *
  * Typical Ports:
  * - Unix socket: /var/run/haproxy/admin.sock (most common)
@@ -27,14 +33,21 @@
  *
  * Security Notes:
  * - The Runtime API allows configuration changes (enable/disable servers, etc.)
- * - Our implementation only uses read-only "show" commands
- * - Production deployments should restrict access via ACLs
+ * - Access control is configured at the socket level (Unix permissions, bind ACLs)
+ * - Our read-only endpoint restricts commands to "show", "help", and "quit"
+ * - Write endpoints expose specific administrative commands
+ *
+ * CSV Output ("show stat"):
+ * - First line is a header starting with "# " followed by comma-separated field names
+ * - Every line (header and data) ends with a trailing comma before the newline
+ * - Fields: pxname, svname, qcur, qmax, scur, smax, slim, stot, bin, bout, ...
  *
  * Use Cases:
  * - Monitor HAProxy load balancer health and version
  * - Check backend server states and weights
  * - View connection statistics and session counts
  * - Verify HAProxy configuration and capabilities
+ * - Drain/enable servers for maintenance
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -129,6 +142,10 @@ async function sendCommand(
 
 /**
  * Parse HAProxy "show info" output into key-value pairs.
+ *
+ * Format: each line is "Key: value\n"
+ * Lines starting with "#" are comments; ">" is the prompt indicator.
+ * The trim() handles both \n and \r\n line endings.
  */
 function parseInfo(raw: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -236,16 +253,22 @@ export async function handleHAProxyStat(request: Request): Promise<Response> {
     }
 
     // Parse CSV stats
+    // HAProxy "show stat" CSV format:
+    //   - Header line starts with "# " followed by comma-separated field names
+    //   - Every line (header + data) has a trailing comma before the newline
+    //   - Prompt lines ("> ") are filtered out
     const lines = response.trim().split('\n').filter(l => l.trim() && !l.startsWith('>'));
-    const headers = lines[0]?.replace(/^# /, '').split(',') || [];
-    const rows = lines.slice(1).map(line => {
-      const values = line.split(',');
-      const row: Record<string, string> = {};
-      for (let i = 0; i < headers.length && i < values.length; i++) {
-        row[headers[i]] = values[i];
-      }
-      return row;
-    });
+    const headers = lines[0]?.replace(/^# /, '').split(',').filter(h => h !== '') || [];
+    const rows = lines.slice(1)
+      .filter(line => line.trim() !== '')
+      .map(line => {
+        const values = line.split(',');
+        const row: Record<string, string> = {};
+        for (let i = 0; i < headers.length && i < values.length; i++) {
+          row[headers[i]] = values[i];
+        }
+        return row;
+      });
 
     return new Response(JSON.stringify({
       success: true, host, port,
@@ -296,21 +319,25 @@ export async function handleHAProxyCommand(request: Request): Promise<Response> 
     }
 
     // Safety: only allow read-only commands
-    const cmd = command.trim().toLowerCase();
-    const readOnlyPrefixes = ['show ', 'help', 'prompt', 'quit'];
-    const isReadOnly = readOnlyPrefixes.some(p => cmd.startsWith(p));
+    // Strip embedded newlines to prevent command injection (HAProxy processes
+    // one command per line, so an embedded \n could smuggle a write command)
+    const sanitized = command.trim().replace(/[\r\n]+/g, ' ');
+    const cmd = sanitized.toLowerCase();
+    const readOnlyPrefixes = ['show ', 'help', 'quit'];
+    const readOnlyExact = ['show', 'help', 'quit'];
+    const isReadOnly = readOnlyPrefixes.some(p => cmd.startsWith(p)) || readOnlyExact.includes(cmd);
     if (!isReadOnly) {
       return new Response(JSON.stringify({
         success: false,
-        error: 'Only read-only commands (show, help) are allowed for safety',
+        error: 'Only read-only commands (show, help, quit) are allowed for safety',
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const { response, rtt } = await sendCommand(host, port, timeout, command);
+    const { response, rtt } = await sendCommand(host, port, timeout, sanitized);
 
     return new Response(JSON.stringify({
       success: true, host, port,
-      command: command.trim(),
+      command: sanitized,
       response: response.substring(0, 65536),
       rtt,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -327,44 +354,24 @@ export async function handleHAProxyCommand(request: Request): Promise<Response> 
 // ---------------------------------------------------------------------------
 
 /**
- * Send a command to HAProxy, optionally prepending a password auth step.
- * HAProxy Runtime API (TCP) auth is optional and depends on configuration.
- */
-async function sendCommandWithAuth(
-  host: string,
-  port: number,
-  timeout: number,
-  command: string,
-  password?: string,
-): Promise<{ response: string; rtt: number }> {
-  if (password) {
-    // Some HAProxy setups require sending the password before the command
-    const fullCmd = password + '\n' + command;
-    return sendCommand(host, port, timeout, fullCmd);
-  }
-  return sendCommand(host, port, timeout, command);
-}
-
-
-// ---------------------------------------------------------------------------
-// HAProxy write commands
-// ---------------------------------------------------------------------------
-
-/**
  * Set server weight in a backend.
+ * HAProxy command: set server <backend>/<server> weight <value>
+ *
+ * Note: "set weight" is a deprecated alias. The canonical form is
+ * "set server <bk>/<sv> weight <value>" which works on all versions.
  * POST /api/haproxy/weight
  */
 export async function handleHAProxySetWeight(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
-    const body = await request.json() as { host: string; port?: number; password?: string; backend: string; server: string; weight: number; timeout?: number };
-    const { host, port = 9999, password, backend, server, weight, timeout = 10000 } = body;
+    const body = await request.json() as { host: string; port?: number; backend: string; server: string; weight: number; timeout?: number };
+    const { host, port = 9999, backend, server, weight, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend) return new Response(JSON.stringify({ success: false, error: 'Backend is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!server) return new Response(JSON.stringify({ success: false, error: 'Server is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (weight === undefined || weight === null) return new Response(JSON.stringify({ success: false, error: 'Weight is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const cmd = 'set weight ' + backend + '/' + server + ' ' + String(weight);
-    const { response, rtt } = await sendCommandWithAuth(host, port, timeout, cmd, password);
+    const cmd = 'set server ' + backend + '/' + server + ' weight ' + String(weight);
+    const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -373,13 +380,14 @@ export async function handleHAProxySetWeight(request: Request): Promise<Response
 
 /**
  * Set server state (ready/drain/maint).
+ * HAProxy command: set server <backend>/<server> state <ready|drain|maint>
  * POST /api/haproxy/state
  */
 export async function handleHAProxySetState(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
-    const body = await request.json() as { host: string; port?: number; password?: string; backend: string; server: string; state: string; timeout?: number };
-    const { host, port = 9999, password, backend, server, state, timeout = 10000 } = body;
+    const body = await request.json() as { host: string; port?: number; backend: string; server: string; state: string; timeout?: number };
+    const { host, port = 9999, backend, server, state, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend) return new Response(JSON.stringify({ success: false, error: 'Backend is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!server) return new Response(JSON.stringify({ success: false, error: 'Server is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
@@ -387,7 +395,7 @@ export async function handleHAProxySetState(request: Request): Promise<Response>
     const allowedStates = ['ready', 'drain', 'maint'];
     if (!allowedStates.includes(state)) return new Response(JSON.stringify({ success: false, error: 'State must be one of: ready, drain, maint' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'set server ' + backend + '/' + server + ' state ' + state;
-    const { response, rtt } = await sendCommandWithAuth(host, port, timeout, cmd, password);
+    const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -396,17 +404,18 @@ export async function handleHAProxySetState(request: Request): Promise<Response>
 
 /**
  * Set server address and port.
+ * HAProxy command: set server <backend>/<server> addr <ip> port <port>
  * POST /api/haproxy/addr
  */
 export async function handleHAProxySetAddr(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
-    const body = await request.json() as { host: string; port?: number; password?: string; backend: string; server: string; addr: string; svrPort: number; timeout?: number };
-    const { host, port = 9999, password, backend, server, addr, svrPort, timeout = 10000 } = body;
+    const body = await request.json() as { host: string; port?: number; backend: string; server: string; addr: string; svrPort: number; timeout?: number };
+    const { host, port = 9999, backend, server, addr, svrPort, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server || !addr || !svrPort) return new Response(JSON.stringify({ success: false, error: 'backend, server, addr, and svrPort are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'set server ' + backend + '/' + server + ' addr ' + addr + ' port ' + String(svrPort);
-    const { response, rtt } = await sendCommandWithAuth(host, port, timeout, cmd, password);
+    const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -415,17 +424,18 @@ export async function handleHAProxySetAddr(request: Request): Promise<Response> 
 
 /**
  * Disable a backend server.
+ * HAProxy command: disable server <backend>/<server>
  * POST /api/haproxy/disable
  */
 export async function handleHAProxyDisableServer(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
-    const body = await request.json() as { host: string; port?: number; password?: string; backend: string; server: string; timeout?: number };
-    const { host, port = 9999, password, backend, server, timeout = 10000 } = body;
+    const body = await request.json() as { host: string; port?: number; backend: string; server: string; timeout?: number };
+    const { host, port = 9999, backend, server, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server) return new Response(JSON.stringify({ success: false, error: 'backend and server are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'disable server ' + backend + '/' + server;
-    const { response, rtt } = await sendCommandWithAuth(host, port, timeout, cmd, password);
+    const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -434,17 +444,18 @@ export async function handleHAProxyDisableServer(request: Request): Promise<Resp
 
 /**
  * Enable a backend server.
+ * HAProxy command: enable server <backend>/<server>
  * POST /api/haproxy/enable
  */
 export async function handleHAProxyEnableServer(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
-    const body = await request.json() as { host: string; port?: number; password?: string; backend: string; server: string; timeout?: number };
-    const { host, port = 9999, password, backend, server, timeout = 10000 } = body;
+    const body = await request.json() as { host: string; port?: number; backend: string; server: string; timeout?: number };
+    const { host, port = 9999, backend, server, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server) return new Response(JSON.stringify({ success: false, error: 'backend and server are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'enable server ' + backend + '/' + server;
-    const { response, rtt } = await sendCommandWithAuth(host, port, timeout, cmd, password);
+    const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });

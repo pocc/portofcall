@@ -24,6 +24,18 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
+ * Escape special XML characters in user-supplied values to prevent XML injection.
+ */
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+/**
  * Read data from socket with timeout
  */
 async function readWithTimeout(
@@ -84,9 +96,16 @@ function parseStreamFeatures(xml: string): {
   const serverFrom = xml.match(/from=['"]([^'"]+)['"]/)?.[1] || null;
   const version = xml.match(/version=['"]([^'"]+)['"]/)?.[1] || null;
 
-  // TLS
+  // TLS — scope the <required> check to the <starttls> block to avoid
+  // false positives from <bind><required/></bind> (RFC 6120 §7.4).
   const tlsAvailable = xml.includes('urn:ietf:params:xml:ns:xmpp-tls') || xml.includes('<starttls');
-  const tlsRequired = xml.includes('<required') && tlsAvailable;
+  let tlsRequired = false;
+  if (tlsAvailable) {
+    const starttlsMatch = xml.match(/<starttls[\s\S]*?<\/starttls>/);
+    if (starttlsMatch) {
+      tlsRequired = starttlsMatch[0].includes('<required');
+    }
+  }
 
   // SASL mechanisms
   const saslMechanisms: string[] = [];
@@ -114,7 +133,7 @@ function parseStreamFeatures(xml: string): {
   if (xml.includes('urn:xmpp:sm:') || xml.includes('stream-management')) {
     features.push('stream-management');
   }
-  if (xml.includes('rosterver') || xml.includes('roster-versioning')) {
+  if (xml.includes('urn:xmpp:features:rosterver')) {
     features.push('roster-versioning');
   }
   if (xml.includes('urn:xmpp:csi:')) {
@@ -122,9 +141,6 @@ function parseStreamFeatures(xml: string): {
   }
   if (xml.includes('urn:xmpp:carbons:')) {
     features.push('message-carbons');
-  }
-  if (xml.includes('ver=') || xml.includes('urn:xmpp:features:rosterver')) {
-    features.push('roster-versioning');
   }
   if (tlsAvailable) {
     features.push('starttls');
@@ -192,7 +208,7 @@ export async function handleXMPPConnect(request: Request): Promise<Response> {
         const streamOpen =
           `<?xml version='1.0'?>` +
           `<stream:stream ` +
-          `to='${targetDomain}' ` +
+          `to='${escapeXml(targetDomain)}' ` +
           `xmlns='jabber:client' ` +
           `xmlns:stream='http://etherx.jabber.org/streams' ` +
           `version='1.0'>`;
@@ -316,7 +332,7 @@ async function openXMPPStream(
 ): Promise<string> {
   const streamOpen =
     `<?xml version='1.0'?>` +
-    `<stream:stream to='${domain}' xmlns='jabber:client' ` +
+    `<stream:stream to='${escapeXml(domain)}' xmlns='jabber:client' ` +
     `xmlns:stream='http://etherx.jabber.org/streams' version='1.0'>`;
   await writer.write(encoder.encode(streamOpen));
   return readUntil(reader, ['</stream:features>', '<stream:error', '</features>'], 5000);
@@ -370,9 +386,10 @@ export async function handleXMPPLogin(request: Request): Promise<Response> {
         }
 
         // SASL PLAIN: base64(\0username\0password)
+        // Note: btoa output is base64-safe (A-Z, a-z, 0-9, +, /, =) but we escape for defense-in-depth
         const authStr = btoa(`\0${username}\0${password}`);
         await writer.write(encoder.encode(
-          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${authStr}</auth>`,
+          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${escapeXml(authStr)}</auth>`,
         ));
         phases.push('sasl_plain_sent');
 
@@ -487,7 +504,7 @@ export async function handleXMPPRoster(request: Request): Promise<Response> {
 
         const authStr = btoa(`\0${username}\0${password}`);
         await writer.write(encoder.encode(
-          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${authStr}</auth>`,
+          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${escapeXml(authStr)}</auth>`,
         ));
         const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
         if (!authResp.includes('<success')) {
@@ -619,7 +636,7 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
 
         const authStr = btoa(`\0${username}\0${password}`);
         await writer.write(encoder.encode(
-          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${authStr}</auth>`,
+          `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${escapeXml(authStr)}</auth>`,
         ));
         const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
         if (!authResp.includes('<success')) {
@@ -648,14 +665,9 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
           phases.push('session_established');
         }
 
-        // Escape XML special chars in message body
-        const escapedMsg = message
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-
         const msgId = `poc_${Date.now()}`;
         await writer.write(encoder.encode(
-          `<message to='${recipient}' type='chat' id='${msgId}'><body>${escapedMsg}</body></message>`,
+          `<message to='${escapeXml(recipient)}' type='chat' id='${escapeXml(msgId)}'><body>${escapeXml(message)}</body></message>`,
         ));
         phases.push('message_sent');
 

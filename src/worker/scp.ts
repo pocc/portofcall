@@ -5,15 +5,30 @@
  * channel — the client executes `scp -f /path` (download) or `scp -t /path`
  * (upload) as an SSH command, then exchanges the SCP wire protocol.
  *
- * SCP wire protocol (download, client receives):
- *   1. Client → Server: '\0' (ready)
- *   2. Server → Client: 'C{mode} {size} {filename}\n' (control message)
- *   3. Client → Server: '\0' (ACK)
- *   4. Server → Client: {size} bytes of file content
- *   5. Server → Client: '\0' (EOF marker)
+ * SCP wire protocol (download, scp -f, client receives):
+ *   1. Server → Client: '\0' (ready)
+ *   2. Client → Server: '\0' (ready)
+ *   3. Server → Client: ['T{mtime} 0 {atime} 0\n'] (optional timestamp)
+ *   4. [Client → Server: '\0' (ACK timestamp)]
+ *   5. Server → Client: 'C{mode} {size} {filename}\n' (control message)
  *   6. Client → Server: '\0' (ACK)
+ *   7. Server → Client: {size} bytes of file content
+ *   8. Server → Client: '\0' (EOF marker)
+ *   9. Client → Server: '\0' (final ACK)
+ *
+ * SCP wire protocol (upload, scp -t, client sends):
+ *   1. Client → Server: 'C{mode} {size} {filename}\n'
+ *   2. Server → Client: '\0' (ACK)
+ *   3. Client → Server: {size} bytes of file content
+ *   4. Client → Server: '\0' (EOF marker)
+ *   5. Server → Client: '\0' (final ACK)
+ *
+ * Error handling:
+ *   - '\x01' + message + '\n' = warning (non-fatal)
+ *   - '\x02' + message + '\n' = error (fatal, connection terminates)
  *
  * Directory listing uses SSH exec 'ls -la {path}' for compatibility.
+ * Directory transfers ('D' messages) are not implemented.
  *
  * All operations require authentication (password or private key).
  *
@@ -23,6 +38,7 @@
  *   POST /api/scp/connect  — SSH banner grab (no credentials required)
  *   POST /api/scp/list     — list directory via SSH exec 'ls -la'
  *   POST /api/scp/get      — download a file via SCP protocol
+ *   POST /api/scp/put      — upload a file via SCP protocol
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -31,6 +47,28 @@ import { openSSHSubsystem, SSHTerminalOptions } from './ssh2-impl';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
+
+/**
+ * Escape a string for safe use in shell commands.
+ * Wraps the string in single quotes and escapes any single quotes within.
+ */
+function shellEscape(str: string): string {
+  return "'" + str.replace(/'/g, "'\\''") + "'";
+}
+
+/**
+ * Convert Uint8Array to base64 string.
+ * Uses proper chunking to avoid call stack issues with large arrays.
+ */
+function toBase64(data: Uint8Array): string {
+  const chunkSize = 8192;
+  let binary = '';
+  for (let i = 0; i < data.length; i += chunkSize) {
+    const chunk = data.subarray(i, Math.min(i + chunkSize, data.length));
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
 
 export interface SCPConnectionOptions {
   host: string;
@@ -179,11 +217,9 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
  * Collect all data from an SSH exec channel until EOF or timeout.
  */
 async function collectExecOutput(
-  sendChannelData: (d: Uint8Array) => Promise<void>,
   readChannelData: () => Promise<Uint8Array | null>,
   timeoutMs: number,
 ): Promise<Uint8Array> {
-  void sendChannelData; // not needed for read-only exec
   const chunks: Uint8Array[] = [];
   const deadline = Date.now() + timeoutMs;
 
@@ -292,13 +328,13 @@ export async function handleSCPList(request: Request): Promise<Response> {
         password, privateKey, passphrase,
       };
 
-      const { sendChannelData, readChannelData, close } = await openSSHSubsystem(
-        socket, opts, `ls -la ${path}`, true,
+      const { readChannelData, close } = await openSSHSubsystem(
+        socket, opts, `ls -la ${shellEscape(path)}`, true,
       );
 
       try {
         const raw = await Promise.race([
-          collectExecOutput(sendChannelData, readChannelData, Math.min(timeout - (Date.now() - startTime), 10000)),
+          collectExecOutput(readChannelData, Math.min(timeout - (Date.now() - startTime), 10000)),
           tp,
         ]);
 
@@ -394,18 +430,29 @@ export async function handleSCPGet(request: Request): Promise<Response> {
       };
 
       // scp -f = "from" mode (server sends, client receives)
-      // -p preserves timestamps
       const { sendChannelData, readChannelData, close } = await openSSHSubsystem(
-        socket, opts, `scp -f ${path}`, true,
+        socket, opts, `scp -f ${shellEscape(path)}`, true,
       );
 
       try {
-        // Step 1: Send ready signal
+        const deadline = Date.now() + Math.min(timeout - (Date.now() - startTime), 15000);
+
+        // Step 1: Wait for initial ready signal from server
+        const initialReady = await Promise.race([
+          readChannelData(),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout waiting for server ready')), deadline - Date.now())),
+        ]);
+        if (initialReady === null || initialReady[0] !== 0x00) {
+          throw new Error('Server did not send initial ready signal');
+        }
+
+        // Step 2: Send client ready signal
         await sendChannelData(new Uint8Array([0x00]));
 
-        // Step 2: Read control message 'C{mode} {size} {filename}\n'
+        // Step 3: Read control message (may be T timestamp or C file)
         let controlLine = '';
-        const deadline = Date.now() + Math.min(timeout - (Date.now() - startTime), 15000);
+        let timestampLine = '';
+
         while (!controlLine.endsWith('\n') && Date.now() < deadline) {
           const chunk = await Promise.race([
             readChannelData(),
@@ -417,12 +464,45 @@ export async function handleSCPGet(request: Request): Promise<Response> {
 
         controlLine = controlLine.trim();
 
-        if (controlLine.startsWith('\x01') || controlLine.startsWith('\x02')) {
-          // SCP error message
+        // Handle error responses
+        if (controlLine.startsWith('\x01')) {
+          throw new Error(`SCP warning: ${controlLine.slice(1).trim()}`);
+        }
+        if (controlLine.startsWith('\x02')) {
           throw new Error(`SCP error: ${controlLine.slice(1).trim()}`);
         }
 
-        if (!controlLine.startsWith('C') && !controlLine.startsWith('D')) {
+        // Handle timestamp message (T)
+        if (controlLine.startsWith('T')) {
+          timestampLine = controlLine;
+          // ACK timestamp
+          await sendChannelData(new Uint8Array([0x00]));
+
+          // Read next control message (should be C or D)
+          controlLine = '';
+          while (!controlLine.endsWith('\n') && Date.now() < deadline) {
+            const chunk = await Promise.race([
+              readChannelData(),
+              new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), deadline - Date.now())),
+            ]);
+            if (chunk === null) break;
+            controlLine += dec.decode(chunk);
+          }
+          controlLine = controlLine.trim();
+
+          // Check again for errors
+          if (controlLine.startsWith('\x01') || controlLine.startsWith('\x02')) {
+            throw new Error(`SCP error: ${controlLine.slice(1).trim()}`);
+          }
+        }
+
+        // Reject directory transfers (not implemented)
+        if (controlLine.startsWith('D')) {
+          await sendChannelData(enc.encode('\x02Directory transfers not supported\n'));
+          throw new Error('Directory transfers not supported — use a single file path');
+        }
+
+        if (!controlLine.startsWith('C')) {
           throw new Error(`Unexpected SCP control message: ${JSON.stringify(controlLine.slice(0, 64))}`);
         }
 
@@ -432,16 +512,27 @@ export async function handleSCPGet(request: Request): Promise<Response> {
         const fileSize = parseInt(parts[1] || '0', 10);
         const filename = parts.slice(2).join(' ').trim();
 
+        // Validate filename doesn't contain path separators (security)
+        if (filename.includes('/') || filename.includes('\\') || filename === '..' || filename === '.') {
+          await sendChannelData(enc.encode('\x02Invalid filename\n'));
+          throw new Error('Filename contains path separators or special names');
+        }
+
+        if (isNaN(fileSize) || fileSize < 0) {
+          await sendChannelData(enc.encode('\x02Invalid file size\n'));
+          throw new Error('Invalid file size in SCP control message');
+        }
+
         if (fileSize > maxBytes) {
           await sendChannelData(enc.encode('\x02File too large\n'));
           throw new Error(`File size ${fileSize} exceeds maxBytes ${maxBytes}`);
         }
 
-        // Step 3: ACK the control message
+        // Step 4: ACK the control message
         await sendChannelData(new Uint8Array([0x00]));
 
-        // Step 4: Read file content
-        const fileChunks: Uint8Array[] = [];
+        // Step 5: Read exactly fileSize bytes of file content
+        const fileData = new Uint8Array(fileSize);
         let bytesRead = 0;
 
         while (bytesRead < fileSize && Date.now() < deadline) {
@@ -450,30 +541,28 @@ export async function handleSCPGet(request: Request): Promise<Response> {
             new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), deadline - Date.now())),
           ]);
           if (chunk === null) break;
-          fileChunks.push(chunk);
-          bytesRead += chunk.length;
+
+          const toCopy = Math.min(chunk.length, fileSize - bytesRead);
+          fileData.set(chunk.subarray(0, toCopy), bytesRead);
+          bytesRead += toCopy;
         }
 
-        // Step 5: Read EOF marker (\0) from server and send final ACK
-        // (May be bundled with last data chunk or come separately)
+        if (bytesRead !== fileSize) {
+          throw new Error(`Incomplete file transfer: expected ${fileSize} bytes, got ${bytesRead}`);
+        }
+
+        // Step 6: Wait for EOF marker from server
+        const eofMarker = await Promise.race([
+          readChannelData(),
+          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout waiting for EOF')), 1000)),
+        ]).catch(() => null);
+
+        if (eofMarker && eofMarker[0] !== 0x00) {
+          throw new Error('Server did not send EOF marker (0x00)');
+        }
+
+        // Step 7: Send final ACK
         await sendChannelData(new Uint8Array([0x00]));
-
-        // Assemble file data
-        const totalData = new Uint8Array(bytesRead);
-        let off = 0;
-        for (const c of fileChunks) { totalData.set(c, off); off += c.length; }
-
-        // Strip trailing \0 byte if present (SCP EOF marker bundled with data)
-        const actualData = (totalData.length > 0 && totalData[totalData.length - 1] === 0)
-          ? totalData.slice(0, totalData.length - 1)
-          : totalData;
-
-        // Base64-encode for transport
-        let b64 = '';
-        for (let i = 0; i < actualData.length; i += 3) {
-          const chunk = actualData.slice(i, i + 3);
-          b64 += btoa(String.fromCharCode(...chunk));
-        }
 
         const rtt = Date.now() - startTime;
         return {
@@ -481,8 +570,9 @@ export async function handleSCPGet(request: Request): Promise<Response> {
           host, port, path,
           filename,
           mode,
-          size: actualData.length,
-          data: b64,
+          size: fileSize,
+          timestamp: timestampLine || undefined,
+          data: toBase64(fileData),
           rtt,
         };
 
@@ -548,9 +638,31 @@ export async function handleSCPPut(request: Request): Promise<Response> {
       });
     }
 
-    const raw = atob(body.data);
-    const fileData = new Uint8Array(raw.length);
-    for (let i = 0; i < raw.length; i++) fileData[i] = raw.charCodeAt(i);
+    // Validate and decode base64 data
+    let fileData: Uint8Array;
+    try {
+      const raw = atob(body.data);
+      fileData = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) fileData[i] = raw.charCodeAt(i);
+    } catch (err) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid base64 data' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate mode format (should be octal, 4 digits)
+    if (!/^[0-7]{4}$/.test(mode)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid mode format (must be 4-digit octal, e.g., 0644)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate filename doesn't contain path separators
+    if (filename.includes('/') || filename.includes('\\') || filename === '..' || filename === '.') {
+      return new Response(JSON.stringify({ success: false, error: 'Filename contains path separators or special names' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -573,7 +685,7 @@ export async function handleSCPPut(request: Request): Promise<Response> {
       };
 
       const { sendChannelData, readChannelData, close } = await openSSHSubsystem(
-        socket, opts, `scp -t ${remotePath}`, true,
+        socket, opts, `scp -t ${shellEscape(remotePath)}`, true,
       );
 
       try {

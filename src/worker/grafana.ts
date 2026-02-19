@@ -5,13 +5,19 @@
  * communicates with Grafana's REST API over raw TCP (bypassing TLS on typical
  * internal deployments) using HTTP/1.1 GET and POST requests.
  *
- * Authentication:
- *   - Bearer token:   Authorization: Bearer <token>
- *   - API key:        X-Grafana-API-Key: <key>  (legacy)
- *   - Both are passed in the request body as `token` or `apiKey`
+ * Authentication (all sent as Authorization header):
+ *   - Service account token: Authorization: Bearer <sa-token>
+ *   - API key (legacy):      Authorization: Bearer <api-key>
+ *   - Basic auth:            Authorization: Basic base64(user:pass)
+ *
+ * Request body fields:
+ *   - `token`    → sent as Authorization: Bearer <token>
+ *   - `apiKey`   → also sent as Authorization: Bearer <apiKey> (Grafana API
+ *                   keys use the same Bearer scheme as service account tokens)
+ *   - `username` + `password` → sent as Authorization: Basic base64(user:pass)
  *
  * Endpoints implemented:
- *   GET /api/health                         - server liveness + version
+ *   GET /api/health                         - server liveness + version (unauthenticated)
  *   GET /api/frontend/settings              - Grafana version, features
  *   GET /api/search?type=dash-db            - list dashboards
  *   GET /api/datasources                    - list datasources
@@ -19,11 +25,15 @@
  *   GET /api/v1/provisioning/alert-rules    - alert rules (Grafana 9+)
  *   GET /api/org                            - current organisation
  *   GET /api/org/users                      - organisation users
+ *   GET /api/dashboards/uid/:uid             - fetch dashboard by UID
+ *   POST /api/dashboards/db                  - create/update a dashboard
+ *   POST /api/annotations                    - create an annotation
  *
  * Default port: 3000
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // ---- shared types ----------------------------------------------------------
 
@@ -31,8 +41,10 @@ interface GrafanaBaseRequest {
   host: string;
   port?: number;
   timeout?: number;
-  token?: string;   // Bearer token (service account or API token)
-  apiKey?: string;  // Legacy X-Grafana-API-Key header
+  token?: string;    // Bearer token (service account or API token)
+  apiKey?: string;   // Legacy API key (also sent as Bearer token)
+  username?: string; // Basic auth username
+  password?: string; // Basic auth password
 }
 
 interface GrafanaSearchRequest extends GrafanaBaseRequest {
@@ -46,28 +58,37 @@ interface GrafanaCacheGetRequest extends GrafanaBaseRequest {
 
 // ---- low-level HTTP helpers -------------------------------------------------
 
+/** Build the Authorization header value from the available credentials */
+function buildAuthHeader(token?: string, apiKey?: string, username?: string, password?: string): string | null {
+  if (token) return `Bearer ${token}`;
+  if (apiKey) return `Bearer ${apiKey}`;
+  if (username && password) return `Basic ${btoa(`${username}:${password}`)}`;
+  return null;
+}
+
 /**
  * Build HTTP/1.1 GET headers, with optional Grafana auth.
  */
 function buildGetRequest(
   hostname: string,
+  port: number,
   path: string,
   token?: string,
   apiKey?: string,
+  username?: string,
+  password?: string,
 ): string {
+  const hostHeader = port === 80 ? hostname : `${hostname}:${port}`;
   const lines = [
     `GET ${path} HTTP/1.1`,
-    `Host: ${hostname}`,
+    `Host: ${hostHeader}`,
     'Connection: close',
     'Accept: application/json',
     'User-Agent: PortOfCall/1.0',
   ];
 
-  if (token) {
-    lines.push(`Authorization: Bearer ${token}`);
-  } else if (apiKey) {
-    lines.push(`X-Grafana-API-Key: ${apiKey}`);
-  }
+  const auth = buildAuthHeader(token, apiKey, username, password);
+  if (auth) lines.push(`Authorization: ${auth}`);
 
   lines.push('', '');
   return lines.join('\r\n');
@@ -81,15 +102,18 @@ type Socket = ReturnType<typeof connect>;
 async function httpGet(
   socket: Socket,
   hostname: string,
+  port: number,
   path: string,
   token?: string,
   apiKey?: string,
+  username?: string,
+  password?: string,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
 
   try {
-    await writer.write(new TextEncoder().encode(buildGetRequest(hostname, path, token, apiKey)));
+    await writer.write(new TextEncoder().encode(buildGetRequest(hostname, port, path, token, apiKey, username, password)));
 
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
@@ -194,13 +218,18 @@ async function fetchJson(
   timeout: number,
   token?: string,
   apiKey?: string,
+  username?: string,
+  password?: string,
 ): Promise<{ statusCode: number; data: unknown; headers: Record<string, string> }> {
+  const start = Date.now();
   const socket = await openSocket(host, port, timeout);
+  const elapsed = Date.now() - start;
+  const remaining = Math.max(timeout - elapsed, 1000);
   try {
     const resp = await Promise.race([
-      httpGet(socket, host, path, token, apiKey),
+      httpGet(socket, host, port, path, token, apiKey, username, password),
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Request timeout')), timeout)
+        setTimeout(() => reject(new Error('Request timeout')), remaining)
       ),
     ]);
     return { statusCode: resp.statusCode, data: parseJsonBody(resp.body), headers: resp.headers };
@@ -214,7 +243,12 @@ async function fetchJson(
 /**
  * POST /api/grafana/health
  * Returns Grafana liveness status and front-end settings.
- * Body: { host, port?, timeout?, token?, apiKey? }
+ *
+ * Note: /api/health is unauthenticated — it always returns 200 regardless of
+ * credentials. To detect whether auth is required, we probe /api/org which
+ * returns 401/403 when anonymous access is disabled.
+ *
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaHealth(request: Request): Promise<Response> {
   if (request.method === 'GET') {
@@ -223,6 +257,15 @@ export async function handleGrafanaHealth(request: Request): Promise<Response> {
     const hostname = url.searchParams.get('hostname');
     const port = parseInt(url.searchParams.get('port') || '3000', 10);
     if (!hostname) return jsonError('Missing hostname parameter', 400);
+
+    const cfCheck = await checkIfCloudflare(hostname);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(hostname, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     try {
       const [health, settings] = await Promise.all([
@@ -246,17 +289,29 @@ export async function handleGrafanaHealth(request: Request): Promise<Response> {
   try { body = await request.json() as GrafanaBaseRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
   if (!host) return jsonError('host is required', 400);
 
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+      isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
   try {
-    const [health, settings] = await Promise.all([
-      fetchJson(host, port, '/api/health', timeout, token, apiKey),
-      fetchJson(host, port, '/api/frontend/settings', timeout, token, apiKey),
+    // /api/health is unauthenticated — always returns 200.
+    // Probe /api/org (which requires auth) to determine auth state.
+    const [health, settings, orgProbe] = await Promise.all([
+      fetchJson(host, port, '/api/health', timeout, token, apiKey, username, password),
+      fetchJson(host, port, '/api/frontend/settings', timeout, token, apiKey, username, password),
+      fetchJson(host, port, '/api/org', timeout, token, apiKey, username, password),
     ]);
 
-    const isAuthenticated = health.statusCode === 200;
-    const authRequired = health.statusCode === 401 || health.statusCode === 403;
+    const isAuthenticated = orgProbe.statusCode === 200;
+    const authRequired = orgProbe.statusCode === 401 || orgProbe.statusCode === 403;
 
     return jsonOk({
       success: true,
@@ -275,7 +330,7 @@ export async function handleGrafanaHealth(request: Request): Promise<Response> {
 /**
  * POST /api/grafana/datasources
  * Returns the list of configured datasources.
- * Body: { host, port?, timeout?, token?, apiKey? }
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaDatasources(request: Request): Promise<Response> {
   if (request.method === 'GET') {
@@ -283,6 +338,14 @@ export async function handleGrafanaDatasources(request: Request): Promise<Respon
     const hostname = url.searchParams.get('hostname');
     const port = parseInt(url.searchParams.get('port') || '3000', 10);
     if (!hostname) return jsonError('Missing hostname parameter', 400);
+
+    const cfCheck = await checkIfCloudflare(hostname);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(hostname, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     try {
       const result = await fetchJson(hostname, port, '/api/datasources', 10000);
       const ds = Array.isArray(result.data) ? result.data : [];
@@ -298,17 +361,24 @@ export async function handleGrafanaDatasources(request: Request): Promise<Respon
   try { body = await request.json() as GrafanaBaseRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
   if (!host) return jsonError('host is required', 400);
 
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
   try {
-    const result = await fetchJson(host, port, '/api/datasources', timeout, token, apiKey);
+    const result = await fetchJson(host, port, '/api/datasources', timeout, token, apiKey, username, password);
 
     if (result.statusCode === 401 || result.statusCode === 403) {
       return jsonOk({
         success: false,
         statusCode: result.statusCode,
-        error: 'Authentication required — provide token or apiKey',
+        error: 'Authentication required — provide token, apiKey, or username/password',
         endpoint: `${host}:${port}`,
       });
     }
@@ -329,7 +399,7 @@ export async function handleGrafanaDatasources(request: Request): Promise<Respon
 /**
  * POST /api/grafana/dashboards
  * Searches dashboards via /api/search?type=dash-db.
- * Body: { host, port?, timeout?, token?, apiKey?, query?, limit? }
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password?, query?, limit? }
  */
 export async function handleGrafanaDashboards(request: Request): Promise<Response> {
   if (request.method === 'GET') {
@@ -339,6 +409,14 @@ export async function handleGrafanaDashboards(request: Request): Promise<Respons
     const query = url.searchParams.get('query') || '';
     const limit = url.searchParams.get('limit') || '50';
     if (!hostname) return jsonError('Missing hostname parameter', 400);
+
+    const cfCheck = await checkIfCloudflare(hostname);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(hostname, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     try {
       const path = `/api/search?type=dash-db&query=${encodeURIComponent(query)}&limit=${limit}`;
       const result = await fetchJson(hostname, port, path, 10000);
@@ -355,18 +433,25 @@ export async function handleGrafanaDashboards(request: Request): Promise<Respons
   try { body = await request.json() as GrafanaSearchRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey, query = '', limit = 50 } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password, query = '', limit = 50 } = body;
   if (!host) return jsonError('host is required', 400);
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
 
   try {
     const path = `/api/search?type=dash-db&query=${encodeURIComponent(query)}&limit=${limit}`;
-    const result = await fetchJson(host, port, path, timeout, token, apiKey);
+    const result = await fetchJson(host, port, path, timeout, token, apiKey, username, password);
 
     if (result.statusCode === 401 || result.statusCode === 403) {
       return jsonOk({
         success: false,
         statusCode: result.statusCode,
-        error: 'Authentication required — provide token or apiKey',
+        error: 'Authentication required — provide token, apiKey, or username/password',
         endpoint: `${host}:${port}`,
       });
     }
@@ -388,7 +473,7 @@ export async function handleGrafanaDashboards(request: Request): Promise<Respons
 /**
  * POST /api/grafana/folders
  * Returns the list of Grafana folders.
- * Body: { host, port?, timeout?, token?, apiKey? }
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaFolders(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
@@ -397,11 +482,18 @@ export async function handleGrafanaFolders(request: Request): Promise<Response> 
   try { body = await request.json() as GrafanaBaseRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
   if (!host) return jsonError('host is required', 400);
 
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
   try {
-    const result = await fetchJson(host, port, '/api/folders', timeout, token, apiKey);
+    const result = await fetchJson(host, port, '/api/folders', timeout, token, apiKey, username, password);
 
     if (result.statusCode === 401 || result.statusCode === 403) {
       return jsonOk({
@@ -428,7 +520,7 @@ export async function handleGrafanaFolders(request: Request): Promise<Response> 
 /**
  * POST /api/grafana/alert-rules
  * Returns provisioned alert rules (Grafana Alerting, v9+).
- * Body: { host, port?, timeout?, token?, apiKey? }
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaAlertRules(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
@@ -437,11 +529,18 @@ export async function handleGrafanaAlertRules(request: Request): Promise<Respons
   try { body = await request.json() as GrafanaBaseRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
   if (!host) return jsonError('host is required', 400);
 
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
   try {
-    const result = await fetchJson(host, port, '/api/v1/provisioning/alert-rules', timeout, token, apiKey);
+    const result = await fetchJson(host, port, '/api/v1/provisioning/alert-rules', timeout, token, apiKey, username, password);
 
     if (result.statusCode === 401 || result.statusCode === 403) {
       return jsonOk({
@@ -477,7 +576,7 @@ export async function handleGrafanaAlertRules(request: Request): Promise<Respons
 /**
  * POST /api/grafana/org
  * Returns the current organisation and its users.
- * Body: { host, port?, timeout?, token?, apiKey? }
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaOrg(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
@@ -486,13 +585,20 @@ export async function handleGrafanaOrg(request: Request): Promise<Response> {
   try { body = await request.json() as GrafanaBaseRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
   if (!host) return jsonError('host is required', 400);
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
 
   try {
     const [orgResult, usersResult] = await Promise.all([
-      fetchJson(host, port, '/api/org', timeout, token, apiKey),
-      fetchJson(host, port, '/api/org/users', timeout, token, apiKey),
+      fetchJson(host, port, '/api/org', timeout, token, apiKey, username, password),
+      fetchJson(host, port, '/api/org/users', timeout, token, apiKey, username, password),
     ]);
 
     if (orgResult.statusCode === 401 || orgResult.statusCode === 403) {
@@ -521,7 +627,7 @@ export async function handleGrafanaOrg(request: Request): Promise<Response> {
 /**
  * POST /api/grafana/dashboard
  * Fetch a specific dashboard by UID.
- * Body: { host, port?, timeout?, token?, apiKey?, uid }
+ * Body: { host, port?, timeout?, token?, apiKey?, username?, password?, uid }
  */
 export async function handleGrafanaDashboard(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
@@ -530,12 +636,19 @@ export async function handleGrafanaDashboard(request: Request): Promise<Response
   try { body = await request.json() as GrafanaCacheGetRequest; }
   catch { return jsonError('Invalid JSON body', 400); }
 
-  const { host, port = 3000, timeout = 10000, token, apiKey, uid } = body;
+  const { host, port = 3000, timeout = 10000, token, apiKey, username, password, uid } = body;
   if (!host) return jsonError('host is required', 400);
   if (!uid)  return jsonError('uid is required', 400);
 
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
   try {
-    const result = await fetchJson(host, port, `/api/dashboards/uid/${encodeURIComponent(uid)}`, timeout, token, apiKey);
+    const result = await fetchJson(host, port, `/api/dashboards/uid/${encodeURIComponent(uid)}`, timeout, token, apiKey, username, password);
 
     if (result.statusCode === 401 || result.statusCode === 403) {
       return jsonOk({ success: false, statusCode: result.statusCode, error: 'Authentication required', endpoint: `${host}:${port}` });
@@ -557,23 +670,27 @@ export async function handleGrafanaDashboard(request: Request): Promise<Response
  */
 function buildPostRequest(
   hostname: string,
+  port: number,
   path: string,
   body: string,
   token?: string,
   apiKey?: string,
+  username?: string,
+  password?: string,
 ): string {
   const bodyBytes = new TextEncoder().encode(body).length;
+  const hostHeader = port === 80 ? hostname : `${hostname}:${port}`;
   const lines = [
     `POST ${path} HTTP/1.1`,
-    `Host: ${hostname}`,
+    `Host: ${hostHeader}`,
     'Connection: close',
     'Content-Type: application/json',
     'Accept: application/json',
     'User-Agent: PortOfCall/1.0',
     `Content-Length: ${bodyBytes}`,
   ];
-  if (token) lines.push(`Authorization: Bearer ${token}`);
-  else if (apiKey) lines.push(`X-Grafana-API-Key: ${apiKey}`);
+  const auth = buildAuthHeader(token, apiKey, username, password);
+  if (auth) lines.push(`Authorization: ${auth}`);
   lines.push('', body);
   return lines.join('\r\n');
 }
@@ -582,15 +699,18 @@ function buildPostRequest(
 async function httpPost(
   socket: Socket,
   hostname: string,
+  port: number,
   path: string,
   body: string,
   token?: string,
   apiKey?: string,
+  username?: string,
+  password?: string,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
   try {
-    await writer.write(new TextEncoder().encode(buildPostRequest(hostname, path, body, token, apiKey)));
+    await writer.write(new TextEncoder().encode(buildPostRequest(hostname, port, path, body, token, apiKey, username, password)));
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
     while (totalBytes < 10 * 1024 * 1024) {
@@ -611,7 +731,7 @@ async function httpPost(
  * Create a new Grafana dashboard.
  * POST /api/dashboards/db
  *
- * Request: { host, port?, timeout?, token?, apiKey?, title?, tags?, folderId? }
+ * Request: { host, port?, timeout?, token?, apiKey?, username?, password?, title?, tags?, folderId?, folderUid? }
  * Response: { success, statusCode, dashboard, endpoint }
  */
 export async function handleGrafanaDashboardCreate(request: Request): Promise<Response> {
@@ -619,24 +739,35 @@ export async function handleGrafanaDashboardCreate(request: Request): Promise<Re
     const body = await request.json() as GrafanaBaseRequest & {
       title?: string;
       tags?: string[];
-      folderId?: number;
+      folderId?: number;   // Grafana <9: numeric folder ID (deprecated)
+      folderUid?: string;  // Grafana 9+: folder UID (preferred)
     };
-    const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+    const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
     if (!host) return jsonError('host is required', 400);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const title = body.title ?? 'PortOfCall Test Dashboard';
     const tags = body.tags ?? ['portofcall'];
+    // Grafana 9+ prefers folderUid; folderId kept for backward compat with Grafana <9.
+    const folderUid = body.folderUid;
     const folderId = body.folderId ?? 0;
 
     const dashboardPayload = JSON.stringify({
-      dashboard: { title, tags, timezone: 'browser', schemaVersion: 16, version: 0, panels: [] },
+      dashboard: { title, tags, timezone: 'browser', schemaVersion: 36, version: 0, panels: [] },
       folderId,
+      ...(folderUid !== undefined ? { folderUid } : {}),
       overwrite: false,
     });
 
     const socket = await openSocket(host, port, timeout);
     try {
-      const result = await httpPost(socket, host, '/api/dashboards/db', dashboardPayload, token, apiKey);
+      const result = await httpPost(socket, host, port, '/api/dashboards/db', dashboardPayload, token, apiKey, username, password);
       if (result.statusCode === 401 || result.statusCode === 403) {
         return jsonOk({ success: false, statusCode: result.statusCode, error: 'Authentication required', endpoint: `${host}:${port}` });
       }
@@ -653,7 +784,7 @@ export async function handleGrafanaDashboardCreate(request: Request): Promise<Re
  * Create a Grafana annotation.
  * POST /api/annotations
  *
- * Request: { host, port?, timeout?, token?, apiKey?, text?, tags?, time?, timeEnd?, dashboardId?, panelId? }
+ * Request: { host, port?, timeout?, token?, apiKey?, username?, password?, text?, tags?, time?, timeEnd?, dashboardId?, panelId? }
  * Response: { success, statusCode, annotation, endpoint }
  */
 export async function handleGrafanaAnnotationCreate(request: Request): Promise<Response> {
@@ -666,8 +797,15 @@ export async function handleGrafanaAnnotationCreate(request: Request): Promise<R
       dashboardId?: number;
       panelId?: number;
     };
-    const { host, port = 3000, timeout = 10000, token, apiKey } = body;
+    const { host, port = 3000, timeout = 10000, token, apiKey, username, password } = body;
     if (!host) return jsonError('host is required', 400);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const annotation: Record<string, unknown> = {
       text: body.text ?? 'PortOfCall annotation',
@@ -680,7 +818,7 @@ export async function handleGrafanaAnnotationCreate(request: Request): Promise<R
 
     const socket = await openSocket(host, port, timeout);
     try {
-      const result = await httpPost(socket, host, '/api/annotations', JSON.stringify(annotation), token, apiKey);
+      const result = await httpPost(socket, host, port, '/api/annotations', JSON.stringify(annotation), token, apiKey, username, password);
       if (result.statusCode === 401 || result.statusCode === 403) {
         return jsonOk({ success: false, statusCode: result.statusCode, error: 'Authentication required', endpoint: `${host}:${port}` });
       }

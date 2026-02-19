@@ -105,17 +105,18 @@ function getCodeText(code: number): string {
  * Generate a random RADIUS identifier.
  */
 function generateIdentifier(): number {
-  return Math.floor(Math.random() * 256);
+  const randomValues = new Uint8Array(1);
+  crypto.getRandomValues(randomValues);
+  return randomValues[0];
 }
 
 /**
  * Generate a random Request Authenticator (16 bytes).
+ * Uses cryptographically secure random number generation.
  */
 function generateAuthenticator(): Uint8Array {
   const authenticator = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) {
-    authenticator[i] = Math.floor(Math.random() * 256);
-  }
+  crypto.getRandomValues(authenticator);
   return authenticator;
 }
 
@@ -135,14 +136,46 @@ function encodeAttribute(type: number, value: string | Uint8Array): Uint8Array {
 }
 
 /**
- * Encode User-Password attribute (simplified - no MD5 hashing for demo).
- * In production, password should be XORed with MD5(shared-secret + authenticator).
- * Since RADSEC uses TLS, the password can be sent as-is (TLS provides encryption).
+ * Encode User-Password attribute per RFC 2865 §5.2 with RFC 6614 shared secret.
+ * RFC 6614 §2.3: The shared secret MUST be "radsec" for RADIUS/TLS.
+ * Password is padded to 16-byte boundary and XORed with MD5(secret + authenticator).
  */
-function encodePasswordAttribute(password: string): Uint8Array {
-  // For RADSEC over TLS, we can send password as cleartext attribute
-  // since TLS encrypts the entire packet
-  return encodeAttribute(RADIUS_ATTR.USER_PASSWORD, password);
+async function encodePasswordAttribute(password: string, authenticator: Uint8Array): Promise<Uint8Array> {
+  const RADSEC_SECRET = 'radsec'; // RFC 6614 mandated shared secret
+  const passwordBytes = new TextEncoder().encode(password);
+
+  // Pad password to multiple of 16 bytes (RFC 2865 §5.2)
+  const paddedLength = Math.ceil(passwordBytes.length / 16) * 16;
+  const paddedPassword = new Uint8Array(paddedLength);
+  paddedPassword.set(passwordBytes);
+  // Remaining bytes are zero-filled by default
+
+  const secretBytes = new TextEncoder().encode(RADSEC_SECRET);
+  const encrypted = new Uint8Array(paddedLength);
+
+  // Encrypt password chunks: c(i) = p(i) XOR MD5(secret + b(i-1))
+  // where b(0) = Request Authenticator, b(i) = c(i)
+  let prevBlock = authenticator;
+
+  for (let i = 0; i < paddedLength; i += 16) {
+    // Compute MD5(secret + prevBlock)
+    const hashInput = new Uint8Array(secretBytes.length + 16);
+    hashInput.set(secretBytes);
+    hashInput.set(prevBlock, secretBytes.length);
+
+    const hashBuffer = await crypto.subtle.digest('MD5', hashInput.buffer as ArrayBuffer);
+    const hash = new Uint8Array(hashBuffer);
+
+    // XOR password chunk with hash
+    for (let j = 0; j < 16; j++) {
+      encrypted[i + j] = paddedPassword[i + j] ^ hash[j];
+    }
+
+    // Next iteration uses this encrypted block
+    prevBlock = encrypted.slice(i, i + 16);
+  }
+
+  return encodeAttribute(RADIUS_ATTR.USER_PASSWORD, encrypted);
 }
 
 /**
@@ -157,16 +190,33 @@ function encodeNasIpAddress(ipAddress: string): Uint8Array {
 }
 
 /**
+ * Compute Message-Authenticator (RFC 3579 §3.2) using HMAC-MD5.
+ * Message-Authenticator protects against insertion, deletion, and modification attacks.
+ */
+async function computeMessageAuthenticator(packet: Uint8Array, secret: string): Promise<Uint8Array> {
+  const secretBytes = new TextEncoder().encode(secret);
+  const key = await crypto.subtle.importKey(
+    'raw',
+    secretBytes,
+    { name: 'HMAC', hash: 'MD5' },
+    false,
+    ['sign']
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, packet.buffer as ArrayBuffer);
+  return new Uint8Array(signature);
+}
+
+/**
  * Encode RADIUS Access-Request packet.
  */
-function encodeAccessRequest(params: {
+async function encodeAccessRequest(params: {
   identifier: number;
   authenticator: Uint8Array;
   username: string;
   password: string;
   nasIdentifier?: string;
   nasIpAddress?: string;
-}): Uint8Array {
+}): Promise<Uint8Array> {
   const { identifier, authenticator, username, password, nasIdentifier, nasIpAddress } = params;
 
   // Build attributes
@@ -175,8 +225,8 @@ function encodeAccessRequest(params: {
   // User-Name attribute
   attributes.push(encodeAttribute(RADIUS_ATTR.USER_NAME, username));
 
-  // User-Password attribute
-  attributes.push(encodePasswordAttribute(password));
+  // User-Password attribute (encrypted with shared secret "radsec")
+  attributes.push(await encodePasswordAttribute(password, authenticator));
 
   // NAS-Identifier attribute (optional)
   if (nasIdentifier) {
@@ -188,11 +238,19 @@ function encodeAccessRequest(params: {
     attributes.push(encodeNasIpAddress(nasIpAddress));
   }
 
+  // Message-Authenticator placeholder (will be computed after packet construction)
+  // RFC 3579 §3.2: Must be zeroed when computing HMAC-MD5
+  const msgAuthPlaceholder = new Uint8Array(18); // Type(1) + Length(1) + Value(16)
+  msgAuthPlaceholder[0] = RADIUS_ATTR.MESSAGE_AUTHENTICATOR;
+  msgAuthPlaceholder[1] = 18;
+  // bytes 2-17 are zero
+  attributes.push(msgAuthPlaceholder);
+
   // Calculate total length
   const attributesLength = attributes.reduce((sum, attr) => sum + attr.length, 0);
   const totalLength = 20 + attributesLength; // Header (20 bytes) + Attributes
 
-  // Build packet
+  // Build packet with zeroed Message-Authenticator
   const packet = new Uint8Array(totalLength);
 
   // Code (1 byte)
@@ -214,6 +272,15 @@ function encodeAccessRequest(params: {
     packet.set(attr, offset);
     offset += attr.length;
   }
+
+  // Compute Message-Authenticator over entire packet (RFC 3579 §3.2)
+  const RADSEC_SECRET = 'radsec';
+  const msgAuth = await computeMessageAuthenticator(packet, RADSEC_SECRET);
+
+  // Replace zeroed Message-Authenticator with computed value
+  // Find Message-Authenticator attribute (last 18 bytes)
+  const msgAuthOffset = totalLength - 18;
+  packet.set(msgAuth, msgAuthOffset + 2); // +2 to skip Type and Length
 
   return packet;
 }
@@ -240,6 +307,51 @@ function parseAttribute(data: Uint8Array, offset: number): {
   const value = data.slice(offset + 2, offset + length);
 
   return { type, length, value };
+}
+
+/**
+ * Validate Response Authenticator per RFC 2865 §3.
+ * Response Authenticator = MD5(Code+ID+Length+RequestAuth+Attributes+Secret)
+ */
+async function validateResponseAuthenticator(
+  responsePacket: Uint8Array,
+  requestAuthenticator: Uint8Array,
+  secret: string
+): Promise<boolean> {
+  if (responsePacket.length < 20) {
+    return false;
+  }
+
+  // Extract Response Authenticator from packet
+  const responseAuth = responsePacket.slice(4, 20);
+
+  // Build validation packet: replace Response Authenticator with Request Authenticator
+  const validationPacket = new Uint8Array(responsePacket.length);
+  validationPacket.set(responsePacket);
+  validationPacket.set(requestAuthenticator, 4); // Replace authenticator field
+
+  // Append shared secret
+  const secretBytes = new TextEncoder().encode(secret);
+  const hashInput = new Uint8Array(validationPacket.length + secretBytes.length);
+  hashInput.set(validationPacket);
+  hashInput.set(secretBytes, validationPacket.length);
+
+  // Compute MD5
+  const hashBuffer = await crypto.subtle.digest('MD5', hashInput.buffer as ArrayBuffer);
+  const computedAuth = new Uint8Array(hashBuffer);
+
+  // Compare authenticators
+  if (computedAuth.length !== responseAuth.length) {
+    return false;
+  }
+
+  for (let i = 0; i < computedAuth.length; i++) {
+    if (computedAuth[i] !== responseAuth[i]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -346,8 +458,8 @@ export async function handleRadsecAuth(request: Request): Promise<Response> {
     const identifier = generateIdentifier();
     const authenticator = generateAuthenticator();
 
-    // Encode RADIUS Access-Request
-    const radiusRequest = encodeAccessRequest({
+    // Encode RADIUS Access-Request (async due to crypto operations)
+    const radiusRequest = await encodeAccessRequest({
       identifier,
       authenticator,
       username,
@@ -478,6 +590,26 @@ export async function handleRadsecAuth(request: Request): Promise<Response> {
         });
       }
 
+      // Validate Response Authenticator (RFC 2865 §3)
+      const RADSEC_SECRET = 'radsec';
+      const isAuthenticatorValid = await validateResponseAuthenticator(
+        combined,
+        authenticator,
+        RADSEC_SECRET
+      );
+
+      if (!isAuthenticatorValid) {
+        return new Response(JSON.stringify({
+          success: false,
+          host,
+          port,
+          error: 'Response Authenticator validation failed (possible spoofing or corruption)',
+        } satisfies RadsecResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
       const isSuccess = parsed.code === RADIUS_CODE.ACCESS_ACCEPT;
 
       // Decode attributes
@@ -596,11 +728,11 @@ export async function handleRadsecConnect(request: Request): Promise<Response> {
 
 /**
  * Encode a RADIUS Accounting-Request packet (RFC 2866).
+ * RFC 2866 §3: Request Authenticator = MD5(Code+ID+Length+16zero+Attributes+Secret)
  * acctStatusType: 1=Start, 2=Stop, 3=Interim-Update
  */
-function encodeAccountingRequest(params: {
+async function encodeAccountingRequest(params: {
   identifier: number;
-  authenticator: Uint8Array;
   username: string;
   nasIdentifier?: string;
   nasIpAddress?: string;
@@ -609,8 +741,8 @@ function encodeAccountingRequest(params: {
   acctInputOctets?: number;
   acctOutputOctets?: number;
   acctSessionTime?: number;
-}): Uint8Array {
-  const { identifier, authenticator, username, nasIdentifier, nasIpAddress,
+}): Promise<Uint8Array> {
+  const { identifier, username, nasIdentifier, nasIpAddress,
           acctStatusType = 1, acctSessionId, acctInputOctets = 0,
           acctOutputOctets = 0, acctSessionTime = 0 } = params;
 
@@ -636,14 +768,30 @@ function encodeAccountingRequest(params: {
 
   const attrLen = attributes.reduce((s, a) => s + a.length, 0);
   const totalLen = 20 + attrLen;
+
+  // Build packet with zeroed authenticator field (RFC 2866 §3)
   const packet = new Uint8Array(totalLen);
   packet[0] = RADIUS_CODE.ACCOUNTING_REQUEST;
   packet[1] = identifier;
   packet[2] = (totalLen >> 8) & 0xFF;
   packet[3] = totalLen & 0xFF;
-  packet.set(authenticator, 4);
+  // Authenticator field (offset 4-19) left as zeros
   let off = 20;
   for (const attr of attributes) { packet.set(attr, off); off += attr.length; }
+
+  // Compute Request Authenticator: MD5(Code+ID+Length+16zero+Attributes+Secret)
+  const RADSEC_SECRET = 'radsec';
+  const secretBytes = new TextEncoder().encode(RADSEC_SECRET);
+  const hashInput = new Uint8Array(totalLen + secretBytes.length);
+  hashInput.set(packet);
+  hashInput.set(secretBytes, totalLen);
+
+  const hashBuffer = await crypto.subtle.digest('MD5', hashInput.buffer as ArrayBuffer);
+  const authenticator = new Uint8Array(hashBuffer);
+
+  // Set computed authenticator in packet
+  packet.set(authenticator, 4);
+
   return packet;
 }
 
@@ -678,9 +826,8 @@ export async function handleRadsecAccounting(request: Request): Promise<Response
     if (!username) return new Response(JSON.stringify({ success: false, host, port, error: 'Username is required' } satisfies RadsecResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const identifier = generateIdentifier();
-    const authenticator = generateAuthenticator();
-    const radiusRequest = encodeAccountingRequest({
-      identifier, authenticator, username, nasIdentifier, nasIpAddress,
+    const radiusRequest = await encodeAccountingRequest({
+      identifier, username, nasIdentifier, nasIpAddress,
       acctStatusType, acctSessionId, acctInputOctets, acctOutputOctets, acctSessionTime,
     });
 

@@ -56,8 +56,20 @@ const isc_tpb_read         = 9;
 const isc_tpb_concurrency  = 5;
 const isc_tpb_wait         = 6;
 
+// ─── Protocol versions & connection constants ──────────────────────────────
+// CONNECT_VERSION2 (2) is for protocol 10-12; CONNECT_VERSION3 (3) is for protocol 13+
+const CONNECT_VERSION3     = 3;
+// PROTOCOL_VERSION10 (10) is the base wire protocol; 13 is the current widely-supported version
 const PROTOCOL_VERSION13   = 13;
-const ARCHITECTURE_GENERIC = 1;
+const ARCHITECTURE_GENERIC = 1;    // arch_generic (XDR, big-endian)
+
+// Connection types (ptype): PTYPE_RPC=2, PTYPE_BATCH_SEND=3, PTYPE_LAZY_SEND=4
+const PTYPE_RPC            = 2;    // Remote procedure call
+const PTYPE_LAZY_SEND      = 4;    // Lazy send (protocol 11+)
+
+// User identification tags for p_cnct_user_id
+const CNCT_user            = 1;    // User name
+const CNCT_host            = 4;    // Client hostname
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -68,18 +80,36 @@ function u32BE(v: number): number[] {
   return [(v >>> 24) & 0xff, (v >>> 16) & 0xff, (v >>> 8) & 0xff, v & 0xff];
 }
 
-/** Firebird "counted string": [u32BE length][bytes][null][pad to 4-byte boundary] */
-function cstring(s: string): number[] {
+/**
+ * XDR-style opaque/string encoding: [u32BE length][bytes][pad to 4-byte boundary]
+ *
+ * The Firebird wire protocol uses standard XDR encoding for strings.
+ * The length field is the actual byte count of the string (no null terminator).
+ * The data is padded with zero bytes to the next 4-byte boundary.
+ *
+ * Previous bug: included a null terminator in the length and data, which is
+ * a C convention only and not part of the XDR wire encoding.
+ */
+function xdrString(s: string): number[] {
   const bytes = enc.encode(s);
-  const len = bytes.length + 1;
+  const len = bytes.length;
   const pad = (4 - (len % 4)) % 4;
-  return [...u32BE(len), ...bytes, 0, ...new Array(pad).fill(0)];
+  return [...u32BE(len), ...bytes, ...new Array(pad).fill(0)];
 }
 
-/** Pad a byte array to 4-byte boundary */
-function pad4(data: number[]): number[] {
-  const r = data.length % 4;
-  return r === 0 ? data : [...data, ...new Array(4 - r).fill(0)];
+/**
+ * XDR-style opaque encoding for raw byte arrays: [u32BE length][bytes][pad to 4-byte boundary]
+ */
+function xdrOpaque(data: Uint8Array | number[]): number[] {
+  const bytes = data instanceof Uint8Array ? [...data] : data;
+  const len = bytes.length;
+  const pad = (4 - (len % 4)) % 4;
+  return [...u32BE(len), ...bytes, ...new Array(pad).fill(0)];
+}
+
+/** Read a u32 big-endian from a Uint8Array at offset */
+function readU32(buf: Uint8Array, offset: number): number {
+  return new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(offset);
 }
 
 /**
@@ -98,44 +128,94 @@ function buildDPB(username: string, password: string): Uint8Array {
   return new Uint8Array(items);
 }
 
-/** Build op_connect packet */
-function buildConnectPacket(database: string): Uint8Array {
+/**
+ * Build op_connect packet.
+ *
+ * Wire format (from Firebird protocol.h P_CNCT struct):
+ *   op_connect          u32   opcode (1)
+ *   p_cnct_operation    u32   intended follow-up operation (op_attach=19)
+ *   p_cnct_cversion     u32   connect version (CONNECT_VERSION2=2 for protocol 10-12,
+ *                              CONNECT_VERSION3=3 for protocol 13+)
+ *   p_cnct_client       u32   client architecture (arch_generic=1)
+ *   p_cnct_file         xdr_string   database file path
+ *   p_cnct_count        u32   number of protocol versions offered
+ *   p_cnct_user_id      xdr_opaque   user identification (CNCT_user + CNCT_host tags)
+ *   [protocol versions]  count * 5 u32s each:
+ *     p_cnct_version      u32   protocol version number
+ *     p_cnct_architecture u32   architecture type
+ *     p_cnct_min_type     u32   minimum connection type (ptype)
+ *     p_cnct_max_type     u32   maximum connection type (ptype)
+ *     p_cnct_weight       u32   preference weight
+ *
+ * Previous bugs fixed:
+ *   - p_cnct_operation was 0 (no-op); should be OP_ATTACH (19)
+ *   - Missing p_cnct_cversion and p_cnct_client fields
+ *   - Protocol array field 4 was the version again instead of max_type
+ */
+function buildConnectPacket(database: string, username = 'portofcall'): Uint8Array {
+  // Build user identification buffer: CNCT_user tag + CNCT_host tag
+  const userBytes = enc.encode(username);
+  const hostBytes = enc.encode('portofcall');
+  const userId: number[] = [
+    CNCT_user, userBytes.length, ...userBytes,
+    CNCT_host, hostBytes.length, ...hostBytes,
+  ];
+
   const parts: number[] = [
     ...u32BE(OP_CONNECT),
-    ...u32BE(0),               // operation type: attach(0)
-    ...cstring(database),
-    ...u32BE(1),               // 1 protocol offered
-    ...u32BE(0),               // user-id buffer length (none for probe)
-    // Protocol description: version, architecture, min, max, weight
-    ...u32BE(PROTOCOL_VERSION13),
-    ...u32BE(ARCHITECTURE_GENERIC),
-    ...u32BE(2),               // ptype_rpc
-    ...u32BE(PROTOCOL_VERSION13),
-    ...u32BE(2),               // weight
+    ...u32BE(OP_ATTACH),               // p_cnct_operation: intended next op
+    ...u32BE(CONNECT_VERSION3),        // p_cnct_cversion: connect version 3 for protocol 13
+    ...u32BE(ARCHITECTURE_GENERIC),    // p_cnct_client: client architecture
+    ...xdrString(database),            // p_cnct_file: database path (XDR string)
+    ...u32BE(1),                       // p_cnct_count: 1 protocol version offered
+    ...xdrOpaque(new Uint8Array(userId)), // p_cnct_user_id: user identification
+    // Protocol version entry (5 x u32):
+    ...u32BE(PROTOCOL_VERSION13),      // p_cnct_version: version 13
+    ...u32BE(ARCHITECTURE_GENERIC),    // p_cnct_architecture: generic (XDR)
+    ...u32BE(PTYPE_RPC),               // p_cnct_min_type: minimum ptype
+    ...u32BE(PTYPE_LAZY_SEND),         // p_cnct_max_type: maximum ptype
+    ...u32BE(2),                       // p_cnct_weight: preference weight
   ];
   return new Uint8Array(parts);
 }
 
-/** Build op_attach packet */
+/**
+ * Build op_attach packet.
+ *
+ * Wire format (from Firebird protocol.h P_ATCH struct):
+ *   op_attach           u32          opcode (19)
+ *   p_atch_file         xdr_string   database file path
+ *   p_atch_dpb          xdr_opaque   Database Parameter Block (DPB)
+ *
+ * Previous bug: had a spurious u32(0) between the opcode and the database
+ * path string.  No such field exists in the P_ATCH struct; the opcode is
+ * immediately followed by the XDR-encoded path string.  That extra 4-byte
+ * word shifted every subsequent field by 4 bytes, causing every op_attach
+ * to be rejected by the server with a protocol framing error.
+ */
 function buildAttachPacket(database: string, dpb: Uint8Array): Uint8Array {
   const parts: number[] = [
     ...u32BE(OP_ATTACH),
-    ...u32BE(0),               // db_handle (0 = new)
-    ...cstring(database),
-    ...u32BE(dpb.length),
-    ...pad4([...dpb]),
+    ...xdrString(database),    // database path (XDR string encoding)
+    ...xdrOpaque(dpb),         // DPB (XDR opaque encoding)
   ];
   return new Uint8Array(parts);
 }
 
-/** Build op_transaction packet with a read-only TPB */
+/**
+ * Build op_transaction packet with a read-only TPB.
+ *
+ * Wire format:
+ *   op_transaction  u32         opcode (29)
+ *   p_sttr_database u32         database handle
+ *   p_sttr_tpb      xdr_opaque  Transaction Parameter Block
+ */
 function buildTransactionPacket(dbHandle: number): Uint8Array {
-  const tpb = [isc_tpb_version3, isc_tpb_read, isc_tpb_concurrency, isc_tpb_wait];
+  const tpb = new Uint8Array([isc_tpb_version3, isc_tpb_read, isc_tpb_concurrency, isc_tpb_wait]);
   return new Uint8Array([
     ...u32BE(OP_TRANSACTION),
     ...u32BE(dbHandle),
-    ...u32BE(tpb.length),
-    ...pad4(tpb),
+    ...xdrOpaque(tpb),
   ]);
 }
 
@@ -144,42 +224,74 @@ function buildAllocateStatement(dbHandle: number): Uint8Array {
   return new Uint8Array([...u32BE(OP_ALLOCATE_STATEMENT), ...u32BE(dbHandle)]);
 }
 
-/** Build op_prepare_statement */
+/**
+ * Build op_prepare_statement packet.
+ *
+ * Wire format (from Firebird protocol.h P_SQLST struct):
+ *   op_prepare_statement  u32         opcode (64)
+ *   p_sqlst_transaction   u32         transaction handle
+ *   p_sqlst_statement     u32         statement handle
+ *   p_sqlst_SQL_dialect   u32         SQL dialect (3 = current)
+ *   p_sqlst_SQL_str       xdr_string  SQL text
+ *   p_sqlst_items         xdr_opaque  describe items buffer
+ *   p_sqlst_buffer_length u32         max length for describe output
+ */
 function buildPrepareStatement(trHandle: number, stmtHandle: number, sql: string): Uint8Array {
-  // dialect=3; describe_items is empty; max describe length = 65535
-  const sqlBytes = enc.encode(sql);
   return new Uint8Array([
     ...u32BE(OP_PREPARE_STATEMENT),
     ...u32BE(trHandle),
     ...u32BE(stmtHandle),
-    ...u32BE(3),              // SQL dialect
-    ...u32BE(sqlBytes.length),
-    ...pad4([...sqlBytes]),
-    ...u32BE(0),              // describe_items length (none)
-    ...u32BE(65535),          // max describe length
+    ...u32BE(3),                             // SQL dialect 3
+    ...xdrString(sql),                       // SQL text (XDR string)
+    ...xdrOpaque(new Uint8Array(0)),         // describe_items (empty)
+    ...u32BE(65535),                         // max describe buffer length
   ]);
 }
 
-/** Build op_execute */
+/**
+ * Build op_execute packet (no input parameters).
+ *
+ * Wire format (from Firebird protocol.h P_SQLDATA struct):
+ *   op_execute          u32         opcode (63)
+ *   p_sqldata_statement u32         statement handle
+ *   p_sqldata_transaction u32       transaction handle
+ *   p_sqldata_blr       xdr_opaque  BLR descriptor for input message (empty = no params)
+ *   p_sqldata_message_number u32    message number (0)
+ *   p_sqldata_messages  u32         message count (0 = no input data)
+ */
 function buildExecute(trHandle: number, stmtHandle: number): Uint8Array {
   return new Uint8Array([
     ...u32BE(OP_EXECUTE),
     ...u32BE(stmtHandle),
     ...u32BE(trHandle),
-    ...u32BE(0), ...u32BE(0), // blr (none)
-    ...u32BE(0),              // message_number
-    ...u32BE(0),              // message_count
+    ...xdrOpaque(new Uint8Array(0)),  // BLR descriptor (empty = no input params)
+    ...u32BE(0),                      // message_number
+    ...u32BE(0),                      // message_count (0 = no input message follows)
   ]);
 }
 
-/** Build op_fetch */
+/**
+ * Build op_fetch packet.
+ *
+ * Wire format (from Firebird protocol.h P_SQLDATA struct):
+ *   op_fetch            u32         opcode (65)
+ *   p_sqldata_statement u32         statement handle
+ *   p_sqldata_blr       xdr_opaque  BLR output message descriptor
+ *   p_sqldata_message_number u32    message number (0)
+ *   p_sqldata_messages  u32         fetch count (rows to retrieve per call)
+ *
+ * Note: With an empty BLR descriptor, the server returns raw data in
+ * the response. For proper row parsing you would need a BLR that
+ * describes the output columns. This implementation fetches raw data
+ * and does best-effort text extraction.
+ */
 function buildFetch(stmtHandle: number): Uint8Array {
   return new Uint8Array([
     ...u32BE(OP_FETCH),
     ...u32BE(stmtHandle),
-    ...u32BE(0), ...u32BE(0), // blr (none)
-    ...u32BE(0),              // message_number
-    ...u32BE(200),            // fetch count (max rows to return)
+    ...xdrOpaque(new Uint8Array(0)),  // BLR descriptor (empty)
+    ...u32BE(0),                      // message_number
+    ...u32BE(200),                    // fetch count
   ]);
 }
 
@@ -242,7 +354,7 @@ interface FBResponse {
  */
 async function recvPacket(s: FirebirdSocket, timeoutMs = 8000): Promise<FBResponse> {
   const opcodeBytes = await recvBytes(s, 4, timeoutMs);
-  const opcode = new DataView(opcodeBytes.buffer).getUint32(0);
+  const opcode = new DataView(opcodeBytes.buffer, opcodeBytes.byteOffset, opcodeBytes.byteLength).getUint32(0);
 
   if (opcode === OP_ACCEPT) {
     // op_accept: [version 4][architecture 4][type 4]
@@ -255,33 +367,78 @@ async function recvPacket(s: FirebirdSocket, timeoutMs = 8000): Promise<FBRespon
   }
 
   if (opcode === OP_RESPONSE) {
-    // [handle 4][blob_id 8][status_vector_length 4][status_vector ...]
-    const header = await recvBytes(s, 16, timeoutMs);
-    const dv = new DataView(header.buffer);
-    const handle = dv.getUint32(0);
-    const svLen  = dv.getUint32(12);
+    // op_response wire format (from Firebird protocol.h P_RESP struct):
+    //   p_resp_object     u32         handle / object ID
+    //   p_resp_blob_id    u64         blob ID (8 bytes)
+    //   p_resp_data       xdr_opaque  response data buffer [u32 len][data][pad]
+    //   p_resp_status_vector           ISC status vector (sequence of typed u32 entries)
 
+    // Read fixed header: handle (4) + blob_id (8) = 12 bytes
+    const header = await recvBytes(s, 12, timeoutMs);
+    const handle = readU32(header, 0);
+    // blob_id at offset 4..11 (unused here)
+
+    // Read response data (XDR opaque: u32 length + data + padding)
+    const dataLenBuf = await recvBytes(s, 4, timeoutMs);
+    const dataLen = readU32(dataLenBuf, 0);
+    if (dataLen > 0) {
+      const dataPad = (4 - (dataLen % 4)) % 4;
+      await recvBytes(s, dataLen + dataPad, timeoutMs); // consume response data + padding
+    }
+
+    // Read ISC status vector: sequence of u32-typed entries terminated by isc_arg_end (0)
+    // Each entry starts with a u32 argument type:
+    //   0 = isc_arg_end (terminates vector)
+    //   1 = isc_arg_gds: followed by u32 error code
+    //   2 = isc_arg_string: followed by XDR string
+    //   4 = isc_arg_number: followed by u32 number
+    //   5 = isc_arg_interpreted: followed by XDR string (interpreted message)
+    //  19 = isc_arg_sql_state: followed by XDR string (SQLSTATE code)
+    const msgs: string[] = [];
     let statusError: string | undefined;
-    if (svLen > 0) {
-      const sv = await recvBytes(s, svLen, timeoutMs);
-      // Scan for isc_arg_string (2) items which carry human-readable errors
-      const msgs: string[] = [];
-      let i = 0;
-      while (i < sv.length) {
-        const code = sv[i++];
-        if (code === 0) break;           // isc_arg_end
-        if (code === 1) { i += 4; continue; } // isc_arg_gds: skip 4-byte error number
-        if (code === 2) {
-          // isc_arg_string: null-terminated string
-          let end = i;
-          while (end < sv.length && sv[end] !== 0) end++;
-          msgs.push(dec.decode(sv.subarray(i, end)));
-          i = end + 1;
-        } else {
-          i += 4; // unknown arg type: skip 4 bytes
-        }
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const typeBuf = await recvBytes(s, 4, timeoutMs);
+      const argType = readU32(typeBuf, 0);
+
+      if (argType === 0) break; // isc_arg_end
+
+      if (argType === 1) {
+        // isc_arg_gds: u32 ISC error code
+        await recvBytes(s, 4, timeoutMs); // consume error code
+        continue;
       }
-      statusError = msgs.join('; ') || `status vector length=${svLen}`;
+
+      if (argType === 2 || argType === 5 || argType === 19) {
+        // isc_arg_string / isc_arg_interpreted / isc_arg_sql_state: XDR string
+        const strLenBuf = await recvBytes(s, 4, timeoutMs);
+        const strLen = readU32(strLenBuf, 0);
+        const strPad = (4 - (strLen % 4)) % 4;
+        if (strLen > 0) {
+          const strData = await recvBytes(s, strLen + strPad, timeoutMs);
+          const text = dec.decode(strData.subarray(0, strLen));
+          if (argType === 19) {
+            msgs.push(`SQLSTATE ${text}`);
+          } else {
+            msgs.push(text);
+          }
+        }
+        continue;
+      }
+
+      if (argType === 4) {
+        // isc_arg_number: u32 value
+        await recvBytes(s, 4, timeoutMs);
+        continue;
+      }
+
+      // Unknown arg type: assume u32 value and skip
+      await recvBytes(s, 4, timeoutMs);
+    }
+
+    if (msgs.length > 0) {
+      statusError = msgs.join('; ');
     }
 
     return { opcode, handle, statusError };
@@ -290,7 +447,7 @@ async function recvPacket(s: FirebirdSocket, timeoutMs = 8000): Promise<FBRespon
   if (opcode === OP_FETCH_RESPONSE) {
     // [fetch_status 4][count 4]
     const body = await recvBytes(s, 8, timeoutMs);
-    const fetchStatus = new DataView(body.buffer).getUint32(0);
+    const fetchStatus = new DataView(body.buffer, body.byteOffset, body.byteLength).getUint32(0);
     return { opcode, fetchStatus, data: body };
   }
 
@@ -335,7 +492,7 @@ async function connectAndAccept(
     throw new Error(`Expected op_accept (2), got opcode ${resp.opcode}`);
   }
 
-  const dv = new DataView(resp.data.buffer);
+  const dv = new DataView(resp.data.buffer, resp.data.byteOffset, resp.data.byteLength);
   const protocol     = dv.getUint32(0);
   const architecture = dv.getUint32(4);
 
@@ -368,6 +525,11 @@ export async function handleFirebirdProbe(request: Request): Promise<Response> {
 
     if (!host || typeof host !== 'string') {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -427,6 +589,11 @@ export async function handleFirebirdAuth(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -504,6 +671,11 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 

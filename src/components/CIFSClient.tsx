@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface CIFSClientProps {
   onBack: () => void;
@@ -320,6 +322,7 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
 
   return (
     <ProtocolClientLayout title="CIFS / SMB2 Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.CIFS || []} />
       {/* Tab bar */}
       <div className="flex gap-1 mb-4 bg-slate-900 rounded-lg p-1">
         {tabs.map(t => (

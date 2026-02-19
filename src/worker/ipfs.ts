@@ -316,9 +316,10 @@ export async function handleIPFSAdd(request: Request): Promise<Response> {
       timeout = 10000,
     } = body;
 
-    if (!host || host.trim().length === 0) {
+    const addValidationError = validateInput(host, port);
+    if (addValidationError) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Host is required' }),
+        JSON.stringify({ success: false, error: addValidationError }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -385,9 +386,10 @@ export async function handleIPFSCat(request: Request): Promise<Response> {
     const body = (await request.json()) as IPFSCatRequest;
     const { host, port = 5001, cid, timeout = 10000 } = body;
 
-    if (!host || host.trim().length === 0) {
+    const catValidationError = validateInput(host, port);
+    if (catValidationError) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Host is required' }),
+        JSON.stringify({ success: false, error: catValidationError }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -449,8 +451,9 @@ export async function handleIPFSPinAdd(request: Request): Promise<Response> {
   try {
     const body = await request.json() as { host: string; port?: number; cid: string; timeout?: number };
     const { host, port = 5001, cid, timeout = 15000 } = body;
-    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!cid)  return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const pinAddValErr = validateInput(host, port);
+    if (pinAddValErr) return new Response(JSON.stringify({ success: false, error: pinAddValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!cid || !cid.trim()) return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const startTime = Date.now();
     const resp = await fetch(`http://${host}:${port}/api/v0/pin/add?arg=${encodeURIComponent(cid)}`, { method: 'POST', signal: AbortSignal.timeout(timeout) });
     const latencyMs = Date.now() - startTime;
@@ -472,7 +475,8 @@ export async function handleIPFSPinList(request: Request): Promise<Response> {
   try {
     const body = await request.json() as { host: string; port?: number; cid?: string; type?: string; timeout?: number };
     const { host, port = 5001, cid, type = 'all', timeout = 10000 } = body;
-    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const pinLsValErr = validateInput(host, port);
+    if (pinLsValErr) return new Response(JSON.stringify({ success: false, error: pinLsValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const startTime = Date.now();
     let url = `http://${host}:${port}/api/v0/pin/ls?type=${encodeURIComponent(type)}`;
     if (cid) url += `&arg=${encodeURIComponent(cid)}`;
@@ -500,8 +504,9 @@ export async function handleIPFSPinRm(request: Request): Promise<Response> {
   try {
     const body = await request.json() as { host: string; port?: number; cid: string; recursive?: boolean; timeout?: number };
     const { host, port = 5001, cid, recursive = true, timeout = 15000 } = body;
-    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!cid) return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const pinRmValErr = validateInput(host, port);
+    if (pinRmValErr) return new Response(JSON.stringify({ success: false, error: pinRmValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!cid || !cid.trim()) return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const startTime = Date.now();
     const resp = await fetch(
       `http://${host}:${port}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}&recursive=${recursive}`,
@@ -527,23 +532,29 @@ export async function handleIPFSPinRm(request: Request): Promise<Response> {
  * POST /api/ipfs/pubsub-pub
  * Body: { host, port?, topic, data, timeout? }
  *
- * Calls POST /api/v0/pubsub/pub?arg=TOPIC with data as binary body.
+ * Calls POST /api/v0/pubsub/pub?arg=TOPIC with data as multipart/form-data file.
  * Note: pubsub requires --enable-pubsub-experiment on go-ipfs / kubo ≥ 0.11.
+ *
+ * The Kubo RPC API expects the message payload as a file upload in multipart/form-data,
+ * not as a raw octet-stream body.
  */
 export async function handleIPFSPubsubPub(request: Request): Promise<Response> {
   if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
   try {
     const body = await request.json() as { host: string; port?: number; topic: string; data?: string; timeout?: number };
     const { host, port = 5001, topic, data = '', timeout = 10000 } = body;
-    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!topic) return new Response(JSON.stringify({ success: false, error: 'topic is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const pubValErr = validateInput(host, port);
+    if (pubValErr) return new Response(JSON.stringify({ success: false, error: pubValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!topic || !topic.trim()) return new Response(JSON.stringify({ success: false, error: 'Topic is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const startTime = Date.now();
+    // Kubo RPC API expects data as a file in multipart/form-data
+    const form = new FormData();
+    form.append('file', new Blob([data], { type: 'application/octet-stream' }), 'data');
     const resp = await fetch(
       `http://${host}:${port}/api/v0/pubsub/pub?arg=${encodeURIComponent(topic)}`,
       {
         method: 'POST',
-        body: new TextEncoder().encode(data),
-        headers: { 'Content-Type': 'application/octet-stream' },
+        body: form,
         signal: AbortSignal.timeout(timeout),
       },
     );
@@ -571,7 +582,8 @@ export async function handleIPFSPubsubLs(request: Request): Promise<Response> {
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 5001, timeout = 10000 } = body;
-    if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const lsValErr = validateInput(host, port);
+    if (lsValErr) return new Response(JSON.stringify({ success: false, error: lsValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const startTime = Date.now();
     const resp = await fetch(`http://${host}:${port}/api/v0/pubsub/ls`, { method: 'POST', signal: AbortSignal.timeout(timeout) });
     const latencyMs = Date.now() - startTime;
@@ -604,9 +616,10 @@ export async function handleIPFSNodeInfo(request: Request): Promise<Response> {
     const body = (await request.json()) as IPFSNodeInfoRequest;
     const { host, port = 5001, timeout = 10000 } = body;
 
-    if (!host || host.trim().length === 0) {
+    const infoValidationError = validateInput(host, port);
+    if (infoValidationError) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Host is required' }),
+        JSON.stringify({ success: false, error: infoValidationError }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -634,6 +647,8 @@ export async function handleIPFSNodeInfo(request: Request): Promise<Response> {
       PublicKey?: string;
       Addresses?: string[];
       AgentVersion?: string;
+      ProtocolVersion?: string;
+      Protocols?: string[];
     };
 
     return new Response(
@@ -643,6 +658,8 @@ export async function handleIPFSNodeInfo(request: Request): Promise<Response> {
         publicKey: json.PublicKey,
         addresses: json.Addresses,
         agentVersion: json.AgentVersion,
+        protocolVersion: json.ProtocolVersion,
+        protocols: json.Protocols,
         latencyMs,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },

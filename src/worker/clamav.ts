@@ -1,18 +1,29 @@
 /**
  * ClamAV Daemon Protocol Support for Cloudflare Workers
- * ClamAV clamd TCP Protocol
- * Port: 3310
+ * ClamAV clamd TCP Protocol — Default Port: 3310
  *
  * ClamAV is an open-source antivirus engine. The clamd daemon listens
- * on TCP port 3310 and accepts simple text commands:
+ * on TCP port 3310 and accepts text commands in three formats:
  *
- *   PING        - Check if daemon is alive (response: PONG)
- *   VERSION     - Get ClamAV version info
- *   STATS       - Get scanning statistics
- *   RELOAD      - Reload virus database
+ *   Plain:    "COMMAND\n"   — newline-terminated, single command per connection
+ *   n-prefix: "nCOMMAND\n"  — newline-delimited, supports session/keep-alive
+ *   z-prefix: "zCOMMAND\0"  — null-delimited, supports session/keep-alive
  *
- * Responses are null-byte (\0) terminated.
- * The "n" prefix variants (nPING, nVERSION, etc.) use newline termination.
+ * Supported commands:
+ *   PING        — Response: "PONG"
+ *   VERSION     — Response: "ClamAV <ver>/<db-ver>/<db-date>"
+ *   STATS       — Response: multi-line daemon statistics, ending with "END"
+ *   RELOAD      — Reload virus signature database
+ *   SHUTDOWN    — Shut down the daemon
+ *   INSTREAM    — Stream data for scanning using chunked protocol
+ *
+ * INSTREAM chunked protocol:
+ *   1. Send command: "zINSTREAM\0" (or "INSTREAM\n")
+ *   2. Send data in chunks: [4-byte big-endian length][data bytes]
+ *   3. Terminate with a zero-length chunk: [0x00 0x00 0x00 0x00]
+ *   4. Read response: "stream: OK\0" or "stream: <name> FOUND\0"
+ *
+ * This module uses n-prefix for simple commands and z-prefix for INSTREAM.
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -350,12 +361,24 @@ export async function handleClamAVStats(request: Request): Promise<Response> {
           if (done || !value) break;
           chunks.push(value);
 
-          // STATS response ends with "END\n" or null byte
-          const text = new TextDecoder().decode(value);
-          if (text.includes('END') || value.includes(0)) break;
+          // Check for null terminator in current chunk
+          if (value.includes(0)) break;
 
+          // STATS response ends with "END" on its own line.
+          // Check accumulated text to handle "END" split across chunks,
+          // and use a regex anchored to line start to avoid false positives
+          // on words like "PENDING", "BACKEND", etc.
           const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
           if (totalLength > 65536) break;
+
+          const accumulated = new Uint8Array(totalLength);
+          let pos = 0;
+          for (const c of chunks) {
+            accumulated.set(c, pos);
+            pos += c.length;
+          }
+          const text = new TextDecoder().decode(accumulated);
+          if (/^END\s*$/m.test(text)) break;
         }
       } catch {
         // Connection closed
@@ -448,6 +471,26 @@ export async function handleClamAVScan(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'Missing required: host, data (base64)' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     // Decode base64 data

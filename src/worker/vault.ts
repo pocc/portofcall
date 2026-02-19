@@ -342,7 +342,10 @@ export async function handleVaultQuery(request: Request): Promise<Response> {
 
     return new Response(
       JSON.stringify({
-        success: result.statusCode >= 200 && result.statusCode < 400,
+        // Bug fix: was >= 200 && < 400; Vault never returns intentional 3xx
+        // redirects and treating 3xx as success masked degraded-state codes
+        // (e.g. 429 standby, 472 DR mode, 473 perf-standby, 503 sealed).
+        success: result.statusCode >= 200 && result.statusCode < 300,
         host,
         port,
         path,
@@ -372,6 +375,14 @@ export async function handleVaultQuery(request: Request): Promise<Response> {
  * and KV v2 (/v1/secret/data/{path}). Auto-detects version from response shape.
  */
 export async function handleVaultSecretRead(request: Request): Promise<Response> {
+  // Bug fix: method check was missing; GET/PUT/DELETE requests were silently processed.
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   try {
     const body = await request.json() as {
       host: string; port?: number; path: string; token: string;
@@ -382,9 +393,32 @@ export async function handleVaultSecretRead(request: Request): Promise<Response>
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+
     const host = body.host;
     const port = body.port || 8200;
     const timeout = body.timeout || 10000;
+
+    // Bug fix: port validation was missing; out-of-range ports caused connect() to throw.
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Bug fix: Cloudflare detection was missing; requests could reach Cloudflare infra.
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const mount = body.mount || 'secret';
     const kvVersion = body.kv_version || 2;
     const apiPath = kvVersion === 2
@@ -431,6 +465,14 @@ export async function handleVaultSecretRead(request: Request): Promise<Response>
  * KV v1: POST /v1/{mount}/{path} with the data directly.
  */
 export async function handleVaultSecretWrite(request: Request): Promise<Response> {
+  // Bug fix: method check was missing; non-POST requests were silently processed.
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   try {
     const body = await request.json() as {
       host: string; port?: number; path: string; token: string;
@@ -441,9 +483,32 @@ export async function handleVaultSecretWrite(request: Request): Promise<Response
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+
     const host = body.host;
     const port = body.port || 8200;
     const timeout = body.timeout || 10000;
+
+    // Bug fix: port validation was missing.
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Bug fix: Cloudflare detection was missing.
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const mount = body.mount || 'secret';
     const kvVersion = body.kv_version || 2;
     const apiPath = kvVersion === 2
@@ -453,8 +518,8 @@ export async function handleVaultSecretWrite(request: Request): Promise<Response
       ? JSON.stringify({ data: body.data })
       : JSON.stringify(body.data);
 
-    // Build raw HTTP POST over TCP socket
-    const { connect } = await import('cloudflare:sockets');
+    // Bug fix: removed redundant dynamic import of 'cloudflare:sockets' that shadowed
+    // the top-level `connect` import. The top-level `connect` is used directly here.
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
     await socket.opened;

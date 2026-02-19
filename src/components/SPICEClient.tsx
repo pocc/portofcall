@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface SPICEClientProps {
   onBack: () => void;
@@ -117,6 +119,7 @@ export default function SPICEClient({ onBack }: SPICEClientProps) {
 
   return (
     <ProtocolClientLayout title="SPICE Protocol" onBack={onBack}>
+      <ApiExamples examples={apiExamples.SPICE || []} />
       <SectionHeader stepNumber={1} title="Connection Settings" />
 
       <FormField

@@ -26,7 +26,10 @@
  *   0x02 = String (2-byte length prefix + UTF-8)
  *   0x03 = Object (key-value pairs ending with 0x00 0x00 0x09)
  *   0x05 = Null
+ *   0x06 = Undefined
  *   0x08 = ECMA Array (4-byte count + key-value pairs ending with 0x00 0x00 0x09)
+ *   0x0A = Strict Array (4-byte count + sequential typed values)
+ *   0x0C = Long String (4-byte length prefix + UTF-8)
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -96,13 +99,14 @@ function amf0EncodeKey(key: string): Uint8Array {
 // AMF0Value: recursive type for AMF0 encoded values.
 // Using interface + type alias mutual reference (both must be declared in the same scope).
 // TypeScript allows this pattern as interfaces are hoisted.
-type AMF0Value = string | number | boolean | null | { [key: string]: AMF0Value };
+type AMF0Value = string | number | boolean | null | AMF0Value[] | { [key: string]: AMF0Value };
 
 function amf0EncodeValue(value: AMF0Value): Uint8Array {
   if (value === null || value === undefined) return amf0EncodeNull();
   if (typeof value === 'number') return amf0EncodeNumber(value);
   if (typeof value === 'boolean') return amf0EncodeBoolean(value);
   if (typeof value === 'string') return amf0EncodeString(value);
+  if (Array.isArray(value)) return amf0EncodeStrictArray(value);
   if (typeof value === 'object') return amf0EncodeObject(value);
   return amf0EncodeNull();
 }
@@ -115,6 +119,18 @@ function amf0EncodeObject(obj: Record<string, AMF0Value>): Uint8Array {
   }
   // Object end marker: 0x00 0x00 0x09
   parts.push(new Uint8Array([0x00, 0x00, 0x09]));
+  return concatBuffers(parts);
+}
+
+function amf0EncodeStrictArray(arr: AMF0Value[]): Uint8Array {
+  const header = new Uint8Array(5);
+  header[0] = 0x0A; // Strict Array type marker
+  const view = new DataView(header.buffer);
+  view.setUint32(1, arr.length, false);
+  const parts: Uint8Array[] = [header];
+  for (const item of arr) {
+    parts.push(amf0EncodeValue(item));
+  }
   return concatBuffers(parts);
 }
 
@@ -155,8 +171,8 @@ function amf0Decode(data: Uint8Array, offset = 0): AMF0Decoded {
     case 0x03: { // Object
       const obj: Record<string, AMF0Value> = {};
       let pos = offset + 1;
-      while (pos < data.length) {
-        // Check for end marker
+      while (pos + 2 < data.length) {
+        // Check for end marker (0x00 0x00 0x09)
         if (data[pos] === 0x00 && data[pos + 1] === 0x00 && data[pos + 2] === 0x09) {
           pos += 3;
           break;
@@ -174,10 +190,14 @@ function amf0Decode(data: Uint8Array, offset = 0): AMF0Decoded {
     case 0x05: { // Null
       return { value: null, bytesRead: 1 };
     }
+    case 0x06: { // Undefined
+      return { value: null, bytesRead: 1 };
+    }
     case 0x08: { // ECMA Array
       const obj: Record<string, AMF0Value> = {};
       let pos = offset + 5; // skip type + 4-byte count
-      while (pos < data.length) {
+      while (pos + 2 < data.length) {
+        // Check for end marker (0x00 0x00 0x09)
         if (data[pos] === 0x00 && data[pos + 1] === 0x00 && data[pos + 2] === 0x09) {
           pos += 3;
           break;
@@ -191,6 +211,24 @@ function amf0Decode(data: Uint8Array, offset = 0): AMF0Decoded {
         pos += decoded.bytesRead;
       }
       return { value: obj, bytesRead: pos - offset };
+    }
+    case 0x0A: { // Strict Array
+      const view = new DataView(data.buffer, data.byteOffset + offset + 1);
+      const count = view.getUint32(0, false);
+      const arr: AMF0Value[] = [];
+      let pos = offset + 5; // skip type + 4-byte count
+      for (let i = 0; i < count && pos < data.length; i++) {
+        const decoded = amf0Decode(data, pos);
+        arr.push(decoded.value);
+        pos += decoded.bytesRead;
+      }
+      return { value: arr, bytesRead: pos - offset };
+    }
+    case 0x0C: { // Long String (4-byte length prefix)
+      const view = new DataView(data.buffer, data.byteOffset + offset + 1);
+      const len = view.getUint32(0, false);
+      const str = new TextDecoder().decode(data.slice(offset + 5, offset + 5 + len));
+      return { value: str, bytesRead: 5 + len };
     }
     default:
       return { value: null, bytesRead: 1 };
@@ -387,9 +425,12 @@ async function readRTMPMessage(
   };
 }
 
-/** Parse AMF0 response command fields from a message payload */
-function parseAMF0Response(payload: Uint8Array): { name: string; txId: number; args: AMF0Value[] } {
-  const values = amf0DecodeAll(payload);
+/** Parse AMF0 response command fields from a message payload.
+ *  AMF3 command messages (typeId 17) have a leading 0x00 byte before the AMF0 data. */
+function parseAMF0Response(payload: Uint8Array, typeId: number = MSG_AMF0_CMD): { name: string; txId: number; args: AMF0Value[] } {
+  // AMF3 command messages prefix the payload with a single 0x00 byte
+  const data = typeId === MSG_AMF3_CMD ? payload.subarray(1) : payload;
+  const values = amf0DecodeAll(data);
   const name = (values[0] as string) || '';
   const txId = (values[1] as number) || 0;
   const args = values.slice(2);
@@ -471,7 +512,7 @@ async function rtmpHandshakeAndConnect(
       continue;
     }
     if (msg.typeId === MSG_AMF0_CMD || msg.typeId === MSG_AMF3_CMD) {
-      const resp = parseAMF0Response(msg.payload);
+      const resp = parseAMF0Response(msg.payload, msg.typeId);
       if (resp.name === '_result' && resp.txId === 1) {
         return { connectResult: resp.args };
       }
@@ -508,7 +549,7 @@ async function rtmpCreateStream(
       continue;
     }
     if (msg.typeId === MSG_AMF0_CMD || msg.typeId === MSG_AMF3_CMD) {
-      const resp = parseAMF0Response(msg.payload);
+      const resp = parseAMF0Response(msg.payload, msg.typeId);
       if (resp.name === '_result' && resp.txId === txId) {
         const streamId = resp.args[1];
         if (typeof streamId === 'number') return streamId;
@@ -686,7 +727,7 @@ export async function handleRTMPPublish(request: Request): Promise<Response> {
             continue;
           }
           if (msg.typeId === MSG_AMF0_CMD || msg.typeId === MSG_AMF3_CMD) {
-            const resp = parseAMF0Response(msg.payload);
+            const resp = parseAMF0Response(msg.payload, msg.typeId);
             serverResponses.push({ name: resp.name, info: resp.args[1] ?? null });
 
             if (resp.name === 'onStatus') {
@@ -849,7 +890,7 @@ export async function handleRTMPPlay(request: Request): Promise<Response> {
             continue;
           }
           if (msg.typeId === MSG_AMF0_CMD || msg.typeId === MSG_AMF3_CMD) {
-            const resp = parseAMF0Response(msg.payload);
+            const resp = parseAMF0Response(msg.payload, msg.typeId);
             serverResponses.push({ name: resp.name, txId: resp.txId, info: resp.args[1] ?? null });
 
             if (resp.name === 'onStatus') {

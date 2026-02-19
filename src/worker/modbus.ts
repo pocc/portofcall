@@ -42,18 +42,19 @@ let transactionCounter = 0;
 function buildModbusFrame(unitId: number, functionCode: number, data: number[]): Uint8Array {
   const txId = ++transactionCounter & 0xFFFF;
   const pduLength = 1 + data.length; // function code + data
-  const totalLength = 7 + pduLength; // MBAP header + PDU
+  const mbapLength = 1 + pduLength;  // Unit ID (1) + PDU — per Modbus TCP spec
+  const totalLength = 6 + mbapLength; // MBAP prefix (TxID + ProtoID + Length = 6) + remaining bytes
 
   const frame = new Uint8Array(totalLength);
 
   // MBAP Header
-  frame[0] = (txId >> 8) & 0xFF;     // Transaction ID high
-  frame[1] = txId & 0xFF;             // Transaction ID low
-  frame[2] = 0x00;                     // Protocol ID high (always 0)
-  frame[3] = 0x00;                     // Protocol ID low
-  frame[4] = (pduLength >> 8) & 0xFF; // Length high
-  frame[5] = pduLength & 0xFF;        // Length low
-  frame[6] = unitId;                   // Unit ID
+  frame[0] = (txId >> 8) & 0xFF;      // Transaction ID high
+  frame[1] = txId & 0xFF;              // Transaction ID low
+  frame[2] = 0x00;                      // Protocol ID high (always 0)
+  frame[3] = 0x00;                      // Protocol ID low
+  frame[4] = (mbapLength >> 8) & 0xFF; // Length high (counts from Unit ID onward)
+  frame[5] = mbapLength & 0xFF;        // Length low
+  frame[6] = unitId;                    // Unit ID
 
   // PDU
   frame[7] = functionCode;

@@ -457,6 +457,17 @@ export async function handlePrometheusRangeQuery(request: Request): Promise<Resp
     const host = body.host;
     const port = body.port || 9090;
     const timeout = body.timeout || 15000;
+
+    // Bug fix: added missing Cloudflare detection (all other handlers had this check)
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const now = Math.floor(Date.now() / 1000);
     const start = body.start || String(now - 3600);
     const end = body.end || String(now);
@@ -473,26 +484,37 @@ export async function handlePrometheusRangeQuery(request: Request): Promise<Resp
       });
     }
 
-    interface RangeResult { data?: { resultType?: string; result?: Array<{ metric: Record<string,string>; values: [number, string][] }> }; status?: string }
+    interface RangeResult {
+      data?: { resultType?: string; result?: Array<{ metric: Record<string,string>; values: [number, string][] }> };
+      status?: string; warnings?: string[]; error?: string; errorType?: string;
+    }
     let parsed: RangeResult = {};
     try { parsed = JSON.parse(result.body) as RangeResult; } catch { /* raw */ }
 
     const series = parsed?.data?.result ?? [];
     const resultType = parsed?.data?.resultType ?? 'unknown';
+    // Bug fix: derive success from parsed.status — Prometheus returns HTTP 200 with status:"error" for bad PromQL
+    const isSuccess = parsed?.status === 'success';
 
     const formattedSeries = series.map(s => ({
       metric: s.metric,
       valueCount: s.values?.length ?? 0,
       firstValue: s.values?.[0],
       lastValue: s.values?.[s.values.length - 1],
-      sampleValues: s.values?.slice(0, 5).map(([ts, v]) => ({ ts, value: parseFloat(v) })),
+      // Bug fix: keep values as strings — parseFloat("NaN")/parseFloat("+Inf") → null after JSON.stringify
+      sampleValues: s.values?.slice(0, 5).map(([ts, v]) => ({ ts, value: v })),
     }));
 
     return new Response(JSON.stringify({
-      success: true,
-      host, port, query: body.query, start, end, step, resultType,
+      success: isSuccess,
+      host, port, query: body.query, start, end, step,
+      status: parsed?.status || 'error',
+      resultType,
       seriesCount: series.length,
       series: formattedSeries,
+      warnings: parsed?.warnings || null,
+      error: parsed?.error || null,
+      errorType: parsed?.errorType || null,
     }), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Range query failed' }), {

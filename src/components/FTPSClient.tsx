@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface FTPSClientProps {
   onBack: () => void;
@@ -122,6 +124,7 @@ export default function FTPSClient({ onBack }: FTPSClientProps) {
 
   return (
     <ProtocolClientLayout title="FTPS Client (FTP over TLS)" onBack={onBack}>
+      <ApiExamples examples={apiExamples.FTPS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="FTPS Connection" />
 

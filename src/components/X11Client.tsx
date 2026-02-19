@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface X11ClientProps {
   onBack: () => void;
@@ -123,6 +125,7 @@ export default function X11Client({ onBack }: X11ClientProps) {
 
   return (
     <ProtocolClientLayout title="X11 Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.X11 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="X11 Server Configuration" />
         <div className="grid md:grid-cols-3 gap-4 mb-4">

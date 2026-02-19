@@ -30,6 +30,7 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 // -- DSS header constants
 const DSS_MAGIC           = 0xD0;
 const DSS_TYPE_RQSDSS     = 0x01;
+const DSS_TYPE_OBJDSS     = 0x03;
 const DSS_CHAIN_SAME_CORR = 0x40;
 
 // -- DDM Code Points: Attribute exchange
@@ -180,7 +181,7 @@ function buildBytesParam(codePoint: number, data: Uint8Array): Uint8Array {
   return out;
 }
 
-function buildDSS(ddmCodePoint: number, params: Uint8Array[], correlId: number, chainNext = false): Uint8Array {
+function buildDSS(ddmCodePoint: number, params: Uint8Array[], correlId: number, chainNext = false, dssType = DSS_TYPE_RQSDSS): Uint8Array {
   const paramsTotal = params.reduce((n, p) => n + p.length, 0);
   const ddmLen = 4 + paramsTotal;
   const dssLen = 6 + ddmLen;
@@ -188,7 +189,7 @@ function buildDSS(ddmCodePoint: number, params: Uint8Array[], correlId: number, 
   const v = new DataView(pkt.buffer);
   v.setUint16(0, dssLen, false);
   pkt[2] = DSS_MAGIC;
-  pkt[3] = DSS_TYPE_RQSDSS | (chainNext ? DSS_CHAIN_SAME_CORR : 0);
+  pkt[3] = dssType | (chainNext ? DSS_CHAIN_SAME_CORR : 0);
   v.setUint16(4, correlId, false);
   v.setUint16(6, ddmLen, false);
   v.setUint16(8, ddmCodePoint, false);
@@ -245,14 +246,14 @@ function buildPKGNAMCSN(database: string, pkgSn: number): Uint8Array {
 
 // ── Protocol message builders ────────────────────────────────────────────────
 
-function buildEXCSAT(): Uint8Array {
+function buildEXCSAT(chainNext = false): Uint8Array {
   return buildDSS(CP_EXCSAT, [
     buildStringParam(CP_EXTNAM, 'portofcall'),
     buildStringParam(CP_SRVCLSNM, 'DRDA/TCP'),
     buildStringParam(CP_SRVRLSLV, '01.00.0000'),
     buildStringParam(CP_SRVNAM, 'portofcall'),
     buildMgrLvlLs(),
-  ], 1, true);
+  ], 1, chainNext);
 }
 
 function buildACCSEC(database: string): Uint8Array {
@@ -262,13 +263,13 @@ function buildACCSEC(database: string): Uint8Array {
   ], 1, false);
 }
 
-function buildSECCHK(database: string, username: string, password: string): Uint8Array {
+function buildSECCHK(database: string, username: string, password: string, chainNext = false): Uint8Array {
   return buildDSS(CP_SECCHK, [
     buildUint16Param(CP_SECMEC, SECMEC_USRIDPWD),
     buildStringParam(CP_RDBNAM, database),
     buildStringParam(CP_USRID, username),
     buildStringParam(CP_PASSWORD, password),
-  ], 2, true);
+  ], 2, chainNext);
 }
 
 function buildACCRDB(database: string): Uint8Array {
@@ -283,28 +284,25 @@ function buildACCRDB(database: string): Uint8Array {
   ], 2, false);
 }
 
-function buildEXCSQLIMM(database: string, sql: string, pkgSn: number): Uint8Array {
+function buildSQLSTTObj(sql: string, correlId: number): Uint8Array {
   const sqlBytes = new TextEncoder().encode(sql);
-  const sqlstt = new Uint8Array(4 + sqlBytes.length);
-  const sv = new DataView(sqlstt.buffer);
-  sv.setUint16(0, sqlstt.length, false);
-  sv.setUint16(2, CP_SQLSTT, false);
-  sqlstt.set(sqlBytes, 4);
-  return buildDSS(CP_EXCSQLIMM, [buildPKGNAMCSN(database, pkgSn), buildByte1Param(0x211C, 0x01), sqlstt], 3, false);
+  return buildDSS(CP_SQLSTT, [sqlBytes], correlId, false, DSS_TYPE_OBJDSS);
+}
+
+function buildEXCSQLIMM(database: string, sql: string, pkgSn: number): Uint8Array {
+  const rqsDss = buildDSS(CP_EXCSQLIMM, [buildPKGNAMCSN(database, pkgSn), buildByte1Param(0x211C, 0x00)], 3, true);
+  const objDss = buildSQLSTTObj(sql, 3);
+  return concat(rqsDss, objDss);
 }
 
 function buildOPNQRY(database: string, sql: string, pkgSn: number): Uint8Array {
-  const sqlBytes = new TextEncoder().encode(sql);
-  const sqlstt = new Uint8Array(4 + sqlBytes.length);
-  const sv = new DataView(sqlstt.buffer);
-  sv.setUint16(0, sqlstt.length, false);
-  sv.setUint16(2, CP_SQLSTT, false);
-  sqlstt.set(sqlBytes, 4);
-  return buildDSS(CP_OPNQRY, [buildPKGNAMCSN(database, pkgSn), buildUint32Param(CP_QRYBLKSZ, 32767), buildUint16Param(CP_QRYROWSET, 100), sqlstt], 3, false);
+  const rqsDss = buildDSS(CP_OPNQRY, [buildPKGNAMCSN(database, pkgSn), buildUint32Param(CP_QRYBLKSZ, 32767), buildUint16Param(CP_QRYROWSET, 100)], 3, true);
+  const objDss = buildSQLSTTObj(sql, 3);
+  return concat(rqsDss, objDss);
 }
 
 function buildFETCH(database: string, queryToken: Uint8Array, pkgSn: number): Uint8Array {
-  return buildDSS(CP_FETCH, [buildPKGNAMCSN(database, pkgSn), buildUint32Param(CP_QRYBLKSZ, 32767), buildUint16Param(CP_QRYROWSET, 100), buildBytesParam(0x2135, queryToken)], 4, false);
+  return buildDSS(CP_FETCH, [buildPKGNAMCSN(database, pkgSn), buildBytesParam(0x2135, queryToken)], 4, false);
 }
 
 function buildCLSQRY(database: string, queryToken: Uint8Array, pkgSn: number): Uint8Array {
@@ -329,7 +327,11 @@ export type SqldtaParam = string | number | bigint | boolean | null;
  * Each param: null→indicator(-1); string→indicator+len+bytes; int→indicator+int32;
  * bigint→indicator+int64; float→indicator+float64; bool→indicator+int16.
  */
-export function buildSQLDTA(params: SqldtaParam[]): Uint8Array {
+/**
+ * Encode raw parameter bytes for SQLDTA (no DDM header wrapper).
+ * Used internally by buildDSS(CP_SQLDTA, ...) for OBJDSS framing.
+ */
+function buildSQLDTAInner(params: SqldtaParam[]): Uint8Array {
   const parts: Uint8Array[] = [];
   for (const p of params) {
     if (p === null || p === undefined) {
@@ -342,7 +344,7 @@ export function buildSQLDTA(params: SqldtaParam[]): Uint8Array {
       parts.push(vlen, strBytes);
     } else if (typeof p === 'bigint') {
       const val = new Uint8Array(8); const dv = new DataView(val.buffer);
-      dv.setInt32(0, Number(p >> 32n), false); dv.setInt32(4, Number(p & 0xFFFFFFFFn), false);
+      dv.setBigInt64(0, p, false);
       parts.push(val);
     } else if (typeof p === 'boolean') {
       const val = new Uint8Array(2); new DataView(val.buffer).setInt16(0, p ? 1 : 0, false); parts.push(val);
@@ -352,7 +354,16 @@ export function buildSQLDTA(params: SqldtaParam[]): Uint8Array {
       const val = new Uint8Array(8); new DataView(val.buffer).setFloat64(0, p as number, false); parts.push(val);
     }
   }
-  const inner = concat(...parts);
+  return concat(...parts);
+}
+
+/**
+ * Encode parameters as SQLDTA DDM object for prepared statement execution.
+ * Each param: null->indicator(-1); string->indicator+len+bytes; int->indicator+int32;
+ * bigint->indicator+int64; float->indicator+float64; bool->indicator+int16.
+ */
+export function buildSQLDTA(params: SqldtaParam[]): Uint8Array {
+  const inner = buildSQLDTAInner(params);
   const out = new Uint8Array(4 + inner.length);
   const v = new DataView(out.buffer);
   v.setUint16(0, 4 + inner.length, false);
@@ -363,21 +374,23 @@ export function buildSQLDTA(params: SqldtaParam[]): Uint8Array {
 
 /** Prepare an SQL statement. Server returns SQLDARD with column/param types. */
 export function buildPRPSQLSTT(database: string, sql: string, pkgSn: number): Uint8Array {
-  const sqlBytes = new TextEncoder().encode(sql);
-  const sqlstt = new Uint8Array(4 + sqlBytes.length);
-  const sv = new DataView(sqlstt.buffer);
-  sv.setUint16(0, sqlstt.length, false); sv.setUint16(2, CP_SQLSTT, false); sqlstt.set(sqlBytes, 4);
-  return buildDSS(CP_PRPSQLSTT, [buildPKGNAMCSN(database, pkgSn), buildUint16Param(0x2104, 0x0000), sqlstt], 3, false);
+  const rqsDss = buildDSS(CP_PRPSQLSTT, [buildPKGNAMCSN(database, pkgSn), buildUint16Param(0x2104, 0x0000)], 3, true);
+  const objDss = buildSQLSTTObj(sql, 3);
+  return concat(rqsDss, objDss);
 }
 
 /** Execute a prepared DML statement with SQLDTA parameters. */
 export function buildEXCSQLSTT(database: string, params: SqldtaParam[], pkgSn: number): Uint8Array {
-  return buildDSS(CP_EXCSQLSTT, [buildPKGNAMCSN(database, pkgSn), buildSQLDTA(params)], 4, false);
+  const rqsDss = buildDSS(CP_EXCSQLSTT, [buildPKGNAMCSN(database, pkgSn)], 4, true);
+  const objDss = buildDSS(CP_SQLDTA, [buildSQLDTAInner(params)], 4, false, DSS_TYPE_OBJDSS);
+  return concat(rqsDss, objDss);
 }
 
 /** Open a prepared SELECT query with SQLDTA parameters. */
 export function buildOPNQRYPrepared(database: string, params: SqldtaParam[], pkgSn: number): Uint8Array {
-  return buildDSS(CP_OPNQRY, [buildPKGNAMCSN(database, pkgSn), buildUint32Param(CP_QRYBLKSZ, 32767), buildUint16Param(CP_QRYROWSET, 100), buildSQLDTA(params)], 4, false);
+  const rqsDss = buildDSS(CP_OPNQRY, [buildPKGNAMCSN(database, pkgSn), buildUint32Param(CP_QRYBLKSZ, 32767), buildUint16Param(CP_QRYROWSET, 100)], 4, true);
+  const objDss = buildDSS(CP_SQLDTA, [buildSQLDTAInner(params)], 4, false, DSS_TYPE_OBJDSS);
+  return concat(rqsDss, objDss);
 }
 
 // ── SSL/TLS connect helper ────────────────────────────────────────────────────
@@ -400,9 +413,12 @@ async function readDSS(reader: ReadableStreamDefaultReader<Uint8Array>, tp: Prom
     if (result.done || !result.value) break;
     chunks.push(result.value);
     total += result.value.length;
-    if (isDSSChainComplete(concat(...chunks))) break;
+    // Avoid O(n²) re-concat on every chunk: only assemble when needed for completeness check.
+    // For single-chunk responses (common case) this is zero-copy; for multi-chunk we pay once.
+    const buf = chunks.length === 1 ? chunks[0] : concat(...chunks);
+    if (isDSSChainComplete(buf)) break;
   }
-  return chunks.length === 0 ? new Uint8Array(0) : concat(...chunks);
+  return chunks.length === 0 ? new Uint8Array(0) : (chunks.length === 1 ? chunks[0] : concat(...chunks));
 }
 
 function isDSSChainComplete(buf: Uint8Array): boolean {
@@ -560,7 +576,7 @@ function parseQRYDTA(data: Uint8Array, cols: ColumnDescriptor[]): RowValue[][] {
           case FDOCA_INTEGER:  { if (off + 4 > data.length) { ok = false; break; } row.push(v.getInt32(off, false)); off += 4; break; }
           case FDOCA_BIGINT: {
             if (off + 8 > data.length) { ok = false; break; }
-            row.push(`${(BigInt(v.getUint32(off, false)) << 32n) | BigInt(v.getUint32(off + 4, false))}`); off += 8; break;
+            row.push(`${v.getBigInt64(off, false)}`); off += 8; break;
           }
           case FDOCA_REAL:   { if (off + 4 > data.length) { ok = false; break; } row.push(v.getFloat32(off, false)); off += 4; break; }
           case FDOCA_DOUBLE: { if (off + 8 > data.length) { ok = false; break; } row.push(v.getFloat64(off, false)); off += 8; break; }
@@ -596,8 +612,13 @@ function decodePackedDecimal(buf: Uint8Array, off: number, len: number, scale: n
   for (let i = 0; i < len - 1; i++) { digits += ((buf[off + i] >> 4) & 0xF).toString(); digits += (buf[off + i] & 0xF).toString(); }
   const lastByte = buf[off + len - 1];
   digits += ((lastByte >> 4) & 0xF).toString();
-  const sign = (lastByte & 0xF) === 0xD ? '-' : '';
-  return scale > 0 && digits.length > scale ? sign + digits.slice(0, -scale) + '.' + digits.slice(-scale) : sign + digits;
+  const signNibble = lastByte & 0xF;
+  const sign = (signNibble === 0xD || signNibble === 0xB) ? '-' : '';
+  if (scale > 0 && digits.length > scale) {
+    const intPart = digits.slice(0, -scale).replace(/^0+/, '') || '0';
+    return sign + intPart + '.' + digits.slice(-scale);
+  }
+  return sign + (digits.replace(/^0+/, '') || '0');
 }
 
 function parseSQLCARD(data: Uint8Array): { sqlCode: number; sqlState: string; message: string } {
@@ -645,7 +666,7 @@ async function doAuth(params: AuthParams, tp: Promise<never>): Promise<
     if (!findObject(accsecObjs, CP_ACCSECRD)) {
       close();
       const svrcod = findObject(accsecObjs, CP_SVRCOD);
-      return { ok: false, response: errResponse(`ACCSEC rejected (svrcod=${svrcod ? new DataView(svrcod.data.buffer).getUint16(0, false) : '?'})`) };
+      return { ok: false, response: errResponse(`ACCSEC rejected (svrcod=${svrcod ? new DataView(svrcod.data.buffer, svrcod.data.byteOffset, svrcod.data.byteLength).getUint16(0, false) : '?'})`) };
     }
     await writer.write(buildSECCHK(database, username, password));
     const r3 = await readDSS(reader, tp);
@@ -704,6 +725,7 @@ export async function handleDRDAProbe(request: Request): Promise<Response> {
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
   const { host, port = 50000, timeout = 10000 } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
+  if (port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   try {

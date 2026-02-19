@@ -1,752 +1,333 @@
-# Rsync Protocol Implementation Plan
+# Rsync Daemon Protocol — Power-User Reference
 
-## Overview
+**Port:** 873 (rsync daemon)
+**Source:** `src/worker/rsync.ts`
+**Routes:** `src/worker/index.ts` (3 endpoints)
+**Spec:** Rsync daemon protocol (text handshake phase only)
 
-**Protocol:** Rsync
-**Port:** 873 (rsync daemon), 22 (rsync over SSH)
-**Specification:** [Rsync Technical Report](https://rsync.samba.org/tech_report/)
-**Complexity:** Very High
-**Purpose:** Efficient file synchronization and transfer
+This implementation covers the rsync daemon's text-based handshake layer: version negotiation, module listing, module probing, and MD4 challenge-response authentication. It does **not** implement the binary delta-transfer protocol (file list exchange, rolling checksums, block transfer). Think of it as `rsync rsync://host/` and `rsync rsync://user@host/module/` — the parts that happen before any file data flows.
 
-Rsync enables **delta-transfer file synchronization** - efficiently sync files by transferring only differences, ideal for backups and remote synchronization from the browser.
+---
 
-### Use Cases
-- File backup and synchronization
-- Website deployment
-- Data replication
-- Mirror management
-- Incremental backups
-- Remote file updates
+## Endpoints
 
-## Protocol Specification
+### 1. `POST /api/rsync/connect`
 
-### Delta-Transfer Algorithm
+Version exchange + module listing. rsync CLI equivalent: `rsync rsync://host/`
 
-Rsync's efficiency comes from transferring only file differences:
-
-```
-1. Client requests file list from server
-2. Server sends file metadata (size, mtime, permissions)
-3. For each file:
-   a. Client generates checksums of local blocks
-   b. Server compares with remote file
-   c. Server sends only non-matching blocks
-   d. Client reconstructs file
+**Request:**
+```json
+{ "host": "mirror.example.com", "port": 873, "timeout": 10000 }
 ```
 
-### Protocol Phases
-
-**Phase 1: Handshake**
-```
-Client → Server: Protocol version
-Server → Client: Protocol version
-Client → Server: Module name
-Server → Client: MOTD, module info
-```
-
-**Phase 2: File List Exchange**
-```
-Client → Server: Filter patterns
-Server → Client: File list with metadata
-```
-
-**Phase 3: Delta Transfer**
-```
-For each file:
-  Client → Server: Block checksums
-  Server → Client: Matching blocks + new data
-```
-
-### File List Entry
-
-```
-flags: uint8
-mode: uint32
-uid: uint32
-gid: uint32
-size: int64
-mtime: int64
-name_length: uint8
-name: string
-```
-
-### Checksum Algorithm
-
-**Rolling checksum** (fast):
-```
-a = sum of bytes in block (mod 2^16)
-b = sum of a values (mod 2^16)
-checksum = (b << 16) | a
-```
-
-**Strong checksum** (MD5/MD4):
-```
-MD4 hash of block data
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/rsync/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface RsyncConfig {
-  host: string;
-  port?: number;
-  module?: string;
-  username?: string;
-  password?: string;
-}
-
-export interface FileInfo {
-  name: string;
-  mode: number;
-  size: number;
-  mtime: Date;
-  uid: number;
-  gid: number;
-}
-
-export interface BlockChecksum {
-  offset: number;
-  rolling: number;
-  md4: Uint8Array;
-}
-
-export class RsyncClient {
-  private socket: any;
-  private version = 30; // Protocol version
-
-  constructor(private config: RsyncConfig) {}
-
-  async connect(): Promise<void> {
-    const port = this.config.port || 873;
-    this.socket = connect(`${this.config.host}:${port}`);
-    await this.socket.opened;
-
-    // Protocol handshake
-    await this.handshake();
-  }
-
-  private async handshake(): Promise<void> {
-    // Send protocol version
-    await this.send(`@RSYNCD: ${this.version}\n`);
-
-    // Read server version
-    const serverVersion = await this.readLine();
-    console.log('Server version:', serverVersion);
-
-    // Send module name
-    const module = this.config.module || '';
-    await this.send(`${module}\n`);
-
-    // Read MOTD and auth challenge if needed
-    while (true) {
-      const line = await this.readLine();
-
-      if (line.startsWith('@RSYNCD: OK')) {
-        break;
-      } else if (line.startsWith('@RSYNCD: AUTHREQD')) {
-        await this.authenticate();
-        break;
-      } else if (line.startsWith('@RSYNCD: EXIT')) {
-        throw new Error('Server rejected connection');
-      }
-    }
-  }
-
-  private async authenticate(): Promise<void> {
-    if (!this.config.username || !this.config.password) {
-      throw new Error('Authentication required but no credentials provided');
-    }
-
-    // Read challenge
-    const challenge = await this.readLine();
-
-    // Generate response (MD4 based)
-    const response = this.generateAuthResponse(
-      this.config.username,
-      this.config.password,
-      challenge
-    );
-
-    await this.send(`${this.config.username} ${response}\n`);
-
-    // Wait for OK
-    const result = await this.readLine();
-    if (!result.startsWith('@RSYNCD: OK')) {
-      throw new Error('Authentication failed');
-    }
-  }
-
-  async list(path: string = ''): Promise<FileInfo[]> {
-    // Send list command
-    await this.sendCommand('--list-only', path);
-
-    // Read file list
-    const files: FileInfo[] = [];
-
-    while (true) {
-      const entry = await this.readFileEntry();
-      if (!entry) break;
-      files.push(entry);
-    }
-
-    return files;
-  }
-
-  async sync(
-    localPath: string,
-    remotePath: string,
-    options: {
-      recursive?: boolean;
-      preserve?: boolean;
-      compress?: boolean;
-      delete?: boolean;
-    } = {}
-  ): Promise<void> {
-    // Build command args
-    const args: string[] = [];
-
-    if (options.recursive) args.push('-r');
-    if (options.preserve) args.push('-p');
-    if (options.compress) args.push('-z');
-    if (options.delete) args.push('--delete');
-
-    args.push(remotePath);
-    args.push(localPath);
-
-    // Send sync command
-    await this.sendCommand(...args);
-
-    // Process file list
-    const files = await this.receiveFileList();
-
-    // Transfer files
-    for (const file of files) {
-      await this.transferFile(file, localPath);
-    }
-  }
-
-  async download(remotePath: string, localPath: string): Promise<void> {
-    await this.sync(localPath, remotePath, { recursive: true });
-  }
-
-  async upload(localPath: string, remotePath: string): Promise<void> {
-    // Rsync client can also send files
-    // This requires implementing the sender role
-
-    throw new Error('Upload not yet implemented');
-  }
-
-  private async transferFile(file: FileInfo, basePath: string): Promise<void> {
-    // Check if local file exists
-    const localFile = await this.getLocalFile(`${basePath}/${file.name}`);
-
-    if (localFile && localFile.mtime >= file.mtime && localFile.size === file.size) {
-      // File is up to date
-      return;
-    }
-
-    // Generate block checksums of local file
-    const checksums = localFile ? await this.generateBlockChecksums(localFile) : [];
-
-    // Send checksums to server
-    await this.sendBlockChecksums(checksums);
-
-    // Receive delta data
-    const deltaData = await this.receiveDeltaData();
-
-    // Reconstruct file
-    await this.reconstructFile(file, localFile, deltaData, `${basePath}/${file.name}`);
-  }
-
-  private async generateBlockChecksums(file: any): Promise<BlockChecksum[]> {
-    const blockSize = 700; // Typical block size
-    const checksums: BlockChecksum[] = [];
-
-    const data = file.data; // Would read actual file data
-
-    for (let offset = 0; offset < data.length; offset += blockSize) {
-      const block = data.slice(offset, offset + blockSize);
-
-      checksums.push({
-        offset,
-        rolling: this.rollingChecksum(block),
-        md4: this.md4Hash(block),
-      });
-    }
-
-    return checksums;
-  }
-
-  private rollingChecksum(data: Uint8Array): number {
-    let a = 0;
-    let b = 0;
-
-    for (let i = 0; i < data.length; i++) {
-      a = (a + data[i]) & 0xFFFF;
-      b = (b + a) & 0xFFFF;
-    }
-
-    return (b << 16) | a;
-  }
-
-  private md4Hash(data: Uint8Array): Uint8Array {
-    // Would use actual MD4 implementation
-    // Simplified for example
-    return new Uint8Array(16);
-  }
-
-  private async sendBlockChecksums(checksums: BlockChecksum[]): Promise<void> {
-    // Send checksum count
-    await this.sendInt(checksums.length);
-
-    // Send each checksum
-    for (const checksum of checksums) {
-      await this.sendInt(checksum.rolling);
-      await this.send(checksum.md4);
-    }
-  }
-
-  private async receiveDeltaData(): Promise<any> {
-    // Receive delta instructions
-    // Format: mix of literal data and references to existing blocks
-
-    const instructions: any[] = [];
-
-    while (true) {
-      const opcode = await this.readByte();
-
-      if (opcode === 0) break; // End marker
-
-      if (opcode & 0x80) {
-        // Block reference
-        const blockIndex = opcode & 0x7F;
-        instructions.push({ type: 'block', index: blockIndex });
-      } else {
-        // Literal data
-        const length = opcode;
-        const data = await this.readBytes(length);
-        instructions.push({ type: 'data', data });
-      }
-    }
-
-    return instructions;
-  }
-
-  private async reconstructFile(
-    fileInfo: FileInfo,
-    localFile: any,
-    deltaData: any[],
-    outputPath: string
-  ): Promise<void> {
-    // Reconstruct file from local blocks and delta data
-    const output: Uint8Array[] = [];
-
-    for (const instruction of deltaData) {
-      if (instruction.type === 'block') {
-        // Copy block from local file
-        const blockData = localFile.getBlock(instruction.index);
-        output.push(blockData);
-      } else {
-        // Literal data
-        output.push(instruction.data);
-      }
-    }
-
-    // Write reconstructed file
-    const finalData = this.concatenate(output);
-    await this.writeFile(outputPath, finalData);
-
-    // Set file metadata
-    await this.setFileMetadata(outputPath, fileInfo);
-  }
-
-  private async sendCommand(...args: string[]): Promise<void> {
-    const command = args.join(' ') + '\n';
-    await this.send(command);
-  }
-
-  private async receiveFileList(): Promise<FileInfo[]> {
-    const files: FileInfo[] = [];
-
-    while (true) {
-      const entry = await this.readFileEntry();
-      if (!entry) break;
-      files.push(entry);
-    }
-
-    return files;
-  }
-
-  private async readFileEntry(): Promise<FileInfo | null> {
-    // Read file list entry from stream
-    // Simplified - actual format is more complex
-
-    const flags = await this.readByte();
-    if (flags === 0) return null;
-
-    const mode = await this.readInt();
-    const size = await this.readInt64();
-    const mtime = await this.readInt();
-    const nameLen = await this.readByte();
-    const name = await this.readString(nameLen);
-
-    return {
-      name,
-      mode,
-      size,
-      mtime: new Date(mtime * 1000),
-      uid: 0,
-      gid: 0,
-    };
-  }
-
-  private async send(data: string | Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-
-    if (typeof data === 'string') {
-      const encoder = new TextEncoder();
-      await writer.write(encoder.encode(data));
-    } else {
-      await writer.write(data);
-    }
-
-    writer.releaseLock();
-  }
-
-  private async readLine(): Promise<string> {
-    // Read until newline
-    const reader = this.socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (!buffer.includes('\n')) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-    }
-
-    reader.releaseLock();
-
-    return buffer.split('\n')[0];
-  }
-
-  private async readByte(): Promise<number> {
-    const reader = this.socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-    return value[0];
-  }
-
-  private async readBytes(length: number): Promise<Uint8Array> {
-    const reader = this.socket.readable.getReader();
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-
-    while (offset < length) {
-      const { value } = await reader.read();
-      const toCopy = Math.min(length - offset, value.length);
-      buffer.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    reader.releaseLock();
-    return buffer;
-  }
-
-  private async readInt(): Promise<number> {
-    const bytes = await this.readBytes(4);
-    return new DataView(bytes.buffer).getInt32(0, true);
-  }
-
-  private async readInt64(): Promise<number> {
-    const bytes = await this.readBytes(8);
-    return Number(new DataView(bytes.buffer).getBigInt64(0, true));
-  }
-
-  private async readString(length: number): Promise<string> {
-    const bytes = await this.readBytes(length);
-    return new TextDecoder().decode(bytes);
-  }
-
-  private async sendInt(value: number): Promise<void> {
-    const buffer = new Uint8Array(4);
-    new DataView(buffer.buffer).setInt32(0, value, true);
-    await this.send(buffer);
-  }
-
-  private generateAuthResponse(username: string, password: string, challenge: string): string {
-    // MD4-based authentication
-    // Simplified for example
-    return 'auth-response-hash';
-  }
-
-  private concatenate(arrays: Uint8Array[]): Uint8Array {
-    const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-
-    for (const arr of arrays) {
-      result.set(arr, offset);
-      offset += arr.length;
-    }
-
-    return result;
-  }
-
-  private async getLocalFile(path: string): Promise<any> {
-    // Would read local file
-    return null;
-  }
-
-  private async writeFile(path: string, data: Uint8Array): Promise<void> {
-    // Would write file
-  }
-
-  private async setFileMetadata(path: string, info: FileInfo): Promise<void> {
-    // Would set file permissions, mtime, etc.
-  }
-
-  async close(): Promise<void> {
-    if (this.socket) {
-      await this.socket.close();
-    }
-  }
+| Field | Type | Default | Required | Notes |
+|-------|------|---------|----------|-------|
+| `host` | string | — | yes | Hostname or IP |
+| `port` | number | 873 | no | Validated 1–65535 |
+| `timeout` | number | 10000 | no | ms; module read capped at min(timeout, 5000) |
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "host": "mirror.example.com",
+  "port": 873,
+  "rtt": 245,
+  "connectTime": 82,
+  "serverVersion": "31.0",
+  "clientVersion": "30.0",
+  "greeting": "@RSYNCD: 31.0",
+  "motd": "Welcome to the public mirror",
+  "modules": [
+    { "name": "pub", "description": "Public files" },
+    { "name": "iso", "description": "ISO images" }
+  ],
+  "moduleCount": 2
 }
 ```
 
-## Web UI Design
+**Wire exchange:**
+```
+Server → Client: @RSYNCD: 31.0\n
+Client → Server: @RSYNCD: 30.0\n
+Client → Server: \n                          (empty = list modules)
+Server → Client: pub\tPublic files\n
+Server → Client: iso\tISO images\n
+Server → Client: @RSYNCD: EXIT\n
+```
 
-```typescript
-// src/components/RsyncClient.tsx
+**Cloudflare detection:** Yes (returns 403 with `isCloudflare: true`).
 
-export function RsyncClient() {
-  const [connected, setConnected] = useState(false);
-  const [host, setHost] = useState('rsync://backup.example.com/');
-  const [module, setModule] = useState('backup');
-  const [files, setFiles] = useState<FileInfo[]>([]);
-  const [syncing, setSyncing] = useState(false);
+**Conditional response fields** — these are omitted (not `null`) when empty:
+- `motd` — only present when at least one non-module, non-directive line appears before the first module entry
+- `modules[].description` — always present (empty string if no tab-separated description)
 
-  const connect = async () => {
-    await fetch('/api/rsync/connect', {
-      method: 'POST',
-      body: JSON.stringify({ host, module }),
-    });
+**curl:**
+```bash
+curl -s -X POST https://portofcall.ross.gg/api/rsync/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"rsync.example.com"}' | jq .
+```
 
-    setConnected(true);
-    listFiles();
-  };
+---
 
-  const listFiles = async () => {
-    const response = await fetch('/api/rsync/list', {
-      method: 'POST',
-      body: JSON.stringify({ path: '' }),
-    });
+### 2. `POST /api/rsync/module`
 
-    const data = await response.json();
-    setFiles(data);
-  };
+Probe a specific module — determines whether it exists, requires auth, or returns an error. rsync CLI equivalent: `rsync rsync://host/module/` (the first exchange before any file listing).
 
-  const syncFile = async (remotePath: string) => {
-    setSyncing(true);
+**Request:**
+```json
+{ "host": "mirror.example.com", "port": 873, "module": "pub", "timeout": 10000 }
+```
 
-    await fetch('/api/rsync/sync', {
-      method: 'POST',
-      body: JSON.stringify({
-        remotePath,
-        localPath: '/downloads/',
-      }),
-    });
+| Field | Type | Default | Required | Notes |
+|-------|------|---------|----------|-------|
+| `host` | string | — | yes | |
+| `port` | number | 873 | no | Validated 1–65535 |
+| `module` | string | — | yes | Module name to probe |
+| `timeout` | number | 10000 | no | Module read capped at min(timeout, 5000) |
 
-    setSyncing(false);
-    alert('Sync complete');
-  };
-
-  return (
-    <div className="rsync-client">
-      <h2>Rsync Client</h2>
-
-      {!connected ? (
-        <div className="connect">
-          <input
-            type="text"
-            placeholder="rsync://server/module"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Module name"
-            value={module}
-            onChange={(e) => setModule(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <>
-          <div className="file-list">
-            <h3>Remote Files</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Size</th>
-                  <th>Modified</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {files.map(file => (
-                  <tr key={file.name}>
-                    <td>{file.name}</td>
-                    <td>{formatSize(file.size)}</td>
-                    <td>{file.mtime.toLocaleString()}</td>
-                    <td>
-                      <button
-                        onClick={() => syncFile(file.name)}
-                        disabled={syncing}
-                      >
-                        Sync
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
-      )}
-
-      <div className="info">
-        <h3>About Rsync</h3>
-        <ul>
-          <li>Efficient delta-transfer algorithm</li>
-          <li>Only transfers file differences</li>
-          <li>Preserves permissions, ownership, timestamps</li>
-          <li>Compression support (-z)</li>
-          <li>Can use SSH for secure transport</li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+**Response (200):**
+```json
+{
+  "success": true,
+  "host": "mirror.example.com",
+  "port": 873,
+  "module": "pub",
+  "rtt": 190,
+  "serverVersion": "31.0",
+  "moduleOk": true,
+  "authRequired": false,
+  "response": "Welcome to the pub mirror"
 }
 ```
 
-## Security
+When the module requires auth:
+```json
+{
+  "success": true,
+  "moduleOk": false,
+  "authRequired": true
+}
+```
 
-### Authentication
+**Wire exchange:**
+```
+Server → Client: @RSYNCD: 31.0\n
+Client → Server: @RSYNCD: 30.0\n
+Client → Server: pub\n
+Server → Client: @RSYNCD: OK\n             (or @RSYNCD: AUTHREQD <challenge>)
+```
+
+**Conditional response fields** — omitted when empty:
+- `error` — only present when `@ERROR` received
+- `response` — only present when non-directive text lines exist
+
+**Cloudflare detection:** No (unlike `/connect`, this endpoint skips the CF check).
+
+**curl:**
+```bash
+curl -s -X POST https://portofcall.ross.gg/api/rsync/module \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"rsync.example.com","module":"pub"}' | jq .
+```
+
+---
+
+### 3. `POST /api/rsync/auth`
+
+Authenticate to a module using MD4 challenge-response. rsync CLI equivalent: `rsync rsync://user@host/module/` when the module has `auth users` set.
+
+**Request:**
+```json
+{
+  "host": "backup.example.com",
+  "port": 873,
+  "module": "backup",
+  "username": "backupuser",
+  "password": "s3cret",
+  "timeout": 10000
+}
+```
+
+| Field | Type | Default | Required | Notes |
+|-------|------|---------|----------|-------|
+| `host` | string | — | yes | |
+| `port` | number | 873 | no | **Not validated** (see quirks) |
+| `module` | string | — | yes | |
+| `username` | string | — | yes | |
+| `password` | string | — | yes | |
+| `timeout` | number | 10000 | no | Single shared timeout for entire flow |
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "host": "backup.example.com",
+  "port": 873,
+  "module": "backup",
+  "username": "backupuser",
+  "serverVersion": "31.0",
+  "authenticated": true,
+  "authRequired": true,
+  "challenge": "f8a2b9c1d4e5f6a7",
+  "motd": "Authorized access only",
+  "rtt": 310
+}
+```
+
+`success` equals `authenticated` — if auth fails, `success: false`.
+
+**Wire exchange:**
+```
+Server → Client: @RSYNCD: 31.0\n
+Client → Server: @RSYNCD: 30.0\n
+Client → Server: backup\n
+Server → Client: Welcome MOTD line\n
+Server → Client: @RSYNCD: AUTHREQD f8a2b9c1d4e5f6a7\n
+Client → Server: backupuser 0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d\n
+Server → Client: @RSYNCD: OK\n
+```
+
+**Conditional response fields** — omitted when empty:
+- `challenge` — only present when `AUTHREQD` received (omitted for modules with no auth)
+- `motd` — only present when non-directive text lines exist before a decisive directive
+- `error` — only present on auth failure or `@ERROR`
+
+**Cloudflare detection:** No.
+
+**curl:**
+```bash
+curl -s -X POST https://portofcall.ross.gg/api/rsync/auth \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"backup.example.com","module":"backup","username":"user","password":"pass"}' | jq .
+```
+
+---
+
+## Cross-Endpoint Comparison
+
+| Aspect | `/connect` | `/module` | `/auth` |
+|--------|-----------|----------|--------|
+| Purpose | List modules | Probe single module | Authenticate |
+| CF detection | Yes | **No** | **No** |
+| Port validation | 1–65535 | 1–65535 | **None** |
+| Host validation | `!host` (falsy) | `!host` (falsy) | `!host` (falsy) |
+| Module required | No (sends `\n`) | Yes | Yes |
+| Greeting read | Single `reader.read()` | Single `reader.read()` | Line-buffered `readLine()` |
+| Module-read timeout | min(timeout, 5000ms) | min(timeout, 5000ms) | Full timeout |
+| HTTP status on error | 500 | 500 | 500 |
+| `success` meaning | Connection worked | Always `true` | `authenticated` |
+
+---
+
+## MD4 Authentication
+
+The rsync daemon uses MD4-based challenge-response auth (not Web Crypto compatible, so a pure-TypeScript MD4 implementation is included in `rsync.ts`).
+
+**Algorithm:**
+```
+token = MD4("\0" + password + challenge)
+```
+
+The `\0` (null byte) is prepended to the password before the challenge is appended. The result is a 16-byte MD4 digest, sent as 32-character lowercase hex.
+
+**Wire format:** `username hexhash\n` (space-separated, newline-terminated).
+
+This matches the rsync daemon protocol: the server sends `@RSYNCD: AUTHREQD <challenge>` and the client responds with the username and hash on one line.
+
+---
+
+## Quirks and Known Limitations
+
+1. **`/module` always returns `success: true`** — Even when the module returns `@ERROR` or `@RSYNCD: EXIT`, the HTTP response is 200 with `success: true`. The `moduleOk` field is `false` and the error text is in `error`, but `success` doesn't reflect failure. Contrast with `/auth` where `success` equals `authenticated`.
+
+2. **Single-read greeting in `/connect` and `/module`** — Both endpoints read the server banner with a single `reader.read()` call. If the greeting is split across multiple TCP segments (unlikely but possible), only the first segment is parsed. `/auth` uses a proper line-buffered reader that handles segment splitting correctly.
+
+3. **No port validation in `/auth`** — `/connect` and `/module` both validate port is 1–65535. `/auth` does not validate port at all — any value (including negative, 0, or >65535) is passed directly to `connect()`.
+
+4. **Client version hardcoded to `30.0`** — All three endpoints send `@RSYNCD: 30.0` regardless of what the server advertises. The server may support newer features at higher protocol versions. The client version is not configurable via the API.
+
+5. **MOTD classification in `/connect`** — Lines without tabs that appear *before* the first module entry are classified as MOTD. Lines without tabs *after* modules are silently ignored (the `modules.length === 0` guard prevents them from being appended to `motd`).
+
+6. **No method check, but POST required in practice** — The route matching in `index.ts` does not filter by HTTP method. However, all three handlers call `request.json()` immediately, which throws on bodyless methods (GET, HEAD, DELETE without body). The error is caught and returned as `{ success: false, error: "..." }` with HTTP 500. Use POST.
+
+7. **Module-read timeout capped at 5 seconds** — `/connect` and `/module` use `Math.min(timeout, 5000)` for `readAllLines()`. Even if you pass `timeout: 30000`, module listing only waits 5 seconds for data. `/auth` uses the full timeout value.
+
+8. **64 KB module-list cap** — `readAllLines()` stops at 64 KB of total data. Servers with very large module lists may be truncated.
+
+9. **No host regex validation** — Unlike many other Port of Call workers, rsync accepts any string as `host` (no pattern validation). Only falsy values are rejected.
+
+10. **`/module` response lines are unlabeled** — Text lines from the server before a directive (`@RSYNCD:` or `@ERROR`) are collected in `response` as a joined string, but aren't distinguished as MOTD vs other output.
+
+11. **No delta transfer** — The implementation covers only the daemon handshake protocol. File listing (`--list-only`), file transfer (rolling checksums, block matching), and file metadata operations are not implemented.
+
+12. **Auth challenge format** — The challenge is extracted by splitting on spaces: `@RSYNCD: AUTHREQD <challenge>`. If a challenge contains spaces, the full challenge (including spaces) is preserved via `parts.slice(2).join(' ')`.
+
+---
+
+## Server Directives Reference
+
+| Directive | Meaning | Where Handled |
+|-----------|---------|---------------|
+| `@RSYNCD: <version>` | Protocol version announcement | All 3 endpoints |
+| `@RSYNCD: OK` | Module ready / auth success | All 3 endpoints |
+| `@RSYNCD: AUTHREQD <challenge>` | Auth required, challenge follows | `/module`, `/auth` |
+| `@RSYNCD: EXIT` | Server closing connection | All 3 endpoints |
+| `@ERROR` or `@ERROR: <msg>` | Server-side error | `/connect`, `/module`, `/auth` |
+
+---
+
+## Failure Modes
+
+| Scenario | HTTP Status | `success` | Error field |
+|----------|-------------|-----------|-------------|
+| Missing `host` | 400 | `false` | `"Host is required"` |
+| Invalid port (0, >65535) | 400 | `false` | `"Port must be between 1 and 65535"` (not `/auth`) |
+| Missing `module` (for `/module`, `/auth`) | 400 | `false` | `"Module name is required"` |
+| Missing `username`/`password` (`/auth`) | 400 | `false` | `"username and password are required"` |
+| Cloudflare-protected host (`/connect` only) | 403 | `false` | Cloudflare error message + `isCloudflare: true` |
+| TCP connection refused | 500 | `false` | `"Connection failed"` or socket error |
+| Connection timeout | 500 | `false` | `"Connection timeout"` |
+| Non-rsync server greeting | 500 | `false` | `"Unexpected server greeting: ..."` (truncated at 100 chars) |
+| Module `@ERROR` via `/module` | 200 | **`true`** | Error text in `error` field |
+| Auth rejected via `/auth` | 200 | `false` | `"Authentication rejected by server"` |
+| No JSON body (GET request) | 500 | `false` | JSON parse error |
+
+---
+
+## Local Testing
 
 ```bash
-# Create rsyncd secrets file
-echo "username:password" > /etc/rsyncd.secrets
-chmod 600 /etc/rsyncd.secrets
-```
+# Docker: rsyncd with anonymous module
+docker run --rm -d -p 873:873 \
+  -v /tmp/rsync-test:/data \
+  --name rsyncd \
+  vimagick/rsyncd
 
-### Rsync over SSH
-
-```bash
-# More secure than rsync daemon
-rsync -avz -e ssh user@host:/path /local/path
-```
-
-## Testing
-
-### Rsync Daemon
-
-```bash
-# /etc/rsyncd.conf
-[backup]
-path = /data/backup
-comment = Backup directory
+# Or manual rsyncd.conf:
+cat > /tmp/rsyncd.conf << 'EOF'
+[pub]
+path = /tmp/rsync-test
+comment = Public test module
 read only = yes
 list = yes
-auth users = user
-secrets file = /etc/rsyncd.secrets
 
-# Start daemon
-rsync --daemon
+[private]
+path = /tmp/rsync-private
+comment = Auth-required module
+auth users = testuser
+secrets file = /tmp/rsyncd.secrets
+read only = yes
+list = yes
+EOF
 
-# Test
-rsync rsync://localhost/backup/
+echo "testuser:testpass" > /tmp/rsyncd.secrets
+chmod 600 /tmp/rsyncd.secrets
+rsync --daemon --config=/tmp/rsyncd.conf --no-detach
+
+# Verify with CLI:
+rsync rsync://localhost/         # list modules
+rsync rsync://localhost/pub/     # browse module
+rsync rsync://testuser@localhost/private/  # auth prompt
 ```
-
-### Docker Rsync Server
-
-```bash
-# Rsync server
-docker run -d \
-  -p 873:873 \
-  -v /data:/data \
-  --name rsync \
-  axiom/rsync-server
-
-# Sync to server
-rsync -avz /local/path rsync://localhost/backup/
-```
-
-## Resources
-
-- **Rsync**: [Official documentation](https://rsync.samba.org/)
-- **Algorithm**: [Technical Report](https://rsync.samba.org/tech_report/)
-- **Man Page**: [rsync(1)](https://linux.die.net/man/1/rsync)
-
-## Common Rsync Options
-
-| Option | Description |
-|--------|-------------|
-| -a | Archive mode (recursive, preserve all) |
-| -v | Verbose output |
-| -z | Compress during transfer |
-| -r | Recursive |
-| -p | Preserve permissions |
-| -t | Preserve times |
-| -u | Update (skip newer files) |
-| --delete | Delete extraneous files |
-| --exclude | Exclude pattern |
-| -n | Dry run |
-| -e ssh | Use SSH transport |
-
-## Example Commands
-
-```bash
-# Sync directory
-rsync -avz source/ dest/
-
-# Sync to remote via SSH
-rsync -avz -e ssh /local/ user@host:/remote/
-
-# Sync from rsync daemon
-rsync -avz rsync://server/module/ /local/
-
-# Exclude files
-rsync -avz --exclude='*.tmp' source/ dest/
-
-# Delete extraneous files
-rsync -avz --delete source/ dest/
-
-# Dry run
-rsync -avzn source/ dest/
-```
-
-## Notes
-
-- **Delta-transfer** - only transfers file differences
-- **Very efficient** - minimal bandwidth usage
-- **Complex protocol** - one of the most sophisticated
-- **Bidirectional** - can send or receive
-- **Incremental** - ideal for backups
-- **Checksums** - verifies data integrity
-- **Compression** - optional gzip compression
-- **SSH transport** - recommended for security
-- **Daemon mode** - port 873
-- **Widely used** - standard for backups and mirrors

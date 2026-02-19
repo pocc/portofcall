@@ -106,10 +106,10 @@ function tsUnescape(s: string): string {
     .replace(/\\s/g, ' ')
     .replace(/\\p/g, '|')
     .replace(/\\\//g, '/')
-    .replace(/\\\\/g, '\\')
     .replace(/\\n/g, '\n')
     .replace(/\\r/g, '\r')
-    .replace(/\\t/g, '\t');
+    .replace(/\\t/g, '\t')
+    .replace(/\\\\/g, '\\'); // Must be last to avoid false matches
 }
 
 /**
@@ -168,37 +168,42 @@ async function readTSResponse(
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('Response timeout');
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Read timeout')), remaining);
+      timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), remaining);
     });
 
-    const { value, done } = await Promise.race([
-      reader.read(),
-      timeoutPromise,
-    ]);
+    try {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        timeoutPromise,
+      ]);
 
-    if (done) break;
+      if (done) break;
 
-    if (value) {
-      chunks.push(value);
-      totalBytes += value.length;
+      if (value) {
+        chunks.push(value);
+        totalBytes += value.length;
 
-      if (totalBytes > MAX_RESPONSE_SIZE) {
-        throw new Error('Response too large');
+        if (totalBytes > MAX_RESPONSE_SIZE) {
+          throw new Error('Response too large');
+        }
+
+        const combined = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        fullText = new TextDecoder().decode(combined);
+
+        // TS3 responses end with "error id=..." followed by \r\n
+        if (/error id=\d+ msg=.+\r\n$/.test(fullText)) {
+          break;
+        }
       }
-
-      const combined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-      fullText = new TextDecoder().decode(combined);
-
-      // TS3 responses end with "error id=..." followed by \n\r\n
-      if (/error id=\d+ msg=.+\n\r\n$/.test(fullText)) {
-        break;
-      }
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   }
 
@@ -206,7 +211,7 @@ async function readTSResponse(
 }
 
 /**
- * Read the initial TS3 banner (TS3\n\r\n + welcome text ending with \n\r\n)
+ * Read the initial TS3 banner (TS3\r\n + welcome text ending with \r\n)
  */
 async function readTSBanner(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -217,45 +222,48 @@ async function readTSBanner(
   let fullText = '';
 
   const deadline = Date.now() + timeoutMs;
-  let bannerLines = 0;
 
   while (true) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('Response timeout');
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Read timeout')), remaining);
+      timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), remaining);
     });
 
-    const { value, done } = await Promise.race([
-      reader.read(),
-      timeoutPromise,
-    ]);
+    try {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        timeoutPromise,
+      ]);
 
-    if (done) break;
+      if (done) break;
 
-    if (value) {
-      chunks.push(value);
-      totalBytes += value.length;
+      if (value) {
+        chunks.push(value);
+        totalBytes += value.length;
 
-      if (totalBytes > MAX_RESPONSE_SIZE) {
-        throw new Error('Response too large');
+        if (totalBytes > MAX_RESPONSE_SIZE) {
+          throw new Error('Response too large');
+        }
+
+        const combined = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        fullText = new TextDecoder().decode(combined);
+
+        // Banner is: "TS3" + welcome text ending with \r\n
+        // Look for at least one \r\n after "TS3" prefix
+        if (fullText.startsWith('TS3') && /\r\n$/.test(fullText)) {
+          break;
+        }
       }
-
-      const combined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-      fullText = new TextDecoder().decode(combined);
-
-      // Banner is: "TS3\n\r\n" + "Welcome to the..." + "\n\r\n"
-      // Count the \n\r\n sequences - we need at least 2
-      bannerLines = (fullText.match(/\n\r\n/g) || []).length;
-      if (bannerLines >= 2) {
-        break;
-      }
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   }
 
@@ -273,12 +281,14 @@ async function tsSession(
 ): Promise<{ banner: string; responses: string[] }> {
   const socket = connect(`${host}:${port}`);
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
   });
 
   try {
     await Promise.race([socket.opened, timeoutPromise]);
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -305,6 +315,7 @@ async function tsSession(
 
     return { banner, responses };
   } catch (error) {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     socket.close();
     throw error;
   }
@@ -349,6 +360,17 @@ export async function handleTeamSpeakConnect(request: Request): Promise<Response
         success: false,
         server: '',
         error: 'Invalid host format',
+      } satisfies TSConnectResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: 'Timeout must be between 1 and 300000 ms',
       } satisfies TSConnectResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -445,6 +467,17 @@ export async function handleTeamSpeakCommand(request: Request): Promise<Response
         success: false,
         server: '',
         error: 'Invalid host format',
+      } satisfies TSCommandResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: 'Timeout must be between 1 and 300000 ms',
       } satisfies TSCommandResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -628,12 +661,23 @@ export async function handleTeamSpeakChannel(request: Request): Promise<Response
       });
     }
 
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: 'Timeout must be between 1 and 300000 ms',
+      } satisfies TSChannelResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Build command list — login and virtual-server selection are done
     // before the data commands so all subsequent responses are consistent.
     const commands: string[] = [];
 
     if (serverAdminToken) {
-      commands.push(`login serveradmin ${serverAdminToken}`);
+      commands.push(`login serveradmin ${tsEscape(serverAdminToken)}`);
     }
 
     // Select virtual server 1
@@ -655,12 +699,14 @@ export async function handleTeamSpeakChannel(request: Request): Promise<Response
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
@@ -791,6 +837,7 @@ export async function handleTeamSpeakChannel(request: Request): Promise<Response
       });
 
     } catch (error) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
       throw error;
     }
@@ -904,6 +951,11 @@ export async function handleTeamSpeakMessage(request: Request): Promise<Response
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Timeout must be between 1 and 300000 ms' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const commands: string[] = [];
     if (serverAdminToken) {
@@ -914,12 +966,15 @@ export async function handleTeamSpeakMessage(request: Request): Promise<Response
     commands.push(`sendtextmessage targetmode=${targetmode} target=${target} msg=${tsEscape(message)}`);
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
@@ -972,6 +1027,7 @@ export async function handleTeamSpeakMessage(request: Request): Promise<Response
         error: parsed && parsed.id !== 0 ? `ServerQuery error ${parsed.id}: ${parsed.msg}` : undefined,
       } satisfies TSMessageResponse), { headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
       throw error;
     }
@@ -1017,6 +1073,16 @@ export async function handleTeamSpeakKick(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Timeout must be between 1 and 300000 ms' } satisfies TSMessageResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     let kickCmd = `clientkick reasonid=${reasonid} clid=${clid}`;
     if (reasonmsg) kickCmd += ` reasonmsg=${tsEscape(reasonmsg)}`;
@@ -1028,12 +1094,15 @@ export async function handleTeamSpeakKick(request: Request): Promise<Response> {
     ];
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
@@ -1064,6 +1133,7 @@ export async function handleTeamSpeakKick(request: Request): Promise<Response> {
         error: parsed && parsed.id !== 0 ? `ServerQuery error ${parsed.id}: ${parsed.msg}` : undefined,
       } satisfies TSMessageResponse), { headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
       throw error;
     }
@@ -1110,6 +1180,16 @@ export async function handleTeamSpeakBan(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' } satisfies TSBanResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Timeout must be between 1 and 300000 ms' } satisfies TSBanResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     let banCmd = `banclient clid=${clid} time=${time}`;
     if (banreason) banCmd += ` banreason=${tsEscape(banreason)}`;
@@ -1121,12 +1201,15 @@ export async function handleTeamSpeakBan(request: Request): Promise<Response> {
     ];
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
@@ -1172,6 +1255,7 @@ export async function handleTeamSpeakBan(request: Request): Promise<Response> {
         error: errorId && errorId !== 0 ? `ServerQuery error ${errorId}: ${errorMsg}` : undefined,
       } satisfies TSBanResponse), { headers: { 'Content-Type': 'application/json' } });
     } catch (error) {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
       throw error;
     }

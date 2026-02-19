@@ -11,6 +11,9 @@ interface GangliaMetric {
   units: string;
   tn?: string;
   tmax?: string;
+  group?: string;
+  desc?: string;
+  title?: string;
 }
 
 interface GangliaHost {
@@ -19,6 +22,7 @@ interface GangliaHost {
   os?: string;
   reported?: string;
   metricCount: number;
+  metricsTruncated?: boolean;
   metrics: GangliaMetric[];
 }
 
@@ -301,6 +305,11 @@ export default function GangliaClient({ onBack }: GangliaClientProps) {
                         </button>
                         {isExpanded && h.metrics.length > 0 && (
                           <div className="px-4 pb-3 border-t border-slate-600">
+                            {h.metricsTruncated && (
+                              <p className="mt-2 text-xs text-yellow-400">
+                                Showing 50 of {h.metricCount} metrics (truncated for response size)
+                              </p>
+                            )}
                             <div className="mt-2 max-h-64 overflow-y-auto">
                               <table className="w-full text-xs">
                                 <thead>
@@ -308,16 +317,18 @@ export default function GangliaClient({ onBack }: GangliaClientProps) {
                                     <th className="text-left py-1 pr-3">Metric</th>
                                     <th className="text-right py-1 pr-3">Value</th>
                                     <th className="text-left py-1 pr-3">Units</th>
-                                    <th className="text-left py-1">Type</th>
+                                    <th className="text-left py-1 pr-3">Type</th>
+                                    <th className="text-left py-1">Group</th>
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {h.metrics.map((m, i) => (
-                                    <tr key={i} className="text-slate-300 border-t border-slate-700">
+                                    <tr key={i} className="text-slate-300 border-t border-slate-700" title={m.desc || m.title || ''}>
                                       <td className="py-1 pr-3 font-mono">{m.name}</td>
                                       <td className="py-1 pr-3 text-right font-mono text-green-400">{m.val}</td>
                                       <td className="py-1 pr-3 text-slate-500">{m.units || '-'}</td>
-                                      <td className="py-1 text-slate-500">{m.type}</td>
+                                      <td className="py-1 pr-3 text-slate-500">{m.type}</td>
+                                      <td className="py-1 text-slate-500">{m.group || '-'}</td>
                                     </tr>
                                   ))}
                                 </tbody>

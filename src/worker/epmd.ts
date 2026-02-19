@@ -106,9 +106,11 @@ function parseNamesResponse(data: Uint8Array): {
     throw new Error('Response too short for NAMES response');
   }
 
-  // First 4 bytes: EPMD port (32-bit big-endian)
+  // First 4 bytes: EPMD port (32-bit big-endian, unsigned)
+  // Use >>> 0 to force unsigned interpretation — the << operator returns a
+  // signed 32-bit int in JavaScript, which goes negative when data[0] >= 128.
   const epmdPort =
-    (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
+    ((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]) >>> 0;
 
   // Rest is text: "name <name> at port <port>\n" repeated
   const text = new TextDecoder().decode(data.slice(4));

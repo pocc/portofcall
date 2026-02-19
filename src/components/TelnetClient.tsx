@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface TelnetClientProps {
   onBack: () => void;
@@ -154,8 +156,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
-      {/* Header */}
+    <div className="max-w-6xl mx-auto">      {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button
@@ -166,6 +167,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">Telnet Client</h1>
         </div>
+
         {connected && (
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse"></div>
@@ -176,6 +178,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
         )}
       </div>
 
+      <ApiExamples examples={apiExamples.Telnet || []} />
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection Panel */}
         <div className="lg:col-span-1">

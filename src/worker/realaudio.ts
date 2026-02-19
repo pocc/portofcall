@@ -73,6 +73,20 @@
 
 import { connect } from 'cloudflare:sockets';
 
+/**
+ * Concatenate multiple Uint8Array chunks into a single buffer
+ */
+function concatenateBytes(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
 interface RealAudioRequest {
   host: string;
   port?: number;
@@ -101,8 +115,12 @@ function buildRTSPOptions(host: string, port: number, streamPath: string = '/'):
   return [
     `OPTIONS rtsp://${host}:${port}${streamPath} RTSP/1.0`,
     'CSeq: 1',
-    'User-Agent: RealMedia Player',
+    'User-Agent: RealMedia Player Version 6.0.9.1235',
     'ClientChallenge: 9e26d33f2984236010ef6253fb1887f7',
+    'PlayerStarttime: [28/03/2003:22:50:23 00:00]',
+    'ClientID: Linux_2.4_6.0.9.1235_play32_RN01_EN_586',
+    'CompanyID: progressive-networks',
+    'GUID: 00000000-0000-0000-0000-000000000000',
     '\r\n',
   ].join('\r\n');
 }
@@ -114,8 +132,9 @@ function buildRTSPDescribe(host: string, port: number, streamPath: string): stri
   return [
     `DESCRIBE rtsp://${host}:${port}${streamPath} RTSP/1.0`,
     'CSeq: 2',
-    'User-Agent: RealMedia Player',
+    'User-Agent: RealMedia Player Version 6.0.9.1235',
     'Accept: application/sdp',
+    'ClientID: Linux_2.4_6.0.9.1235_play32_RN01_EN_586',
     '\r\n',
   ].join('\r\n');
 }
@@ -180,13 +199,19 @@ function parseRTSPResponse(data: string): {
         result.isRealServer = true;
       }
     } else if (headerName === 'cseq') {
-      result.cseq = parseInt(headerValue, 10);
+      const cseqVal = parseInt(headerValue, 10);
+      if (!isNaN(cseqVal)) {
+        result.cseq = cseqVal;
+      }
     } else if (headerName === 'content-type') {
       result.contentType = headerValue;
     } else if (headerName === 'content-base') {
       result.contentBase = headerValue;
     } else if (headerName === 'content-length') {
-      result.contentLength = parseInt(headerValue, 10);
+      const clVal = parseInt(headerValue, 10);
+      if (!isNaN(clVal) && clVal >= 0) {
+        result.contentLength = clVal;
+      }
     }
   }
 
@@ -235,7 +260,10 @@ export async function handleRealAudioProbe(request: Request): Promise<Response> 
     });
 
     try {
-      await Promise.race([socket.opened, timeoutPromise]);
+      await Promise.race([socket.opened, timeoutPromise]).catch(err => {
+        socket.close();
+        throw err;
+      });
 
       // Send RTSP OPTIONS request
       const optionsRequest = buildRTSPOptions(host, port, streamPath);
@@ -266,7 +294,8 @@ export async function handleRealAudioProbe(request: Request): Promise<Response> 
         });
       }
 
-      const responseText = new TextDecoder().decode(value);
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      const responseText = decoder.decode(value, { stream: false });
       const parsed = parseRTSPResponse(responseText);
 
       if (!parsed) {
@@ -365,7 +394,10 @@ export async function handleRealAudioDescribe(request: Request): Promise<Respons
     });
 
     try {
-      await Promise.race([socket.opened, timeoutPromise]);
+      await Promise.race([socket.opened, timeoutPromise]).catch(err => {
+        socket.close();
+        throw err;
+      });
 
       // Send DESCRIBE request
       const describeRequest = buildRTSPDescribe(host, port, streamPath);
@@ -377,7 +409,7 @@ export async function handleRealAudioDescribe(request: Request): Promise<Respons
       // Read response
       const reader = socket.readable.getReader();
 
-      const chunks: string[] = [];
+      const chunks: Uint8Array[] = [];
       let totalBytes = 0;
       const maxResponseSize = 5000;
 
@@ -391,12 +423,13 @@ export async function handleRealAudioDescribe(request: Request): Promise<Respons
           if (done) break;
 
           if (value) {
-            const text = new TextDecoder().decode(value);
-            chunks.push(text);
+            chunks.push(value);
             totalBytes += value.length;
 
-            // Stop after getting complete SDP (ends with blank line)
-            if (text.includes('\r\n\r\n')) {
+            // Check if we have complete response (headers + body end with \r\n\r\n)
+            const decoder = new TextDecoder('utf-8', { fatal: false });
+            const accumulated = decoder.decode(concatenateBytes(chunks), { stream: false });
+            if (accumulated.includes('\r\n\r\n')) {
               break;
             }
           }
@@ -405,7 +438,8 @@ export async function handleRealAudioDescribe(request: Request): Promise<Respons
         // Connection closed or timeout (expected)
       }
 
-      const responseText = chunks.join('');
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      const responseText = decoder.decode(concatenateBytes(chunks), { stream: false });
       const parsed = parseRTSPResponse(responseText);
 
       reader.releaseLock();
@@ -537,11 +571,14 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
 
     const socket = connect(`${host}:${port}`);
 
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       async function readRTSPResp(ms: number): Promise<string> {
         const chunks: string[] = [];
@@ -552,6 +589,7 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
         while (Date.now() < dl) {
           const rem = dl - Date.now();
           if (rem <= 0) break;
+          if (!reader) break;
           try {
             const ct = new Promise<{ value: undefined; done: true }>((r) =>
               setTimeout(() => r({ value: undefined, done: true as const }), rem),
@@ -564,6 +602,9 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
               headersDone = true;
               const clMatch = full.match(/Content-Length:\s*(\d+)/i);
               contentLength = clMatch ? parseInt(clMatch[1], 10) : 0;
+              if (contentLength < 0 || contentLength > 1000000) {
+                throw new Error('Invalid Content-Length');
+              }
               bodyRead = full.length - full.indexOf('\r\n\r\n') - 4;
             }
             if (headersDone && bodyRead >= contentLength) break;
@@ -607,8 +648,13 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
       }
 
       const latencyMs = Date.now() - startTime;
-      writer.releaseLock();
-      reader.releaseLock();
+
+      try {
+        if (writer) writer.releaseLock();
+      } catch {}
+      try {
+        if (reader) reader.releaseLock();
+      } catch {}
       socket.close();
 
       return new Response(
@@ -626,6 +672,12 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     } catch (error) {
+      try {
+        if (writer) writer.releaseLock();
+      } catch {}
+      try {
+        if (reader) reader.releaseLock();
+      } catch {}
       socket.close();
       throw error;
     }
@@ -688,10 +740,13 @@ export async function handleRealAudioSession(request: Request): Promise<Response
       setTimeout(() => reject(new Error('Connection timeout')), timeout),
     );
 
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
     try {
       await Promise.race([socket.opened, timeoutPromise]);
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       async function readRTSP(ms: number): Promise<string> {
         const chunks: string[] = [];
@@ -702,6 +757,7 @@ export async function handleRealAudioSession(request: Request): Promise<Response
         while (Date.now() < dl) {
           const rem = dl - Date.now();
           if (rem <= 0) break;
+          if (!reader) break;
           try {
             const ct = new Promise<{ value: undefined; done: true }>((r) =>
               setTimeout(() => r({ value: undefined, done: true as const }), rem),
@@ -714,6 +770,9 @@ export async function handleRealAudioSession(request: Request): Promise<Response
               headersDone = true;
               const clMatch = full.match(/Content-Length:\s*(\d+)/i);
               contentLength = clMatch ? parseInt(clMatch[1], 10) : 0;
+              if (contentLength < 0 || contentLength > 1000000) {
+                throw new Error('Invalid Content-Length');
+              }
               bodyRead = full.length - full.indexOf('\r\n\r\n') - 4;
             }
             if (headersDone && bodyRead >= contentLength) break;
@@ -783,6 +842,8 @@ export async function handleRealAudioSession(request: Request): Promise<Response
             const frameDeadline = Date.now() + collectMs;
             const buf: Uint8Array[] = [];
             let bufLen = 0;
+            const accumulator = new Uint8Array(65536);
+            let accLen = 0;
             while (Date.now() < frameDeadline) {
               const rem = frameDeadline - Date.now();
               try {
@@ -793,13 +854,37 @@ export async function handleRealAudioSession(request: Request): Promise<Response
                 if (done || !value) break;
                 buf.push(value);
                 bufLen += value.length;
-                // Count interleaved frames: each starts with '$' (0x24) + channel(1) + length(2)
-                for (const chunk of buf) {
-                  for (let i = 0; i < chunk.length - 3; i++) {
-                    if (chunk[i] === 0x24) framesReceived++;
+
+                // Accumulate bytes and count complete interleaved frames
+                for (const chunk of value) {
+                  if (accLen < accumulator.length) {
+                    accumulator[accLen++] = chunk;
                   }
                 }
-                buf.length = 0; // clear processed chunks
+
+                // Parse complete frames: '$' (0x24) + channel(1) + length(2 BE) + data
+                let offset = 0;
+                while (offset + 4 <= accLen) {
+                  if (accumulator[offset] === 0x24) {
+                    const frameLen = (accumulator[offset + 2] << 8) | accumulator[offset + 3];
+                    if (offset + 4 + frameLen <= accLen) {
+                      framesReceived++;
+                      offset += 4 + frameLen;
+                    } else {
+                      break; // incomplete frame, wait for more data
+                    }
+                  } else {
+                    offset++; // skip non-frame byte
+                  }
+                }
+                // Shift remaining bytes to start of accumulator
+                if (offset > 0 && offset < accLen) {
+                  accumulator.copyWithin(0, offset, accLen);
+                  accLen -= offset;
+                } else if (offset === accLen) {
+                  accLen = 0;
+                }
+
                 if (bufLen > 65536) break; // safety
               } catch { break; }
             }
@@ -818,8 +903,13 @@ export async function handleRealAudioSession(request: Request): Promise<Response
       }
 
       const latencyMs = Date.now() - startTime;
-      writer.releaseLock();
-      reader.releaseLock();
+
+      try {
+        if (writer) writer.releaseLock();
+      } catch {}
+      try {
+        if (reader) reader.releaseLock();
+      } catch {}
       socket.close();
 
       return new Response(
@@ -838,6 +928,12 @@ export async function handleRealAudioSession(request: Request): Promise<Response
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     } catch (error) {
+      try {
+        if (writer) writer.releaseLock();
+      } catch {}
+      try {
+        if (reader) reader.releaseLock();
+      } catch {}
       socket.close();
       throw error;
     }

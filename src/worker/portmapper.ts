@@ -208,7 +208,20 @@ function parseRpcReply(data: Uint8Array): { offset: number; xid: number } {
   // Skip verifier (flavor + length + data)
   offset += 4; // verifier flavor
   const verifierLen = view.getUint32(offset);  offset += 4;
-  offset += verifierLen; // verifier data
+
+  // Prevent memory exhaustion from malicious servers
+  if (verifierLen > 400) {
+    throw new Error(`Verifier length too large: ${verifierLen} bytes`);
+  }
+
+  // XDR requires 4-byte alignment - verifier data is padded to 4-byte boundary
+  const paddedVerifierLen = (verifierLen + 3) & ~3;
+
+  if (offset + paddedVerifierLen + 4 > data.length) {
+    throw new Error('Truncated verifier data');
+  }
+
+  offset += paddedVerifierLen; // verifier data (padded)
 
   const acceptStatus = view.getUint32(offset); offset += 4;
 
@@ -270,54 +283,70 @@ async function readRpcResponse(
   let totalBytes = 0;
   const maxBytes = 131072; // 128KB safety limit
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Read timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeout);
   });
 
-  // First, read the 4-byte record mark
-  let headerBuf = new Uint8Array(0);
+  try {
+    // First, read the 4-byte record mark
+    let headerBuf = new Uint8Array(0);
 
-  while (headerBuf.length < 4) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) throw new Error('Connection closed before record header');
-    const newBuf = new Uint8Array(headerBuf.length + value.length);
-    newBuf.set(headerBuf);
-    newBuf.set(value, headerBuf.length);
-    headerBuf = newBuf;
+    while (headerBuf.length < 4) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done || !value) throw new Error('Connection closed before record header');
+      const newBuf = new Uint8Array(headerBuf.length + value.length);
+      newBuf.set(headerBuf);
+      newBuf.set(value, headerBuf.length);
+      headerBuf = newBuf;
+    }
+
+    const headerView = new DataView(headerBuf.buffer, headerBuf.byteOffset, headerBuf.byteLength);
+    const recordHeader = headerView.getUint32(0);
+    const fragmentLength = recordHeader & 0x7FFFFFFF;
+
+    if (fragmentLength > maxBytes) {
+      throw new Error(`Fragment too large: ${fragmentLength} bytes`);
+    }
+
+    // We may have extra bytes after the header
+    if (headerBuf.length > 4) {
+      const extra = headerBuf.slice(4);
+      chunks.push(extra);
+      totalBytes += extra.length;
+    }
+
+    // Read remaining fragment data
+    while (totalBytes < fragmentLength) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done || !value) break;
+
+      // Only take what we need to avoid reading past fragment boundary
+      const bytesNeeded = fragmentLength - totalBytes;
+      if (value.length > bytesNeeded) {
+        chunks.push(value.slice(0, bytesNeeded));
+        totalBytes += bytesNeeded;
+        break;
+      } else {
+        chunks.push(value);
+        totalBytes += value.length;
+      }
+    }
+
+    // Combine chunks into exactly fragmentLength bytes
+    const result = new Uint8Array(fragmentLength);
+    let offset = 0;
+    for (const chunk of chunks) {
+      result.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return result;
+  } finally {
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
   }
-
-  const headerView = new DataView(headerBuf.buffer, headerBuf.byteOffset, headerBuf.byteLength);
-  const recordHeader = headerView.getUint32(0);
-  const fragmentLength = recordHeader & 0x7FFFFFFF;
-
-  if (fragmentLength > maxBytes) {
-    throw new Error(`Fragment too large: ${fragmentLength} bytes`);
-  }
-
-  // We may have extra bytes after the header
-  if (headerBuf.length > 4) {
-    const extra = headerBuf.slice(4);
-    chunks.push(extra);
-    totalBytes += extra.length;
-  }
-
-  // Read remaining fragment data
-  while (totalBytes < fragmentLength) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) break;
-    chunks.push(value);
-    totalBytes += value.length;
-  }
-
-  // Combine chunks
-  const result = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
-  }
-
-  return result;
 }
 
 /**
@@ -349,19 +378,33 @@ export async function handlePortmapperProbe(request: Request): Promise<Response>
       });
     }
 
+    if (timeout < 0 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 0 and 300000ms',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       // Build NULL call (no args)
       const rpcCall = buildRpcCall(PMAPPROC_NULL);
@@ -376,10 +419,6 @@ export async function handlePortmapperProbe(request: Request): Promise<Response>
       // Parse RPC reply (NULL returns empty body on success)
       parseRpcReply(responseData);
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
       const result: PortmapperProbeResponse = {
         success: true,
         host,
@@ -392,9 +431,11 @@ export async function handlePortmapperProbe(request: Request): Promise<Response>
         headers: { 'Content-Type': 'application/json' },
       });
 
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      try { if (writer) writer.releaseLock(); } catch {}
+      try { if (reader) reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
     }
 
   } catch (error) {
@@ -437,19 +478,33 @@ export async function handlePortmapperDump(request: Request): Promise<Response> 
       });
     }
 
+    if (timeout < 0 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 0 and 300000ms',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       // Build DUMP call (no args)
       const rpcCall = buildRpcCall(PMAPPROC_DUMP);
@@ -467,10 +522,6 @@ export async function handlePortmapperDump(request: Request): Promise<Response> 
       // Parse DUMP mapping list
       const mappings = parseDumpResponse(responseData, offset);
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
       const result: PortmapperDumpResponse = {
         success: true,
         host,
@@ -485,9 +536,11 @@ export async function handlePortmapperDump(request: Request): Promise<Response> 
         headers: { 'Content-Type': 'application/json' },
       });
 
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      try { if (writer) writer.releaseLock(); } catch {}
+      try { if (reader) reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
     }
 
   } catch (error) {
@@ -546,6 +599,16 @@ export async function handlePortmapperGetPort(request: Request): Promise<Respons
       });
     }
 
+    if (timeout < 0 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 0 and 300000ms',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Build GETPORT args: [program:4][version:4][protocol:4][port:4]
     const args = new Uint8Array(16);
     const argsView = new DataView(args.buffer);
@@ -556,14 +619,19 @@ export async function handlePortmapperGetPort(request: Request): Promise<Respons
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       const rpcCall = buildRpcCall(PMAPPROC_GETPORT, args);
       const frame = buildRecordMark(rpcCall);
@@ -580,10 +648,6 @@ export async function handlePortmapperGetPort(request: Request): Promise<Respons
       }
       const view = new DataView(responseData.buffer, responseData.byteOffset, responseData.byteLength);
       const servicePort = view.getUint32(offset);
-
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
 
       return new Response(JSON.stringify({
         success: true,
@@ -604,9 +668,11 @@ export async function handlePortmapperGetPort(request: Request): Promise<Respons
         headers: { 'Content-Type': 'application/json' },
       });
 
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      try { if (writer) writer.releaseLock(); } catch {}
+      try { if (reader) reader.releaseLock(); } catch {}
+      try { socket.close(); } catch {}
     }
 
   } catch (error) {

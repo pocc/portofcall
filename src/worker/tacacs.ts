@@ -25,6 +25,9 @@ const TAC_PLUS_ACCT = 0x03;
 const TAC_PLUS_UNENCRYPTED_FLAG = 0x01;
 const TAC_PLUS_SINGLE_CONNECT_FLAG = 0x04;
 
+// Protocol limits
+const MAX_BODY_LENGTH = 65535; // Maximum body size per RFC 8907
+
 // Authentication actions
 const TAC_PLUS_AUTHEN_LOGIN = 0x01;
 
@@ -376,6 +379,13 @@ function parseHeader(data: Uint8Array): {
 } {
   const view = new DataView(data.buffer, data.byteOffset);
 
+  const bodyLength = view.getUint32(8, false);
+
+  // Validate body length to prevent OOM attacks
+  if (bodyLength > MAX_BODY_LENGTH) {
+    throw new Error(`TACACS+ body length ${bodyLength} exceeds maximum ${MAX_BODY_LENGTH}`);
+  }
+
   return {
     majorVersion: (data[0] >> 4) & 0x0f,
     minorVersion: data[0] & 0x0f,
@@ -383,8 +393,15 @@ function parseHeader(data: Uint8Array): {
     seqNo: data[2],
     flags: data[3],
     sessionId: view.getUint32(4, false),
-    bodyLength: view.getUint32(8, false),
+    bodyLength,
   };
+}
+
+/**
+ * Check if a TACACS+ packet is encrypted
+ */
+function isEncrypted(flags: number): boolean {
+  return (flags & TAC_PLUS_UNENCRYPTED_FLAG) === 0;
 }
 
 /**
@@ -458,6 +475,9 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
       );
     }
 
+    // Validate timeout
+    const validTimeout = Math.max(1000, Math.min(timeout, 300000)); // 1s to 5min
+
     // Check if host is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -471,9 +491,10 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), validTimeout);
+    });
 
     const probePromise = (async () => {
       const startTime = Date.now();
@@ -487,8 +508,10 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
 
-        // Generate random session ID
-        const sessionId = Math.floor(Math.random() * 0xffffffff);
+        // Generate cryptographically secure random session ID
+        const sessionIdArray = new Uint32Array(1);
+        crypto.getRandomValues(sessionIdArray);
+        const sessionId = sessionIdArray[0];
 
         // Build authentication START body
         const body = buildAuthenStart('probe-user');
@@ -496,11 +519,10 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
         // Determine encryption mode
         const useEncryption = !!secret;
         const flags = useEncryption ? TAC_PLUS_SINGLE_CONNECT_FLAG : (TAC_PLUS_UNENCRYPTED_FLAG | TAC_PLUS_SINGLE_CONNECT_FLAG);
-        const version = (TAC_PLUS_MAJOR << 4) | TAC_PLUS_MINOR_DEFAULT;
 
         // Encrypt body if secret provided
         const finalBody = useEncryption
-          ? tacacsEncrypt(body, sessionId, secret, version, 1)
+          ? tacacsEncrypt(body, sessionId, secret, (TAC_PLUS_MAJOR << 4) | TAC_PLUS_MINOR_DEFAULT, 1)
           : body;
 
         // Build header
@@ -518,7 +540,17 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
 
         // Validate response
         if (parsedHeader.majorVersion !== TAC_PLUS_MAJOR) {
-          throw new Error(`Not a TACACS+ server (major version ${parsedHeader.majorVersion}, expected ${TAC_PLUS_MAJOR})`);
+          throw new Error(`Invalid TACACS+ response: major version ${parsedHeader.majorVersion}, expected ${TAC_PLUS_MAJOR}`);
+        }
+
+        // Validate minor version per RFC 8907 §3.1
+        if (parsedHeader.minorVersion !== TAC_PLUS_MINOR_DEFAULT) {
+          throw new Error(`TACACS+ minor version mismatch: ${parsedHeader.minorVersion}, expected ${TAC_PLUS_MINOR_DEFAULT}`);
+        }
+
+        // Validate sequence number (server reply should be seq_no=2)
+        if (parsedHeader.seqNo !== 2) {
+          throw new Error(`TACACS+ sequence number mismatch: got ${parsedHeader.seqNo}, expected 2`);
         }
 
         // Read response body
@@ -527,11 +559,8 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
           const { data: bodyData } = await readExactBytes(reader, parsedHeader.bodyLength, leftover);
 
           // Decrypt if encrypted
-          const respFlags = parsedHeader.flags;
-          const isEncrypted = (respFlags & TAC_PLUS_UNENCRYPTED_FLAG) === 0;
-
-          if (isEncrypted && secret) {
-            respBody = tacacsEncrypt(bodyData, sessionId, secret, version, parsedHeader.seqNo);
+          if (isEncrypted(parsedHeader.flags) && secret) {
+            respBody = tacacsEncrypt(bodyData, sessionId, secret, (TAC_PLUS_MAJOR << 4) | TAC_PLUS_MINOR_DEFAULT, parsedHeader.seqNo);
           } else {
             respBody = bodyData;
           }
@@ -548,9 +577,9 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
         const totalTime = Date.now() - startTime;
 
         // Cleanup
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
+        try { writer.releaseLock(); } catch { /* ignore lock release errors */ }
+        try { reader.releaseLock(); } catch { /* ignore lock release errors */ }
+        try { await socket.close(); } catch { /* ignore close errors */ }
 
         return {
           success: true,
@@ -563,7 +592,7 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
           responseType: PACKET_TYPE_NAMES[parsedHeader.type] || `Unknown(${parsedHeader.type})`,
           seqNo: parsedHeader.seqNo,
           flags: {
-            encrypted: (parsedHeader.flags & TAC_PLUS_UNENCRYPTED_FLAG) === 0,
+            encrypted: isEncrypted(parsedHeader.flags),
             singleConnect: (parsedHeader.flags & TAC_PLUS_SINGLE_CONNECT_FLAG) !== 0,
           },
           sessionId: `0x${sessionId.toString(16).padStart(8, '0')}`,
@@ -580,8 +609,10 @@ export async function handleTacacsProbe(request: Request): Promise<Response> {
           totalTimeMs: totalTime,
         };
       } catch (error) {
-        try { await socket.close(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore close errors */ }
         throw error;
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     })();
 
@@ -650,6 +681,9 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
       );
     }
 
+    // Validate timeout
+    const validTimeout = Math.max(1000, Math.min(timeout, 300000)); // 1s to 5min
+
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -663,9 +697,10 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), validTimeout);
+    });
 
     const authPromise = (async () => {
       const startTime = Date.now();
@@ -677,7 +712,10 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
 
-        const sessionId = Math.floor(Math.random() * 0xffffffff);
+        // Generate cryptographically secure random session ID
+        const sessionIdArray = new Uint32Array(1);
+        crypto.getRandomValues(sessionIdArray);
+        const sessionId = sessionIdArray[0];
         const useEncryption = !!secret;
         const flags = useEncryption
           ? TAC_PLUS_SINGLE_CONNECT_FLAG
@@ -705,15 +743,25 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
         const { data: replyHeader, leftover: replyLeftover } = await readExactBytes(reader, 12);
         const replyH = parseHeader(replyHeader);
 
+        // Validate response
         if (replyH.majorVersion !== TAC_PLUS_MAJOR) {
-          throw new Error('Not a TACACS+ server');
+          throw new Error(`Invalid TACACS+ response: major version ${replyH.majorVersion}, expected ${TAC_PLUS_MAJOR}`);
+        }
+
+        // Validate minor version per RFC 8907 §3.1
+        if (replyH.minorVersion !== TAC_PLUS_MINOR_DEFAULT) {
+          throw new Error(`TACACS+ minor version mismatch: ${replyH.minorVersion}, expected ${TAC_PLUS_MINOR_DEFAULT}`);
+        }
+
+        // Validate sequence number (server reply should be seq_no=2)
+        if (replyH.seqNo !== 2) {
+          throw new Error(`TACACS+ sequence number mismatch: got ${replyH.seqNo}, expected 2`);
         }
 
         let replyBody: Uint8Array;
         if (replyH.bodyLength > 0) {
           const { data: bd } = await readExactBytes(reader, replyH.bodyLength, replyLeftover);
-          const isEnc = (replyH.flags & TAC_PLUS_UNENCRYPTED_FLAG) === 0;
-          replyBody = (isEnc && secret) ? tacacsEncrypt(bd, sessionId, secret, version, replyH.seqNo) : bd;
+          replyBody = (isEncrypted(replyH.flags) && secret) ? tacacsEncrypt(bd, sessionId, secret, version, replyH.seqNo) : bd;
         } else {
           replyBody = new Uint8Array(0);
         }
@@ -733,17 +781,17 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
 
         // Step 3: If server asks for password (GETPASS), send CONTINUE
         if (firstReply && (firstReply.status === 0x05 || firstReply.status === 0x03)) {
-          seqNo++;
+          // Client CONTINUE uses seq_no=3 (previous was START=1, server reply=2)
+          const continueSeqNo = 3;
           const continueBody = buildAuthenContinue(password || '');
           const encContinueBody = useEncryption
-            ? tacacsEncrypt(continueBody, sessionId, secret, version, seqNo)
+            ? tacacsEncrypt(continueBody, sessionId, secret, version, continueSeqNo)
             : continueBody;
-          const continueHeader = buildHeader(TAC_PLUS_AUTHEN, seqNo, flags, sessionId, encContinueBody.length);
+          const continueHeader = buildHeader(TAC_PLUS_AUTHEN, continueSeqNo, flags, sessionId, encContinueBody.length);
           const continuePacket = new Uint8Array(12 + encContinueBody.length);
           continuePacket.set(continueHeader, 0);
           continuePacket.set(encContinueBody, 12);
           await writer.write(continuePacket);
-          seqNo++;
 
           steps.push({ step: 'Authentication CONTINUE', status: 'sent' });
 
@@ -751,11 +799,15 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
           const { data: finalHeader, leftover: finalLeftover } = await readExactBytes(reader, 12);
           const finalH = parseHeader(finalHeader);
 
+          // Validate final response sequence number (should be 4)
+          if (finalH.seqNo !== 4) {
+            throw new Error(`TACACS+ sequence number mismatch in final reply: got ${finalH.seqNo}, expected 4`);
+          }
+
           let finalBody: Uint8Array;
           if (finalH.bodyLength > 0) {
             const { data: fb } = await readExactBytes(reader, finalH.bodyLength, finalLeftover);
-            const isEnc = (finalH.flags & TAC_PLUS_UNENCRYPTED_FLAG) === 0;
-            finalBody = (isEnc && secret) ? tacacsEncrypt(fb, sessionId, secret, version, finalH.seqNo) : fb;
+            finalBody = (isEncrypted(finalH.flags) && secret) ? tacacsEncrypt(fb, sessionId, secret, version, finalH.seqNo) : fb;
           } else {
             finalBody = new Uint8Array(0);
           }
@@ -775,9 +827,9 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
 
         const totalTime = Date.now() - startTime;
 
-        writer.releaseLock();
-        reader.releaseLock();
-        await socket.close();
+        try { writer.releaseLock(); } catch { /* ignore lock release errors */ }
+        try { reader.releaseLock(); } catch { /* ignore lock release errors */ }
+        try { await socket.close(); } catch { /* ignore close errors */ }
 
         return {
           success: true,
@@ -793,8 +845,10 @@ export async function handleTacacsAuthenticate(request: Request): Promise<Respon
           totalTimeMs: totalTime,
         };
       } catch (error) {
-        try { await socket.close(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore close errors */ }
         throw error;
+      } finally {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     })();
 

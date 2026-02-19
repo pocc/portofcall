@@ -77,109 +77,178 @@ const STATUS_CODES: Record<number, string> = {
 };
 
 /**
- * Build an OPC UA Hello message
+ * Build an OPC UA Hello message (OPC 10000-6, Section 7.1.2.3)
+ *
+ * Layout (all fields little-endian):
+ *   Offset  Size  Field
+ *   0       3     MessageType = "HEL"
+ *   3       1     Reserved = 'F'
+ *   4       4     MessageSize (total including header)
+ *   8       4     ProtocolVersion (0)
+ *   12      4     ReceiveBufferSize
+ *   16      4     SendBufferSize
+ *   20      4     MaxMessageSize (0 = no limit)
+ *   24      4     MaxChunkCount (0 = no limit)
+ *   28      4     EndpointUrl length (Int32)
+ *   32      var   EndpointUrl (UTF-8, no null terminator)
  */
 function buildHelloMessage(endpointUrl: string): Uint8Array {
   const urlBytes = new TextEncoder().encode(endpointUrl);
-  const messageSize = 32 + urlBytes.length; // 8 header + 20 fields + 4 url length + url
+  // 4 (type+reserved) + 4 (size) + 5*4 (fields) + 4 (url length) + url bytes = 32 + url
+  const messageSize = 32 + urlBytes.length;
 
   const buffer = new ArrayBuffer(messageSize);
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
 
-  // Message header
+  // Message header: "HEL" + reserved byte 'F'
   bytes[0] = 0x48; // 'H'
   bytes[1] = 0x45; // 'E'
   bytes[2] = 0x4C; // 'L'
-  bytes[3] = 0x46; // 'F' (Final chunk)
+  bytes[3] = 0x46; // 'F' (reserved, always Final for Hello)
 
-  // Message size (little-endian)
+  // Message size (little-endian uint32)
   view.setUint32(4, messageSize, true);
 
-  // Protocol version (0 = current)
+  // Protocol version: 0 is the only defined version
   view.setUint32(8, 0, true);
 
-  // Receive buffer size (65535)
-  view.setUint32(12, 65535, true);
+  // Receive buffer size: 65536 is the conventional minimum for real implementations
+  view.setUint32(12, 65536, true);
 
-  // Send buffer size (65535)
-  view.setUint32(16, 65535, true);
+  // Send buffer size: 65536
+  view.setUint32(16, 65536, true);
 
-  // Max message size (0 = no limit)
+  // Max message size (0 = no limit, let server decide)
   view.setUint32(20, 0, true);
 
   // Max chunk count (0 = no limit)
   view.setUint32(24, 0, true);
 
-  // Endpoint URL length
-  view.setUint32(28, urlBytes.length, true);
+  // Endpoint URL as UA String: Int32 length prefix + UTF-8 bytes
+  view.setInt32(28, urlBytes.length, true);
 
-  // Endpoint URL
+  // Endpoint URL bytes
   bytes.set(urlBytes, 32);
 
   return bytes;
 }
 
 /**
- * Build an OPC UA OpenSecureChannel request
- * Uses SecurityPolicy None for read-only probing
+ * Build an OPC UA OpenSecureChannel request (OPC 10000-6, Section 7.1.3)
+ * Uses SecurityPolicy None for read-only probing.
+ *
+ * OPN message layout:
+ *   [MessageType: "OPN"][ChunkType: "F"][MessageSize: uint32]
+ *   [SecureChannelId: uint32]
+ *   --- Asymmetric Security Header (Section 6.7.2.3) ---
+ *   [SecurityPolicyUri: UA String]
+ *   [SenderCertificate: ByteString (-1 = null)]
+ *   [ReceiverCertificateThumbprint: ByteString (-1 = null)]
+ *   --- Sequence Header (Section 6.7.2.4) ---
+ *   [SequenceNumber: uint32]
+ *   [RequestId: uint32]
+ *   --- Body: Encoded OpenSecureChannelRequest ---
+ *   [NodeId: FourByte encoding of id=446 (0x01, 0x00, 0xBE, 0x01)]
+ *   [RequestHeader]
+ *   [ClientProtocolVersion: uint32]
+ *   [RequestType: uint32 (0=Issue, 1=Renew)]
+ *   [SecurityMode: uint32 (1=None)]
+ *   [ClientNonce: ByteString (-1 = null)]
+ *   [RequestedLifetime: uint32 (ms)]
  */
-function buildGetEndpointsRequest(secureChannelId: number, _tokenId: number): Uint8Array {
-  // OPN message with SecurityPolicy None
-  // This builds a minimal OpenSecureChannel + GetEndpoints
-
-  // For the probe, we'll use the simpler approach of just sending Hello
-  // and parsing the Acknowledge response
-
-  // OpenSecureChannel request with None security
+function buildOpenSecureChannelRequest(secureChannelId: number): Uint8Array {
   const securityPolicyUri = 'http://opcfoundation.org/UA/SecurityPolicy#None';
   const policyBytes = new TextEncoder().encode(securityPolicyUri);
 
-  // Message type: OPN + F
-  // Asymmetric security header + Sequence header + Request body
-  const headerSize = 8; // MSG type (4) + size (4)
-  const secureChannelSize = 4; // secure channel id
-  const asymmetricHeaderSize = 4 + policyBytes.length + 4 + 4; // policy uri length + policy + sender cert (-1) + receiver cert (-1)
-  const sequenceHeaderSize = 8; // sequence number + request id
+  // --- Build the request body first ---
+  // NodeId for OpenSecureChannelRequest encoding = i=446 (FourByte: 0x01, ns=0, id=446 LE)
+  const nodeId = new Uint8Array([0x01, 0x00, 0xBE, 0x01]); // 446 = 0x01BE
 
-  // Encoded request body: NodeId for OpenSecureChannel (0x01, 0x00, 0xBE, 0x01)
-  // + RequestHeader + parameters
-  // This is complex - for the probe we just use Hello/Acknowledge
+  // Minimal RequestHeader:
+  //   AuthenticationToken: TwoByteNodeId(0) = [0x00, 0x00]
+  //   Timestamp: Int64 = 0 (8 bytes)
+  //   RequestHandle: UInt32 = 1
+  //   ReturnDiagnostics: UInt32 = 0
+  //   AuditEntryId: UA String = null (-1)
+  //   TimeoutHint: UInt32 = 0
+  //   AdditionalHeader: ExtensionObject = null (TypeId=0 + encoding=0x00)
+  const reqHeader = new Uint8Array([
+    0x00, 0x00,                                           // AuthenticationToken (TwoByteNodeId id=0)
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,     // Timestamp = 0
+    0x01, 0x00, 0x00, 0x00,                               // RequestHandle = 1
+    0x00, 0x00, 0x00, 0x00,                               // ReturnDiagnostics = 0
+    0xFF, 0xFF, 0xFF, 0xFF,                               // AuditEntryId = null string (-1)
+    0x00, 0x00, 0x00, 0x00,                               // TimeoutHint = 0
+    0x00, 0x00, 0x00,                                     // AdditionalHeader: TypeId(TwoByteNodeId 0) + Encoding(0x00)
+  ]);
 
-  const totalSize = headerSize + secureChannelSize + asymmetricHeaderSize + sequenceHeaderSize;
+  // OpenSecureChannelRequest parameters:
+  //   ClientProtocolVersion: UInt32 = 0
+  //   RequestType: UInt32 = 0 (Issue)
+  //   SecurityMode: UInt32 = 1 (None)
+  //   ClientNonce: ByteString = null (-1)
+  //   RequestedLifetime: UInt32 = 600000 (10 minutes)
+  const params = new Uint8Array([
+    0x00, 0x00, 0x00, 0x00,     // ClientProtocolVersion = 0
+    0x00, 0x00, 0x00, 0x00,     // RequestType = 0 (Issue)
+    0x01, 0x00, 0x00, 0x00,     // SecurityMode = 1 (None / MessageSecurityMode_None)
+    0xFF, 0xFF, 0xFF, 0xFF,     // ClientNonce = null (-1)
+    0x60, 0x27, 0x09, 0x00,     // RequestedLifetime = 600000ms (10 min)
+  ]);
+
+  const bodySize = nodeId.length + reqHeader.length + params.length;
+
+  // --- Calculate total message size ---
+  // Header: 4 (type) + 4 (size) + 4 (channelId) = 12
+  // Asymmetric security header: 4 (policy len) + policy + 4 (cert = -1) + 4 (thumbprint = -1)
+  // Sequence header: 4 (seqNum) + 4 (reqId) = 8
+  // Body
+  const asymHdrSize = 4 + policyBytes.length + 4 + 4;
+  const totalSize = 12 + asymHdrSize + 8 + bodySize;
+
   const buffer = new ArrayBuffer(totalSize);
   const view = new DataView(buffer);
   const bytes = new Uint8Array(buffer);
 
+  // Message header
   bytes[0] = 0x4F; // 'O'
   bytes[1] = 0x50; // 'P'
   bytes[2] = 0x4E; // 'N'
-  bytes[3] = 0x46; // 'F'
+  bytes[3] = 0x46; // 'F' (Final chunk)
 
   view.setUint32(4, totalSize, true);
   view.setUint32(8, secureChannelId, true);
 
-  // Security policy URI
+  // Asymmetric security header
   let offset = 12;
+
+  // SecurityPolicyUri (UA String: Int32 length + bytes)
   view.setInt32(offset, policyBytes.length, true);
   offset += 4;
   bytes.set(policyBytes, offset);
   offset += policyBytes.length;
 
-  // Sender certificate (null = -1)
+  // SenderCertificate (ByteString: null = -1)
   view.setInt32(offset, -1, true);
   offset += 4;
 
-  // Receiver certificate thumbprint (null = -1)
+  // ReceiverCertificateThumbprint (ByteString: null = -1)
   view.setInt32(offset, -1, true);
   offset += 4;
 
-  // Sequence number
-  view.setUint32(offset, 1, true);
+  // Sequence header
+  view.setUint32(offset, 1, true);  // SequenceNumber = 1
+  offset += 4;
+  view.setUint32(offset, 1, true);  // RequestId = 1
   offset += 4;
 
-  // Request ID
-  view.setUint32(offset, 1, true);
+  // Body: NodeId + RequestHeader + Parameters
+  bytes.set(nodeId, offset);
+  offset += nodeId.length;
+  bytes.set(reqHeader, offset);
+  offset += reqHeader.length;
+  bytes.set(params, offset);
 
   return bytes;
 }
@@ -259,9 +328,11 @@ async function readOPCUAResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<Uint8Array> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs),
-  );
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Read timeout')), timeoutMs);
+  });
 
   const readPromise = (async () => {
     let buffer = new Uint8Array(0);
@@ -280,6 +351,11 @@ async function readOPCUAResponse(
         const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
         const messageSize = view.getUint32(4, true);
 
+        // Validate messageSize to prevent buffer overflow
+        if (messageSize < 8 || messageSize > 1000000) {
+          throw new Error(`Invalid OPC UA message size: ${messageSize}`);
+        }
+
         if (buffer.length >= messageSize) {
           return buffer.subarray(0, messageSize);
         }
@@ -288,7 +364,14 @@ async function readOPCUAResponse(
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  try {
+    const result = await Promise.race([readPromise, timeoutPromise]);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    return result;
+  } catch (error) {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    throw error;
+  }
 }
 
 /**
@@ -342,6 +425,8 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
 
     const actualEndpointUrl = endpointUrl || `opc.tcp://${host}:${port}`;
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
       await socket.opened;
@@ -356,9 +441,9 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
 
         // Read response
         const responseBytes = await readOPCUAResponse(reader, 5000);
-        await socket.close();
 
         if (responseBytes.length === 0) {
+          try { await socket.close(); } catch { /* ignore close error */ }
           return {
             success: false,
             error: 'No response from OPC UA server (empty response)',
@@ -368,6 +453,7 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
         const parsed = parseResponse(responseBytes);
 
         if (!parsed) {
+          try { await socket.close(); } catch { /* ignore close error */ }
           return {
             success: true,
             message: 'Received data but could not parse as OPC UA message',
@@ -380,6 +466,7 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
         }
 
         if (parsed.messageType === 'ACK') {
+          try { await socket.close(); } catch { /* ignore close error */ }
           return {
             success: true,
             message: `OPC UA server reachable at ${host}:${port}`,
@@ -398,6 +485,7 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
         }
 
         if (parsed.messageType === 'ERR') {
+          try { await socket.close(); } catch { /* ignore close error */ }
           return {
             success: true,
             message: `OPC UA server responded with error at ${host}:${port}`,
@@ -413,6 +501,7 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
           };
         }
 
+        try { await socket.close(); } catch { /* ignore close error */ }
         return {
           success: true,
           message: `OPC UA server responded with ${parsed.messageType} at ${host}:${port}`,
@@ -427,19 +516,25 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
           rawHex: toHex(responseBytes),
         };
       } catch (error) {
-        await socket.close();
+        try { await socket.close(); } catch { /* ignore close error */ }
         throw error;
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
-    return new Response(JSON.stringify(result), {
-      headers: { 'Content-Type': 'application/json' },
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      throw error;
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -493,6 +588,8 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
 
     const actualEndpointUrl = endpointUrl || `opc.tcp://${host}:${port}`;
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
       await socket.opened;
@@ -509,7 +606,7 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
         const ackParsed = parseResponse(ackBytes);
 
         if (!ackParsed || ackParsed.messageType !== 'ACK') {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore close error */ }
 
           if (ackParsed?.messageType === 'ERR') {
             return {
@@ -541,7 +638,7 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
         await writer.write(opnMsg);
 
         const opnBytes = await readOPCUAResponse(reader, 5000);
-        await socket.close();
+        try { await socket.close(); } catch { /* ignore close error */ }
 
         const opnParsed = parseResponse(opnBytes);
 
@@ -588,19 +685,25 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
 
         return result;
       } catch (error) {
-        await socket.close();
+        try { await socket.close(); } catch { /* ignore close error */ }
         throw error;
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
-    return new Response(JSON.stringify(result), {
-      headers: { 'Content-Type': 'application/json' },
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      throw error;
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -610,6 +713,17 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
       headers: { 'Content-Type': 'application/json' },
     });
   }
+}
+
+/**
+ * Build a combined OpenSecureChannel + GetEndpoints request.
+ * This is what handleOPCUAEndpoints and handleOPCUARead actually need.
+ * The function name is kept for compatibility with existing call sites.
+ */
+function buildGetEndpointsRequest(secureChannelId: number, _tokenId: number): Uint8Array {
+  // For now, this just calls buildOpenSecureChannelRequest
+  // The actual GetEndpoints is sent as a separate MSG after receiving OPN
+  return buildOpenSecureChannelRequest(secureChannelId);
 }
 
 /**
@@ -682,6 +796,9 @@ function parseEndpointList(payload: Uint8Array): Array<{
 }> {
   const SECURITY_MODES: Record<number, string> = { 1: 'None', 2: 'Sign', 3: 'SignAndEncrypt' };
   const endpoints: Array<{ endpointUrl: string | null; securityMode: string; securityPolicyUri: string | null; securityLevel: number }> = [];
+
+  // Validate minimum payload length before parsing
+  if (payload.length < 48) return endpoints;
 
   try {
     const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -769,7 +886,9 @@ function parseEndpointList(payload: Uint8Array): Array<{
       offset = tpResult.nextOffset;
 
       // securityLevel
-      if (offset < payload.length) ep.securityLevel = payload[offset++];
+      if (offset + 1 <= payload.length) {
+        ep.securityLevel = payload[offset++];
+      }
 
       endpoints.push(ep);
     }
@@ -799,6 +918,8 @@ export async function handleOPCUARead(request: Request): Promise<Response> {
 
     const actualEndpointUrl = endpoint_url || `opc.tcp://${host}:${port}`;
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
       await socket.opened;
@@ -811,7 +932,7 @@ export async function handleOPCUARead(request: Request): Promise<Response> {
         const ackBytes = await readOPCUAResponse(reader, 5000);
         const ackParsed = parseResponse(ackBytes);
         if (!ackParsed || ackParsed.messageType !== 'ACK') {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore close error */ }
           return { success: false, error: `Expected ACK, got ${ackParsed?.messageType || 'empty'}`, host, port };
         }
 
@@ -820,7 +941,7 @@ export async function handleOPCUARead(request: Request): Promise<Response> {
         const opnBytes = await readOPCUAResponse(reader, 5000);
         const opnParsed = parseResponse(opnBytes);
         if (!opnParsed || opnParsed.messageType !== 'OPN') {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore close error */ }
           return {
             success: false,
             error: opnParsed?.messageType === 'ERR' ? `Server error: ${opnParsed.errorName}` : `Expected OPN, got ${opnParsed?.messageType || 'empty'}`,
@@ -832,7 +953,7 @@ export async function handleOPCUARead(request: Request): Promise<Response> {
         // GetEndpoints MSG
         await writer.write(buildGetEndpointsMsgRequest(actualEndpointUrl));
         const msgBytes = await readOPCUAResponse(reader, 5000);
-        await socket.close();
+        try { await socket.close(); } catch { /* ignore close error */ }
 
         const msgParsed = parseResponse(msgBytes);
         const endpoints = msgParsed?.rawPayload ? parseEndpointList(msgParsed.rawPayload) : [];
@@ -850,12 +971,18 @@ export async function handleOPCUARead(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
-    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      throw error;
+    }
 
   } catch (error) {
     return new Response(JSON.stringify({

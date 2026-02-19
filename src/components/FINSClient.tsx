@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface FINSClientProps {
   onBack: () => void;
@@ -115,6 +117,7 @@ export default function FINSClient({ onBack }: FINSClientProps) {
 
   return (
     <ProtocolClientLayout title="Omron FINS Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.FINS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="PLC Connection" />
 

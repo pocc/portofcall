@@ -47,6 +47,7 @@ const SPAMC_VERSION = '1.5';
 interface SpamdPingRequest {
   host: string;
   port?: number;
+  username?: string;
   timeout?: number;
 }
 
@@ -55,6 +56,7 @@ interface SpamdCheckRequest {
   port?: number;
   message: string;
   command?: 'CHECK' | 'SYMBOLS' | 'REPORT';
+  username?: string;
   timeout?: number;
 }
 
@@ -95,8 +97,9 @@ async function readSpamdResponse(
   let totalBytes = 0;
   const maxBytes = 131072; // 128KB safety limit
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Read timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeout);
   });
 
   try {
@@ -106,7 +109,7 @@ async function readSpamdResponse(
       chunks.push(value);
       totalBytes += value.length;
 
-      // Check if we have a complete response (headers + body based on Content-length)
+      // Combine all chunks to check completion
       const combined = new Uint8Array(totalBytes);
       let offset = 0;
       for (const chunk of chunks) {
@@ -115,8 +118,11 @@ async function readSpamdResponse(
       }
       const text = new TextDecoder().decode(combined);
 
-      // For PING, response is just one line
-      if (text.includes('PONG') && text.endsWith('\r\n')) break;
+      // For PING, response should be "SPAMD/x.x 0 PONG\r\n"
+      if (text.includes('PONG')) {
+        const firstLine = text.split('\r\n')[0];
+        if (firstLine && firstLine.includes('PONG')) break;
+      }
 
       // For other commands, check Content-length header
       const headerEnd = text.indexOf('\r\n\r\n');
@@ -125,8 +131,9 @@ async function readSpamdResponse(
         const contentLengthMatch = headers.match(/Content-length:\s*(\d+)/i);
         if (contentLengthMatch) {
           const contentLength = parseInt(contentLengthMatch[1]);
-          const bodyStart = headerEnd + 4;
-          const bodyReceived = totalBytes - new TextEncoder().encode(text.substring(0, bodyStart)).length;
+          // Calculate body bytes: total bytes minus header section (including \r\n\r\n)
+          const headerBytes = new TextEncoder().encode(text.substring(0, headerEnd + 4)).length;
+          const bodyReceived = totalBytes - headerBytes;
           if (bodyReceived >= contentLength) break;
         } else {
           // No Content-length, response may be header-only
@@ -136,6 +143,8 @@ async function readSpamdResponse(
     }
   } catch (error) {
     if (chunks.length === 0) throw error;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 
   const result = new Uint8Array(totalBytes);
@@ -180,14 +189,29 @@ function parseSpamHeader(headers: string): { isSpam: boolean; score: number; thr
  * Sends PING and expects PONG response
  */
 export async function handleSpamdPing(request: Request): Promise<Response> {
+  let socket: ReturnType<typeof connect> | null = null;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
   try {
     const body = await request.json() as SpamdPingRequest;
-    const { host, port = 783, timeout = 10000 } = body;
+    const { host, port = 783, username, timeout = 10000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate host format (domain or IPv4/IPv6)
+    const hostRegex = /^(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$|^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^\[?[0-9a-fA-F:]+\]?$/;
+    if (!hostRegex.test(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Invalid host format',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -204,12 +228,21 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
       });
     }
 
-    const startTime = Date.now();
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 300000 ms',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
-    const socket = connect(`${host}:${port}`);
+    const startTime = Date.now();
+    socket = connect(`${host}:${port}`);
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -218,23 +251,43 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send PING command
-      const pingCmd = `PING SPAMC/${SPAMC_VERSION}\r\n\r\n`;
-      await writer.write(new TextEncoder().encode(pingCmd));
+      try {
+        // Send PING command with optional User header
+        let pingCmd = `PING SPAMC/${SPAMC_VERSION}\r\n`;
+        if (username) {
+          pingCmd += `User: ${username}\r\n`;
+        }
+        pingCmd += `\r\n`;
+        await writer.write(new TextEncoder().encode(pingCmd));
 
-      // Read response
-      const responseText = await readSpamdResponse(reader, timeout);
-      const rtt = Date.now() - startTime;
+        // Read response
+        const responseText = await readSpamdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        // Parse response
+        const firstLine = responseText.split('\r\n')[0];
+        const parsed = parseResponseLine(firstLine);
 
-      // Parse response
-      const firstLine = responseText.split('\r\n')[0];
-      const parsed = parseResponseLine(firstLine);
+        if (!parsed) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Invalid spamd response: ${firstLine}`,
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      if (parsed && parsed.message === 'PONG') {
+        if (parsed.message !== 'PONG') {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Expected PONG, got: ${parsed.message}`,
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
         const result: SpamdPingResponse = {
           success: true,
           host,
@@ -246,22 +299,16 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
-      } else {
-        return new Response(JSON.stringify({
-          success: true,
-          host,
-          port,
-          version: parsed?.version || 'unknown',
-          rtt,
-        }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
+
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
 
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      if (socket) {
+        try { socket.close(); } catch {}
+      }
     }
 
   } catch (error) {
@@ -272,6 +319,8 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 
@@ -280,14 +329,29 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
  * Sends the email content and receives spam analysis results
  */
 export async function handleSpamdCheck(request: Request): Promise<Response> {
+  let socket: ReturnType<typeof connect> | null = null;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
   try {
     const body = await request.json() as SpamdCheckRequest;
-    const { host, port = 783, message, command = 'SYMBOLS', timeout = 30000 } = body;
+    const { host, port = 783, message, command = 'SYMBOLS', username, timeout = 30000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate host format
+    const hostRegex = /^(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$|^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^\[?[0-9a-fA-F:]+\]?$/;
+    if (!hostRegex.test(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Invalid host format',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -314,6 +378,16 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
       });
     }
 
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 300000 ms',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Validate command
     const validCommands = ['CHECK', 'SYMBOLS', 'REPORT'];
     const cmd = command.toUpperCase();
@@ -327,8 +401,8 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
       });
     }
 
-    // Size limit: 512KB for message content
-    if (message.length > 524288) {
+    // Size limit: 512KB for message content (check string length before encoding)
+    if (message.length > 524288 || message.length < 0) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Message too large (max 512KB)',
@@ -339,11 +413,10 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
     }
 
     const startTime = Date.now();
-
-    const socket = connect(`${host}:${port}`);
+    socket = connect(`${host}:${port}`);
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -352,77 +425,85 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Build request
-      const messageBytes = new TextEncoder().encode(message);
-      const requestText = `${cmd} SPAMC/${SPAMC_VERSION}\r\nContent-length: ${messageBytes.length}\r\n\r\n`;
+      try {
+        // Build request with User header if provided
+        const messageBytes = new TextEncoder().encode(message);
+        let requestText = `${cmd} SPAMC/${SPAMC_VERSION}\r\nContent-length: ${messageBytes.length}\r\n`;
+        if (username) {
+          requestText += `User: ${username}\r\n`;
+        }
+        requestText += `\r\n`;
 
-      // Send command + headers
-      await writer.write(new TextEncoder().encode(requestText));
-      // Send message body
-      await writer.write(messageBytes);
+        // Send command + headers
+        await writer.write(new TextEncoder().encode(requestText));
+        // Send message body
+        await writer.write(messageBytes);
 
-      // Read response
-      const responseText = await readSpamdResponse(reader, timeout);
-      const rtt = Date.now() - startTime;
+        // Read response
+        const responseText = await readSpamdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        // Parse response
+        const lines = responseText.split('\r\n');
+        const statusLine = lines[0];
+        const parsed = parseResponseLine(statusLine);
 
-      // Parse response
-      const lines = responseText.split('\r\n');
-      const statusLine = lines[0];
-      const parsed = parseResponseLine(statusLine);
+        if (!parsed) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Unexpected response: ${statusLine}`,
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      if (!parsed) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: `Unexpected response: ${statusLine}`,
-        }), {
-          status: 500,
+        // Parse headers section
+        const headerEnd = responseText.indexOf('\r\n\r\n');
+        const headersSection = headerEnd !== -1 ? responseText.substring(0, headerEnd) : responseText;
+        const bodySection = headerEnd !== -1 ? responseText.substring(headerEnd + 4) : '';
+
+        // Parse spam status
+        const spamInfo = parseSpamHeader(headersSection);
+
+        const result: SpamdCheckResponse = {
+          success: true,
+          host,
+          port,
+          command: cmd,
+          responseCode: parsed.code,
+          responseMessage: parsed.message,
+          isSpam: spamInfo?.isSpam,
+          score: spamInfo?.score,
+          threshold: spamInfo?.threshold,
+          rtt,
+        };
+
+        // For SYMBOLS command, parse the matched rules
+        // SpamAssassin symbols are comma-separated, but individual symbols do not contain commas
+        if (cmd === 'SYMBOLS' && bodySection) {
+          result.symbols = bodySection.trim().split(',').map(s => s.trim()).filter(s => s.length > 0);
+        }
+
+        // For REPORT command, include the full report
+        if (cmd === 'REPORT' && bodySection) {
+          result.report = bodySection.trim();
+        }
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
 
-      // Parse headers section
-      const headerEnd = responseText.indexOf('\r\n\r\n');
-      const headersSection = headerEnd !== -1 ? responseText.substring(0, headerEnd) : responseText;
-      const bodySection = headerEnd !== -1 ? responseText.substring(headerEnd + 4) : '';
-
-      // Parse spam status
-      const spamInfo = parseSpamHeader(headersSection);
-
-      const result: SpamdCheckResponse = {
-        success: true,
-        host,
-        port,
-        command: cmd,
-        responseCode: parsed.code,
-        responseMessage: parsed.message,
-        isSpam: spamInfo?.isSpam,
-        score: spamInfo?.score,
-        threshold: spamInfo?.threshold,
-        rtt,
-      };
-
-      // For SYMBOLS command, parse the matched rules
-      if (cmd === 'SYMBOLS' && bodySection) {
-        result.symbols = bodySection.trim().split(',').map(s => s.trim()).filter(s => s.length > 0);
+    } finally {
+      if (socket) {
+        try { socket.close(); } catch {}
       }
-
-      // For REPORT command, include the full report
-      if (cmd === 'REPORT' && bodySection) {
-        result.report = bodySection.trim();
-      }
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-    } catch (error) {
-      socket.close();
-      throw error;
     }
 
   } catch (error) {
@@ -433,6 +514,8 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }
 
@@ -442,6 +525,7 @@ interface SpamdTellRequest {
   message: string;
   messageType?: 'spam' | 'ham';
   action?: 'learn' | 'forget';
+  username?: string;
   timeout?: number;
 }
 
@@ -462,14 +546,29 @@ interface SpamdTellResponse {
  * Uses the SPAMD TELL command to update Bayes database
  */
 export async function handleSpamdTell(request: Request): Promise<Response> {
+  let socket: ReturnType<typeof connect> | null = null;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
   try {
     const body = await request.json() as SpamdTellRequest;
-    const { host, port = 783, message, messageType = 'spam', action = 'learn', timeout = 30000 } = body;
+    const { host, port = 783, message, messageType = 'spam', action = 'learn', username, timeout = 30000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate host format
+    const hostRegex = /^(?:[a-zA-Z0-9-]+\.)*[a-zA-Z0-9-]+$|^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$|^\[?[0-9a-fA-F:]+\]?$/;
+    if (!hostRegex.test(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Invalid host format',
       } satisfies SpamdTellResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -490,6 +589,16 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
+      } satisfies SpamdTellResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 300000 ms',
       } satisfies SpamdTellResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -517,7 +626,7 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
     }
 
     // Size limit: 512KB
-    if (message.length > 524288) {
+    if (message.length > 524288 || message.length < 0) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Message too large (max 512KB)',
@@ -528,10 +637,10 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
     }
 
     const startTime = Date.now();
-    const socket = connect(`${host}:${port}`);
+    socket = connect(`${host}:${port}`);
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -540,69 +649,75 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Build TELL request
-      const messageBytes = new TextEncoder().encode(message);
-      const actionHeader = action === 'learn' ? 'Set: local\r\n' : 'Remove: local\r\n';
-      const requestText =
-        `TELL SPAMC/${SPAMC_VERSION}\r\n` +
-        `Content-length: ${messageBytes.length}\r\n` +
-        `Message-class: ${messageType}\r\n` +
-        actionHeader +
-        `\r\n`;
+      try {
+        // Build TELL request with User header if provided
+        const messageBytes = new TextEncoder().encode(message);
+        const actionHeader = action === 'learn' ? 'Set: local\r\n' : 'Remove: local\r\n';
+        let requestText =
+          `TELL SPAMC/${SPAMC_VERSION}\r\n` +
+          `Content-length: ${messageBytes.length}\r\n` +
+          `Message-class: ${messageType}\r\n` +
+          actionHeader;
+        if (username) {
+          requestText += `User: ${username}\r\n`;
+        }
+        requestText += `\r\n`;
 
-      await writer.write(new TextEncoder().encode(requestText));
-      await writer.write(messageBytes);
+        await writer.write(new TextEncoder().encode(requestText));
+        await writer.write(messageBytes);
 
-      // Read response
-      const responseText = await readSpamdResponse(reader, timeout);
-      const rtt = Date.now() - startTime;
+        // Read response
+        const responseText = await readSpamdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        // Parse response status line
+        const firstLine = responseText.split('\r\n')[0];
+        const parsed = parseResponseLine(firstLine);
 
-      // Parse response status line
-      const firstLine = responseText.split('\r\n')[0];
-      const parsed = parseResponseLine(firstLine);
+        if (!parsed || parsed.code !== 0) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            messageType,
+            action,
+            error: `TELL failed: ${firstLine}`,
+            rtt,
+          } satisfies SpamdTellResponse), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      if (!parsed || parsed.code !== 0) {
-        return new Response(JSON.stringify({
-          success: false,
+        // Parse DidSet/DidRemove from response headers
+        const didSet = /DidSet:\s*local/i.test(responseText);
+        const didRemove = /DidRemove:\s*local/i.test(responseText);
+
+        const result: SpamdTellResponse = {
+          success: true,
           host,
           port,
           messageType,
           action,
-          error: `TELL failed: ${firstLine}`,
+          didSet,
+          didRemove,
           rtt,
-        } satisfies SpamdTellResponse), {
-          status: 500,
+        };
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
 
-      // Parse DidSet/DidRemove from response headers
-      const didSet = /DidSet:\s*local/i.test(responseText);
-      const didRemove = /DidRemove:\s*local/i.test(responseText);
-
-      const result: SpamdTellResponse = {
-        success: true,
-        host,
-        port,
-        messageType,
-        action,
-        didSet,
-        didRemove,
-        rtt,
-      };
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      if (socket) {
+        try { socket.close(); } catch {}
+      }
     }
 
   } catch (error) {
@@ -613,5 +728,7 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
 }

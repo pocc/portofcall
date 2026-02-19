@@ -1,5 +1,5 @@
 /**
- * IPP (Internet Printing Protocol) Implementation - RFC 8011
+ * IPP (Internet Printing Protocol) Implementation - RFC 8010 / RFC 8011
  *
  * IPP is an HTTP-based protocol for managing print jobs and printers.
  * It runs on port 631 and is used by CUPS on macOS/Linux.
@@ -31,7 +31,7 @@ interface IPPRequest {
 
 interface IPPAttribute {
   name: string;
-  value: string;
+  value: string | string[];
 }
 
 interface IPPResponse {
@@ -47,11 +47,13 @@ interface IPPResponse {
   error?: string;
 }
 
-// IPP status codes
+// IPP status codes (RFC 8011 Section 4.1)
 const IPP_STATUS_CODES: Record<number, string> = {
+  // Successful status codes (0x0000-0x00FF)
   0x0000: 'successful-ok',
   0x0001: 'successful-ok-ignored-or-substituted-attributes',
   0x0002: 'successful-ok-conflicting-attributes',
+  // Client error status codes (0x0400-0x04FF)
   0x0400: 'client-error-bad-request',
   0x0401: 'client-error-forbidden',
   0x0402: 'client-error-not-authenticated',
@@ -64,6 +66,14 @@ const IPP_STATUS_CODES: Record<number, string> = {
   0x0409: 'client-error-request-value-too-long',
   0x040A: 'client-error-document-format-not-supported',
   0x040B: 'client-error-attributes-or-values-not-supported',
+  0x040C: 'client-error-uri-scheme-not-supported',
+  0x040D: 'client-error-charset-not-supported',
+  0x040E: 'client-error-conflicting-attributes',
+  0x040F: 'client-error-compression-not-supported',
+  0x0410: 'client-error-compression-error',
+  0x0411: 'client-error-document-format-error',
+  0x0412: 'client-error-document-access-error',
+  // Server error status codes (0x0500-0x05FF)
   0x0500: 'server-error-internal-error',
   0x0501: 'server-error-operation-not-supported',
   0x0502: 'server-error-service-unavailable',
@@ -73,19 +83,29 @@ const IPP_STATUS_CODES: Record<number, string> = {
   0x0506: 'server-error-not-accepting-jobs',
   0x0507: 'server-error-busy',
   0x0508: 'server-error-job-canceled',
+  0x0509: 'server-error-multiple-document-jobs-not-supported',
 };
 
-// IPP value tags (used for response parsing)
+// IPP value tags (RFC 8010 Section 3.5.2)
 export const VALUE_TAG_NAMES: Record<number, string> = {
+  // Out-of-band tags
+  0x10: 'unsupported',
+  0x12: 'unknown',
+  0x13: 'no-value',
+  // Integer tags
   0x21: 'integer',
   0x22: 'boolean',
   0x23: 'enum',
+  // Octet-string tags
   0x30: 'octetString',
   0x31: 'dateTime',
   0x32: 'resolution',
   0x33: 'rangeOfInteger',
+  0x34: 'begCollection',
   0x35: 'textWithLanguage',
   0x36: 'nameWithLanguage',
+  0x37: 'endCollection',
+  // Character-string tags
   0x41: 'textWithoutLanguage',
   0x42: 'nameWithoutLanguage',
   0x44: 'keyword',
@@ -98,24 +118,55 @@ export const VALUE_TAG_NAMES: Record<number, string> = {
 };
 
 /**
- * Build an IPP Get-Printer-Attributes request payload
+ * Extract the HTTP resource path from an IPP printer URI.
+ * e.g. "ipp://host:631/ipp/print" -> "/ipp/print"
+ *      "ipp://host/printers/laserjet" -> "/printers/laserjet"
+ * Falls back to "/ipp/print" if the URI cannot be parsed.
+ */
+function extractPathFromUri(printerUri: string): string {
+  try {
+    // ipp:// URIs are structurally identical to http:// URIs
+    const asHttp = printerUri.replace(/^ipps?:\/\//, 'http://');
+    const parsed = new URL(asHttp);
+    return parsed.pathname || '/ipp/print';
+  } catch {
+    return '/ipp/print';
+  }
+}
+
+/**
+ * Find the byte offset of the \r\n\r\n header/body separator in raw bytes.
+ * Returns -1 if not found.
+ */
+function findHeaderEnd(data: Uint8Array): number {
+  for (let i = 0; i <= data.length - 4; i++) {
+    if (data[i] === 0x0D && data[i + 1] === 0x0A &&
+        data[i + 2] === 0x0D && data[i + 3] === 0x0A) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Build an IPP Get-Printer-Attributes request payload (RFC 8011 Section 4.2.5)
  */
 function buildGetPrinterAttributesRequest(printerUri: string, requestId: number = 1): Uint8Array {
   const parts: number[] = [];
 
-  // Version: IPP/1.1
+  // Version: IPP/1.1 (RFC 8010 Section 3.1.8)
   parts.push(0x01, 0x01);
 
   // Operation: Get-Printer-Attributes (0x000B)
   parts.push(0x00, 0x0B);
 
-  // Request ID
+  // Request ID (MUST be non-zero per RFC 8010 Section 3.1.1)
   parts.push((requestId >> 24) & 0xFF, (requestId >> 16) & 0xFF, (requestId >> 8) & 0xFF, requestId & 0xFF);
 
-  // Operation attributes tag
+  // Operation attributes tag (0x01)
   parts.push(0x01);
 
-  // attributes-charset = utf-8
+  // attributes-charset = utf-8 (MUST be first - RFC 8011 Section 4.1.4)
   parts.push(0x47); // charset value tag
   const charsetName = new TextEncoder().encode('attributes-charset');
   parts.push((charsetName.length >> 8) & 0xFF, charsetName.length & 0xFF);
@@ -124,7 +175,7 @@ function buildGetPrinterAttributesRequest(printerUri: string, requestId: number 
   parts.push((charsetValue.length >> 8) & 0xFF, charsetValue.length & 0xFF);
   for (const b of charsetValue) parts.push(b);
 
-  // attributes-natural-language = en
+  // attributes-natural-language = en (MUST be second - RFC 8011 Section 4.1.4)
   parts.push(0x48); // naturalLanguage value tag
   const langName = new TextEncoder().encode('attributes-natural-language');
   parts.push((langName.length >> 8) & 0xFF, langName.length & 0xFF);
@@ -133,7 +184,7 @@ function buildGetPrinterAttributesRequest(printerUri: string, requestId: number 
   parts.push((langValue.length >> 8) & 0xFF, langValue.length & 0xFF);
   for (const b of langValue) parts.push(b);
 
-  // printer-uri
+  // printer-uri (REQUIRED - RFC 8011 Section 4.2.5.1)
   parts.push(0x45); // uri value tag
   const uriName = new TextEncoder().encode('printer-uri');
   parts.push((uriName.length >> 8) & 0xFF, uriName.length & 0xFF);
@@ -142,14 +193,26 @@ function buildGetPrinterAttributesRequest(printerUri: string, requestId: number 
   parts.push((uriValue.length >> 8) & 0xFF, uriValue.length & 0xFF);
   for (const b of uriValue) parts.push(b);
 
-  // End of attributes
+  // requesting-user-name (SHOULD - RFC 8011 Section 4.2.5.1)
+  parts.push(0x42); // nameWithoutLanguage value tag
+  const reqUserName = new TextEncoder().encode('requesting-user-name');
+  parts.push((reqUserName.length >> 8) & 0xFF, reqUserName.length & 0xFF);
+  for (const b of reqUserName) parts.push(b);
+  const reqUserValue = new TextEncoder().encode('portofcall');
+  parts.push((reqUserValue.length >> 8) & 0xFF, reqUserValue.length & 0xFF);
+  for (const b of reqUserValue) parts.push(b);
+
+  // End of attributes (0x03)
   parts.push(0x03);
 
   return new Uint8Array(parts);
 }
 
 /**
- * Parse IPP response attributes from binary data
+ * Parse IPP response attributes from binary data (RFC 8010 Section 3.1)
+ *
+ * Handles multi-valued attributes: when name-length is 0, the value belongs
+ * to the preceding attribute (RFC 8010 Section 3.1.3).
  */
 function parseIPPResponse(data: Uint8Array): {
   version: string;
@@ -173,10 +236,10 @@ function parseIPPResponse(data: Uint8Array): {
     const tag = data[offset];
     offset++;
 
-    // Delimiter tags (0x00-0x0F)
+    // Delimiter tags (0x00-0x0F) per RFC 8010 Section 3.5.1
     if (tag <= 0x0F) {
       if (tag === 0x03) break; // end-of-attributes-tag
-      continue; // other group tags
+      continue; // other group tags (0x01=operation, 0x02=job, 0x04=printer, etc.)
     }
 
     // Value tag - read attribute
@@ -196,27 +259,66 @@ function parseIPPResponse(data: Uint8Array): {
     const valueBytes = data.slice(offset, offset + valueLength);
     offset += valueLength;
 
-    // Decode value based on tag type
+    // Decode value based on tag type (RFC 8010 Section 3.5.2)
     let value: string;
     if (tag === 0x21 && valueLength === 4) {
-      // integer
-      value = String((valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3]);
+      // integer (SIGNED-INTEGER, 4 bytes big-endian)
+      const raw = (valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3];
+      value = String(raw);
     } else if (tag === 0x22 && valueLength === 1) {
-      // boolean
+      // boolean (1 byte: 0x00=false, 0x01=true)
       value = valueBytes[0] ? 'true' : 'false';
     } else if (tag === 0x23 && valueLength === 4) {
-      // enum
-      value = String((valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3]);
+      // enum (4 bytes big-endian, always positive per RFC 8010)
+      const raw = ((valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3]) >>> 0;
+      value = String(raw);
+    } else if (tag === 0x31 && valueLength === 11) {
+      // dateTime (RFC 2579 DateAndTime, 11 octets)
+      const year = (valueBytes[0] << 8) | valueBytes[1];
+      const month = valueBytes[2];
+      const day = valueBytes[3];
+      const hour = valueBytes[4];
+      const minute = valueBytes[5];
+      const second = valueBytes[6];
+      const utcDir = String.fromCharCode(valueBytes[8]); // '+' or '-'
+      const utcHour = valueBytes[9];
+      const utcMin = valueBytes[10];
+      value = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(second).padStart(2, '0')}${utcDir}${String(utcHour).padStart(2, '0')}:${String(utcMin).padStart(2, '0')}`;
+    } else if (tag === 0x32 && valueLength === 9) {
+      // resolution (4-byte cross-feed + 4-byte feed + 1-byte units)
+      const crossFeed = (valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3];
+      const feedDir = (valueBytes[4] << 24) | (valueBytes[5] << 16) | (valueBytes[6] << 8) | valueBytes[7];
+      const units = valueBytes[8]; // 3=dpi, 4=dpcm
+      const unitStr = units === 3 ? 'dpi' : units === 4 ? 'dpcm' : `units(${units})`;
+      value = `${crossFeed}x${feedDir}${unitStr}`;
+    } else if (tag === 0x33 && valueLength === 8) {
+      // rangeOfInteger (4-byte lower + 4-byte upper)
+      const lower = (valueBytes[0] << 24) | (valueBytes[1] << 16) | (valueBytes[2] << 8) | valueBytes[3];
+      const upper = (valueBytes[4] << 24) | (valueBytes[5] << 16) | (valueBytes[6] << 8) | valueBytes[7];
+      value = `${lower}-${upper}`;
     } else if (tag >= 0x40 && tag <= 0x4A) {
-      // text/keyword/uri/charset/language/mime
+      // character-string values: text/keyword/uri/charset/language/mime
       value = decoder.decode(valueBytes);
+    } else if (tag === 0x10 || tag === 0x12 || tag === 0x13) {
+      // Out-of-band: unsupported / unknown / no-value
+      value = VALUE_TAG_NAMES[tag] || 'out-of-band';
     } else {
-      // fallback: hex
+      // fallback: hex representation
       value = Array.from(valueBytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
     }
 
-    if (name) {
+    if (nameLength > 0) {
+      // Named attribute -- start a new entry
       attributes.push({ name, value });
+    } else if (attributes.length > 0) {
+      // Additional value (name-length == 0): append to previous attribute
+      // per RFC 8010 Section 3.1.3
+      const prev = attributes[attributes.length - 1];
+      if (Array.isArray(prev.value)) {
+        prev.value.push(value);
+      } else {
+        prev.value = [prev.value, value];
+      }
     }
   }
 
@@ -258,9 +360,12 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
     // Build IPP request
     const ippPayload = buildGetPrinterAttributesRequest(printerUri);
 
+    // Derive the HTTP resource path from the printer URI (RFC 8011 Section 4.4.1)
+    const httpPath = extractPathFromUri(printerUri);
+
     // Build HTTP request wrapping the IPP payload
     const httpRequest =
-      `POST /ipp/print HTTP/1.1\r\n` +
+      `POST ${httpPath} HTTP/1.1\r\n` +
       `Host: ${host}:${port}\r\n` +
       `Content-Type: application/ipp\r\n` +
       `Content-Length: ${ippPayload.length}\r\n` +
@@ -304,24 +409,25 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
         chunks.push(readResult.value);
         totalLength += readResult.value.length;
 
-        // Check if we've received the full HTTP response
+        // Check if we've received the full HTTP response by searching
+        // the raw bytes for the header/body separator
         const combined = new Uint8Array(totalLength);
-        let offset = 0;
+        let combineOffset = 0;
         for (const chunk of chunks) {
-          combined.set(chunk, offset);
-          offset += chunk.length;
+          combined.set(chunk, combineOffset);
+          combineOffset += chunk.length;
         }
 
-        const text = new TextDecoder().decode(combined);
-        // Check for end of HTTP response with content
-        if (text.includes('\r\n\r\n')) {
-          const headerEnd = text.indexOf('\r\n\r\n');
-          const headers = text.substring(0, headerEnd);
-          const contentLengthMatch = headers.match(/Content-Length:\s*(\d+)/i);
+        const headerEndIdx = findHeaderEnd(combined);
+        if (headerEndIdx >= 0) {
+          // Parse Content-Length from ASCII headers
+          const headerBytes = combined.slice(0, headerEndIdx);
+          const headerText = new TextDecoder('ascii').decode(headerBytes);
+          const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
           if (contentLengthMatch) {
             const contentLength = parseInt(contentLengthMatch[1]);
-            const bodyStart = headerEnd + 4;
-            if (totalLength >= bodyStart + contentLength) break;
+            const bodyStartByte = headerEndIdx + 4;
+            if (totalLength >= bodyStartByte + contentLength) break;
           } else {
             // No content-length, try to read a bit more then stop
             if (chunks.length > 3) break;
@@ -343,18 +449,15 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
         off += chunk.length;
       }
 
-      const responseText = new TextDecoder().decode(fullResponse);
-
-      // Parse HTTP response
-      const headerEnd = responseText.indexOf('\r\n\r\n');
+      // Find the header/body boundary in raw bytes
+      const headerEnd = findHeaderEnd(fullResponse);
       if (headerEnd === -1) {
         throw new Error('Invalid HTTP response from IPP server');
       }
 
-      const httpHeaders = responseText.substring(0, headerEnd);
+      const httpHeaders = new TextDecoder('ascii').decode(fullResponse.slice(0, headerEnd));
       const statusLine = httpHeaders.split('\r\n')[0];
-      const bodyStart = headerEnd + 4;
-      const bodyBytes = fullResponse.slice(new TextEncoder().encode(responseText.substring(0, bodyStart)).length);
+      const bodyBytes = fullResponse.slice(headerEnd + 4);
 
       const response: IPPResponse = {
         success: true,
@@ -407,7 +510,7 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
  *
  * Encodes mandatory operation attributes (charset, language, printer-uri,
  * job-name) plus the document data.  The document is sent as the body
- * immediately after the end-of-attributes tag.
+ * immediately after the end-of-attributes tag (RFC 8011 Section 4.2.1).
  */
 function buildPrintJobRequest(
   printerUri: string,
@@ -436,11 +539,12 @@ function buildPrintJobRequest(
     for (const b of v) parts.push(b);
   };
 
-  // Operation attributes group
+  // Operation attributes group (0x01)
   parts.push(0x01);
   pushAttr(0x47, 'attributes-charset', 'utf-8');
   pushAttr(0x48, 'attributes-natural-language', 'en');
   pushAttr(0x45, 'printer-uri', printerUri);
+  pushAttr(0x42, 'requesting-user-name', 'portofcall');
   pushAttr(0x42, 'job-name', jobName);
   pushAttr(0x49, 'document-format', mimeType);
 
@@ -501,8 +605,11 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
     const startTime = Date.now();
     const ippPayload = buildPrintJobRequest(printerUri, data, mimeType, jobName);
 
+    // Derive the HTTP resource path from the printer URI
+    const httpPath = extractPathFromUri(printerUri);
+
     const httpRequest =
-      `POST /ipp/print HTTP/1.1\r\n` +
+      `POST ${httpPath} HTTP/1.1\r\n` +
       `Host: ${host}:${port}\r\n` +
       `Content-Type: application/ipp\r\n` +
       `Content-Length: ${ippPayload.length}\r\n` +
@@ -538,16 +645,17 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
         totalLength += readResult.value.length;
 
         const combined = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.length; }
-        const text = new TextDecoder().decode(combined);
-        if (text.includes('\r\n\r\n')) {
-          const headerEnd = text.indexOf('\r\n\r\n');
-          const headers = text.substring(0, headerEnd);
-          const contentLengthMatch = headers.match(/Content-Length:\s*(\d+)/i);
+        let combineOffset = 0;
+        for (const chunk of chunks) { combined.set(chunk, combineOffset); combineOffset += chunk.length; }
+
+        const headerEndIdx = findHeaderEnd(combined);
+        if (headerEndIdx >= 0) {
+          const headerBytes = combined.slice(0, headerEndIdx);
+          const headerText = new TextDecoder('ascii').decode(headerBytes);
+          const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
           if (contentLengthMatch) {
             const contentLength = parseInt(contentLengthMatch[1]);
-            if (totalLength >= headerEnd + 4 + contentLength) break;
+            if (totalLength >= headerEndIdx + 4 + contentLength) break;
           } else if (chunks.length > 3) break;
         }
       }
@@ -562,14 +670,13 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
       let off = 0;
       for (const chunk of chunks) { fullResponse.set(chunk, off); off += chunk.length; }
 
-      const responseText = new TextDecoder().decode(fullResponse);
-      const headerEnd = responseText.indexOf('\r\n\r\n');
+      // Find header/body boundary in raw bytes
+      const headerEnd = findHeaderEnd(fullResponse);
       if (headerEnd === -1) throw new Error('Invalid HTTP response from IPP server');
 
-      const httpHeaders = responseText.substring(0, headerEnd);
+      const httpHeaders = new TextDecoder('ascii').decode(fullResponse.slice(0, headerEnd));
       const statusLine = httpHeaders.split('\r\n')[0];
-      const bodyStart = headerEnd + 4;
-      const bodyBytes = fullResponse.slice(new TextEncoder().encode(responseText.substring(0, bodyStart)).length);
+      const bodyBytes = fullResponse.slice(headerEnd + 4);
 
       let jobId: number | undefined;
       let statusCode: number | undefined;
@@ -581,7 +688,10 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
           statusCode = parsed.statusCode;
           statusMessage = IPP_STATUS_CODES[parsed.statusCode] || `0x${parsed.statusCode.toString(16).padStart(4, '0')}`;
           const jobIdAttr = parsed.attributes.find(a => a.name === 'job-id');
-          if (jobIdAttr) jobId = parseInt(jobIdAttr.value);
+          if (jobIdAttr) {
+            const jobIdVal = Array.isArray(jobIdAttr.value) ? jobIdAttr.value[0] : jobIdAttr.value;
+            jobId = parseInt(jobIdVal);
+          }
         } catch { /* ignore parse errors */ }
       }
 

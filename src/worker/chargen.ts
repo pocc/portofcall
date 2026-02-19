@@ -45,6 +45,7 @@ interface ChargenResponse {
  * Calculate bandwidth from bytes and duration
  */
 function calculateBandwidth(bytes: number, durationMs: number): string {
+  if (durationMs <= 0) return '0 bps';
   const bps = (bytes * 8) / (durationMs / 1000);
 
   if (bps < 1024) {

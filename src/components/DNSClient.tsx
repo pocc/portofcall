@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface DNSClientProps {
   onBack: () => void;
@@ -101,8 +103,7 @@ export default function DNSClient({ onBack }: DNSClientProps) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
-      {/* Header */}
+    <div className="max-w-6xl mx-auto">      {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="text-white hover:text-blue-400 transition-colors">
@@ -110,8 +111,10 @@ export default function DNSClient({ onBack }: DNSClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">DNS Lookup</h1>
         </div>
+
       </div>
 
+      <ApiExamples examples={apiExamples.DNS || []} />
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Query Panel */}
         <div className="lg:col-span-1">

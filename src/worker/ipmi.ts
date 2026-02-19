@@ -54,30 +54,43 @@ function buildRMCPPresencePing(): Uint8Array {
 
 /**
  * Parse an RMCP ASF Presence Pong response
+ *
+ * Pong layout (DSP0136 §3.2.4.2):
+ *   Bytes 0–3:   RMCP header (version, reserved, seq, class=0x06)
+ *   Bytes 4–7:   IANA Enterprise Number (0x000011BE = ASF)
+ *   Byte  8:     Message Type (0x40 = Presence Pong)
+ *   Byte  9:     Message Tag (echoed from Ping)
+ *   Byte  10:    Reserved
+ *   Byte  11:    Data Length (0x10 = 16 bytes)
+ *   Bytes 12–15: IANA Enterprise Number of managed entity (4 bytes big-endian)
+ *   Byte  16:    OEM-defined
+ *   Bytes 17–18: OEM-defined
+ *   Byte  19:    Supported Entities (bit 7 = IPMI supported)
+ *   Byte  20:    Supported Interactions
+ *   Bytes 21–27: Reserved
  */
 function parseRMCPResponse(data: Uint8Array): {
   isPresencePong: boolean;
   supportsIPMI: boolean;
-  entityType: number;
-  entityId: number;
+  entityIANA: number;
   message: string;
 } {
   if (data.length < 12) {
-    return { isPresencePong: false, supportsIPMI: false, entityType: 0, entityId: 0, message: 'Response too short for RMCP' };
+    return { isPresencePong: false, supportsIPMI: false, entityIANA: 0, message: 'Response too short for RMCP' };
   }
 
   // Check RMCP header
   if (data[0] !== 0x06) {
-    return { isPresencePong: false, supportsIPMI: false, entityType: 0, entityId: 0, message: 'Not an RMCP packet (bad version byte)' };
+    return { isPresencePong: false, supportsIPMI: false, entityIANA: 0, message: 'Not an RMCP packet (bad version byte)' };
   }
 
   if (data[3] !== 0x06) {
-    return { isPresencePong: false, supportsIPMI: false, entityType: 0, entityId: 0, message: `Unexpected RMCP message class: 0x${data[3].toString(16)}` };
+    return { isPresencePong: false, supportsIPMI: false, entityIANA: 0, message: `Unexpected RMCP message class: 0x${data[3].toString(16)}` };
   }
 
   // IANA check (bytes 4–7)
   if (data[4] !== 0x00 || data[5] !== 0x00 || data[6] !== 0x11 || data[7] !== 0xBE) {
-    return { isPresencePong: false, supportsIPMI: false, entityType: 0, entityId: 0, message: 'Unexpected IANA in RMCP response' };
+    return { isPresencePong: false, supportsIPMI: false, entityIANA: 0, message: 'Unexpected IANA in RMCP response' };
   }
 
   const msgType = data[8];
@@ -85,22 +98,24 @@ function parseRMCPResponse(data: Uint8Array): {
     return {
       isPresencePong: false,
       supportsIPMI: false,
-      entityType: 0,
-      entityId: 0,
+      entityIANA: 0,
       message: `Unexpected ASF message type: 0x${msgType.toString(16)} (expected 0x40 Presence Pong)`,
     };
   }
 
-  // Presence Pong — parse supported entities (16 bytes of data starting at offset 12)
-  const supportsIPMI = data.length >= 20 && (data[16] & 0x80) !== 0;
-  const entityType = data.length >= 14 ? data[12] : 0;
-  const entityId = data.length >= 15 ? data[13] : 0;
+  // Presence Pong data starts at offset 12 (16 bytes of data per DSP0136 §3.2.4.2)
+  // Bytes 12–15: IANA Enterprise Number of the managed entity (big-endian)
+  const entityIANA = data.length >= 16
+    ? (data[12] << 24) | (data[13] << 16) | (data[14] << 8) | data[15]
+    : 0;
+
+  // Byte 19: Supported Entities — bit 7 = IPMI supported
+  const supportsIPMI = data.length >= 20 && (data[19] & 0x80) !== 0;
 
   return {
     isPresencePong: true,
     supportsIPMI,
-    entityType,
-    entityId,
+    entityIANA,
     message: `RMCP Presence Pong received — IPMI supported: ${supportsIPMI}`,
   };
 }
@@ -166,6 +181,8 @@ export async function handleIPMIConnect(request: Request): Promise<Response> {
           ),
         ]);
 
+        writer.releaseLock();
+        reader.releaseLock();
         await socket.close();
 
         if (!value) {
@@ -181,13 +198,15 @@ export async function handleIPMIConnect(request: Request): Promise<Response> {
           tcpReachable: true,
           rmcpResponse: parsed.isPresencePong,
           supportsIPMI: parsed.supportsIPMI,
-          entityType: parsed.entityType,
-          entityId: parsed.entityId,
+          entityIANA: parsed.entityIANA,
           message: parsed.message,
           note: 'RMCP/IPMI typically uses UDP port 623. This test used TCP — full protocol interaction requires UDP.',
         };
       } catch (err) {
         // If we connected (socket.opened succeeded) but got no response, report partial success
+        // Clean up locks and socket - may already be released/closed
+        try { writer.releaseLock(); } catch (_) { /* ignore */ }
+        try { reader.releaseLock(); } catch (_) { /* ignore */ }
         try { await socket.close(); } catch (_) { /* ignore */ }
         return {
           success: true,
@@ -196,8 +215,7 @@ export async function handleIPMIConnect(request: Request): Promise<Response> {
           tcpReachable: true,
           rmcpResponse: false,
           supportsIPMI: false,
-          entityType: 0,
-          entityId: 0,
+          entityIANA: 0,
           message: err instanceof Error ? err.message : 'TCP connection established but no RMCP response',
           note: 'TCP port 623 is open. RMCP/IPMI typically uses UDP — this TCP probe cannot perform full RMCP negotiation.',
         };
@@ -263,7 +281,8 @@ function buildIPMILANPacket(
   const hdrChk = (-(rsAddr + ((netFn << 2) | lun)) & 0xFF);
 
   // Data checksum = -(RQ + seq/LUN + cmd + data...) mod 256
-  let dataSum = rqAddr + 0x00 /* seq/LUN */ + cmd;
+  const seqLun = 0x00; // sequence number 0, LUN 0
+  let dataSum = rqAddr + seqLun + cmd;
   for (const b of data) dataSum += b;
   const dataChk = (-dataSum) & 0xFF;
 
@@ -272,7 +291,7 @@ function buildIPMILANPacket(
   ipmi[1] = (netFn << 2) | lun;
   ipmi[2] = hdrChk;
   ipmi[3] = rqAddr;
-  ipmi[4] = 0x00; // seq/LUN
+  ipmi[4] = seqLun;
   ipmi[5] = cmd;
   ipmi.set(data, 6);
   ipmi[6 + data.length] = dataChk;
@@ -296,62 +315,104 @@ function buildIPMILANPacket(
 /**
  * Parse an IPMI GetChannelAuthenticationCapabilities response.
  *
- * IPMI 2.0 spec §22.13. Response data bytes (after completion code 0x00):
- *   Byte 1: channel number (bits 3:0)
- *   Byte 2: auth type support bitmask
- *             bit 0 = none, bit 1 = MD2, bit 2 = MD5,
- *             bit 4 = straight password, bit 5 = OEM
- *   Byte 3: auth type enables (same bit layout as byte 2)
- *   Byte 4: extended capabilities
- *             bit 0 = IPMI v2.0+ compatible
- *             bit 1 = user level auth disabled
- *             bit 2 = per-message auth disabled
- *             bit 3 = K-G status (non-zero K-G required)
- *   Bytes 5-6: OEM IANA (3 bytes LE) + OEM aux data
+ * IPMI 2.0 spec §22.13, Table 22-15. Response data bytes (after completion code 0x00):
+ *
+ *   Byte 1 (data[0]): Channel number (bits 3:0)
+ *   Byte 2 (data[1]): Authentication Type Support bitmask
+ *             bit 7 = IPMI v2.0+ extended data present
+ *             bit 5 = OEM proprietary, bit 4 = straight password/key,
+ *             bit 2 = MD5, bit 1 = MD2, bit 0 = none
+ *   Byte 3 (data[2]): Authentication Status
+ *             bit 5 = KG status (1 = non-default KG key set)
+ *             bit 4 = per-message authentication disabled
+ *             bit 3 = user level authentication disabled
+ *             bit 2 = non-null usernames enabled
+ *             bit 1 = null usernames enabled
+ *             bit 0 = anonymous login enabled
+ *   Byte 4 (data[3]): Extended Capabilities (present when data[1] bit 7 = 1)
+ *             bit 1 = IPMI v2.0/RMCP+ connections supported
+ *             bit 0 = IPMI v1.5 connections supported
+ *   Bytes 5-7 (data[4..6]): OEM ID (IANA PEN, 3 bytes LS-first)
+ *   Byte 8 (data[7]): OEM auxiliary data
  */
 function parseAuthCapsResponse(buf: Uint8Array): {
   channel: number;
-  authSupport: string[];
-  authEnabled: string[];
-  ipmiV2Compatible: boolean;
+  authTypes: string[];
+  ipmiV2ExtendedData: boolean;
+  anonymousLoginEnabled: boolean;
+  nullUsernamesEnabled: boolean;
+  nonNullUsernamesEnabled: boolean;
   userLevelAuthDisabled: boolean;
   perMessageAuthDisabled: boolean;
-  kgRequired: boolean;
-  anonymousLoginAllowed: boolean;
-  nonNullUsersAllowed: boolean;
-  nullUsersAllowed: boolean;
+  kgNonDefault: boolean;
+  ipmiV15Supported: boolean;
+  ipmiV20Supported: boolean;
   oemIana?: number;
+  completionCode?: number;
+  errorMessage?: string;
 } | null {
   // Find the IPMI LAN response within the raw RMCP packet
   // Layout: RMCP(4) + authtype(1) + sess_seq(4) + sess_id(4) + msg_len(1) + IPMI_msg
   // IPMI msg: RS(1) + NetFn(1) + chk(1) + RQ(1) + seq(1) + cmd(1) + ccode(1) + data + chk
   if (buf.length < 14) return null;
 
+  // Validate RMCP header
+  if (buf[0] !== 0x06) return null; // RMCP version must be 0x06
+  if (buf[3] !== 0x07) return null; // RMCP class must be 0x07 (IPMI)
+
   const msgOff = 14; // after RMCP(4)+authtype(1)+seq(4)+sessid(4)+msglen(1)
   if (msgOff + 7 > buf.length) return null;
 
   // cmd = buf[msgOff+5], ccode = buf[msgOff+6]
   const ccode = buf[msgOff + 6];
-  if (ccode !== 0x00) return null;
+  if (ccode !== 0x00) {
+    return {
+      channel: 0,
+      authTypes: [],
+      ipmiV2ExtendedData: false,
+      anonymousLoginEnabled: false,
+      nullUsernamesEnabled: false,
+      nonNullUsernamesEnabled: false,
+      userLevelAuthDisabled: false,
+      perMessageAuthDisabled: false,
+      kgNonDefault: false,
+      ipmiV15Supported: false,
+      ipmiV20Supported: false,
+      completionCode: ccode,
+      errorMessage: `IPMI completion code 0x${ccode.toString(16).padStart(2, '0')}`,
+    };
+  }
 
   const data = buf.slice(msgOff + 7); // response data bytes
   if (data.length < 4) return null;
 
-  const channel = data[0] & 0x0F;
-  const authSupByte = data[1];
-  const authEnByte  = data[2];
-  const extCaps     = data[3];
+  const channel      = data[0] & 0x0F;
+  const authTypeByte = data[1]; // Authentication Type Support
+  const authStatus   = data[2]; // Authentication Status
+  const extCaps      = data[3]; // Extended Capabilities
 
-  const parseBits = (b: number) => {
-    const methods: string[] = [];
-    if (b & 0x01) methods.push('none');
-    if (b & 0x02) methods.push('MD2');
-    if (b & 0x04) methods.push('MD5');
-    if (b & 0x10) methods.push('straight-password');
-    if (b & 0x20) methods.push('OEM');
-    return methods;
-  };
+  // Parse auth type support bitmask (data[1])
+  const authTypes: string[] = [];
+  if (authTypeByte & 0x01) authTypes.push('none');
+  if (authTypeByte & 0x02) authTypes.push('MD2');
+  if (authTypeByte & 0x04) authTypes.push('MD5');
+  if (authTypeByte & 0x10) authTypes.push('straight-password');
+  if (authTypeByte & 0x20) authTypes.push('OEM');
+  const ipmiV2ExtendedData = (authTypeByte & 0x80) !== 0;
 
+  // Parse authentication status (data[2])
+  const anonymousLoginEnabled    = (authStatus & 0x01) !== 0;
+  const nullUsernamesEnabled     = (authStatus & 0x02) !== 0;
+  const nonNullUsernamesEnabled  = (authStatus & 0x04) !== 0;
+  const userLevelAuthDisabled    = (authStatus & 0x08) !== 0;
+  const perMessageAuthDisabled   = (authStatus & 0x10) !== 0;
+  const kgNonDefault             = (authStatus & 0x20) !== 0;
+
+  // Parse extended capabilities (data[3]) — only meaningful when ipmiV2ExtendedData is true
+  const ipmiV15Supported = (extCaps & 0x01) !== 0;
+  const ipmiV20Supported = (extCaps & 0x02) !== 0;
+
+  // OEM IANA PEN (data[4..6], 3 bytes LS-first)
   let oemIana: number | undefined;
   if (data.length >= 7) {
     oemIana = data[4] | (data[5] << 8) | (data[6] << 16);
@@ -359,15 +420,16 @@ function parseAuthCapsResponse(buf: Uint8Array): {
 
   return {
     channel,
-    authSupport: parseBits(authSupByte),
-    authEnabled: parseBits(authEnByte),
-    ipmiV2Compatible:        (extCaps & 0x01) !== 0,
-    userLevelAuthDisabled:   (extCaps & 0x02) !== 0,
-    perMessageAuthDisabled:  (extCaps & 0x04) !== 0,
-    kgRequired:              (extCaps & 0x08) !== 0,
-    anonymousLoginAllowed:   (extCaps & 0x10) !== 0,
-    nonNullUsersAllowed:     (extCaps & 0x20) !== 0,
-    nullUsersAllowed:        (extCaps & 0x40) !== 0,
+    authTypes,
+    ipmiV2ExtendedData,
+    anonymousLoginEnabled,
+    nullUsernamesEnabled,
+    nonNullUsernamesEnabled,
+    userLevelAuthDisabled,
+    perMessageAuthDisabled,
+    kgNonDefault,
+    ipmiV15Supported,
+    ipmiV20Supported,
     oemIana: oemIana !== 0 ? oemIana : undefined,
   };
 }
@@ -423,7 +485,7 @@ export async function handleIPMIGetAuthCaps(request: Request): Promise<Response>
       const startMs = Date.now();
 
       // GetChannelAuthenticationCapabilities (cmd 0x38)
-      // Data: channel (with bit6=1 for IPMI 2.0 request), privilege level
+      // Data: channel (with bit7=1 to request IPMI v2.0+ extended data), privilege level
       const data = new Uint8Array([channel | 0x80, privilege]);
       const packet = buildIPMILANPacket(0x20, 0x06, 0x38, data);
 
@@ -432,6 +494,7 @@ export async function handleIPMIGetAuthCaps(request: Request): Promise<Response>
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      let locksReleased = false;
 
       try {
         await writer.write(packet);
@@ -444,6 +507,7 @@ export async function handleIPMIGetAuthCaps(request: Request): Promise<Response>
 
         writer.releaseLock();
         reader.releaseLock();
+        locksReleased = true;
         socket.close();
 
         if (!value || value.length < 14) {
@@ -474,8 +538,10 @@ export async function handleIPMIGetAuthCaps(request: Request): Promise<Response>
           latencyMs: Date.now() - startMs,
         };
       } catch (err) {
-        try { writer.releaseLock(); } catch { /* ignore */ }
-        try { reader.releaseLock(); } catch { /* ignore */ }
+        if (!locksReleased) {
+          try { writer.releaseLock(); } catch { /* ignore */ }
+          try { reader.releaseLock(); } catch { /* ignore */ }
+        }
         socket.close();
         return {
           success: true,
@@ -583,9 +649,10 @@ export async function handleIPMIGetDeviceID(request: Request): Promise<Response>
       Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join(' ');
 
     const start = Date.now();
-    const tp = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const tp = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     let portOpen = false;
     let latencyMs = 0;
@@ -645,14 +712,23 @@ export async function handleIPMIGetDeviceID(request: Request): Promise<Response>
               const fwMinor          = ((fwMinorBCD >> 4) * 10) + (fwMinorBCD & 0x0F);
               const ipmiVersion      = d[4];
               const ipmiVerStr       = `${(ipmiVersion >> 4)}.${ipmiVersion & 0x0F}`;
-              const mfrId            = d.length >= 8 ? (d[7] << 16) | (d[6] << 8) | d[5] : 0;
-              const productId        = d.length >= 10 ? (d[9] << 8) | d[8] : 0;
+              // Manufacturer ID: bytes 7-9 of response data (d[6..8]), 3 bytes LS-first (IANA PEN)
+              const mfrId            = d.length >= 9 ? d[6] | (d[7] << 8) | (d[8] << 16) : 0;
+              // Product ID: bytes 10-11 of response data (d[9..10]), 2 bytes LS-first
+              const productId        = d.length >= 11 ? d[9] | (d[10] << 8) : 0;
 
-              // Map known manufacturer IDs
+              // Map known manufacturer IDs (IANA Private Enterprise Numbers)
               const mfrNames: Record<number, string> = {
-                0x002A: 'Hewlett-Packard (HP)',
-                0x0002: 'IBM', 0x1028: 'Dell', 0x15D9: 'Supermicro',
-                0x003A: 'Kontron', 0x000B: 'Packard Bell',
+                0x00000B: 'Hewlett-Packard (HP/HPE)',
+                0x000002: 'IBM',
+                0x0002A2: 'Dell',
+                0x002A7C: 'Supermicro',
+                0x000157: 'Intel',
+                0x003A98: 'Kontron',
+                0x00B980: 'Supermicro (alt)',
+                0x00A2B5: 'Lenovo',
+                0x000BD3: 'ASUS',
+                0x000763: 'American Megatrends (AMI)',
               };
 
               deviceInfo = {
@@ -682,6 +758,8 @@ export async function handleIPMIGetDeviceID(request: Request): Promise<Response>
     } catch (err) {
       latencyMs = Date.now() - start;
       errorMsg = err instanceof Error ? err.message : 'Connection failed';
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
     }
 
     return new Response(JSON.stringify({

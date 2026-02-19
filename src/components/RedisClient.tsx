@@ -1,4 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface RedisClientProps {
   onBack: () => void;
@@ -142,8 +144,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
       : 'bg-slate-500';
 
   return (
-    <div className="max-w-6xl mx-auto">
-      {/* Header */}
+    <div className="max-w-6xl mx-auto">      {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="text-white hover:text-blue-400 transition-colors">
@@ -151,6 +152,8 @@ export default function RedisClient({ onBack }: RedisClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">Redis Client</h1>
         </div>
+
+      <ApiExamples examples={apiExamples.Redis || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} />

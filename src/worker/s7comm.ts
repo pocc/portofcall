@@ -191,6 +191,7 @@ async function readTPKTPacket(
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
+  const MAX_PACKET_SIZE = 1024 * 1024; // 1MB limit
 
   const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
   if (done || !value) return new Uint8Array(0);
@@ -198,18 +199,29 @@ async function readTPKTPacket(
   totalLen += value.length;
 
   // Try to read more
+  let shortTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const shortTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('read_done')), 500),
-    );
+    const shortTimeout = new Promise<never>((_, reject) => {
+      shortTimeoutHandle = setTimeout(() => reject(new Error('read_done')), 500);
+    });
     while (true) {
       const { value: next, done: nextDone } = await Promise.race([reader.read(), shortTimeout]);
       if (nextDone || !next) break;
       chunks.push(next);
       totalLen += next.length;
+      if (totalLen > MAX_PACKET_SIZE) {
+        throw new Error('Packet size exceeds 1MB limit');
+      }
     }
-  } catch {
+  } catch (e) {
+    if (e instanceof Error && e.message !== 'read_done') {
+      throw e;
+    }
     // Done reading
+  } finally {
+    if (shortTimeoutHandle !== null) {
+      clearTimeout(shortTimeoutHandle);
+    }
   }
 
   const combined = new Uint8Array(totalLen);
@@ -231,6 +243,10 @@ function parseCOTPConnectionConfirm(data: Uint8Array): boolean {
   // TPKT header: version=3, skip to payload at offset 4
   if (data[0] !== 3) return false;
 
+  // Validate TPKT length field matches actual packet length
+  const tpktLength = (data[2] << 8) | data[3];
+  if (tpktLength !== data.length) return false;
+
   const cotpLength = data[4]; // Length indicator
   const pduType = data[5];    // PDU type
 
@@ -244,6 +260,11 @@ function parseCOTPConnectionConfirm(data: Uint8Array): boolean {
 function parseS7SetupResponse(data: Uint8Array): number | null {
   if (data.length < 20) return null;
 
+  // Validate TPKT length
+  if (data[0] !== 3) return null;
+  const tpktLength = (data[2] << 8) | data[3];
+  if (tpktLength !== data.length) return null;
+
   // Skip TPKT (4) + COTP DT (3) = offset 7
   const offset = 7;
 
@@ -253,7 +274,11 @@ function parseS7SetupResponse(data: Uint8Array): number | null {
   // Message type should be 0x03 (Ack_Data)
   if (data[offset + 1] !== 0x03) return null;
 
-  // Check for error (error class at offset+17, error code at offset+18 for Ack_Data)
+  // Check for S7 error code (byte at offset+8 and offset+9 in header)
+  const errorClass = data[offset + 8];
+  const errorCode = data[offset + 9];
+  if (errorClass !== 0x00 || errorCode !== 0x00) return null;
+
   // For setup response, param starts at offset+10
   const paramOffset = offset + 10;
   if (data.length <= paramOffset + 7) return null;
@@ -261,8 +286,13 @@ function parseS7SetupResponse(data: Uint8Array): number | null {
   // Function should be 0xF0 (Setup Communication)
   if (data[paramOffset] !== 0xF0) return null;
 
-  // PDU size is at paramOffset+6 (uint16 big-endian)
-  const pduSize = (data[paramOffset + 5] << 8) | data[paramOffset + 6];
+  // PDU size is at paramOffset+6 and +7 (uint16 big-endian)
+  // Setup response: [F0][00][MaxAmQCalling:2][MaxAmQCalled:2][PDULength:2]
+  const pduSize = (data[paramOffset + 6] << 8) | data[paramOffset + 7];
+
+  // Validate PDU size is within S7 spec (240-960 bytes typical, max 65535 theoretical)
+  if (pduSize < 240 || pduSize > 65535) return null;
+
   return pduSize;
 }
 
@@ -281,6 +311,11 @@ function parseSZLResponse(data: Uint8Array): {
 
   if (data.length < 30) return result;
 
+  // Validate TPKT header
+  if (data[0] !== 3) return result;
+  const tpktLength = (data[2] << 8) | data[3];
+  if (tpktLength !== data.length) return result;
+
   // Skip TPKT (4) + COTP (3) + S7 Header (12) + Data header (4) + SZL header (4) = 27
   // The SZL data contains records of 34 bytes each
   // Record format: [Index:uint16][Text:32 bytes]
@@ -296,18 +331,21 @@ function parseSZLResponse(data: Uint8Array): {
   const paramLen = (data[s7Offset + 6] << 8) | data[s7Offset + 7];
   const dataStart = s7Offset + 10 + paramLen;
 
-  if (dataStart + 8 >= data.length) return result;
+  if (dataStart + 12 >= data.length) return result;
 
   // Skip data header (return code, transport size, length) = 4 bytes
-  // Then SZL header (SZL ID, SZL Index, SZL record size, SZL record count) = 8 bytes
-  const recordStart = dataStart + 4 + 8;
-  const recordSize = (data[dataStart + 8] << 8) | data[dataStart + 9];
+  // Then SZL header (SZL ID:2, SZL Index:2, SZL record size:2, SZL record count:2) = 8 bytes
+  const szlHeaderStart = dataStart + 4;
+  const recordSize = (data[szlHeaderStart + 4] << 8) | data[szlHeaderStart + 5];
+  const recordCount = (data[szlHeaderStart + 6] << 8) | data[szlHeaderStart + 7];
+  const recordStart = szlHeaderStart + 8;
 
   if (recordSize < 4 || recordStart >= data.length) return result;
+  if (recordCount > 100) return result; // Sanity check
 
   // Parse records
   let offset = recordStart;
-  while (offset + recordSize <= data.length) {
+  for (let i = 0; i < recordCount && offset + recordSize <= data.length; i++) {
     const index = (data[offset] << 8) | data[offset + 1];
     const textBytes = data.slice(offset + 2, offset + recordSize);
     const text = decoder.decode(textBytes).replace(/\0+$/, '').trim();
@@ -334,8 +372,16 @@ function validateS7Input(host: string, port: number, rack: number, slot: number)
     return 'Host is required';
   }
 
-  if (!/^[a-zA-Z0-9._-]+$/.test(host)) {
+  // Allow hostnames, IPv4, and IPv6 (basic validation)
+  // Hostname: alphanumeric, dots, hyphens
+  // IPv4: digits and dots
+  // IPv6: hex digits, colons, brackets
+  if (!/^[a-zA-Z0-9._:\[\]-]+$/.test(host)) {
     return 'Host contains invalid characters';
+  }
+
+  if (host.length > 253) {
+    return 'Host exceeds maximum length (253 chars)';
   }
 
   if (port < 1 || port > 65535) {
@@ -478,8 +524,9 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
       );
     }
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     const socket = connect(`${host}:${port}`);
@@ -494,38 +541,71 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
       const cotpCR = buildCOTPConnectionRequest(rack, slot);
       await writer.write(cotpCR);
 
-      const cotpResponse = await readTPKTPacket(reader, timeoutPromise);
-      const cotpConnected = parseCOTPConnectionConfirm(cotpResponse);
+      try {
+        const cotpResponse = await readTPKTPacket(reader, timeoutPromise);
+        const cotpConnected = parseCOTPConnectionConfirm(cotpResponse);
 
-      if (!cotpConnected) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
-        return new Response(
-          JSON.stringify({
-            success: false,
-            host,
-            port,
-            rack,
-            slot,
-            cotpConnected: false,
-            error: 'COTP connection rejected - check rack/slot configuration',
-          } satisfies S7commResponse),
-          { status: 502, headers: { 'Content-Type': 'application/json' } },
-        );
-      }
+        if (!cotpConnected) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              host,
+              port,
+              rack,
+              slot,
+              cotpConnected: false,
+              error: 'COTP connection rejected - check rack/slot configuration',
+            } satisfies S7commResponse),
+            { status: 502, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
 
-      // Step 2: S7 Setup Communication
-      const s7Setup = buildS7SetupCommunication();
-      await writer.write(s7Setup);
+        // Step 2: S7 Setup Communication
+        const s7Setup = buildS7SetupCommunication();
+        await writer.write(s7Setup);
 
-      const s7SetupResponse = await readTPKTPacket(reader, timeoutPromise);
-      const pduSize = parseS7SetupResponse(s7SetupResponse);
+        const s7SetupResponse = await readTPKTPacket(reader, timeoutPromise);
+        const pduSize = parseS7SetupResponse(s7SetupResponse);
 
-      if (pduSize === null) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        if (pduSize === null) {
+          return new Response(
+            JSON.stringify({
+              success: true,
+              host,
+              port,
+              rack,
+              slot,
+              cotpConnected: true,
+              s7Connected: false,
+              error: 'S7 setup communication failed',
+            } satisfies S7commResponse),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
+        // Step 3: Read SZL for CPU identification (optional, best-effort)
+        let cpuInfo: string | undefined;
+        let moduleType: string | undefined;
+        let serialNumber: string | undefined;
+        let plantId: string | undefined;
+        let copyright: string | undefined;
+
+        try {
+          const szlRequest = buildS7ReadSZL();
+          await writer.write(szlRequest);
+
+          const szlResponse = await readTPKTPacket(reader, timeoutPromise);
+          const szlData = parseSZLResponse(szlResponse);
+
+          cpuInfo = szlData.cpuInfo;
+          moduleType = szlData.moduleType;
+          serialNumber = szlData.serialNumber;
+          plantId = szlData.plantId;
+          copyright = szlData.copyright;
+        } catch {
+          // SZL read failed - not critical
+        }
+
         return new Response(
           JSON.stringify({
             success: true,
@@ -534,61 +614,27 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
             rack,
             slot,
             cotpConnected: true,
-            s7Connected: false,
-            error: 'S7 setup communication failed',
+            s7Connected: true,
+            pduSize,
+            cpuInfo,
+            moduleType,
+            serialNumber,
+            plantId,
+            copyright,
           } satisfies S7commResponse),
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         );
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
-
-      // Step 3: Read SZL for CPU identification (optional, best-effort)
-      let cpuInfo: string | undefined;
-      let moduleType: string | undefined;
-      let serialNumber: string | undefined;
-      let plantId: string | undefined;
-      let copyright: string | undefined;
-
-      try {
-        const szlRequest = buildS7ReadSZL();
-        await writer.write(szlRequest);
-
-        const szlResponse = await readTPKTPacket(reader, timeoutPromise);
-        const szlData = parseSZLResponse(szlResponse);
-
-        cpuInfo = szlData.cpuInfo;
-        moduleType = szlData.moduleType;
-        serialNumber = szlData.serialNumber;
-        plantId = szlData.plantId;
-        copyright = szlData.copyright;
-      } catch {
-        // SZL read failed - not critical
-      }
-
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          host,
-          port,
-          rack,
-          slot,
-          cotpConnected: true,
-          s7Connected: true,
-          pduSize,
-          cpuInfo,
-          moduleType,
-          serialNumber,
-          plantId,
-          copyright,
-        } satisfies S7commResponse),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
     } catch (error) {
-      socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
+      socket.close();
     }
   } catch (error) {
     return new Response(
@@ -641,9 +687,10 @@ export async function handleS7ReadDB(request: Request): Promise<Response> {
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
     const socket = connect(`${host}:${port}`);
 
     try {
@@ -651,62 +698,67 @@ export async function handleS7ReadDB(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Step 1: COTP CR
-      await writer.write(buildCOTPConnectionRequest(rack, slot));
-      const cotpResp = await readTPKTPacket(reader, timeoutPromise);
-      if (!parseCOTPConnectionConfirm(cotpResp)) {
-        throw new Error('COTP connection rejected');
-      }
-
-      // Step 2: S7 Setup
-      await writer.write(buildS7SetupCommunication());
-      const setupResp = await readTPKTPacket(reader, timeoutPromise);
-      const pduSize = parseS7SetupResponse(setupResp);
-      if (!pduSize) {
-        throw new Error('S7 setup communication failed');
-      }
-
-      // Step 3: Read DB
-      await writer.write(buildS7ReadDB(dbNumber, startByte, byteCount));
-      const readResp = await readTPKTPacket(reader, timeoutPromise);
-
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
-      // Parse S7 ReadVar response: skip TPKT(4)+COTP(3)+S7Header(10)+ReturnCode(1)+TSize(1)+DataLen(2) = 21 bytes
-      let dataBytes: Uint8Array | null = null;
-      if (readResp.length > 21 && readResp[7] === 0x32 && readResp[8] === 0x03) {
-        // Ack_Data, check return code at offset 21
-        const returnCode = readResp[21];
-        if (returnCode === 0xFF) {
-          const dataLen = ((readResp[23] << 8) | readResp[24]) / 8; // length in bits, convert to bytes
-          dataBytes = readResp.slice(25, 25 + dataLen);
+      try {
+        // Step 1: COTP CR
+        await writer.write(buildCOTPConnectionRequest(rack, slot));
+        const cotpResp = await readTPKTPacket(reader, timeoutPromise);
+        if (!parseCOTPConnectionConfirm(cotpResp)) {
+          throw new Error('COTP connection rejected');
         }
+
+        // Step 2: S7 Setup
+        await writer.write(buildS7SetupCommunication());
+        const setupResp = await readTPKTPacket(reader, timeoutPromise);
+        const pduSize = parseS7SetupResponse(setupResp);
+        if (!pduSize) {
+          throw new Error('S7 setup communication failed');
+        }
+
+        // Step 3: Read DB
+        await writer.write(buildS7ReadDB(dbNumber, startByte, byteCount));
+        const readResp = await readTPKTPacket(reader, timeoutPromise);
+
+        // Parse S7 ReadVar response: skip TPKT(4)+COTP(3)+S7Header(10)+ReturnCode(1)+TSize(1)+DataLen(2) = 21 bytes
+        let dataBytes: Uint8Array | null = null;
+        if (readResp.length > 21 && readResp[7] === 0x32 && readResp[8] === 0x03) {
+          // Ack_Data, check return code at offset 21
+          const returnCode = readResp[21];
+          if (returnCode === 0xFF) {
+            const bitLen = (readResp[23] << 8) | readResp[24]; // length in bits
+            const dataLen = Math.floor(bitLen / 8); // convert to bytes
+            dataBytes = readResp.slice(25, 25 + dataLen);
+          }
+        }
+
+        const hexDump = dataBytes
+          ? Array.from(dataBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
+          : null;
+
+        return new Response(JSON.stringify({
+          success: dataBytes !== null,
+          host, port, rack, slot,
+          db: dbNumber,
+          startByte,
+          byteCount: dataBytes?.length ?? 0,
+          hex: hexDump,
+          bytes: dataBytes ? Array.from(dataBytes) : null,
+          error: dataBytes === null ? 'Read failed — check DB number and permissions' : undefined,
+          message: dataBytes !== null
+            ? `Read ${dataBytes.length} bytes from DB${dbNumber}[${startByte}..${startByte + dataBytes.length - 1}]`
+            : 'DB read failed',
+        } satisfies S7commResponse & { db: number; startByte: number; byteCount: number; hex: string | null; bytes: number[] | null }),
+          { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
-
-      const hexDump = dataBytes
-        ? Array.from(dataBytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
-        : null;
-
-      return new Response(JSON.stringify({
-        success: dataBytes !== null,
-        host, port, rack, slot,
-        db: dbNumber,
-        startByte,
-        byteCount: dataBytes?.length ?? 0,
-        hex: hexDump,
-        bytes: dataBytes ? Array.from(dataBytes) : null,
-        error: dataBytes === null ? 'Read failed — check DB number and permissions' : undefined,
-        message: dataBytes !== null
-          ? `Read ${dataBytes.length} bytes from DB${dbNumber}[${startByte}..${startByte + dataBytes.length - 1}]`
-          : 'DB read failed',
-      } satisfies S7commResponse & { db: number; startByte: number; byteCount: number; hex: string | null; bytes: number[] | null }),
-        { headers: { 'Content-Type': 'application/json' } });
-
     } catch (error) {
-      socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
+      socket.close();
     }
   } catch (error) {
     return new Response(
@@ -781,9 +833,10 @@ export async function handleS7WriteDB(request: Request): Promise<Response> {
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
     const socket = connect(`${host}:${port}`);
 
     try {
@@ -791,54 +844,58 @@ export async function handleS7WriteDB(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Step 1: COTP CR
-      await writer.write(buildCOTPConnectionRequest(rack, slot));
-      const cotpResp = await readTPKTPacket(reader, timeoutPromise);
-      if (!parseCOTPConnectionConfirm(cotpResp)) {
-        throw new Error('COTP connection rejected');
+      try {
+        // Step 1: COTP CR
+        await writer.write(buildCOTPConnectionRequest(rack, slot));
+        const cotpResp = await readTPKTPacket(reader, timeoutPromise);
+        if (!parseCOTPConnectionConfirm(cotpResp)) {
+          throw new Error('COTP connection rejected');
+        }
+
+        // Step 2: S7 Setup
+        await writer.write(buildS7SetupCommunication());
+        const setupResp = await readTPKTPacket(reader, timeoutPromise);
+        const pduSize = parseS7SetupResponse(setupResp);
+        if (!pduSize) {
+          throw new Error('S7 setup communication failed');
+        }
+
+        // Step 3: Write DB
+        const writeData = new Uint8Array(dataBytes);
+        await writer.write(buildS7WriteDB(dbNumber, startByte, writeData));
+        const writeResp = await readTPKTPacket(reader, timeoutPromise);
+
+        // Parse WriteVar response: ack at TPKT(4)+COTP(3)+S7Header(10) = offset 17
+        // Data section: returnCode at offset 21, for write it's just 1 byte per item
+        let writeOk = false;
+        if (writeResp.length > 21 && writeResp[7] === 0x32 && writeResp[8] === 0x03) {
+          const returnCode = writeResp[21];
+          writeOk = returnCode === 0xFF;
+        }
+
+        return new Response(JSON.stringify({
+          success: writeOk,
+          host, port, rack, slot,
+          db: dbNumber,
+          startByte,
+          bytesWritten: writeOk ? writeData.length : 0,
+          error: writeOk ? undefined : 'Write failed — check DB number, address, and write permissions',
+          message: writeOk
+            ? `Wrote ${writeData.length} bytes to DB${dbNumber}[${startByte}..${startByte + writeData.length - 1}]`
+            : 'DB write failed',
+        } satisfies S7commResponse & { db: number; startByte: number; bytesWritten: number }),
+          { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
       }
-
-      // Step 2: S7 Setup
-      await writer.write(buildS7SetupCommunication());
-      const setupResp = await readTPKTPacket(reader, timeoutPromise);
-      const pduSize = parseS7SetupResponse(setupResp);
-      if (!pduSize) {
-        throw new Error('S7 setup communication failed');
-      }
-
-      // Step 3: Write DB
-      const writeData = new Uint8Array(dataBytes);
-      await writer.write(buildS7WriteDB(dbNumber, startByte, writeData));
-      const writeResp = await readTPKTPacket(reader, timeoutPromise);
-
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
-      // Parse WriteVar response: ack at TPKT(4)+COTP(3)+S7Header(10) = offset 17
-      // Data section: returnCode at offset 21, for write it's just 1 byte per item
-      let writeOk = false;
-      if (writeResp.length > 21 && writeResp[7] === 0x32 && writeResp[8] === 0x03) {
-        const returnCode = writeResp[21];
-        writeOk = returnCode === 0xFF;
-      }
-
-      return new Response(JSON.stringify({
-        success: writeOk,
-        host, port, rack, slot,
-        db: dbNumber,
-        startByte,
-        bytesWritten: writeOk ? writeData.length : 0,
-        error: writeOk ? undefined : 'Write failed — check DB number, address, and write permissions',
-        message: writeOk
-          ? `Wrote ${writeData.length} bytes to DB${dbNumber}[${startByte}..${startByte + writeData.length - 1}]`
-          : 'DB write failed',
-      } satisfies S7commResponse & { db: number; startByte: number; bytesWritten: number }),
-        { headers: { 'Content-Type': 'application/json' } });
-
     } catch (error) {
-      socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== null) {
+        clearTimeout(timeoutHandle);
+      }
+      socket.close();
     }
   } catch (error) {
     return new Response(

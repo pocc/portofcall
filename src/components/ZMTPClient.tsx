@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface ZMTPClientProps {
   onBack: () => void;
@@ -183,6 +185,7 @@ export default function ZMTPClient({ onBack }: ZMTPClientProps) {
 
   return (
     <ProtocolClientLayout title="ZMTP / ZeroMQ Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.ZMTP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="ZeroMQ Endpoint" />
 

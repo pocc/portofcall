@@ -205,6 +205,19 @@ function buildBindPDU(interfaceUuid: string, interfaceVersion: number): Uint8Arr
 }
 
 /**
+ * Parse the provider_reject_reason from a Bind NAK PDU, respecting data representation.
+ * Per C706 Section 12.6.4.7, the bind_nak body starts at offset 16 with a 2-byte reason code.
+ */
+function parseBindNakReason(pdu: Uint8Array): number {
+  const isLittleEndian = (pdu[4] & 0x10) !== 0;
+  if (isLittleEndian) {
+    return pdu[16] | (pdu[17] << 8);
+  } else {
+    return (pdu[16] << 8) | pdu[17];
+  }
+}
+
+/**
  * Read a complete PDU response from the server
  */
 async function readPDU(
@@ -330,7 +343,7 @@ function parseBindAck(pdu: Uint8Array): {
   const secAddrBytes = pdu.slice(26, 26 + secAddrLen);
   // Remove null terminator if present
   const secAddr = new TextDecoder().decode(
-    secAddrBytes[secAddrLen - 1] === 0 ? secAddrBytes.slice(0, -1) : secAddrBytes
+    secAddrLen > 0 && secAddrBytes[secAddrLen - 1] === 0 ? secAddrBytes.slice(0, -1) : secAddrBytes
   );
 
   // Pad to 4-byte alignment after secondary address
@@ -340,8 +353,8 @@ function parseBindAck(pdu: Uint8Array): {
   }
 
   // Result list
-  const resultCount = pdu[offset];
-  offset += 4; // count + 3 padding bytes
+  const resultCount = read16(offset);
+  offset += 4; // count (uint16) + 2 bytes alignment padding
 
   const results = [];
   for (let i = 0; i < resultCount; i++) {
@@ -430,7 +443,7 @@ export async function handleDCERPCConnect(request: Request): Promise<Response> {
 
         const ptype = response[2];
         if (ptype === PTYPE_BIND_NAK) {
-          const reason = response[16] | (response[17] << 8);
+          const reason = parseBindNakReason(response);
           throw new Error(`Bind rejected (NAK): ${NAK_REASONS[reason] || `reason ${reason}`}`);
         }
 
@@ -598,12 +611,20 @@ function buildEPMPDUs(): { bindPDU: Uint8Array; requestPDU: Uint8Array } {
 /**
  * Parse EPM tower floors to extract endpoint information.
  * Each floor: lhs_len(2LE) + lhs_data(lhs_len) + rhs_len(2LE) + rhs_data(rhs_len)
+ *
+ * Floor 1 protocol ID 0x0D identifies the DCE/RPC interface:
+ *   LHS: 0x0D + UUID (16 bytes) + version_major (2 bytes LE)
+ *   RHS: version_minor (2 bytes LE)
  */
+const EPM_PROTOCOL_UUID = 0x0d;
+
 function parseTower(data: Uint8Array, offset: number): {
   protocol: string;
   host: string | null;
   port: number | null;
   pipe: string | null;
+  interfaceUuid: string | null;
+  interfaceVersion: string | null;
 } | null {
   if (offset + 2 > data.length) return null;
 
@@ -615,6 +636,8 @@ function parseTower(data: Uint8Array, offset: number): {
   let ipHost: string | null = null;
   let protocol = 'unknown';
   let pipe: string | null = null;
+  let interfaceUuid: string | null = null;
+  let interfaceVersion: string | null = null;
 
   for (let f = 0; f < floorCount && f < 10; f++) {
     if (offset + 4 > data.length) break;
@@ -637,7 +660,15 @@ function parseTower(data: Uint8Array, offset: number): {
     if (lhsLen < 1) continue;
     const protId = lhs[0];
 
-    if (protId === EPM_PROTOCOL_DOD_TCP && rhsLen >= 2) {
+    if (protId === EPM_PROTOCOL_UUID && lhsLen >= 19 && rhsLen >= 2) {
+      // Floor 1: DCE/RPC interface UUID + version
+      // LHS: protocol_id(1) + UUID(16) + version_major(2 LE)
+      // RHS: version_minor(2 LE)
+      interfaceUuid = bytesToUuid(lhs, 1);
+      const vMajor = lhs[17] | (lhs[18] << 8);
+      const vMinor = rhs[0] | (rhs[1] << 8);
+      interfaceVersion = `${vMajor}.${vMinor}`;
+    } else if (protId === EPM_PROTOCOL_DOD_TCP && rhsLen >= 2) {
       tcpPort = (rhs[0] << 8) | rhs[1];
       protocol = EPM_PROTOCOL_NAMES[protId] || 'TCP';
     } else if (protId === EPM_PROTOCOL_DOD_UDP && rhsLen >= 2) {
@@ -656,12 +687,28 @@ function parseTower(data: Uint8Array, offset: number): {
     }
   }
 
-  return { protocol, host: ipHost, port: tcpPort, pipe };
+  return { protocol, host: ipHost, port: tcpPort, pipe, interfaceUuid, interfaceVersion };
 }
 
 /**
  * Parse the NDR response body from an ept_lookup Response PDU.
  * Extracts entries with UUID, annotation, and endpoint towers.
+ *
+ * NDR response wire order for ept_lookup:
+ *   entry_handle (20 bytes: context handle)
+ *   num_ents (4 bytes)
+ *   entries[] conformant array: max_count(4) + elements
+ *   status (4 bytes)
+ *
+ * Each ept_entry_t element (fixed part):
+ *   object UUID (16 bytes)
+ *   tower pointer referent ID (4 bytes)
+ *   annotation: conformant/varying char[] with max_count(4) + offset(4) + actual_count(4) + data + pad
+ *
+ * Tower referent data (deferred pointers) follows after all fixed entry data.
+ * However, Windows EPM typically inlines tower data immediately after each entry's
+ * annotation (MS-RPC implementation detail). We attempt inline parsing first and
+ * fall back gracefully if the layout differs.
  */
 function parseEPMLookupResponse(pdu: Uint8Array): Array<{
   uuid: string;
@@ -686,13 +733,18 @@ function parseEPMLookupResponse(pdu: Uint8Array): Array<{
   // Skip PDU header (16) + alloc_hint(4) + context_id(2) + cancel_count(1) + reserved(1) = 24
   let offset = 24;
 
+  // entry_handle: context handle (20 bytes: 4 bytes attributes + 16 bytes UUID)
+  // This is the [in, out] parameter that appears first in the response
+  if (offset + 20 > pdu.length) return entries;
+  offset += 20; // skip entry_handle
+
   if (offset + 4 > pdu.length) return entries;
 
   // num_ents (4 bytes LE)
   const numEnts = view.getUint32(offset, true);
   offset += 4;
 
-  // Array conformant size (4 bytes)
+  // Conformant array max_count (4 bytes)
   if (offset + 4 > pdu.length) return entries;
   const arraySize = view.getUint32(offset, true);
   offset += 4;
@@ -709,15 +761,17 @@ function parseEPMLookupResponse(pdu: Uint8Array): Array<{
 
     // tower pointer (4 bytes) — referent ID
     if (offset + 4 > pdu.length) break;
-    offset += 4; // skip referent
+    offset += 4; // skip referent ID
 
-    // annotation_offset (4 bytes) and annotation_length (4 bytes) for conformant string
-    if (offset + 8 > pdu.length) break;
-    offset += 4; // offset always 0
-    const annoLen = view.getUint32(offset, true);
+    // annotation: NDR conformant/varying char array
+    // Wire format: max_count(4) + offset(4) + actual_count(4) + data + padding
+    if (offset + 12 > pdu.length) break;
+    offset += 4; // max_count (skip)
+    offset += 4; // offset (always 0, skip)
+    const annoLen = view.getUint32(offset, true); // actual_count
     offset += 4;
 
-    // annotation string (annoLen bytes, padded to 4-byte boundary)
+    // annotation string (annoLen bytes, padded to 4-byte alignment)
     let annotation = '';
     if (annoLen > 0 && offset + annoLen <= pdu.length) {
       const annoBytes = pdu.slice(offset, offset + annoLen);
@@ -726,30 +780,36 @@ function parseEPMLookupResponse(pdu: Uint8Array): Array<{
     const paddedAnnoLen = annoLen + (4 - (annoLen % 4)) % 4;
     offset += paddedAnnoLen;
 
-    // tower (inline, twr_p_t pointer then actual tower):
-    // tower_length (4 bytes) then floor data
+    // Tower referent data (inlined by Windows MS-RPC):
+    // twr_t: tower_length(4) + tower_octet_string(tower_length) + padding
     if (offset + 4 > pdu.length) break;
     const towerLen = view.getUint32(offset, true);
     offset += 4;
 
     let endpoint = { protocol: 'unknown', host: null as string | null, port: null as number | null, pipe: null as string | null };
+    let towerInterfaceUuid: string | null = null;
+    let towerInterfaceVersion: string | null = null;
     if (towerLen > 0 && offset + towerLen <= pdu.length) {
       const towerData = pdu.slice(offset, offset + towerLen);
       const parsed = parseTower(towerData, 0);
-      if (parsed) endpoint = parsed;
+      if (parsed) {
+        endpoint = { protocol: parsed.protocol, host: parsed.host, port: parsed.port, pipe: parsed.pipe };
+        towerInterfaceUuid = parsed.interfaceUuid;
+        towerInterfaceVersion = parsed.interfaceVersion;
+      }
     }
     const paddedTowerLen = towerLen + (4 - (towerLen % 4)) % 4;
     offset += paddedTowerLen;
 
-    // interface UUID is the first floor's LHS UUID when floors are present
-    // (the object GUID above is the entry object, not necessarily the interface UUID)
-    // For now use the object GUID as interface identifier
-    const version = '?';
+    // Prefer the interface UUID from the tower's first floor (protocol 0x0D)
+    // over the entry's object UUID, since the object UUID is often null
+    const effectiveUuid = towerInterfaceUuid || uuidStr;
+    const version = towerInterfaceVersion || '?';
 
-    const serviceName = EPM_UUID_TO_SERVICE[uuidStr.toLowerCase()] || annotation || `Unknown (${uuidStr})`;
+    const serviceName = EPM_UUID_TO_SERVICE[effectiveUuid.toLowerCase()] || annotation || `Unknown (${effectiveUuid})`;
 
     entries.push({
-      uuid: uuidStr,
+      uuid: effectiveUuid,
       version,
       annotation,
       endpoint,
@@ -818,7 +878,7 @@ export async function handleDCERPCEPMEnum(request: Request): Promise<Response> {
 
         const bindPtype = bindResponse[2];
         if (bindPtype === PTYPE_BIND_NAK) {
-          const reason = bindResponse[16] | (bindResponse[17] << 8);
+          const reason = parseBindNakReason(bindResponse);
           throw new Error(`EPM bind rejected: ${NAK_REASONS[reason] || `reason ${reason}`}`);
         }
         if (bindPtype !== PTYPE_BIND_ACK) {
@@ -836,7 +896,9 @@ export async function handleDCERPCEPMEnum(request: Request): Promise<Response> {
 
         const responsePtype = lookupResponse[2];
         if (responsePtype === PTYPE_FAULT) {
-          throw new Error(`EPM ept_lookup fault: status=${lookupResponse[16]?.toString(16)}`);
+          const faultView = new DataView(lookupResponse.buffer, lookupResponse.byteOffset);
+          const faultStatus = faultView.getUint32(24, true);
+          throw new Error(`EPM ept_lookup fault: status=0x${faultStatus.toString(16).padStart(8, '0')}`);
         }
         if (responsePtype !== PTYPE_RESPONSE) {
           throw new Error(`Unexpected ept_lookup response type: ${responsePtype}`);
@@ -1013,7 +1075,7 @@ export async function handleDCERPCProbe(request: Request): Promise<Response> {
         let probeResult: Record<string, unknown>;
 
         if (ptype === PTYPE_BIND_NAK) {
-          const reason = response[16] | (response[17] << 8);
+          const reason = parseBindNakReason(response);
           probeResult = {
             available: false,
             response: 'Bind NAK',

@@ -423,7 +423,9 @@ export async function handleXMPPS2STlsDialback(request: Request): Promise<Respon
       let usedTls = false;
 
       try {
-        const streamHeader = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
+        // RFC 6120 Section 4.7: Stream opening with proper namespace declarations
+        // XEP-0220 dialback namespace is declared in db:result element, not stream header
+        const streamHeader = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
 
         // Step 1: Send stream header on plain connection
         await writer.write(new TextEncoder().encode(streamHeader));
@@ -437,7 +439,7 @@ export async function handleXMPPS2STlsDialback(request: Request): Promise<Respon
         if (!starttlsOffered) {
           // Server doesn't offer STARTTLS — try dialback directly on plain
           const key = genDialbackKey();
-          const dbResult = `<db:result from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
+          const dbResult = `<db:result xmlns:db='jabber:server:dialback' from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
           await writer.write(new TextEncoder().encode(dbResult));
           writer.releaseLock();
           const resp = await readXMPPUntil(reader, 'db:result', 32768, 5000).catch(() => '');
@@ -496,9 +498,9 @@ export async function handleXMPPS2STlsDialback(request: Request): Promise<Respon
         let m;
         while ((m = mechRe.exec(tls1)) !== null) saslMechs.push(m[1]);
 
-        // Step 8: Send dialback key
+        // Step 8: Send dialback key (XEP-0220 Section 2.1)
         const key = genDialbackKey();
-        const dbResult = `<db:result from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
+        const dbResult = `<db:result xmlns:db='jabber:server:dialback' from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
         await writer.write(new TextEncoder().encode(dbResult));
         writer.releaseLock();
 

@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface FingerClientProps {
   onBack: () => void;
@@ -84,6 +86,7 @@ export default function FingerClient({ onBack }: FingerClientProps) {
 
   return (
     <ProtocolClientLayout title="Finger Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Finger || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Finger Server Configuration" />
 

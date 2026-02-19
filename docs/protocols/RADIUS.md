@@ -1,657 +1,454 @@
-# RADIUS Protocol Implementation Plan
+# RADIUS — Power-User Reference
 
-## Overview
+**Port:** 1812 (authentication), 1813 (accounting)
+**Transport:** TCP (RFC 6613 — RADIUS over TCP, since Cloudflare Workers only provide TCP sockets)
+**Implementation:** `src/worker/radius.ts`
+**Routes:** `src/worker/index.ts` lines 2128–2139
 
-**Protocol:** RADIUS (Remote Authentication Dial-In User Service)
-**Port:** 1812 (authentication), 1813 (accounting), legacy 1645/1646
-**RFC:** [RFC 2865](https://tools.ietf.org/html/rfc2865) (Authentication), [RFC 2866](https://tools.ietf.org/html/rfc2866) (Accounting)
-**Complexity:** Medium
-**Purpose:** AAA (Authentication, Authorization, Accounting)
+Standard RADIUS uses UDP. This implementation uses **RADIUS over TCP** (RFC 6613), which means only servers that accept TCP connections on the RADIUS port will respond. FreeRADIUS supports this via `listen { type = auth; proto = tcp; ... }` in `radiusd.conf`. Many production NAS appliances do not.
 
-RADIUS provides **centralized authentication** - validates user credentials, authorizes network access, and tracks resource usage for billing and auditing.
+---
 
-### Use Cases
-- Network device authentication (routers, switches, firewalls)
-- VPN authentication
-- WiFi/802.1X authentication
-- ISP user authentication
-- Accounting and billing
-- Centralized access control
+## Endpoints
 
-## Protocol Specification
+| Endpoint | Method | Default Port | Default Timeout | Purpose |
+|---|---|---|---|---|
+| `/api/radius/probe` | POST | 1812 | 10 000 ms | Status-Server detection |
+| `/api/radius/auth` | POST | 1812 | 15 000 ms | Access-Request (PAP) |
+| `/api/radius/accounting` | POST | 1813 | 10 000 ms | Accounting-Request |
 
-### UDP-Based Protocol
+All three endpoints check `checkIfCloudflare()` before connecting and return HTTP 403 with `isCloudflare: true` if the target resolves to a Cloudflare IP.
 
-RADIUS uses **UDP** (not TCP):
-- Port 1812: Authentication
-- Port 1813: Accounting
-- Legacy: 1645/1646
+---
 
-**Note:** For Cloudflare Workers TCP sockets, a UDP proxy would be needed.
+## `/api/radius/probe`
 
-### Packet Format
+Sends a **Status-Server** packet (code 12, RFC 5997) to detect whether a RADIUS server is listening.
 
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Code      |  Identifier   |            Length             |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                         Authenticator                         |
-|                          (16 bytes)                           |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|  Attributes ...
-+-+-+-+-+-+-+-+-+-+-+-+-+-
-```
+### Request
 
-### Packet Codes
-
-```
-1  - Access-Request
-2  - Access-Accept
-3  - Access-Reject
-4  - Accounting-Request
-5  - Accounting-Response
-11 - Access-Challenge
-12 - Status-Server
-13 - Status-Client
-```
-
-### Attribute Format
-
-```
- 0                   1                   2
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|     Type      |    Length     |  Value ...
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-### Common Attributes
-
-```
-1  - User-Name
-2  - User-Password (encrypted)
-3  - CHAP-Password
-4  - NAS-IP-Address
-5  - NAS-Port
-6  - Service-Type
-7  - Framed-Protocol
-8  - Framed-IP-Address
-18 - Reply-Message
-25 - Class
-79 - EAP-Message
-80 - Message-Authenticator
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/radius/client.ts
-
-import { connect } from 'cloudflare:sockets';
-import { createHash, createHmac, randomBytes } from 'crypto';
-
-export interface RADIUSConfig {
-  host: string;
-  port?: number;
-  secret: string; // Shared secret
-  timeout?: number;
-}
-
-// RADIUS Packet Codes
-export enum PacketCode {
-  AccessRequest = 1,
-  AccessAccept = 2,
-  AccessReject = 3,
-  AccountingRequest = 4,
-  AccountingResponse = 5,
-  AccessChallenge = 11,
-  StatusServer = 12,
-  StatusClient = 13,
-}
-
-// RADIUS Attribute Types
-export enum AttributeType {
-  UserName = 1,
-  UserPassword = 2,
-  CHAPPassword = 3,
-  NASIPAddress = 4,
-  NASPort = 5,
-  ServiceType = 6,
-  FramedProtocol = 7,
-  FramedIPAddress = 8,
-  ReplyMessage = 18,
-  State = 24,
-  Class = 25,
-  VendorSpecific = 26,
-  SessionTimeout = 27,
-  IdleTimeout = 28,
-  CallingStationId = 31,
-  CalledStationId = 30,
-  NASIdentifier = 32,
-  AcctStatusType = 40,
-  AcctSessionId = 44,
-  EAPMessage = 79,
-  MessageAuthenticator = 80,
-}
-
-export interface RADIUSAttribute {
-  type: number;
-  value: Uint8Array;
-}
-
-export interface RADIUSPacket {
-  code: PacketCode;
-  identifier: number;
-  authenticator: Uint8Array;
-  attributes: RADIUSAttribute[];
-}
-
-export class RADIUSClient {
-  private socket: any;
-  private identifier: number = 0;
-
-  constructor(private config: RADIUSConfig) {
-    if (!config.port) {
-      config.port = 1812;
-    }
-    if (!config.timeout) {
-      config.timeout = 5000;
-    }
-  }
-
-  // Note: RADIUS uses UDP, not TCP
-  // This implementation assumes a UDP-to-TCP proxy or RADIUS-over-TCP extension
-
-  async authenticate(username: string, password: string): Promise<{
-    success: boolean;
-    message?: string;
-    attributes?: RADIUSAttribute[];
-  }> {
-    // Generate request authenticator
-    const requestAuth = randomBytes(16);
-
-    // Build Access-Request packet
-    const attributes: RADIUSAttribute[] = [
-      this.buildAttribute(AttributeType.UserName, username),
-      this.buildPasswordAttribute(password, requestAuth),
-      this.buildAttribute(AttributeType.NASIPAddress, '127.0.0.1'),
-    ];
-
-    const request: RADIUSPacket = {
-      code: PacketCode.AccessRequest,
-      identifier: this.nextIdentifier(),
-      authenticator: requestAuth,
-      attributes,
-    };
-
-    // Send request
-    const response = await this.sendRequest(request);
-
-    // Parse response
-    if (response.code === PacketCode.AccessAccept) {
-      const replyMessage = this.getAttribute(response, AttributeType.ReplyMessage);
-      return {
-        success: true,
-        message: replyMessage ? new TextDecoder().decode(replyMessage.value) : undefined,
-        attributes: response.attributes,
-      };
-    } else if (response.code === PacketCode.AccessReject) {
-      const replyMessage = this.getAttribute(response, AttributeType.ReplyMessage);
-      return {
-        success: false,
-        message: replyMessage ? new TextDecoder().decode(replyMessage.value) : 'Access denied',
-      };
-    } else if (response.code === PacketCode.AccessChallenge) {
-      return {
-        success: false,
-        message: 'Multi-factor authentication required',
-        attributes: response.attributes,
-      };
-    }
-
-    return { success: false, message: 'Unknown response' };
-  }
-
-  async accounting(
-    username: string,
-    sessionId: string,
-    statusType: 'Start' | 'Stop' | 'Interim-Update'
-  ): Promise<boolean> {
-    const requestAuth = randomBytes(16);
-
-    const statusTypeValue = statusType === 'Start' ? 1 : statusType === 'Stop' ? 2 : 3;
-
-    const attributes: RADIUSAttribute[] = [
-      this.buildAttribute(AttributeType.UserName, username),
-      this.buildAttribute(AttributeType.AcctStatusType, statusTypeValue),
-      this.buildAttribute(AttributeType.AcctSessionId, sessionId),
-      this.buildAttribute(AttributeType.NASIPAddress, '127.0.0.1'),
-    ];
-
-    const request: RADIUSPacket = {
-      code: PacketCode.AccountingRequest,
-      identifier: this.nextIdentifier(),
-      authenticator: requestAuth,
-      attributes,
-    };
-
-    const response = await this.sendRequest(request);
-
-    return response.code === PacketCode.AccountingResponse;
-  }
-
-  private async sendRequest(packet: RADIUSPacket): Promise<RADIUSPacket> {
-    const encoded = this.encodePacket(packet);
-
-    // For demonstration - actual implementation needs UDP proxy
-    // Or RADIUS-over-TCP (non-standard)
-
-    const socket = connect(`${this.config.host}:${this.config.port}`);
-    await socket.opened;
-
-    const writer = socket.writable.getWriter();
-    await writer.write(encoded);
-    writer.releaseLock();
-
-    const reader = socket.readable.getReader();
-    const { value } = await reader.read();
-    reader.releaseLock();
-
-    await socket.close();
-
-    if (!value) {
-      throw new Error('No response from RADIUS server');
-    }
-
-    return this.decodePacket(value, packet.authenticator);
-  }
-
-  private encodePacket(packet: RADIUSPacket): Uint8Array {
-    // Calculate total length
-    let attributesLength = 0;
-    for (const attr of packet.attributes) {
-      attributesLength += 2 + attr.value.length; // Type + Length + Value
-    }
-
-    const totalLength = 20 + attributesLength; // Header (20 bytes) + Attributes
-
-    const buffer = new ArrayBuffer(totalLength);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Code
-    view.setUint8(offset++, packet.code);
-
-    // Identifier
-    view.setUint8(offset++, packet.identifier);
-
-    // Length
-    view.setUint16(offset, totalLength, false);
-    offset += 2;
-
-    // Authenticator
-    new Uint8Array(buffer).set(packet.authenticator, offset);
-    offset += 16;
-
-    // Attributes
-    for (const attr of packet.attributes) {
-      view.setUint8(offset++, attr.type);
-      view.setUint8(offset++, 2 + attr.value.length);
-      new Uint8Array(buffer).set(attr.value, offset);
-      offset += attr.value.length;
-    }
-
-    return new Uint8Array(buffer);
-  }
-
-  private decodePacket(data: Uint8Array, requestAuth: Uint8Array): RADIUSPacket {
-    const view = new DataView(data.buffer);
-    let offset = 0;
-
-    // Code
-    const code = view.getUint8(offset++) as PacketCode;
-
-    // Identifier
-    const identifier = view.getUint8(offset++);
-
-    // Length
-    const length = view.getUint16(offset, false);
-    offset += 2;
-
-    // Authenticator
-    const authenticator = data.slice(offset, offset + 16);
-    offset += 16;
-
-    // Verify response authenticator
-    if (!this.verifyResponseAuthenticator(data, requestAuth)) {
-      throw new Error('Invalid response authenticator');
-    }
-
-    // Attributes
-    const attributes: RADIUSAttribute[] = [];
-
-    while (offset < length) {
-      const type = view.getUint8(offset++);
-      const attrLength = view.getUint8(offset++);
-      const value = data.slice(offset, offset + attrLength - 2);
-      offset += attrLength - 2;
-
-      attributes.push({ type, value });
-    }
-
-    return { code, identifier, authenticator, attributes };
-  }
-
-  private buildAttribute(type: AttributeType, value: string | number): RADIUSAttribute {
-    let valueBytes: Uint8Array;
-
-    if (typeof value === 'string') {
-      valueBytes = new TextEncoder().encode(value);
-    } else if (typeof value === 'number') {
-      const buffer = new ArrayBuffer(4);
-      new DataView(buffer).setUint32(0, value, false);
-      valueBytes = new Uint8Array(buffer);
-    } else {
-      throw new Error('Invalid attribute value type');
-    }
-
-    return { type, value: valueBytes };
-  }
-
-  private buildPasswordAttribute(password: string, requestAuth: Uint8Array): RADIUSAttribute {
-    // Encrypt password using shared secret and request authenticator
-    const encrypted = this.encryptPassword(password, requestAuth);
-    return { type: AttributeType.UserPassword, value: encrypted };
-  }
-
-  private encryptPassword(password: string, requestAuth: Uint8Array): Uint8Array {
-    // RADIUS password encryption:
-    // 1. Pad password to multiple of 16 bytes
-    // 2. XOR with MD5(secret + requestAuth)
-
-    const encoder = new TextEncoder();
-    const passwordBytes = encoder.encode(password);
-
-    // Pad to multiple of 16
-    const paddedLength = Math.ceil(passwordBytes.length / 16) * 16;
-    const padded = new Uint8Array(paddedLength);
-    padded.set(passwordBytes);
-
-    const result = new Uint8Array(paddedLength);
-    const secret = encoder.encode(this.config.secret);
-
-    for (let i = 0; i < paddedLength; i += 16) {
-      // Calculate MD5(secret + previous_output)
-      const hashInput = new Uint8Array(secret.length + 16);
-      hashInput.set(secret);
-
-      if (i === 0) {
-        hashInput.set(requestAuth, secret.length);
-      } else {
-        hashInput.set(result.slice(i - 16, i), secret.length);
-      }
-
-      const hash = this.md5(hashInput);
-
-      // XOR with password block
-      for (let j = 0; j < 16; j++) {
-        result[i + j] = padded[i + j] ^ hash[j];
-      }
-    }
-
-    return result;
-  }
-
-  private verifyResponseAuthenticator(responsePacket: Uint8Array, requestAuth: Uint8Array): boolean {
-    // Response authenticator = MD5(Code+ID+Length+RequestAuth+Attributes+Secret)
-
-    const buffer = new Uint8Array(responsePacket.length + this.config.secret.length);
-    buffer.set(responsePacket);
-
-    // Replace response authenticator with request authenticator
-    buffer.set(requestAuth, 4);
-
-    // Append secret
-    buffer.set(new TextEncoder().encode(this.config.secret), responsePacket.length);
-
-    const hash = this.md5(buffer);
-    const responseAuth = responsePacket.slice(4, 20);
-
-    // Compare
-    for (let i = 0; i < 16; i++) {
-      if (hash[i] !== responseAuth[i]) {
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  private md5(data: Uint8Array): Uint8Array {
-    // Use Web Crypto API or crypto library
-    const hash = createHash('md5');
-    hash.update(data);
-    return new Uint8Array(hash.digest());
-  }
-
-  private getAttribute(packet: RADIUSPacket, type: AttributeType): RADIUSAttribute | undefined {
-    return packet.attributes.find(attr => attr.type === type);
-  }
-
-  private nextIdentifier(): number {
-    this.identifier = (this.identifier + 1) % 256;
-    return this.identifier;
-  }
-}
-
-// EAP (Extensible Authentication Protocol) Support
-
-export class RADIUSEAP extends RADIUSClient {
-  async authenticateEAP(username: string, eapMessage: Uint8Array): Promise<any> {
-    // EAP authentication flow
-    // Used for 802.1X, WPA Enterprise, etc.
-  }
+```json
+{
+  "host": "radius.example.com",
+  "port": 1812,
+  "secret": "testing123",
+  "timeout": 10000
 }
 ```
 
-## Web UI Design
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `host` | yes | — | |
+| `port` | no | `1812` | |
+| `secret` | no | `"testing123"` | Shared secret. `testing123` is the FreeRADIUS test default |
+| `timeout` | no | `10000` | ms |
 
-```typescript
-// src/components/RADIUSClient.tsx
+### Wire exchange
 
-export function RADIUSClient() {
-  const [host, setHost] = useState('');
-  const [secret, setSecret] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [result, setResult] = useState<any>(null);
+```
+→  Status-Server (code 12)
+     NAS-Identifier = "portofcall-probe"   (hardcoded, not configurable)
+     Message-Authenticator = HMAC-MD5(secret, packet)
+←  Access-Accept (code 2)  or  Access-Reject (code 3)
+```
 
-  const authenticate = async () => {
-    try {
-      const response = await fetch('/api/radius/authenticate', {
-        method: 'POST',
-        body: JSON.stringify({
-          host,
-          secret,
-          username,
-          password,
-        }),
-      });
+The NAS-Identifier is always `"portofcall-probe"` — there is no request field to override it (unlike `/auth` and `/accounting` where `nasIdentifier` is configurable).
 
-      const data = await response.json();
-      setResult(data);
-    } catch (error) {
-      alert(`Error: ${error.message}`);
+### Response
+
+```json
+{
+  "success": true,
+  "host": "radius.example.com",
+  "port": 1812,
+  "responseCode": 2,
+  "responseCodeName": "Access-Accept",
+  "identifier": 42,
+  "authenticator": "a1b2c3d4e5f6...",
+  "attributes": [
+    {
+      "type": 18,
+      "typeName": "Reply-Message",
+      "length": 22,
+      "stringValue": "FreeRADIUS up 3 days",
+      "intValue": null,
+      "hex": "46 72 65 65 52 ..."
     }
-  };
-
-  const testAccounting = async () => {
-    try {
-      const sessionId = `session-${Date.now()}`;
-
-      // Start
-      await fetch('/api/radius/accounting', {
-        method: 'POST',
-        body: JSON.stringify({
-          host,
-          secret,
-          username,
-          sessionId,
-          statusType: 'Start',
-        }),
-      });
-
-      alert('Accounting Start sent');
-
-      // Stop after 5 seconds
-      setTimeout(async () => {
-        await fetch('/api/radius/accounting', {
-          method: 'POST',
-          body: JSON.stringify({
-            host,
-            secret,
-            username,
-            sessionId,
-            statusType: 'Stop',
-          }),
-        });
-
-        alert('Accounting Stop sent');
-      }, 5000);
-    } catch (error) {
-      alert(`Error: ${error.message}`);
-    }
-  };
-
-  return (
-    <div className="radius-client">
-      <h2>RADIUS Client</h2>
-
-      <div className="config">
-        <input
-          type="text"
-          placeholder="RADIUS Server Host"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder="Shared Secret"
-          value={secret}
-          onChange={(e) => setSecret(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="Username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <button onClick={authenticate}>Authenticate</button>
-        <button onClick={testAccounting}>Test Accounting</button>
-      </div>
-
-      {result && (
-        <div className={`result ${result.success ? 'success' : 'failure'}`}>
-          <h3>{result.success ? 'Access Accepted' : 'Access Rejected'}</h3>
-          {result.message && <p>{result.message}</p>}
-
-          {result.attributes && result.attributes.length > 0 && (
-            <div className="attributes">
-              <h4>Attributes:</h4>
-              <ul>
-                {result.attributes.map((attr: any, i: number) => (
-                  <li key={i}>
-                    Type {attr.type}: {new TextDecoder().decode(attr.value)}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      <div className="info">
-        <h3>About RADIUS</h3>
-        <ul>
-          <li>RFC 2865 - Authentication</li>
-          <li>RFC 2866 - Accounting</li>
-          <li>UDP-based (ports 1812/1813)</li>
-          <li>Shared secret for security</li>
-          <li>MD5 password encryption</li>
-          <li>Widely used for AAA</li>
-        </ul>
-      </div>
-    </div>
-  );
+  ],
+  "replyMessages": ["FreeRADIUS up 3 days"],
+  "connectTimeMs": 45,
+  "totalTimeMs": 112
 }
 ```
 
-## Security
+- `authenticator` is the 16-byte Response-Authenticator as a hex string (no spaces).
+- `attributes[].hex` has space-separated hex bytes.
+- `replyMessages` is a convenience extraction of all Reply-Message (type 18) string values.
 
-### Shared Secret
+---
 
-```typescript
-const client = new RADIUSClient({
-  host: 'radius.example.com',
-  port: 1812,
-  secret: 'strong-shared-secret-here',
-});
+## `/api/radius/auth`
+
+Sends an **Access-Request** (code 1) using **PAP** (User-Password attribute, RFC 2865 §5.2).
+
+### Request
+
+```json
+{
+  "host": "radius.example.com",
+  "port": 1812,
+  "secret": "testing123",
+  "username": "alice",
+  "password": "s3cret",
+  "nasIdentifier": "portofcall",
+  "timeout": 15000
+}
 ```
 
-### Password Encryption
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `host` | yes | — | |
+| `port` | no | `1812` | |
+| `secret` | no | `"testing123"` | |
+| `username` | yes | — | Returns 400 if missing |
+| `password` | no | `""` | Empty string is valid; encrypts as a zero-padded 16-byte block |
+| `nasIdentifier` | no | `"portofcall"` | |
+| `timeout` | no | `15000` | ms — 5 s longer than probe/accounting |
 
-RADIUS encrypts passwords using MD5(secret + authenticator), but **MD5 is weak**. Use RadSec (RADIUS over TLS) for better security.
+### Wire exchange
 
-### RadSec (RADIUS over TLS)
-
-```typescript
-// RFC 6614 - RADIUS over TLS
-// Port 2083 (TCP with TLS)
+```
+→  Access-Request (code 1)
+     User-Name = "alice"
+     User-Password = encrypted(password, secret, authenticator)   [RFC 2865 §5.2]
+     NAS-Identifier = "portofcall"
+     NAS-Port-Type = Virtual (5)
+     Service-Type = Login (1)
+     Message-Authenticator = HMAC-MD5(secret, packet)
+←  Access-Accept (code 2)  |  Access-Reject (code 3)  |  Access-Challenge (code 11)
 ```
 
-## Testing
+### Password encryption (RFC 2865 §5.2)
+
+```
+b1 = MD5(secret || Request-Authenticator)
+c1 = p1 XOR b1
+b2 = MD5(secret || c1)
+c2 = p2 XOR b2
+...
+```
+
+Password is zero-padded to the next multiple of 16 bytes (minimum 16). Each 16-byte block is XORed with `MD5(secret || previous_ciphertext_block)`, where the first block uses the Request-Authenticator.
+
+### Response
+
+```json
+{
+  "success": true,
+  "authenticated": true,
+  "host": "radius.example.com",
+  "port": 1812,
+  "username": "alice",
+  "responseCode": 2,
+  "responseCodeName": "Access-Accept",
+  "replyMessages": ["Welcome, alice"],
+  "hasChallenge": false,
+  "hasState": false,
+  "attributes": [
+    { "type": 18, "typeName": "Reply-Message", "length": 16, "stringValue": "Welcome, alice", "intValue": null }
+  ],
+  "connectTimeMs": 38,
+  "totalTimeMs": 95
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `success` | Always `true` if the TCP exchange completed without error — even for Access-Reject |
+| `authenticated` | `true` only when `responseCode === 2` (Access-Accept) |
+| `hasChallenge` | `true` when `responseCode === 11` (Access-Challenge) — multi-factor or EAP step |
+| `hasState` | `true` when a State attribute (type 24) is present in the response |
+
+**Gotcha:** `success: true` + `authenticated: false` is normal for rejected credentials. Check `authenticated`, not `success`, to determine whether the user was accepted.
+
+---
+
+## `/api/radius/accounting`
+
+Sends an **Accounting-Request** (code 4) per RFC 2866. Used to record session start, stop, and interim usage.
+
+### Request
+
+```json
+{
+  "host": "radius.example.com",
+  "port": 1813,
+  "secret": "mysecret",
+  "username": "alice",
+  "sessionId": "sess-a1b2c3",
+  "statusType": "Start",
+  "nasIdentifier": "portofcall",
+  "sessionTime": 3600,
+  "inputOctets": 1048576,
+  "outputOctets": 524288,
+  "terminateCause": 1,
+  "timeout": 10000
+}
+```
+
+| Field | Required | Default | Notes |
+|---|---|---|---|
+| `host` | yes | — | |
+| `port` | no | `1813` | Note: different from auth/probe's 1812 |
+| `secret` | **yes** | — | No default — returns 400 if missing (unlike probe/auth which default to `"testing123"`) |
+| `username` | no | `"test"` | |
+| `sessionId` | no | `"sess-{random 6-char hex}"` | Auto-generated if omitted |
+| `statusType` | no | `"Start"` | One of: `"Start"`, `"Stop"`, `"Interim-Update"` |
+| `nasIdentifier` | no | `"portofcall"` | |
+| `sessionTime` | no | — | Seconds; only included if provided |
+| `inputOctets` | no | — | Bytes received; only included if provided |
+| `outputOctets` | no | — | Bytes sent; only included if provided |
+| `terminateCause` | no | — | Only included when `statusType === "Stop"` |
+| `timeout` | no | `10000` | ms |
+
+### Acct-Status-Type values
+
+| Name | Code | When to use |
+|---|---|---|
+| `Start` | 1 | Session begins |
+| `Stop` | 2 | Session ends |
+| `Interim-Update` | 3 | Periodic usage report during session |
+
+### Wire exchange
+
+```
+→  Accounting-Request (code 4)
+     User-Name, NAS-Identifier, Acct-Status-Type, Acct-Session-Id,
+     NAS-Port-Type=Virtual(5), Service-Type=Login(1),
+     [Acct-Session-Time], [Acct-Input-Octets], [Acct-Output-Octets],
+     [Acct-Terminate-Cause (Stop only)]
+     Authenticator = MD5(Code+ID+Length+16*0x00+Attributes+Secret)   [RFC 2866 §3]
+←  Accounting-Response (code 5)
+```
+
+### Accounting authenticator (RFC 2866 §3)
+
+Unlike Access-Request (which uses a random 16-byte authenticator), Accounting-Request builds the packet with 16 zero bytes at offset 4, then computes:
+
+```
+MD5(entire_packet_with_zero_auth || secret)
+```
+
+and overwrites bytes 4–19 with the digest.
+
+### Response
+
+```json
+{
+  "success": true,
+  "host": "radius.example.com",
+  "port": 1813,
+  "username": "alice",
+  "sessionId": "sess-a1b2c3",
+  "statusType": "Start",
+  "responseCode": 5,
+  "responseCodeName": "Accounting-Response",
+  "attributes": [],
+  "connectTimeMs": 42,
+  "totalTimeMs": 98
+}
+```
+
+`success` is `true` only when `responseCode === 5` (Accounting-Response).
+
+---
+
+## Attribute Decoding
+
+The parser recognizes 13 attribute types by name:
+
+| Type | Name | Decoding |
+|---|---|---|
+| 1 | User-Name | string |
+| 2 | User-Password | (raw hex, not decoded) |
+| 4 | NAS-IP-Address | dotted-quad IPv4 (e.g., `"192.168.1.1"`) |
+| 5 | NAS-Port | 32-bit integer |
+| 6 | Service-Type | 32-bit integer |
+| 18 | Reply-Message | string |
+| 24 | State | (raw hex) |
+| 26 | Vendor-Specific | (raw hex — VSA sub-fields not decoded) |
+| 30 | Called-Station-Id | string |
+| 31 | Calling-Station-Id | string |
+| 32 | NAS-Identifier | string |
+| 61 | NAS-Port-Type | 32-bit integer |
+| 80 | Message-Authenticator | (raw hex) |
+
+Unknown attribute types appear as `"Unknown(N)"` in `typeName`.
+
+Vendor-Specific Attributes (type 26) are **not** sub-decoded — the vendor ID and vendor-type are returned as raw hex. This means attributes from vendors like Cisco (vendor 9), Microsoft (vendor 311), or Juniper (vendor 2636) are opaque.
+
+---
+
+## Differences Between Endpoints
+
+| Behavior | `/probe` | `/auth` | `/accounting` |
+|---|---|---|---|
+| Default port | 1812 | 1812 | **1813** |
+| Default timeout | 10 000 ms | **15 000 ms** | 10 000 ms |
+| Default secret | `"testing123"` | `"testing123"` | **none (required)** |
+| NAS-Identifier | `"portofcall-probe"` (hardcoded) | configurable (`"portofcall"`) | configurable (`"portofcall"`) |
+| Message-Authenticator | yes (HMAC-MD5) | yes (HMAC-MD5) | **no** |
+| Authenticator type | random 16 bytes | random 16 bytes | **computed MD5** |
+| `success` means | TCP exchange ok | TCP exchange ok | **code === 5** |
+
+---
+
+## Crypto Internals
+
+- **MD5**: Custom pure-JavaScript implementation (no Web Crypto API, no Node.js `crypto`). Runs synchronously in the worker.
+- **HMAC-MD5**: Standard HMAC construction (RFC 2104) using the custom MD5. Used for the Message-Authenticator attribute (RFC 3579 §3.2).
+- **Request Authenticator**: Generated via `Math.random()` — not cryptographically secure. Sufficient for probing; not ideal for production auth.
+- **Response Authenticator**: **Not verified** by any endpoint. The code does not check `MD5(Code+ID+Length+RequestAuth+Attributes+Secret)` against the response authenticator. A man-in-the-middle could forge responses.
+
+---
+
+## Known Limitations
+
+1. **TCP only** — Most RADIUS deployments use UDP. Only servers with RADIUS-over-TCP (RFC 6613) enabled will respond. This excludes most appliance-based NAS devices.
+
+2. **PAP only** — Only User-Password (PAP) authentication. No CHAP (type 3), MS-CHAPv2, or EAP (type 79) support.
+
+3. **No EAP** — Despite the original planning doc mentioning EAP/802.1X, there is no EAP-Message attribute handling. WPA2-Enterprise authentication (802.1X → EAP-TLS/PEAP/TTLS) is not possible.
+
+4. **No response authenticator verification** — The client does not verify the Response-Authenticator, meaning forged responses are accepted.
+
+5. **No CHAP** — CHAP-Password (type 3) and CHAP-Challenge (type 60) are not implemented.
+
+6. **No multi-step challenge** — When `/auth` receives an Access-Challenge (code 11), it reports `hasChallenge: true` and `hasState: true` but does not re-send with the State attribute. The caller would need to make a second `/auth` call manually, but there is no `state` parameter to pass through.
+
+7. **Vendor-Specific Attributes opaque** — Type 26 attributes are not decoded into vendor-id / vendor-type / vendor-value.
+
+8. **terminateCause only on Stop** — The `terminateCause` field is silently ignored unless `statusType === "Stop"` (statusTypeCode === 2). Sending it with Start or Interim-Update has no effect.
+
+9. **`Math.random()` authenticator** — Not cryptographically random. For probing this is fine; for real auth it weakens the password encryption since an attacker who predicts the authenticator can recover the password from the encrypted User-Password attribute.
+
+10. **No TLS** — Plain TCP only. For encrypted transport, use the separate RadSec implementation (`/api/radsec/` endpoints, port 2083).
+
+---
+
+## Packet Format Reference
+
+```
+Offset  Length  Field
+0       1       Code (1=Access-Request, 2=Accept, 3=Reject, 4=Acct-Request, 5=Acct-Response, 11=Challenge, 12=Status-Server)
+1       1       Identifier (0–255, random)
+2       2       Length (big-endian, 20 + attributes)
+4       16      Authenticator (random for Access-Request; MD5-computed for Accounting-Request)
+20      ...     Attributes (TLV: 1-byte type, 1-byte length, N-byte value)
+```
+
+Attribute length field includes the type and length bytes themselves (minimum value: 2).
+
+---
+
+## Terminate-Cause Reference (RFC 2866 §5.10)
+
+For use with the `terminateCause` field in `/accounting` Stop requests:
+
+| Code | Name |
+|---|---|
+| 1 | User-Request |
+| 2 | Lost-Carrier |
+| 3 | Lost-Service |
+| 4 | Idle-Timeout |
+| 5 | Session-Timeout |
+| 6 | Admin-Reset |
+| 7 | Admin-Reboot |
+| 8 | Port-Error |
+| 9 | NAS-Error |
+| 10 | NAS-Request |
+| 11 | NAS-Reboot |
+| 12 | Port-Unneeded |
+| 13 | Port-Preempted |
+| 14 | Port-Suspended |
+| 15 | Service-Unavailable |
+| 16 | Callback |
+| 17 | User-Error |
+| 18 | Host-Request |
+
+---
+
+## curl Examples
+
+### Probe a RADIUS server
 
 ```bash
-# Install radtest (part of freeradius-utils)
-apt-get install freeradius-utils
-
-# Test authentication
-radtest username password radius-server.com 1812 shared-secret
-
-# Test with specific NAS
-radtest username password radius-server.com:1812 10 shared-secret
-
-# Output:
-# Sent Access-Request Id 123 from 0.0.0.0:12345 to 192.168.1.1:1812 length 73
-# Received Access-Accept Id 123 from 192.168.1.1:1812 to 0.0.0.0:12345 length 20
+curl -X POST https://portofcall.example.com/api/radius/probe \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"radius.example.com","secret":"testing123"}'
 ```
 
-## Resources
+### Authenticate a user (PAP)
 
-- **RFC 2865**: [RADIUS Authentication](https://tools.ietf.org/html/rfc2865)
-- **RFC 2866**: [RADIUS Accounting](https://tools.ietf.org/html/rfc2866)
-- **RFC 6614**: [RadSec (RADIUS over TLS)](https://tools.ietf.org/html/rfc6614)
-- **FreeRADIUS**: [Open source server](https://freeradius.org/)
+```bash
+curl -X POST https://portofcall.example.com/api/radius/auth \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"radius.example.com","secret":"testing123","username":"alice","password":"s3cret"}'
+```
 
-## Notes
+### Send accounting Start
 
-- **UDP-based** - requires proxy for Workers TCP sockets
-- **Port 1812/1813** - modern standard (legacy: 1645/1646)
-- **Shared secret** - symmetric key authentication
-- **MD5 encryption** - considered weak, use RadSec for production
-- **Stateless** - each request/response is independent
-- **EAP support** - Extensible Authentication Protocol for 802.1X
-- **Vendor-Specific Attributes** - custom attributes per vendor
-- **Widely deployed** - ISPs, enterprises, WiFi networks
-- **Accounting** - track session time, bandwidth, billing
-- **Replacement**: DIAMETER (RFC 6733) for more modern systems
+```bash
+curl -X POST https://portofcall.example.com/api/radius/accounting \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"radius.example.com","port":1813,"secret":"mysecret","username":"alice","statusType":"Start","sessionId":"sess-001"}'
+```
+
+### Send accounting Stop with stats
+
+```bash
+curl -X POST https://portofcall.example.com/api/radius/accounting \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"radius.example.com","port":1813,"secret":"mysecret","username":"alice","statusType":"Stop","sessionId":"sess-001","sessionTime":3600,"inputOctets":1048576,"outputOctets":524288,"terminateCause":1}'
+```
+
+---
+
+## Local Testing with FreeRADIUS
+
+Enable TCP in `/etc/freeradius/radiusd.conf`:
+
+```
+listen {
+    type = auth
+    ipaddr = *
+    port = 1812
+    proto = tcp
+}
+
+listen {
+    type = acct
+    ipaddr = *
+    port = 1813
+    proto = tcp
+}
+```
+
+Add a test user in `/etc/freeradius/users`:
+
+```
+alice  Cleartext-Password := "s3cret"
+       Reply-Message := "Welcome, alice"
+```
+
+Set shared secret in `/etc/freeradius/clients.conf`:
+
+```
+client portofcall {
+    ipaddr = 0.0.0.0/0
+    secret = testing123
+    proto = tcp
+}
+```
+
+Start with debug output: `freeradius -X`

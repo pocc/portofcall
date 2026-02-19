@@ -37,7 +37,8 @@ interface PerforceProbeRequest {
 
 function validatePerforceInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
-  if (!/^[a-zA-Z0-9._-]+$/.test(host)) return 'Host contains invalid characters';
+  const trimmedHost = host.trim();
+  if (!/^[a-zA-Z0-9._-]+$/.test(trimmedHost)) return 'Host contains invalid characters';
   if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
@@ -51,6 +52,11 @@ function parsePerforceMessage(data: Uint8Array): Record<string, string> {
   const result: Record<string, string> = {};
   const text = new TextDecoder('utf-8', { fatal: false }).decode(data);
   const parts = text.split('\0').filter((p) => p.length > 0);
+
+  // Detect malformed message with orphaned key
+  if (parts.length % 2 !== 0) {
+    console.warn('Perforce: Malformed message with odd number of parts (orphaned key)');
+  }
 
   for (let i = 0; i + 1 < parts.length; i += 2) {
     result[parts[i]] = parts[i + 1];
@@ -112,15 +118,17 @@ export async function handlePerforceProbe(request: Request): Promise<Response> {
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     const socket = connect(`${host}:${port}`);
 
     try {
       const startTime = Date.now();
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       const tcpLatency = Date.now() - startTime;
 
       const writer = socket.writable.getWriter();
@@ -334,18 +342,25 @@ export async function handlePerforceLogin(request: Request): Promise<Response> {
         const chunks: Uint8Array[] = [];
         let totalLen = 0;
         const deadline = Date.now() + deadlineMs;
+        const handles: ReturnType<typeof setTimeout>[] = [];
 
-        while (Date.now() < deadline) {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) break;
+        try {
+          while (Date.now() < deadline) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) break;
 
-          const st = new Promise<{ value: undefined; done: true }>((resolve) =>
-            setTimeout(() => resolve({ value: undefined, done: true }), remaining),
-          );
-          const { value, done } = await Promise.race([reader.read(), st]);
-          if (done || !value) break;
-          chunks.push(value);
-          totalLen += value.length;
+            let handle: ReturnType<typeof setTimeout>;
+            const st = new Promise<{ value: undefined; done: true }>((resolve) => {
+              handle = setTimeout(() => resolve({ value: undefined, done: true }), remaining);
+              handles.push(handle);
+            });
+            const { value, done } = await Promise.race([reader.read(), st]);
+            if (done || !value) break;
+            chunks.push(value);
+            totalLen += value.length;
+          }
+        } finally {
+          for (const h of handles) clearTimeout(h);
         }
 
         const combined = new Uint8Array(totalLen);
@@ -493,15 +508,17 @@ export async function handlePerforceInfo(request: Request): Promise<Response> {
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     const socket = connect(`${host}:${port}`);
 
     try {
       const startTime = Date.now();
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       const tcpLatency = Date.now() - startTime;
 
       const writer = socket.writable.getWriter();
@@ -644,14 +661,34 @@ export async function handlePerforceChanges(request: Request): Promise<Response>
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
+  if (!password) {
+    return new Response(JSON.stringify({ success: false, error: 'password is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
 
   const socket = connect(`${host}:${port}`);
   try {
     const startTime = Date.now();
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
+    await Promise.race([socket.opened, timeoutPromise]);
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -660,17 +697,27 @@ export async function handlePerforceChanges(request: Request): Promise<Response>
       const chunks: Uint8Array[] = [];
       let totalLen = 0;
       const deadline = Date.now() + deadlineMs;
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) break;
-        const st = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), remaining),
-        );
-        const { value, done } = await Promise.race([reader.read(), st]);
-        if (done || !value) break;
-        chunks.push(value);
-        totalLen += value.length;
+      const handles: ReturnType<typeof setTimeout>[] = [];
+
+      try {
+        while (Date.now() < deadline) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+
+          let handle: ReturnType<typeof setTimeout>;
+          const st = new Promise<{ value: undefined; done: true }>((resolve) => {
+            handle = setTimeout(() => resolve({ value: undefined, done: true }), remaining);
+            handles.push(handle);
+          });
+          const { value, done } = await Promise.race([reader.read(), st]);
+          if (done || !value) break;
+          chunks.push(value);
+          totalLen += value.length;
+        }
+      } finally {
+        for (const h of handles) clearTimeout(h);
       }
+
       const combined = new Uint8Array(totalLen);
       let off = 0;
       for (const chunk of chunks) { combined.set(chunk, off); off += chunk.length; }
@@ -738,6 +785,7 @@ export async function handlePerforceChanges(request: Request): Promise<Response>
       socket.close();
     }
   } catch (error) {
+    socket.close();
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Perforce changes failed',
@@ -786,14 +834,34 @@ export async function handlePerforceDescribe(request: Request): Promise<Response
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
+  if (!password) {
+    return new Response(JSON.stringify({ success: false, error: 'password is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }),
+      { status: 403, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
 
   const socket = connect(`${host}:${port}`);
   try {
     const startTime = Date.now();
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
+    await Promise.race([socket.opened, timeoutPromise]);
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -802,17 +870,27 @@ export async function handlePerforceDescribe(request: Request): Promise<Response
       const chunks: Uint8Array[] = [];
       let totalLen = 0;
       const deadline = Date.now() + deadlineMs;
-      while (Date.now() < deadline) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) break;
-        const st = new Promise<{ value: undefined; done: true }>((resolve) =>
-          setTimeout(() => resolve({ value: undefined, done: true }), remaining),
-        );
-        const { value, done } = await Promise.race([reader.read(), st]);
-        if (done || !value) break;
-        chunks.push(value);
-        totalLen += value.length;
+      const handles: ReturnType<typeof setTimeout>[] = [];
+
+      try {
+        while (Date.now() < deadline) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) break;
+
+          let handle: ReturnType<typeof setTimeout>;
+          const st = new Promise<{ value: undefined; done: true }>((resolve) => {
+            handle = setTimeout(() => resolve({ value: undefined, done: true }), remaining);
+            handles.push(handle);
+          });
+          const { value, done } = await Promise.race([reader.read(), st]);
+          if (done || !value) break;
+          chunks.push(value);
+          totalLen += value.length;
+        }
+      } finally {
+        for (const h of handles) clearTimeout(h);
       }
+
       const combined = new Uint8Array(totalLen);
       let off = 0;
       for (const chunk of chunks) { combined.set(chunk, off); off += chunk.length; }
@@ -875,6 +953,7 @@ export async function handlePerforceDescribe(request: Request): Promise<Response
       socket.close();
     }
   } catch (error) {
+    socket.close();
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Perforce describe failed',

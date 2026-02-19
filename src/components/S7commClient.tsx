@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface S7commClientProps {
   onBack: () => void;
@@ -118,6 +120,7 @@ export default function S7commClient({ onBack }: S7commClientProps) {
 
   return (
     <ProtocolClientLayout title="S7comm PLC Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.S7comm || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="PLC Connection" />
 

@@ -1,16 +1,27 @@
 /**
  * Ganglia gmond Protocol Support for Cloudflare Workers
- * Implements the Ganglia gmond XML dump protocol (port 8649)
+ * Implements the Ganglia gmond/gmetad XML dump protocol (TCP ports 8649/8651)
  *
  * Ganglia is a scalable distributed monitoring system for high-performance
  * computing systems such as clusters and grids. The gmond daemon listens
  * on TCP port 8649 and dumps the entire cluster state as XML on connect.
+ * The gmetad daemon listens on TCP port 8651 and serves aggregated XML
+ * from multiple gmond sources using the same XML schema.
  *
  * Protocol behavior:
- *   1. Client connects to gmond TCP port 8649
- *   2. gmond immediately sends an XML document containing cluster state
+ *   1. Client connects to gmond TCP port 8649 (or gmetad 8651)
+ *   2. Server immediately sends an XML document containing cluster state
  *   3. XML includes: cluster info, host info, metrics (CPU, memory, disk, etc.)
  *   4. Connection closes after the XML dump completes
+ *
+ * The XML format uses GANGLIA_XML as the root element, containing CLUSTER
+ * elements, which contain HOST elements, which contain METRIC elements.
+ * In Ganglia 3.1+, METRIC elements may contain EXTRA_DATA children with
+ * additional metadata (GROUP, DESC, TITLE, SOURCE, CLUSTER).
+ *
+ * Note: Ganglia also uses XDR (RFC 4506) encoding for multicast/unicast
+ * metric announcements between gmond daemons (UDP port 8649). This module
+ * implements only the TCP XML dump protocol, not the XDR binary protocol.
  *
  * No commands to send - it's a pure read-only dump protocol.
  * No authentication required.
@@ -66,7 +77,27 @@ function parseAttributes(tag: string): Record<string, string> {
 }
 
 /**
- * Parse the Ganglia XML dump into structured data
+ * Parse extra data from a METRIC element body (Ganglia 3.1+)
+ * EXTRA_DATA contains EXTRA_ELEMENT children with NAME/VAL attributes
+ * Common extras: GROUP, DESC, TITLE, SOURCE, CLUSTER
+ */
+function parseExtraData(metricBody: string): Record<string, string> {
+  const extras: Record<string, string> = {};
+  const extraElementRegex = /<EXTRA_ELEMENT\s+([^>]*)\/?>/g;
+  let match;
+  while ((match = extraElementRegex.exec(metricBody)) !== null) {
+    const attrs = parseAttributes(match[1]);
+    if (attrs['NAME'] && attrs['VAL']) {
+      extras[attrs['NAME']] = attrs['VAL'];
+    }
+  }
+  return extras;
+}
+
+/**
+ * Parse the Ganglia XML dump into structured data.
+ * Handles both Ganglia 3.0 (self-closing METRIC tags) and
+ * Ganglia 3.1+ (METRIC tags with EXTRA_DATA children).
  */
 function parseGangliaXML(xml: string): {
   gangliaVersion?: string;
@@ -84,7 +115,17 @@ function parseGangliaXML(xml: string): {
       tmax?: string;
       os?: string;
       gmond_started?: string;
-      metrics: { name: string; val: string; type: string; units: string; tn?: string; tmax?: string }[];
+      metrics: {
+        name: string;
+        val: string;
+        type: string;
+        units: string;
+        tn?: string;
+        tmax?: string;
+        group?: string;
+        desc?: string;
+        title?: string;
+      }[];
     }[];
   }[];
 } {
@@ -131,11 +172,19 @@ function parseGangliaXML(xml: string): {
         metrics: [],
       };
 
-      // Parse METRIC elements within this host
-      const metricRegex = /<METRIC\s+([^>]*)\/?>/g;
+      // Parse METRIC elements within this host.
+      // Handles both forms:
+      //   1. Self-closing: <METRIC NAME="..." VAL="..." ... />
+      //   2. With body:    <METRIC NAME="..." VAL="..." ...><EXTRA_DATA>...</EXTRA_DATA></METRIC>
+      const metricRegex = /<METRIC\s+([^>]*?)(?:\/>|>([\s\S]*?)<\/METRIC>)/g;
       let metricMatch;
       while ((metricMatch = metricRegex.exec(hostContent)) !== null) {
         const metricAttrs = parseAttributes(metricMatch[1]);
+        const metricBody = metricMatch[2] || '';
+
+        // Parse EXTRA_DATA if present (Ganglia 3.1+)
+        const extras = metricBody ? parseExtraData(metricBody) : {};
+
         host.metrics.push({
           name: metricAttrs['NAME'] || '',
           val: metricAttrs['VAL'] || '',
@@ -143,6 +192,9 @@ function parseGangliaXML(xml: string): {
           units: metricAttrs['UNITS'] || '',
           tn: metricAttrs['TN'],
           tmax: metricAttrs['TMAX'],
+          group: extras['GROUP'],
+          desc: extras['DESC'],
+          title: extras['TITLE'],
         });
       }
 
@@ -202,7 +254,8 @@ export async function handleGangliaConnect(request: Request): Promise<Response> 
 
       try {
         // Read the XML dump (gmond sends it immediately on connect)
-        const xml = await readGangliaXML(reader, timeoutMs - connectTime);
+        const remainingMs = Math.max(timeoutMs - connectTime, 1000);
+        const xml = await readGangliaXML(reader, remainingMs);
         const rtt = Date.now() - startTime;
 
         reader.releaseLock();
@@ -241,6 +294,7 @@ export async function handleGangliaConnect(request: Request): Promise<Response> 
               os: h.os,
               reported: h.reported,
               metricCount: h.metrics.length,
+              metricsTruncated: h.metrics.length > 50,
               metrics: h.metrics.slice(0, 50), // Limit to 50 metrics per host for response size
             })),
           })),
@@ -342,14 +396,16 @@ export async function handleGangliaProbe(request: Request): Promise<Response> {
         reader.releaseLock();
         await socket.close();
 
-        // Check if it looks like Ganglia XML
-        const isGanglia = buffer.includes('<GANGLIA_XML') || buffer.includes('<?xml');
+        // Check if it looks like Ganglia XML - require GANGLIA_XML tag specifically,
+        // not just any XML document (<?xml alone would false-positive on other services)
+        const hasGangliaTag = buffer.includes('<GANGLIA_XML');
+        const isGanglia = hasGangliaTag;
         const versionMatch = buffer.match(/VERSION="([^"]+)"/);
         const sourceMatch = buffer.match(/SOURCE="([^"]+)"/);
 
         return {
           success: true,
-          message: isGanglia ? 'Ganglia gmond detected' : 'Connected but response may not be Ganglia',
+          message: isGanglia ? 'Ganglia gmond detected' : 'Connected but response does not contain GANGLIA_XML tag',
           host,
           port,
           connectTime,

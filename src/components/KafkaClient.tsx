@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface KafkaClientProps {
   onBack: () => void;
@@ -128,9 +130,7 @@ export default function KafkaClient({ onBack }: KafkaClientProps) {
         >
           <span aria-hidden="true">&larr;</span> Back to Protocol List
         </button>
-      </div>
-
-      <div className="bg-slate-800 border border-slate-600 rounded-xl p-8 mb-6">
+      </div>      <div className="bg-slate-800 border border-slate-600 rounded-xl p-8 mb-6">
         <div className="flex items-center gap-4 mb-6">
           <div className="text-5xl" aria-hidden="true">
             <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
@@ -145,6 +145,8 @@ export default function KafkaClient({ onBack }: KafkaClientProps) {
               <line x1="21" y1="36" x2="27" y2="30" stroke="#fff" strokeWidth="2" />
             </svg>
           </div>
+
+
           <div>
             <h1 className="text-3xl font-bold text-white">Apache Kafka</h1>
             <p className="text-slate-400">
@@ -153,6 +155,7 @@ export default function KafkaClient({ onBack }: KafkaClientProps) {
           </div>
         </div>
 
+      <ApiExamples examples={apiExamples.Kafka || []} />
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>

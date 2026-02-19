@@ -8,7 +8,7 @@
  * Header: Start (0x0564) + Length + Control + Dest Addr + Src Addr + CRC
  *
  * WARNING: DNP3 controls critical infrastructure (power grids, water systems).
- * This implementation supports READ-ONLY and probe operations only.
+ * This implementation supports probe, read, and select-before-operate operations.
  */
 
 import { connect } from 'cloudflare:sockets';
@@ -185,6 +185,7 @@ function parseDataLinkResponse(data: Uint8Array): {
   functionName: string;
   userData?: Uint8Array;
   headerCrcValid: boolean;
+  dataBlockCrcsValid: boolean;
 } | null {
   if (data.length < 10) return null;
 
@@ -210,8 +211,9 @@ function parseDataLinkResponse(data: Uint8Array): {
     : SEC_FUNC_NAMES;
   const functionName = funcNames[functionCode] || `UNKNOWN(0x${functionCode.toString(16)})`;
 
-  // Extract user data (remove CRC blocks)
+  // Extract user data (remove CRC blocks) and validate each block's CRC
   let userData: Uint8Array | undefined;
+  let dataBlockCrcsValid = true;
   const userDataLength = length - 5;
 
   if (userDataLength > 0 && data.length > 10) {
@@ -222,6 +224,13 @@ function parseDataLinkResponse(data: Uint8Array): {
     while (remaining > 0 && offset < data.length) {
       const blockSize = Math.min(16, remaining);
       if (offset + blockSize + 2 > data.length) break;
+
+      // Validate this data block's CRC
+      const expectedBlockCRC = computeCRC(data, offset, blockSize);
+      const actualBlockCRC = data[offset + blockSize] | (data[offset + blockSize + 1] << 8);
+      if (expectedBlockCRC !== actualBlockCRC) {
+        dataBlockCrcsValid = false;
+      }
 
       for (let i = 0; i < blockSize; i++) {
         rawData.push(data[offset + i]);
@@ -234,7 +243,7 @@ function parseDataLinkResponse(data: Uint8Array): {
   }
 
   return {
-    valid: headerCrcValid,
+    valid: headerCrcValid && dataBlockCrcsValid,
     length,
     control,
     destination,
@@ -245,6 +254,7 @@ function parseDataLinkResponse(data: Uint8Array): {
     functionName,
     userData,
     headerCrcValid,
+    dataBlockCrcsValid,
   };
 }
 
@@ -325,7 +335,34 @@ function parseApplicationResponse(userData: Uint8Array): {
 }
 
 /**
- * Read a DNP3 response from the socket
+ * Scan a buffer for the DNP3 start bytes (0x05 0x64) and return the offset,
+ * or -1 if not found. Per IEEE 1815, receivers must scan for this sequence
+ * to synchronize with the data link layer framing.
+ */
+function findStartBytes(data: Uint8Array, from = 0): number {
+  for (let i = from; i < data.length - 1; i++) {
+    if (data[i] === 0x05 && data[i + 1] === 0x64) return i;
+  }
+  return -1;
+}
+
+/**
+ * Calculate expected wire size of a single DNP3 frame given the length field.
+ * Returns the total byte count including header (10) + user data + data block CRCs.
+ */
+function expectedFrameSize(lengthField: number): number {
+  const userDataLength = lengthField - 5;
+  if (userDataLength <= 0) return 10; // header-only frame
+  const numBlocks = Math.ceil(userDataLength / 16);
+  return 10 + userDataLength + numBlocks * 2;
+}
+
+/**
+ * Read a DNP3 response from the socket.
+ *
+ * Scans for start bytes (0x0564) to handle any leading garbage in the TCP
+ * stream, then reads until the complete frame is received based on the
+ * length field.
  */
 async function readDNP3Response(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -347,30 +384,24 @@ async function readDNP3Response(
       newBuffer.set(value, buffer.length);
       buffer = newBuffer;
 
-      // Need at least 10 bytes (header with CRC)
-      if (buffer.length >= 10) {
-        // Verify start bytes
-        if (buffer[0] === 0x05 && buffer[1] === 0x64) {
-          const length = buffer[2];
-          const userDataLength = length - 5;
+      // Scan for start bytes — the frame may not begin at offset 0 if
+      // there is leading noise or a partial previous frame in the stream.
+      const startOffset = findStartBytes(buffer);
+      if (startOffset < 0) continue; // keep reading until we find start bytes
 
-          if (userDataLength <= 0) {
-            // No user data, header-only frame
-            return buffer;
-          }
-
-          // Calculate expected total frame size including data block CRCs
-          const numBlocks = Math.ceil(userDataLength / 16);
-          const expectedSize = 10 + userDataLength + (numBlocks * 2);
-
-          if (buffer.length >= expectedSize) {
-            return buffer;
-          }
-        } else {
-          // Not a valid DNP3 frame, return what we have
-          return buffer;
-        }
+      // Trim any bytes before the start sequence
+      if (startOffset > 0) {
+        buffer = buffer.subarray(startOffset);
       }
+
+      // Need at least 10 bytes for a complete header (start + len + ctrl + addrs + CRC)
+      if (buffer.length < 10) continue;
+
+      const frameSize = expectedFrameSize(buffer[2]);
+      if (buffer.length >= frameSize) {
+        return buffer.slice(0, frameSize);
+      }
+      // else keep reading until full frame arrives
     }
     return buffer;
   })();
@@ -473,6 +504,7 @@ export async function handleDNP3Connect(request: Request): Promise<Response> {
           dataLink: {
             valid: parsed.valid,
             headerCrcValid: parsed.headerCrcValid,
+            dataBlockCrcsValid: parsed.dataBlockCrcsValid,
             direction: parsed.direction,
             primary: parsed.primary,
             functionCode: parsed.functionCode,
@@ -840,8 +872,10 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
               selectFunctionName = selectApp.functionName;
               selectIIN = `0x${selectApp.iin.toString(16).padStart(4, '0')}`;
               selectIINFlags = selectApp.iinFlags;
-              // SELECT is confirmed if function code is RESPONSE (0x81) with no error IIN bits
-              const errorIIN = selectApp.iin & 0x0700; // Parameter Error, Object Unknown, No FC support
+              // SELECT is confirmed if function code is RESPONSE (0x81) with no error IIN bits.
+              // Mask covers IIN2: No FC Support (0x0100), Object Unknown (0x0200),
+              // Parameter Error (0x0400), Already Executing (0x1000), Config Corrupt (0x2000)
+              const errorIIN = selectApp.iin & 0x3700;
               selected = selectApp.functionCode === 0x81 && errorIIN === 0;
             }
           }
@@ -892,7 +926,7 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
               operateFunctionName = operateApp.functionName;
               operateIIN = `0x${operateApp.iin.toString(16).padStart(4, '0')}`;
               operateIINFlags = operateApp.iinFlags;
-              const errorIIN = operateApp.iin & 0x0700;
+              const errorIIN = operateApp.iin & 0x3700;
               operated = operateApp.functionCode === 0x81 && errorIIN === 0;
             }
           }

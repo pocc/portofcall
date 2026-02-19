@@ -983,21 +983,59 @@ function buildCFindRequest(
   return pdu;
 }
 
+// VRs that use the long form in Explicit VR: 2 reserved bytes + 4-byte length
+const LONG_VRS = new Set(['OB', 'OD', 'OF', 'OL', 'OW', 'SQ', 'UC', 'UN', 'UR', 'UT']);
+
 /**
- * Parse DICOM Implicit VR LE elements from a byte buffer.
+ * Parse DICOM data elements from a byte buffer.
+ * Supports both Implicit VR Little Endian and Explicit VR Little Endian.
+ *
+ * Implicit VR LE: tag(4) + length(4)
+ * Explicit VR LE: tag(4) + VR(2) + length(2)          — for short-form VRs
+ *                 tag(4) + VR(2) + reserved(2) + length(4) — for long-form VRs
+ *
+ * @param data Raw byte buffer containing DICOM data elements
+ * @param transferSyntax Transfer syntax UID (defaults to Implicit VR LE)
  * Returns a map of "GGGG,EEEE" tag keys to string values.
  */
-function parseDICOMDataset(data: Uint8Array): Record<string, string> {
+function parseDICOMDataset(
+  data: Uint8Array,
+  transferSyntax: string = IMPLICIT_VR_LE,
+): Record<string, string> {
   const decoder = new TextDecoder();
   const result: Record<string, string> = {};
   let offset = 0;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const explicit = transferSyntax === EXPLICIT_VR_LE;
 
-  while (offset + 8 <= data.length) {
+  while (offset + 4 <= data.length) {
     const group   = view.getUint16(offset, true);
     const element = view.getUint16(offset + 2, true);
-    const length  = view.getUint32(offset + 4, true);
-    offset += 8;
+
+    let length: number;
+
+    if (explicit) {
+      // Explicit VR LE: tag(4) + VR(2 ASCII bytes) + ...
+      if (offset + 8 > data.length) break;
+
+      const vr = String.fromCharCode(data[offset + 4], data[offset + 5]);
+
+      if (LONG_VRS.has(vr)) {
+        // Long form: VR(2) + reserved(2) + length(4) = 8 bytes after tag
+        if (offset + 12 > data.length) break;
+        length = view.getUint32(offset + 8, true);
+        offset += 12;
+      } else {
+        // Short form: VR(2) + length(2) = 4 bytes after tag
+        length = view.getUint16(offset + 6, true);
+        offset += 8;
+      }
+    } else {
+      // Implicit VR LE: tag(4) + length(4) = 8 bytes
+      if (offset + 8 > data.length) break;
+      length = view.getUint32(offset + 4, true);
+      offset += 8;
+    }
 
     if (length === 0xFFFFFFFF) break; // sequence / undefined length — stop
     if (offset + length > data.length) break;
@@ -1015,8 +1053,15 @@ function parseDICOMDataset(data: Uint8Array): Record<string, string> {
  * Parse a C-FIND-RSP from a P-DATA-TF PDU.
  * Returns { status, dataset } where status is 0=pending, 0xFF00=pending with dataset,
  * 0x0000=success, or an error code.
+ *
+ * @param data Raw P-DATA-TF payload
+ * @param transferSyntax Transfer syntax negotiated for the dataset (not the command set,
+ *   which is always Implicit VR LE per the DICOM standard)
  */
-function parseCFindResponse(data: Uint8Array): { status: number; dataset: Record<string, string> } {
+function parseCFindResponse(
+  data: Uint8Array,
+  transferSyntax: string = IMPLICIT_VR_LE,
+): { status: number; dataset: Record<string, string> } {
   // Data format: PDV item = length(4BE) + context-id(1) + control(1) + payload
   // There may be two PDV items: command + dataset
   let status = -1;
@@ -1032,7 +1077,7 @@ function parseCFindResponse(data: Uint8Array): { status: number; dataset: Record
     const isCommand = (control & 0x01) !== 0;
 
     if (isCommand) {
-      // Parse command set — look for Status (0000,0900)
+      // Command sets are ALWAYS Implicit VR LE — parse inline
       let cmdOff = 0;
       const cmdView = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
       while (cmdOff + 8 <= payload.length) {
@@ -1046,8 +1091,8 @@ function parseCFindResponse(data: Uint8Array): { status: number; dataset: Record
         cmdOff += l;
       }
     } else {
-      // Dataset
-      dataset = parseDICOMDataset(payload);
+      // Dataset — uses the negotiated transfer syntax
+      dataset = parseDICOMDataset(payload, transferSyntax);
     }
   }
 
@@ -1161,6 +1206,9 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
         }), { status: 502, headers: { 'Content-Type': 'application/json' } });
       }
 
+      // Determine the transfer syntax the server selected for datasets
+      const selectedTransferSyntax = findContext.transferSyntax || IMPLICIT_VR_LE;
+
       // Step 2: C-FIND-RQ
       await writer.write(buildCFindRequest(1, queryLevel, patientId, studyDate));
 
@@ -1174,7 +1222,7 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
         }
         if (pdu.type !== PDU_P_DATA_TF) continue;
 
-        const rsp = parseCFindResponse(pdu.data);
+        const rsp = parseCFindResponse(pdu.data, selectedTransferSyntax);
 
         // Pending responses (0xFF00 or 0xFF01) have datasets
         if (rsp.status === 0xFF00 || rsp.status === 0xFF01) {

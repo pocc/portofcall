@@ -345,21 +345,58 @@ export async function readExact(
 }
 
 /**
- * Read whatever bytes arrive next from the socket, with a timeout.
- * Returns null if the connection closes or the timeout fires first.
+ * Wrap a PDU in a TPKT header (RFC 1006).
+ * TPKT: version (1 byte, always 3), reserved (1 byte, 0), length (2 bytes big-endian).
+ * The length field includes the 4-byte TPKT header itself.
  */
-async function readAvailable(
+function wrapTPKT(payload: Uint8Array): Uint8Array {
+  const totalLength = payload.length + 4;
+  const frame = new Uint8Array(totalLength);
+  frame[0] = 3;   // TPKT version
+  frame[1] = 0;   // Reserved
+  frame[2] = (totalLength >> 8) & 0xff;
+  frame[3] = totalLength & 0xff;
+  frame.set(payload, 4);
+  return frame;
+}
+
+/**
+ * Read a single TPKT-framed PDU from the socket.
+ * Reads the 4-byte TPKT header, validates version=3, extracts payload length,
+ * then reads exactly (length - 4) bytes of payload.
+ * Returns the payload (without the TPKT header) or null on timeout/close.
+ */
+async function readTPKTFrame(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<Uint8Array | null> {
-  const readPromise = reader.read();
-  const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
-    setTimeout(() => resolve({ done: true, value: undefined }), timeoutMs)
-  );
+  let header: Uint8Array;
+  try {
+    header = await readExact(reader, 4, timeoutMs);
+  } catch {
+    return null; // timeout or connection closed
+  }
 
-  const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-  if (done || !value) return null;
-  return value;
+  // Validate TPKT version byte
+  if (header[0] !== 3) {
+    return null;
+  }
+
+  const totalLength = (header[2] << 8) | header[3];
+  if (totalLength < 4) {
+    return null; // invalid: length must be at least 4 (the header itself)
+  }
+
+  const payloadLength = totalLength - 4;
+  if (payloadLength === 0) {
+    return new Uint8Array(0);
+  }
+
+  try {
+    return await readExact(reader, payloadLength, timeoutMs);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -469,13 +506,13 @@ export async function handleH323Register(request: Request): Promise<Response> {
         // Generate a random call reference (1–0x7FFF)
         const callRef = (Math.floor(Math.random() * 0x7ffe) + 1);
 
-        // Build and send H.225 Setup UUIE over Q.931
+        // Build and send H.225 Setup UUIE over Q.931, wrapped in TPKT
         const setupMsg = buildSetupMessage(callRef, callingNumber, calledNumber);
-        await writer.write(setupMsg);
+        await writer.write(wrapTPKT(setupMsg));
 
-        // Read the first response with a reasonable per-read timeout
+        // Read the first TPKT-framed response
         const readTimeout = Math.max(timeout - (Date.now() - startTime) - 200, 1000);
-        const responseData = await readAvailable(reader, readTimeout);
+        const responseData = await readTPKTFrame(reader, readTimeout);
         const latencyMs = Date.now() - startTime;
 
         writer.releaseLock();
@@ -634,13 +671,13 @@ export async function handleH323Info(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
 
       try {
-        // Send a minimal SETUP to provoke any Q.931 response
+        // Send a minimal SETUP to provoke any Q.931 response, wrapped in TPKT
         const callRef = (Math.floor(Math.random() * 0x7ffe) + 1);
         const setupMsg = buildSetupMessage(callRef, '200', '100');
-        await writer.write(setupMsg);
+        await writer.write(wrapTPKT(setupMsg));
 
         const readTimeout = Math.max(timeout - connectTime - 200, 1000);
-        const responseData = await readAvailable(reader, readTimeout);
+        const responseData = await readTPKTFrame(reader, readTimeout);
         const rtt = Date.now() - startTime;
 
         writer.releaseLock();
@@ -777,9 +814,9 @@ export async function handleH323Connect(request: Request): Promise<Response> {
       // Generate random call reference
       const callRef = Math.floor(Math.random() * 0x7fff) + 1;
 
-      // Build and send SETUP message
+      // Build and send SETUP message, wrapped in TPKT
       const setupMsg = buildSetupMessage(callRef, callingNumber, calledNumber);
-      await writer.write(setupMsg);
+      await writer.write(wrapTPKT(setupMsg));
 
       const messages: Array<{
         type: string;
@@ -798,7 +835,7 @@ export async function handleH323Connect(request: Request): Promise<Response> {
       const maxReadTime = Math.min(timeout - connectTime, 8000);
 
       while (!gotFinalResponse && (Date.now() - readStart) < maxReadTime) {
-        const responseData = await readAvailable(reader, Math.min(3000, maxReadTime - (Date.now() - readStart)));
+        const responseData = await readTPKTFrame(reader, Math.min(3000, maxReadTime - (Date.now() - readStart)));
         if (!responseData) break;
 
         const parsed = parseQ931Message(responseData);
@@ -833,8 +870,8 @@ export async function handleH323Connect(request: Request): Promise<Response> {
           case Q931_CONNECT:
             responseStatus = 'connected';
             gotFinalResponse = true;
-            // Send Release Complete to clean up
-            await writer.write(buildReleaseComplete(callRef));
+            // Send Release Complete to clean up, wrapped in TPKT
+            await writer.write(wrapTPKT(buildReleaseComplete(callRef)));
             break;
           case Q931_CALL_PROCEEDING:
             responseStatus = 'call_proceeding';
@@ -862,7 +899,7 @@ export async function handleH323Connect(request: Request): Promise<Response> {
       // Send Release Complete if we got intermediate responses but no final
       if (!gotFinalResponse && messages.length > 0) {
         try {
-          await writer.write(buildReleaseComplete(callRef));
+          await writer.write(wrapTPKT(buildReleaseComplete(callRef)));
         } catch {
           // Ignore cleanup errors
         }
@@ -997,14 +1034,14 @@ export async function handleH323Capabilities(request: Request): Promise<Response
     const writer = socket.writable.getWriter();
 
     try {
-      // Send TerminalCapabilitySet
+      // Send TerminalCapabilitySet, wrapped in TPKT
       const tcs = buildTerminalCapabilitySet(1);
-      await writer.write(tcs);
+      await writer.write(wrapTPKT(tcs));
       messages.push(`Sent TerminalCapabilitySet (${tcs.length} bytes, sequenceNumber=1)`);
 
-      // Send MasterSlaveDetermination
+      // Send MasterSlaveDetermination, wrapped in TPKT
       const msd = buildMasterSlaveDetermination();
-      await writer.write(msd);
+      await writer.write(wrapTPKT(msd));
       messages.push(`Sent MasterSlaveDetermination (${msd.length} bytes, terminalType=50)`);
 
       // Read responses with timeout
@@ -1019,16 +1056,9 @@ export async function handleH323Capabilities(request: Request): Promise<Response
         const remaining = timeoutAt - Date.now();
         if (remaining <= 0) break;
 
-        const readResult = await Promise.race([
-          reader.read(),
-          new Promise<{ done: boolean; value: undefined }>((resolve) =>
-            setTimeout(() => resolve({ done: true, value: undefined }), remaining)
-          ),
-        ]);
+        const chunk = await readTPKTFrame(reader, remaining);
+        if (!chunk) break;
 
-        if (readResult.done || !readResult.value) break;
-
-        const chunk = readResult.value;
         totalBytes += chunk.length;
 
         // Parse H.245 PER response — first two bytes are CHOICE selectors

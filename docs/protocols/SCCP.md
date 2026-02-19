@@ -1,699 +1,867 @@
 # SCCP (Skinny Client Control Protocol)
 
+**Reviewed:** 2026-02-18
+**Implementation:** `/src/worker/sccp.ts`
+**Status:** Deployed with fixes
+
 ## Overview
 
-**SCCP** (Skinny Client Control Protocol), also known as **Skinny**, is Cisco's proprietary VoIP protocol used for communication between Cisco IP phones and Cisco Unified Communications Manager (CUCM). It provides call control, registration, and media setup for Cisco telephony devices.
+SCCP (Skinny Client Control Protocol), also known as "Skinny", is Cisco's proprietary VoIP signaling protocol for communication between Cisco IP phones and Cisco Unified Communications Manager (CUCM). The protocol follows a client-server model where phones act as lightweight "skinny" clients and CUCM provides all call control intelligence.
 
-**Port:** 2000 (TCP), 2443 (TLS)
-**Transport:** TCP
-**Alternative:** SIP (open standard)
+**Default Port:** 2000 (TCP), 2443 (TLS/SCCPS)
+**Transport:** TCP (connection-oriented, stateful)
+**Alternative:** SIP (RFC 3261, open standard)
+
+## API Endpoints
+
+### 1. KeepAlive Probe
+
+**Endpoint:** `POST /api/sccp/probe`
+
+Lightweight connection test — sends a KeepAlive message (0x0000) and waits for KeepAliveAck (0x0100).
+
+**Request:**
+```json
+{
+  "host": "string",        // Required: CUCM hostname or IP
+  "port": 2000,            // Optional: default 2000
+  "timeout": 10000         // Optional: ms, default 10000
+}
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "probe": "keepalive",
+  "connected": true,
+  "keepAliveAck": true,           // true if 0x0100 received
+  "connectMs": 123,               // TCP handshake time
+  "latencyMs": 234,               // Total round-trip time
+  "responseBytes": 12,
+  "messages": [
+    {
+      "id": "0x0100",
+      "name": "KeepAliveAck",
+      "dataLength": 0
+    }
+  ]
+}
+```
+
+**Response (error):**
+```json
+{
+  "success": false,
+  "error": "Connection timeout"
+}
+```
+
+### 2. Device Registration
+
+**Endpoint:** `POST /api/sccp/register`
+
+Full device registration flow — sends Station Register message (0x0001) with device name, type, and capabilities.
+
+**Request:**
+```json
+{
+  "host": "string",                    // Required
+  "port": 2000,                        // Optional: default 2000
+  "deviceName": "SEP001122334455",     // Optional: default SEP001122334455
+  "deviceType": 8,                     // Optional: default 8 (Cisco 7960)
+  "timeout": 10000                     // Optional: ms, default 10000
+}
+```
+
+**Device Types:**
+- `1` = Cisco 30 SP+
+- `2` = Cisco 12 SP+
+- `3` = Cisco 12 SP
+- `4` = Cisco 12 S
+- `5` = Cisco 30 VIP
+- `6` = Cisco Telecaster
+- `7` = Cisco 7910
+- `8` = Cisco 7960 (default)
+- `9` = Cisco 7940
+- `12` = Cisco 7935
+- `20` = Cisco 7920
+- `30007` = Cisco 7961
+- `30008` = Cisco 7941
+
+**Response (registered):**
+```json
+{
+  "success": true,
+  "registration": {
+    "status": "registered",           // "registered" | "rejected" | "no_response" | "unknown"
+    "deviceName": "SEP001122334455",
+    "deviceType": 8,
+    "deviceTypeName": "Cisco 7960",
+    "registered": true,
+    "rejected": false,
+    "capabilitiesRequested": true     // true if CUCM sent 0x0097 CapabilitiesRequest
+  },
+  "connectMs": 45,
+  "latencyMs": 123,
+  "responseBytes": 24,
+  "messages": [
+    {
+      "id": "0x0081",
+      "name": "RegisterAck",
+      "dataLength": 0
+    },
+    {
+      "id": "0x0097",
+      "name": "CapabilitiesRequest",
+      "dataLength": 0
+    }
+  ]
+}
+```
+
+**Response (rejected):**
+```json
+{
+  "success": true,
+  "registration": {
+    "status": "rejected",
+    "deviceName": "SEP001122334455",
+    "deviceType": 8,
+    "deviceTypeName": "Cisco 7960",
+    "registered": false,
+    "rejected": true,
+    "capabilitiesRequested": false
+  },
+  "connectMs": 45,
+  "latencyMs": 89,
+  "responseBytes": 12,
+  "messages": [
+    {
+      "id": "0x0082",
+      "name": "RegisterReject",
+      "dataLength": 0
+    }
+  ]
+}
+```
+
+### 3. Line State Query
+
+**Endpoint:** `POST /api/sccp/linestate`
+
+Query line/button configuration and codec capabilities. Performs full registration, then sends ButtonTemplateRequest (0x000E) and CapabilitiesRequest (0x0021).
+
+**Request:**
+```json
+{
+  "host": "string",                    // Required
+  "port": 2000,                        // Optional: default 2000
+  "timeout": 10000,                    // Optional: ms, default 10000
+  "deviceName": "SEP001122334455",     // Optional: default SEP001122334455
+  "lineNumber": 1                      // Optional: filter to specific line
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "registered": true,
+  "capabilitiesRequested": true,
+  "lines": [
+    {
+      "number": 1,
+      "buttonType": "Line",
+      "label": "Main Line",            // Optional: 40-byte label if present
+      "ringMode": "Off"                // "Off" | "Inside" | "Outside" | "Feature"
+    },
+    {
+      "number": 2,
+      "buttonType": "SpeedDial",
+      "ringMode": "Off"
+    }
+  ],
+  "capabilities": [
+    "G.711 u-law",
+    "G.711 a-law",
+    "G.729 Annex A"
+  ],
+  "connectMs": 45,
+  "latencyMs": 234
+}
+```
+
+**Button Types:**
+- `0x00` = Unused
+- `0x09` = Line
+- `0x15` = SpeedDial
+- `0x21` = FeatureButton
+- `0x26` = Conference
+- `0x27` = ForwardAll
+- `0x28` = ForwardBusy
+- `0x29` = ForwardNoAnswer
+- `0x2A` = Display
+- `0x2B` = Line (alternate)
+- `0xFF` = Unknown
+
+**Supported Codecs:**
+- G.711 u-law (codec 1)
+- G.711 a-law (codec 2)
+- G.722 (codec 3)
+- G.723.1 (codec 4)
+- G.728 (codec 6)
+- G.729 (codec 7)
+- G.729 Annex A (codec 8)
+- G.729 Annex B (codec 9)
+- G.729 Annex A+B (codec 10)
+- GSM Full Rate (codec 11)
+- GSM Half Rate (codec 12)
+- Wideband 256k (codec 16)
+- G.722.1 (codec 20)
+- iSAC (codec 25)
+- ILBC (codec 40)
+- H.261 (codec 82)
+- H.263 (codec 86)
+- Transparent (codec 100)
+
+### 4. Call Setup
+
+**Endpoint:** `POST /api/sccp/call-setup`
+
+Simulate outbound call placement. Registers device, goes off-hook (0x0006), sends dial digits via KeypadButton messages (0x0003), and collects call state changes.
+
+**Request:**
+```json
+{
+  "host": "string",                    // Required
+  "port": 2000,                        // Optional: default 2000
+  "timeout": 15000,                    // Optional: ms, default 15000
+  "deviceName": "SEP001122334455",     // Optional: default SEP001122334455
+  "dialNumber": "1000"                 // Optional: default "1000" (digits only: 0-9, *, #)
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "registered": true,
+  "capabilitiesRequested": true,
+  "offHookSent": true,
+  "digitsSent": "1000",
+  "toneStarted": true,                 // true if StartTone (0x0113) received
+  "callState": "RingOut",              // Call state if CallState message received
+  "displayText": "Calling 1000",       // Display text if DisplayText message received
+  "openReceiveChannel": false,         // true if OpenReceiveChannel (0x0110) received
+  "serverMessages": [
+    { "id": "0x0081", "name": "RegisterAck" },
+    { "id": "0x0097", "name": "CapabilitiesRequest" },
+    { "id": "0x0113", "name": "StartTone" },
+    { "id": "0x008F", "name": "CallState" },
+    { "id": "0x0091", "name": "DisplayText" }
+  ],
+  "latencyMs": 1234,
+  "note": "Server did not send RegisterAck — may require authorized device name/MAC"
+}
+```
+
+**Call States:**
+- `1` = OffHook
+- `2` = OnHook
+- `3` = RingOut
+- `4` = RingIn
+- `5` = Connected
+- `6` = Busy
+- `7` = Congestion
+- `8` = Hold
+- `9` = CallWaiting
+- `10` = CallTransfer
+- `12` = Park
 
 ## Protocol Specification
 
-### Message Structure
+### Message Format
 
-All SCCP messages follow a simple TLV-style format:
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Message Length                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Reserved (0x00000000)                   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Message ID                              |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Message Data                            |
-|                       (variable length)                       |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-- **Message Length**: Total length in bytes (includes header)
-- **Reserved**: Always 0x00000000
-- **Message ID**: Identifies the message type
-- **Message Data**: Variable-length payload
-
-### Common Message IDs
-
-**Station → CallManager:**
-- `0x0000` - Station Keep Alive
-- `0x0001` - Station Register
-- `0x0002` - Station IP Port
-- `0x0003` - Station Key Pad Button
-- `0x0004` - Station Enbloc Call
-- `0x0005` - Station Stimulus
-- `0x0006` - Station Off Hook
-- `0x0007` - Station On Hook
-- `0x0020` - Station Capabilities Response
-
-**CallManager → Station:**
-- `0x0081` - Station Register Ack
-- `0x0082` - Station Register Reject
-- `0x0088` - Station Set Lamp
-- `0x0089` - Station Set Ringer
-- `0x008A` - Station Set Speaker Mode
-- `0x008F` - Station Call State
-- `0x0091` - Station Display Text
-- `0x0095` - Station Clear Display
-- `0x0097` - Station Capabilities Request
-- `0x0105` - Station Start Media Transmission
-- `0x0106` - Station Stop Media Transmission
-- `0x0110` - Station Open Receive Channel
-- `0x0111` - Station Close Receive Channel
-- `0x0113` - Station Start Tone
-
-### Station Register Message
+All SCCP messages use a 12-byte fixed header followed by variable-length payload:
 
 ```
  0                   1                   2                   3
  0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Device Name (16 bytes)                  |
-|                       (null-terminated string)                |
+|                    Message Length (LE uint32)                 |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       User ID (4 bytes)                       |
+|                  Reserved (LE uint32, 0x00000000)             |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Instance (4 bytes)                      |
+|                     Message ID (LE uint32)                    |
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       IP Address (4 bytes)                    |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Device Type (4 bytes)                   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                       Max Streams (4 bytes)                   |
+|                     Message Data (variable)                   |
+~                                                               ~
 +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 ```
 
-### Call States
+**Message Length:** Total bytes of Reserved (4) + Message ID (4) + Data (N). Does NOT include the length field itself.
 
-- `1` - Off Hook
-- `2` - On Hook
-- `3` - Ring Out
-- `4` - Ring In
-- `5` - Connected
-- `6` - Busy
-- `7` - Line In Use
-- `8` - Hold
-- `9` - Call Waiting
-- `10` - Call Transfer
-- `11` - Call Park
-- `12` - Proceed
-- `13` - Remote In Use
+**Reserved:** Always 0x00000000 in SCCP versions ≤17. In SCCP v18+, this field contains a version number (e.g., 0x00000012 for v18).
 
-### Device Types
+**Endianness:** All multi-byte fields are **little-endian**.
 
-- `1` - Cisco 30 SP+
-- `2` - Cisco 12 SP+
-- `3` - Cisco 12 SP
-- `4` - Cisco 12 S
-- `5` - Cisco 30 VIP
-- `6` - Cisco Telecaster
-- `7` - Cisco 7910
-- `8` - Cisco 7960
-- `9` - Cisco 7940
-- `12` - Cisco 7935
-- `20` - Cisco 7920
-- `30008` - Cisco 7941
-- `30007` - Cisco 7961
+### Station Register Message (0x0001)
 
-## Worker Implementation
+Payload layout (36 bytes):
 
-```typescript
-// workers/sccp.ts
-import { connect } from 'cloudflare:sockets';
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    Device Name (16 bytes)                     |
+|                    (null-terminated string)                   |
+|                    e.g., "SEP001122334455"                    |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                      User ID (LE uint32)                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                    Instance (LE uint32)                       |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                   IP Address (LE uint32)                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                   Device Type (LE uint32)                     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                   Max Streams (LE uint32)                     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
 
-interface SCCPConfig {
-  server: string;
-  port?: number;
-  deviceName?: string;
-  deviceType?: number;
+**Device Name:** Typically `SEP<MAC>` (Selsius Ethernet Phone) or `ATA<MAC>` for analog adapters. MAC is 12 hex digits uppercase.
+
+**User ID:** Usually 0.
+
+**Instance:** Device instance number, typically 1.
+
+**IP Address:** Device IP in network byte order (LE uint32). Set to 0 for auto-detect.
+
+**Device Type:** See device type table above.
+
+**Max Streams:** Maximum concurrent RTP streams. Set to 0 for default.
+
+### CapabilitiesResponse Message (0x0020)
+
+Payload layout:
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                   Codec Count (LE uint32)                     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                   Codec ID (LE uint32)                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Max Frames Per Packet (LE uint32)                |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~              (repeat for each codec)                          ~
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+Each codec entry is 8 bytes (codec ID + max frames).
+
+### ButtonTemplateResponse (0x0086 or 0x0097)
+
+Payload layout:
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                 Button Offset (LE uint32)                     |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                 Button Count (LE uint32)                      |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|              Total Button Count (LE uint32)                   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|  Instance # |  Button Def |    Label (40 bytes, optional)    |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~              (repeat for each button)                         ~
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+**Instance Number:** Line/button number (1-based).
+
+**Button Definition:** See button types table above.
+
+**Label:** 40-byte null-terminated ASCII string (optional, implementation-dependent).
+
+### KeypadButton Message (0x0003)
+
+Payload layout (4 bytes):
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|    Button   | Line Instance | Call Reference|    Reserved   |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+
+**Button:** ASCII code of digit (0x30-0x39 for '0'-'9', 0x2A for '*', 0x23 for '#').
+
+**Line Instance:** Line number (0-based).
+
+**Call Reference:** Active call ID (0 for new call).
+
+### Message Flow Examples
+
+#### 1. KeepAlive Flow
+```
+Client → Server: KeepAlive (0x0000, no data)
+Server → Client: KeepAliveAck (0x0100, no data)
+```
+
+#### 2. Registration Flow
+```
+Client → Server: Register (0x0001, 36 bytes)
+Server → Client: RegisterAck (0x0081) OR RegisterReject (0x0082)
+Server → Client: CapabilitiesRequest (0x0097, optional)
+Client → Server: CapabilitiesResponse (0x0020, codec list)
+```
+
+#### 3. Call Setup Flow
+```
+Client → Server: OffHook (0x0006)
+Server → Client: StartTone (0x0113, dial tone)
+Client → Server: KeypadButton (0x0003, digit '1')
+Client → Server: KeypadButton (0x0003, digit '0')
+Client → Server: KeypadButton (0x0003, digit '0')
+Client → Server: KeypadButton (0x0003, digit '0')
+Server → Client: CallState (0x008F, RingOut)
+Server → Client: DisplayText (0x0091, "Calling 1000")
+Server → Client: OpenReceiveChannel (0x0110)
+Client → Server: IpPort (0x0002, RTP port)
+Server → Client: StartMediaTransmission (0x0105)
+```
+
+## Known Issues and Limitations
+
+### 1. Register Message Format Corrected (Fixed 2026-02-18)
+**Previous bug:** `buildRegister()` created 28-byte payload missing IP Address and Max Streams fields.
+
+**Fix:** Added IP Address (offset 24-27, value 0 for auto) and Max Streams (offset 32-35, value 0 for default). Total payload now 36 bytes per SCCP specification.
+
+**Impact:** Registration may have failed on strict CUCM servers expecting full 36-byte payload.
+
+### 2. Codec ID Error in CapabilitiesResponse (Fixed 2026-02-18)
+**Previous bug:** Codec ID 4 advertised as "G.711 u-law" (line 739).
+
+**Actual:** Codec 4 = G.723.1, Codec 1 = G.711 u-law per SCCP codec table.
+
+**Fix:** Changed codec ID from 4 to 1 in `buildCapabilitiesResponse()`.
+
+**Impact:** CUCM would receive wrong codec advertisement, possibly causing call setup failures or incorrect codec selection.
+
+### 3. START_TONE Message ID Mismatch (Fixed 2026-02-18)
+**Previous bug:** `CALL_MSG.START_TONE = 0x0082` (line 718), but `MSG_NAMES[0x0113] = 'StartTone'`.
+
+**Actual:** StartTone is 0x0113, not 0x0082 (0x0082 is RegisterReject in Station→CM direction).
+
+**Fix:** Changed `START_TONE` from 0x0082 to 0x0113.
+
+**Impact:** Call setup endpoint would not detect tone start events, reporting `toneStarted: false` even when dial tone was sent.
+
+### 4. parseMessages Bounds Validation Missing (Fixed 2026-02-18)
+**Previous bug:** `totalSize` used to slice data before checking if `offset + totalSize <= data.length`.
+
+**Risk:** Malformed or malicious `messageLength` field could cause out-of-bounds read or infinite loop.
+
+**Fix:** Added bounds check `if (offset + totalSize > data.length || totalSize < 12) break;` before slicing.
+
+**Impact:** Improved robustness against malformed SCCP messages.
+
+### 5. No SCCP Version Field Support
+**Limitation:** Implementation assumes SCCP v17 or earlier (Reserved field = 0x00000000).
+
+**SCCP v18+ behavior:** Reserved field contains version number (e.g., 0x00000012). This implementation does NOT check or set version field.
+
+**Impact:** May fail to communicate with SCCP v18+ servers expecting version negotiation. Wireshark dissector also fails on v18.
+
+**Workaround:** None in current implementation.
+
+### 6. No TLS/SCCPS Support
+**Limitation:** Only plaintext SCCP on port 2000. No support for encrypted SCCPS (port 2443, TLS 1.2+).
+
+**Security risk:** Signaling and credentials transmitted in cleartext.
+
+**Workaround:** Use external TLS proxy or upgrade to SIP with TLS.
+
+### 7. No Connection Reuse
+**Limitation:** Each API call opens fresh TCP connection, performs operation, then closes. No persistent connection or session pooling.
+
+**Impact:** Higher latency (3× TCP handshakes for register → linestate → call-setup). CUCM may rate-limit frequent connections from same IP.
+
+**Workaround:** Use /probe endpoint for lightweight checks instead of full registration.
+
+### 8. No Multi-Message TCP Segment Reassembly
+**Limitation:** `readWithTimeout()` reads up to 3 chunks then stops. If SCCP response is fragmented across >3 TCP segments, later segments are dropped.
+
+**Impact:** Large responses (e.g., ButtonTemplate with many lines, CapabilitiesAck with many codecs) may be truncated.
+
+**Workaround:** Increase timeout or use lower MTU to avoid fragmentation.
+
+### 9. ButtonTemplateResponse Label Detection Heuristic
+**Issue:** Label field is optional and implementation-dependent. Code uses heuristic "check if next 40 bytes contain printable ASCII" to detect label presence (line 498-505).
+
+**Risk:** Binary button data with coincidentally printable bytes may be misinterpreted as label, corrupting offset tracking.
+
+**Workaround:** None. This is inherent ambiguity in SCCP protocol.
+
+### 10. No Media (RTP) Handling
+**Limitation:** Implementation handles signaling only. Does not open RTP ports, handle OpenReceiveChannel responses, or establish media streams.
+
+**Impact:** Call setup endpoint reports `openReceiveChannel: true` but does not actually open UDP port or send IpPort response.
+
+**Use case:** Signaling validation and device enumeration only, not full call testing.
+
+### 11. No Authentication
+**Limitation:** SCCP has no built-in authentication. Device authorization is MAC-based (device name must be pre-configured in CUCM).
+
+**Impact:** Registration will fail with RegisterReject (0x0082) if device name not in CUCM database.
+
+**Workaround:** Use authorized device name or configure CUCM to accept test devices.
+
+### 12. No CallManager Redundancy
+**Limitation:** Single CUCM hostname/IP. No support for alternate CallManager list or failover.
+
+**Impact:** If primary CUCM is down, probe/registration will timeout (no automatic retry to backup).
+
+**Workaround:** Call endpoint multiple times with different CUCM IPs.
+
+### 13. Timeout Granularity
+**Limitation:** Timeout applies to entire operation (connect + send + receive). Fast connection with slow response may timeout before receiving data.
+
+**Workaround:** Increase timeout for slow CUCM servers.
+
+### 14. No CUCM Feature Detection
+**Limitation:** No endpoint to query CUCM capabilities, version, or feature set.
+
+**Impact:** Cannot distinguish CUCM version (7.x, 8.x, 11.x, 12.x, 14.x) or enabled features (video, encryption, etc.).
+
+**Workaround:** Use CUCM web admin or AXL SOAP API for feature queries.
+
+### 15. Device Name Format Not Validated
+**Limitation:** No regex validation of device name format (should be `SEP<12 hex digits>` or `ATA<12 hex digits>`).
+
+**Impact:** Invalid device names accepted and sent to CUCM, causing RegisterReject.
+
+**Workaround:** Client-side validation before calling endpoint.
+
+### 16. Message ID Enumeration Incomplete
+**Limitation:** Only 23 message IDs defined in `MSG_NAMES` (lines 54-74). SCCP protocol has 200+ message types.
+
+**Impact:** Unknown messages displayed as `Unknown(0xXXXX)` in response.
+
+**Workaround:** Add more message IDs to `MSG_NAMES` as needed.
+
+## Testing
+
+### 1. KeepAlive Probe
+```bash
+curl -X POST http://localhost:8787/api/sccp/probe \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "cucm.example.com",
+    "port": 2000,
+    "timeout": 5000
+  }'
+```
+
+**Expected response (live CUCM):**
+```json
+{
+  "success": true,
+  "probe": "keepalive",
+  "connected": true,
+  "keepAliveAck": true,
+  "connectMs": 45,
+  "latencyMs": 67,
+  "responseBytes": 12,
+  "messages": [
+    {"id": "0x0100", "name": "KeepAliveAck", "dataLength": 0}
+  ]
 }
+```
 
-interface SCCPMessage {
-  messageId: number;
-  data: Uint8Array;
-}
+### 2. Device Registration
+```bash
+curl -X POST http://localhost:8787/api/sccp/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "cucm.example.com",
+    "port": 2000,
+    "deviceName": "SEP001122334455",
+    "deviceType": 8,
+    "timeout": 10000
+  }'
+```
 
-interface SCCPResponse {
-  success: boolean;
-  registered?: boolean;
-  error?: string;
-  messages?: string[];
-}
-
-const MessageId = {
-  // Station → CallManager
-  KEEP_ALIVE: 0x0000,
-  REGISTER: 0x0001,
-  IP_PORT: 0x0002,
-  KEYPAD_BUTTON: 0x0003,
-  OFF_HOOK: 0x0006,
-  ON_HOOK: 0x0007,
-  CAPABILITIES_RES: 0x0020,
-
-  // CallManager → Station
-  REGISTER_ACK: 0x0081,
-  REGISTER_REJECT: 0x0082,
-  SET_LAMP: 0x0088,
-  SET_RINGER: 0x0089,
-  SET_SPEAKER_MODE: 0x008A,
-  CALL_STATE: 0x008F,
-  DISPLAY_TEXT: 0x0091,
-  CLEAR_DISPLAY: 0x0095,
-  CAPABILITIES_REQ: 0x0097,
-  START_MEDIA_TX: 0x0105,
-  STOP_MEDIA_TX: 0x0106,
-  OPEN_RX_CHANNEL: 0x0110,
-  CLOSE_RX_CHANNEL: 0x0111,
-  START_TONE: 0x0113,
-} as const;
-
-const DeviceType = {
-  CISCO_7910: 7,
-  CISCO_7960: 8,
-  CISCO_7940: 9,
-  CISCO_7941: 30008,
-  CISCO_7961: 30007,
-} as const;
-
-class SCCPClient {
-  private config: Required<SCCPConfig>;
-  private socket: any = null;
-  private registered: boolean = false;
-  private messages: string[] = [];
-
-  constructor(config: SCCPConfig) {
-    this.config = {
-      server: config.server,
-      port: config.port || 2000,
-      deviceName: config.deviceName || 'SEP001122334455',
-      deviceType: config.deviceType || DeviceType.CISCO_7960,
-    };
-  }
-
-  async connect(): Promise<void> {
-    this.socket = connect({
-      hostname: this.config.server,
-      port: this.config.port,
-    });
-  }
-
-  async register(): Promise<SCCPResponse> {
-    if (!this.socket) {
-      await this.connect();
-    }
-
-    try {
-      // Send registration message
-      const registerMsg = this.buildRegisterMessage();
-      await this.sendMessage(registerMsg);
-
-      // Wait for response
-      const response = await this.receiveMessage();
-
-      if (!response) {
-        return { success: false, error: 'No response from server' };
-      }
-
-      if (response.messageId === MessageId.REGISTER_ACK) {
-        this.registered = true;
-        this.messages.push('Registration successful');
-
-        // Send capabilities response if requested
-        const capReq = await this.receiveMessage();
-        if (capReq && capReq.messageId === MessageId.CAPABILITIES_REQ) {
-          const capRes = this.buildCapabilitiesResponse();
-          await this.sendMessage(capRes);
-        }
-
-        return {
-          success: true,
-          registered: true,
-          messages: this.messages,
-        };
-
-      } else if (response.messageId === MessageId.REGISTER_REJECT) {
-        return {
-          success: false,
-          registered: false,
-          error: 'Registration rejected by server',
-        };
-      }
-
-      return {
-        success: false,
-        error: `Unexpected response: 0x${response.messageId.toString(16)}`,
-      };
-
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-    }
-  }
-
-  async sendKeepAlive(): Promise<void> {
-    const keepAlive = this.encodeMessage(MessageId.KEEP_ALIVE, new Uint8Array(0));
-    await this.sendMessage(keepAlive);
-  }
-
-  private buildRegisterMessage(): Uint8Array {
-    const data = new ArrayBuffer(28);
-    const view = new DataView(data);
-    const array = new Uint8Array(data);
-
-    // Device Name (16 bytes, null-terminated)
-    const deviceName = this.config.deviceName.substring(0, 15);
-    const encoder = new TextEncoder();
-    const nameBytes = encoder.encode(deviceName);
-    array.set(nameBytes, 0);
-
-    // User ID (4 bytes) - typically 0
-    view.setUint32(16, 0, true);
-
-    // Instance (4 bytes) - typically 1
-    view.setUint32(20, 1, true);
-
-    // Device Type (4 bytes)
-    view.setUint32(24, this.config.deviceType, true);
-
-    return this.encodeMessage(MessageId.REGISTER, array);
-  }
-
-  private buildCapabilitiesResponse(): Uint8Array {
-    // Simplified capabilities - just report G.711 μ-law
-    const data = new ArrayBuffer(16);
-    const view = new DataView(data);
-
-    // Payload capability count
-    view.setUint32(0, 1, true);
-
-    // G.711 μ-law
-    view.setUint32(4, 4, true);   // Codec: G.711 μ-law
-    view.setUint32(8, 20, true);  // Max frames per packet
-    view.setUint32(12, 0, true);  // Reserved
-
-    return this.encodeMessage(MessageId.CAPABILITIES_RES, new Uint8Array(data));
-  }
-
-  private encodeMessage(messageId: number, data: Uint8Array): Uint8Array {
-    const headerSize = 12;
-    const totalLength = headerSize + data.length;
-
-    const buffer = new ArrayBuffer(totalLength);
-    const view = new DataView(buffer);
-    const array = new Uint8Array(buffer);
-
-    // Message Length (includes header)
-    view.setUint32(0, totalLength, true);
-
-    // Reserved
-    view.setUint32(4, 0, true);
-
-    // Message ID
-    view.setUint32(8, messageId, true);
-
-    // Data
-    array.set(data, headerSize);
-
-    return array;
-  }
-
-  private decodeMessage(data: Uint8Array): SCCPMessage {
-    const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
-
-    const messageLength = view.getUint32(0, true);
-    const reserved = view.getUint32(4, true);
-    const messageId = view.getUint32(8, true);
-    const messageData = data.slice(12);
-
-    return { messageId, data: messageData };
-  }
-
-  private async sendMessage(data: Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  private async receiveMessage(): Promise<SCCPMessage | null> {
-    const reader = this.socket.readable.getReader();
-    const { value, done } = await reader.read();
-    reader.releaseLock();
-
-    if (done || !value) {
-      return null;
-    }
-
-    return this.decodeMessage(value);
-  }
-
-  async close(): Promise<void> {
-    if (this.socket) {
-      await this.socket.close();
-      this.socket = null;
-    }
-  }
-}
-
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/api/sccp/register') {
-      if (request.method !== 'POST') {
-        return new Response('Method not allowed', { status: 405 });
-      }
-
-      try {
-        const config = await request.json() as SCCPConfig;
-
-        if (!config.server) {
-          return new Response(JSON.stringify({ error: 'Server is required' }), {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-
-        const client = new SCCPClient(config);
-        const response = await client.register();
-        await client.close();
-
-        return new Response(JSON.stringify(response), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-      } catch (error) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-    }
-
-    return new Response('Not found', { status: 404 });
+**Expected response (authorized device):**
+```json
+{
+  "success": true,
+  "registration": {
+    "status": "registered",
+    "deviceName": "SEP001122334455",
+    "deviceType": 8,
+    "deviceTypeName": "Cisco 7960",
+    "registered": true,
+    "rejected": false,
+    "capabilitiesRequested": true
   },
-};
+  "connectMs": 45,
+  "latencyMs": 123,
+  "responseBytes": 24,
+  "messages": [
+    {"id": "0x0081", "name": "RegisterAck", "dataLength": 0},
+    {"id": "0x0097", "name": "CapabilitiesRequest", "dataLength": 0}
+  ]
+}
 ```
 
-## Web UI Design
-
-```typescript
-// src/components/SCCPTester.tsx
-import React, { useState } from 'react';
-
-interface SCCPResponse {
-  success: boolean;
-  registered?: boolean;
-  error?: string;
-  messages?: string[];
+**Expected response (unauthorized device):**
+```json
+{
+  "success": true,
+  "registration": {
+    "status": "rejected",
+    "deviceName": "SEP001122334455",
+    "deviceType": 8,
+    "deviceTypeName": "Cisco 7960",
+    "registered": false,
+    "rejected": true,
+    "capabilitiesRequested": false
+  },
+  "connectMs": 45,
+  "latencyMs": 78,
+  "responseBytes": 12,
+  "messages": [
+    {"id": "0x0082", "name": "RegisterReject", "dataLength": 0}
+  ]
 }
+```
 
-export default function SCCPTester() {
-  const [server, setServer] = useState('');
-  const [port, setPort] = useState('2000');
-  const [deviceName, setDeviceName] = useState('SEP001122334455');
-  const [deviceType, setDeviceType] = useState('8');
-  const [loading, setLoading] = useState(false);
-  const [response, setResponse] = useState<SCCPResponse | null>(null);
+### 3. Line State Query
+```bash
+curl -X POST http://localhost:8787/api/sccp/linestate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "cucm.example.com",
+    "port": 2000,
+    "deviceName": "SEP001122334455",
+    "timeout": 10000
+  }'
+```
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setResponse(null);
-
-    try {
-      const res = await fetch('/api/sccp/register', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          server,
-          port: parseInt(port, 10),
-          deviceName,
-          deviceType: parseInt(deviceType, 10),
-        }),
-      });
-
-      const data = await res.json();
-      setResponse(data);
-    } catch (error) {
-      setResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const deviceTypes = [
-    { value: '7', label: 'Cisco 7910' },
-    { value: '8', label: 'Cisco 7960' },
-    { value: '9', label: 'Cisco 7940' },
-    { value: '30008', label: 'Cisco 7941' },
-    { value: '30007', label: 'Cisco 7961' },
-  ];
-
-  return (
-    <div className="max-w-2xl mx-auto p-6">
-      <h1 className="text-3xl font-bold mb-6">SCCP (Skinny) Tester</h1>
-
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-        <p className="text-sm text-blue-800">
-          <strong>SCCP (Skinny Client Control Protocol)</strong> is Cisco's proprietary VoIP signaling
-          protocol used by Cisco IP phones to communicate with Cisco Unified Communications Manager (CUCM).
-        </p>
-      </div>
-
-      <form onSubmit={handleRegister} className="space-y-4 mb-6">
-        <div>
-          <label className="block text-sm font-medium mb-2">
-            CUCM Server
-          </label>
-          <input
-            type="text"
-            value={server}
-            onChange={(e) => setServer(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg"
-            placeholder="cucm.example.com"
-            required
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Port
-            </label>
-            <input
-              type="number"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg"
-              placeholder="2000"
-              min="1"
-              max="65535"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Device Type
-            </label>
-            <select
-              value={deviceType}
-              onChange={(e) => setDeviceType(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg"
-            >
-              {deviceTypes.map((type) => (
-                <option key={type.value} value={type.value}>
-                  {type.label}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-sm font-medium mb-2">
-            Device Name (MAC-based)
-          </label>
-          <input
-            type="text"
-            value={deviceName}
-            onChange={(e) => setDeviceName(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg font-mono"
-            placeholder="SEP001122334455"
-            pattern="SEP[0-9A-Fa-f]{12}"
-            title="Format: SEP followed by 12 hex digits (MAC address)"
-            required
-          />
-          <p className="text-xs text-gray-500 mt-1">
-            Format: SEP + MAC address (e.g., SEP001122334455)
-          </p>
-        </div>
-
-        <button
-          type="submit"
-          disabled={loading}
-          className="w-full bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-        >
-          {loading ? 'Registering...' : 'Register Device'}
-        </button>
-      </form>
-
-      {/* Response display */}
-      {response && (
-        <div className={`rounded-lg p-4 ${
-          response.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
-        }`}>
-          <h2 className="font-semibold mb-3">
-            {response.success ? '✓ Success' : '✗ Error'}
-          </h2>
-
-          {response.success && response.registered ? (
-            <div className="space-y-2">
-              <p className="text-green-800">Device registered successfully with CUCM server.</p>
-              {response.messages && response.messages.length > 0 && (
-                <div className="mt-2">
-                  <p className="text-sm font-semibold">Messages:</p>
-                  <ul className="list-disc ml-5 text-sm">
-                    {response.messages.map((msg, idx) => (
-                      <li key={idx}>{msg}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="text-red-800">
-              <p className="font-mono text-sm">{response.error}</p>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Information boxes */}
-      <div className="mt-8 space-y-4">
-        <div className="p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">SCCP vs SIP</h3>
-          <div className="text-sm space-y-2 text-gray-700">
-            <div>
-              <strong>SCCP (Skinny):</strong>
-              <ul className="list-disc ml-5 mt-1">
-                <li>Cisco proprietary protocol</li>
-                <li>Simpler, more centralized control</li>
-                <li>Lower overhead on phones</li>
-                <li>Better integration with Cisco features</li>
-                <li>Less flexible than SIP</li>
-              </ul>
-            </div>
-            <div>
-              <strong>SIP:</strong>
-              <ul className="list-disc ml-5 mt-1">
-                <li>Open standard (RFC 3261)</li>
-                <li>More distributed architecture</li>
-                <li>Vendor-neutral, interoperable</li>
-                <li>More feature-rich</li>
-                <li>Industry standard for VoIP</li>
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        <div className="p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">SCCP Features</h3>
-          <ul className="text-sm space-y-1 text-gray-700 list-disc ml-5">
-            <li>Device registration and keep-alive</li>
-            <li>Call setup and teardown</li>
-            <li>Media (RTP) stream control</li>
-            <li>Keypad and button events</li>
-            <li>Display and lamp control</li>
-            <li>Tone generation</li>
-            <li>Hold, transfer, conference</li>
-            <li>Call park and pickup</li>
-          </ul>
-        </div>
-
-        <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-          <h3 className="font-semibold mb-2 text-yellow-900">Note</h3>
-          <p className="text-sm text-yellow-800">
-            SCCP is being phased out in favor of SIP even in Cisco environments. New deployments should
-            consider SIP for better interoperability and future-proofing.
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+**Expected response (configured device):**
+```json
+{
+  "success": true,
+  "registered": true,
+  "capabilitiesRequested": true,
+  "lines": [
+    {"number": 1, "buttonType": "Line", "label": "Main Line", "ringMode": "Off"},
+    {"number": 2, "buttonType": "Line", "label": "Shared Line", "ringMode": "Off"},
+    {"number": 3, "buttonType": "SpeedDial", "ringMode": "Off"}
+  ],
+  "capabilities": [
+    "G.711 u-law",
+    "G.711 a-law",
+    "G.729 Annex A"
+  ],
+  "connectMs": 45,
+  "latencyMs": 234
 }
+```
+
+### 4. Call Setup Test
+```bash
+curl -X POST http://localhost:8787/api/sccp/call-setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "cucm.example.com",
+    "port": 2000,
+    "deviceName": "SEP001122334455",
+    "dialNumber": "1000",
+    "timeout": 15000
+  }'
+```
+
+**Expected response (call placed):**
+```json
+{
+  "success": true,
+  "registered": true,
+  "capabilitiesRequested": true,
+  "offHookSent": true,
+  "digitsSent": "1000",
+  "toneStarted": true,
+  "callState": "RingOut",
+  "displayText": "Calling 1000",
+  "openReceiveChannel": false,
+  "serverMessages": [
+    {"id": "0x0081", "name": "RegisterAck"},
+    {"id": "0x0097", "name": "CapabilitiesRequest"},
+    {"id": "0x0113", "name": "StartTone"},
+    {"id": "0x008F", "name": "CallState"},
+    {"id": "0x0091", "name": "DisplayText"}
+  ],
+  "latencyMs": 1234
+}
+```
+
+### 5. Wireshark Capture
+```bash
+# Capture SCCP traffic on port 2000
+sudo tcpdump -i any -s 0 -w sccp.pcap port 2000
+
+# Open in Wireshark and apply display filter
+skinny
+```
+
+**Wireshark filter examples:**
+- `skinny.messageId == 0x0001` — Show Register messages
+- `skinny.messageId == 0x0081` — Show RegisterAck
+- `skinny.messageId == 0x0113` — Show StartTone
+- `skinny && tcp.stream == 0` — Show first SCCP session only
+
+### 6. Asterisk chan_skinny Testing
+```bash
+# Install Asterisk with chan_skinny
+apt-get install asterisk
+
+# Edit /etc/asterisk/skinny.conf
+[general]
+bindaddr=0.0.0.0
+bindport=2000
+dateformat=D/M/Y
+version=1.0
+
+[SEP001122334455]
+device=SEP001122334455
+context=default
+line => 1000
+
+# Reload Asterisk
+asterisk -rx "skinny reload"
+asterisk -rx "skinny show lines"
+
+# Test registration against Asterisk
+curl -X POST http://localhost:8787/api/sccp/register \
+  -H "Content-Type: application/json" \
+  -d '{"host": "localhost", "deviceName": "SEP001122334455", "deviceType": 8}'
 ```
 
 ## Security Considerations
 
-1. **No Encryption (SCCP)**: Basic SCCP has no encryption
-2. **Secure SCCP**: Use encrypted SCCP on port 2443 (TLS)
-3. **Authentication**: Device authentication via CUCM
-4. **Network Segmentation**: Isolate voice VLANs from data
-5. **Call Signaling Security (CSS)**: Enable on CUCM for encrypted signaling
-6. **SRTP**: Use Secure RTP for media encryption
-7. **Certificate Management**: PKI for device certificates
-8. **Access Control**: Limit SCCP traffic at network boundaries
-9. **Firmware Security**: Keep phone firmware updated
-10. **VLAN Hopping**: Prevent attacks via 802.1Q tagging
+### 1. Cleartext Signaling
+**Risk:** All SCCP messages transmitted unencrypted on port 2000.
 
-## Testing
+**Exposure:** Device names, call states, dialed digits, display text visible to network sniffers.
 
-```bash
-# Monitor SCCP traffic with tcpdump
-sudo tcpdump -i any port 2000 -A
+**Mitigation:** Use SCCPS (SCCP over TLS) on port 2443, or segment voice VLAN from untrusted networks.
 
-# Wireshark filter for SCCP
-skinny
+### 2. No Authentication
+**Risk:** SCCP has no user/password authentication. Authorization is MAC-based (device name).
 
-# Test registration
-curl -X POST http://localhost:8787/api/sccp/register \
-  -H "Content-Type: application/json" \
-  -d '{
-    "server": "cucm.example.com",
-    "port": 2000,
-    "deviceName": "SEP001122334455",
-    "deviceType": 8
-  }'
+**Attack:** MAC address spoofing allows unauthorized device registration if attacker knows valid device name.
 
-# Expected response:
-{
-  "success": true,
-  "registered": true,
-  "messages": ["Registration successful"]
-}
+**Mitigation:** Enable 802.1X port authentication, use certificate-based device authentication in CUCM, restrict SCCP port to trusted VLANs.
 
-# Use Cisco IP Phone Emulator (CIPE) for testing
-# Available from Cisco DevNet
-```
+### 3. Denial of Service
+**Risk:** CUCM tracks registered devices in memory. Mass registration attempts can exhaust CUCM resources.
+
+**Attack:** Send Register messages with many unique device names to trigger database lookups and rejection logging.
+
+**Mitigation:** Rate-limit SCCP connections at firewall, enable CUCM intrusion detection, monitor failed registration attempts.
+
+### 4. Information Disclosure
+**Risk:** Device type, line configuration, codec capabilities disclosed in registration flow.
+
+**Exposure:** Attacker learns phone model, firmware version (via device type), number of lines, supported codecs.
+
+**Mitigation:** Disable SCCP on untrusted networks, use SIP with TLS instead.
+
+### 5. Call Hijacking
+**Risk:** SCCP has no call ID authentication. Attacker on same network segment can send CallState or OnHook messages to terminate active calls.
+
+**Attack:** Sniff SCCP traffic to learn active call reference IDs, send spoofed OnHook (0x0007) to drop call.
+
+**Mitigation:** Use encrypted signaling (SCCPS), enable SRTP for media encryption, segment voice VLAN.
+
+### 6. Firmware Manipulation
+**Risk:** CUCM pushes firmware updates to IP phones via TFTP. Attacker with CUCM access can push malicious firmware.
+
+**Attack:** Modify TFTP server config to serve backdoored firmware, wait for phone reboot.
+
+**Mitigation:** Use signed firmware, enable TFTP over TLS, restrict CUCM admin access.
+
+### 7. VLAN Hopping
+**Risk:** Cisco IP phones support 802.1Q VLAN tagging. Attacker connected to phone PC port can tag frames to hop between voice and data VLANs.
+
+**Attack:** Send 802.1Q-tagged frames with voice VLAN ID to bypass network segmentation.
+
+**Mitigation:** Enable Dynamic VLAN Assignment, use MAC-based authentication, disable CDP on untrusted ports.
+
+### 8. Eavesdropping on RTP
+**Risk:** RTP media streams use UDP and are unencrypted by default.
+
+**Exposure:** Voice conversations can be captured and replayed using tools like rtpdump, rtpmixsound.
+
+**Mitigation:** Enable SRTP (Secure RTP) in CUCM, use AES-128 or AES-256 encryption for media.
+
+### 9. Toll Fraud
+**Risk:** Compromised phone or CUCM can place unauthorized international calls.
+
+**Attack:** Register rogue device, dial premium-rate or international numbers, incur charges.
+
+**Mitigation:** Implement Class of Service (CoS) restrictions, block international dialing for untrusted devices, monitor call logs for anomalies.
+
+### 10. Configuration Tampering
+**Risk:** CUCM stores phone configuration (line assignments, softkeys, speed dials) in database. Database compromise allows config manipulation.
+
+**Attack:** SQL injection or privileged access to CUCM database, modify line assignments to intercept calls.
+
+**Mitigation:** Harden CUCM database, use least-privilege accounts, enable audit logging, regular backups.
 
 ## Resources
 
-- [Cisco SCCP Documentation](https://developer.cisco.com/site/sccp/)
-- [Wireshark SCCP Dissector](https://wiki.wireshark.org/SKINNY)
-- [Asterisk chan_skinny](https://wiki.asterisk.org/wiki/display/AST/Skinny) - Open-source SCCP support
-- [Cisco IP Phone Developer Guide](https://www.cisco.com/c/en/us/support/collaboration-endpoints/unified-ip-phone-7900-series/products-programming-reference-guides-list.html)
-- [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261) - SIP (alternative)
+- [Cisco SCCP Protocol Overview](https://aurus5.com/blog/cisco/sccp-skinny-client-control-protocol/) — High-level introduction
+- [Wireshark SCCP Dissector](https://wiki.wireshark.org/SKINNY) — Protocol analysis and message decoding
+- [Asterisk chan_skinny](https://wiki.asterisk.org/wiki/display/AST/Skinny) — Open-source SCCP implementation
+- [Packet Guide to Voice over IP (O'Reilly)](https://www.oreilly.com/library/view/packet-guide-to/9781449339661/ch07.html) — Chapter 7: SCCP deep dive
+- [Cisco Firewall SCCP Support](https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/sec-vpn/b-security-vpn/m_sec-data-sccp.html) — Firewall inspection and ALG
+- [RFC 3261 - SIP](https://www.rfc-editor.org/rfc/rfc3261) — Open standard alternative to SCCP
 
-## Notes
+## Migration Notes
 
-- **Proprietary Protocol**: SCCP is Cisco-specific, limiting interoperability
-- **Device Names**: Follow format `SEP<MAC>` or `ATA<MAC>` (SEP = Selsius Ethernet Phone)
-- **Call Manager**: Cisco Unified Communications Manager (CUCM) required
-- **Media**: RTP/RTCP for audio/video, separate from signaling
-- **Keepalive**: Regular keepalive messages (every 30 seconds) required
-- **Call Control**: All intelligence in CUCM, phones are "skinny" clients
-- **Protocol Versions**: Multiple versions exist (SCCP 3.x, 17.x, 19.x, etc.)
-- **Migration to SIP**: Cisco now recommends SIP for new deployments
-- **Asterisk Support**: Open-source PBX Asterisk supports SCCP via chan_skinny
-- **Phone Models**: 7900 series, 8800 series, 9900 series support SCCP
-- **Debug**: Enable "debug skinny" on CUCM for troubleshooting
+### SCCP to SIP
+Cisco recommends migrating from SCCP to SIP for new deployments. Benefits:
+
+1. **Vendor neutrality** — SIP is open standard (RFC 3261), works with any SIP-compliant server
+2. **Richer features** — Presence, instant messaging, video, federation
+3. **Better security** — TLS for signaling, SRTP for media, digest authentication
+4. **Future-proof** — Active development, broad industry support
+
+**Migration steps:**
+1. Verify phone firmware supports SIP (7960/7940 need "SIP firmware" load)
+2. Configure CUCM for SIP device registration
+3. Change phone load file from SCCP (e.g., `P00308010200.bin`) to SIP (e.g., `SIP41.9-4-2SR3-1S.loads`)
+4. Reset phone to TFTP download new firmware
+5. Test registration, call setup, transfer, hold, conference
+6. Monitor for codec mismatch or feature regression
+
+**Limitations of SIP on Cisco phones:**
+- Some SCCP-only features not available (e.g., extension mobility, certain XML services)
+- SIP firmware may have different bugs than SCCP firmware
+- Older phone models (7905, 7912) may lack SIP support
+
+Sources:
+- [What is Skinny Client Control Protocol (SCCP)](https://aurus5.com/blog/cisco/sccp-skinny-client-control-protocol/)
+- [Firewall Support of Skinny Client Control Protocol](https://www.cisco.com/c/en/us/td/docs/routers/ios/config/17-x/sec-vpn/b-security-vpn/m_sec-data-sccp.pdf)
+- [Packet Guide to Voice over IP - Chapter 7: Skinny Client Control Protocol](https://www.oreilly.com/library/view/packet-guide-to/9781449339661/ch07.html)
+- [Skinny Client Control Protocol - Wikipedia](https://en.wikipedia.org/wiki/Skinny_Client_Control_Protocol)

@@ -208,6 +208,18 @@ function unpackValue(data: Uint8Array, offset: number): [unknown, number] {
     return [view.getInt32(0), offset + 5];
   }
 
+  // Int64 (0xCB)
+  if (marker === 0xCB) {
+    const view = new DataView(data.buffer, data.byteOffset + offset + 1, 8);
+    const bigVal = view.getBigInt64(0);
+    // Use Number when the value fits safely, otherwise keep as BigInt
+    // (BigInt serializes as a string in JSON.stringify via default behavior)
+    if (bigVal >= BigInt(Number.MIN_SAFE_INTEGER) && bigVal <= BigInt(Number.MAX_SAFE_INTEGER)) {
+      return [Number(bigVal), offset + 9];
+    }
+    return [bigVal, offset + 9];
+  }
+
   // String8 (0xD0)
   if (marker === 0xD0) {
     const length = data[offset + 1];

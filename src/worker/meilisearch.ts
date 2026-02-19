@@ -358,7 +358,7 @@ export async function handleMeilisearchDocuments(request: Request): Promise<Resp
     const body = await request.json() as {
       host: string; port?: number; index: string;
       documents: Record<string, unknown>[];
-      primary_key?: string; api_key?: string; timeout?: number;
+      primaryKey?: string; apiKey?: string; timeout?: number;
     };
     if (!body.host || !body.index || !Array.isArray(body.documents) || body.documents.length === 0) {
       return new Response(JSON.stringify({ success: false, error: 'Missing required: host, index, documents[]' }), {
@@ -368,10 +368,23 @@ export async function handleMeilisearchDocuments(request: Request): Promise<Resp
     const host = body.host;
     const port = body.port || 7700;
     const timeout = body.timeout || 15000;
-    const qs = body.primary_key ? ('?primaryKey=' + body.primary_key) : '';
-    const path = '/indexes/' + body.index + '/documents' + qs;
 
-    const result = await sendHttpRequest(host, port, 'POST', path, JSON.stringify(body.documents), body.api_key, timeout);
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const qs = body.primaryKey ? ('?primaryKey=' + encodeURIComponent(body.primaryKey)) : '';
+    const path = '/indexes/' + encodeURIComponent(body.index) + '/documents' + qs;
+
+    const result = await sendHttpRequest(host, port, 'POST', path, JSON.stringify(body.documents), body.apiKey, timeout);
     const ok = result.statusCode >= 200 && result.statusCode < 300;
 
     let parsed: Record<string, unknown> = {};
@@ -405,7 +418,7 @@ export async function handleMeilisearchDelete(request: Request): Promise<Respons
     const body = await request.json() as {
       host: string; port?: number; index: string;
       ids?: (string | number)[]; all?: boolean;
-      api_key?: string; timeout?: number;
+      apiKey?: string; timeout?: number;
     };
     if (!body.host || !body.index || (!body.ids?.length && !body.all)) {
       return new Response(JSON.stringify({ success: false, error: 'Missing required: host, index, and either ids[] or all:true' }), {
@@ -416,20 +429,32 @@ export async function handleMeilisearchDelete(request: Request): Promise<Respons
     const port = body.port || 7700;
     const timeout = body.timeout || 10000;
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     let path: string;
     let method: string;
     let reqBody: string | undefined;
 
     if (body.all) {
-      path = '/indexes/' + body.index + '/documents';
+      path = '/indexes/' + encodeURIComponent(body.index) + '/documents';
       method = 'DELETE';
     } else {
-      path = '/indexes/' + body.index + '/documents/delete-batch';
+      path = '/indexes/' + encodeURIComponent(body.index) + '/documents/delete';
       method = 'POST';
       reqBody = JSON.stringify(body.ids);
     }
 
-    const result = await sendHttpRequest(host, port, method, path, reqBody, body.api_key, timeout);
+    const result = await sendHttpRequest(host, port, method, path, reqBody, body.apiKey, timeout);
     const ok = result.statusCode >= 200 && result.statusCode < 300;
 
     let parsed: Record<string, unknown> = {};

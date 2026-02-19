@@ -510,12 +510,13 @@ export async function handleLDAPConnect(request: Request): Promise<Response> {
     let options: Partial<LDAPConnectionOptions>;
 
     if (request.method === 'POST') {
-      options = await request.json() as Partial<LDAPConnectionOptions>;
+      const raw = await request.json() as Partial<LDAPConnectionOptions> & { bindDn?: string };
+      options = { ...raw, bindDN: raw.bindDN || raw.bindDn };
     } else {
       options = {
         host: url.searchParams.get('host') || '',
         port: parseInt(url.searchParams.get('port') || '389'),
-        bindDN: url.searchParams.get('bindDN') || undefined,
+        bindDN: url.searchParams.get('bindDN') || url.searchParams.get('bindDn') || undefined,
         password: url.searchParams.get('password') || undefined,
         timeout: parseInt(url.searchParams.get('timeout') || '30000'),
       };
@@ -670,21 +671,23 @@ export async function handleLDAPSearch(request: Request): Promise<Response> {
     }
 
     const body = await request.json() as {
-      host: string; port?: number; bindDn?: string; password?: string;
-      baseDn: string; filter?: string; scope?: number; attributes?: string[];
+      host: string; port?: number; bindDn?: string; bindDN?: string; password?: string;
+      baseDn?: string; filter?: string; scope?: number; attributes?: string[];
       sizeLimit?: number; timeout?: number;
     };
 
-    const { host, port = 389, bindDn = '', password = '', baseDn,
+    const { host, port = 389, bindDn: bodyBindDn, bindDN: bodyBindDN, password = '', baseDn,
       filter = '(objectClass=*)', scope = 2, attributes = [],
       sizeLimit = 100, timeout = 15000 } = body;
+
+    const bindDn = bodyBindDn || bodyBindDN || '';
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (!baseDn) {
+    if (baseDn === undefined || baseDn === null) {
       return new Response(JSON.stringify({ success: false, error: 'baseDn is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -777,12 +780,13 @@ export async function handleLDAPAdd(request: Request): Promise<Response> {
     }
 
     const body = await request.json() as {
-      host: string; port?: number; bindDn: string; password: string;
+      host: string; port?: number; bindDn?: string; bindDN?: string; password: string;
       entry: { dn: string; attributes: Record<string, string | string[]> };
       timeout?: number;
     };
 
-    const { host, port = 389, bindDn, password, entry, timeout = 10000 } = body;
+    const { host, port = 389, bindDn: bodyBindDn, bindDN: bodyBindDN, password, entry, timeout = 10000 } = body;
+    const bindDn = bodyBindDn || bodyBindDN || '';
 
     if (!host || !bindDn || !entry?.dn) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDn, and entry.dn are required' }), {
@@ -870,13 +874,14 @@ export async function handleLDAPModify(request: Request): Promise<Response> {
     }
 
     const body = await request.json() as {
-      host: string; port?: number; bindDn: string; password: string;
+      host: string; port?: number; bindDn?: string; bindDN?: string; password: string;
       dn: string;
       changes: Array<{ operation: 'add' | 'replace' | 'delete'; attribute: string; values: string[] }>;
       timeout?: number;
     };
 
-    const { host, port = 389, bindDn, password, dn, changes, timeout = 10000 } = body;
+    const { host, port = 389, bindDn: bodyBindDn, bindDN: bodyBindDN, password, dn, changes, timeout = 10000 } = body;
+    const bindDn = bodyBindDn || bodyBindDN || '';
 
     if (!host || !bindDn || !dn || !changes) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDn, dn, and changes are required' }), {
@@ -967,11 +972,12 @@ export async function handleLDAPDelete(request: Request): Promise<Response> {
     }
 
     const body = await request.json() as {
-      host: string; port?: number; bindDn: string; password: string;
+      host: string; port?: number; bindDn?: string; bindDN?: string; password: string;
       dn: string; timeout?: number;
     };
 
-    const { host, port = 389, bindDn, password, dn, timeout = 10000 } = body;
+    const { host, port = 389, bindDn: bodyBindDn, bindDN: bodyBindDN, password, dn, timeout = 10000 } = body;
+    const bindDn = bodyBindDn || bodyBindDN || '';
 
     if (!host || !bindDn || !dn) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDn, and dn are required' }), {
@@ -1027,5 +1033,322 @@ export async function handleLDAPDelete(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false, error: error instanceof Error ? error.message : 'Delete failed',
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// RFC 2696 Simple Paged Results Control helpers
+// OID: 1.2.840.113556.1.4.319
+// ---------------------------------------------------------------------------
+
+const PAGED_RESULTS_OID = '1.2.840.113556.1.4.319';
+
+/** Build an LDAP message SEQUENCE with a controls [0] section appended. */
+function ldapMessageWithControls(
+  msgId: number,
+  protocolOp: number[],
+  controls: number[],
+): Uint8Array {
+  const msg = [...berInteger(msgId), ...protocolOp, ...controls];
+  return new Uint8Array(berSequence(msg));
+}
+
+/** Encode the Simple Paged Results Control for inclusion in a SearchRequest. */
+function encodePagedResultsControl(pageSize: number, cookie: Uint8Array): number[] {
+  // controlValue inner SEQUENCE { INTEGER pageSize, OCTET STRING cookie }
+  const innerSeq = berSequence([
+    ...berInteger(pageSize),
+    ...berTLV(0x04, Array.from(cookie)),
+  ]);
+  // Control SEQUENCE { controlType OID as OCTET STRING, controlValue OCTET STRING wrapping innerSeq }
+  const ctrl = berSequence([
+    ...berOctetString(PAGED_RESULTS_OID),
+    ...berTLV(0x04, innerSeq), // controlValue
+  ]);
+  // Controls wrapper: context-specific constructed [0] = tag 0xA0
+  return berTLV(0xA0, ctrl);
+}
+
+/**
+ * Extract the RFC 2696 response cookie from the controls section of a
+ * SearchResultDone message. Returns empty Uint8Array when there are no
+ * more pages.
+ */
+function extractPagedResultsCookie(data: Uint8Array): Uint8Array {
+  let offset = 0;
+
+  // Walk through concatenated LDAPMessage SEQUENCEs
+  while (offset < data.length) {
+    if (data[offset] !== 0x30) break;
+    offset++;
+    const seqLen = parseLength(data, offset);
+    offset += seqLen.bytesRead;
+    const msgEnd = offset + seqLen.length;
+
+    // Skip messageID (INTEGER 0x02)
+    if (offset < data.length && data[offset] === 0x02) {
+      offset++;
+      const idLen = parseLength(data, offset);
+      offset += idLen.bytesRead + idLen.length;
+    }
+
+    const tag = data[offset];
+    if (tag === 0x65) {
+      // SearchResultDone — skip its body, look for controls after it
+      offset++;
+      const doneLen = parseLength(data, offset);
+      offset += doneLen.bytesRead + doneLen.length;
+
+      // Controls [0] = 0xA0
+      if (offset < msgEnd && data[offset] === 0xA0) {
+        offset++;
+        const ctrlsLen = parseLength(data, offset);
+        offset += ctrlsLen.bytesRead;
+        const ctrlsEnd = offset + ctrlsLen.length;
+
+        while (offset < ctrlsEnd) {
+          if (data[offset] !== 0x30) break;
+          offset++;
+          const ctrlLen = parseLength(data, offset);
+          offset += ctrlLen.bytesRead;
+          const ctrlEnd = offset + ctrlLen.length;
+
+          // controlType (OCTET STRING 0x04)
+          if (offset < ctrlEnd && data[offset] === 0x04) {
+            offset++;
+            const oidLen = parseLength(data, offset);
+            offset += oidLen.bytesRead;
+            const oidStr = new TextDecoder().decode(
+              data.slice(offset, offset + oidLen.length),
+            );
+            offset += oidLen.length;
+
+            // Skip optional criticality (BOOLEAN 0x01)
+            if (offset < ctrlEnd && data[offset] === 0x01) {
+              offset++;
+              const boolLen = parseLength(data, offset);
+              offset += boolLen.bytesRead + boolLen.length;
+            }
+
+            // controlValue (OCTET STRING 0x04) — only for our OID
+            if (
+              offset < ctrlEnd &&
+              data[offset] === 0x04 &&
+              oidStr === PAGED_RESULTS_OID
+            ) {
+              offset++;
+              const valLen = parseLength(data, offset);
+              offset += valLen.bytesRead;
+              const valData = data.slice(offset, offset + valLen.length);
+
+              // Inner SEQUENCE { INTEGER size, OCTET STRING cookie }
+              let vOff = 0;
+              if (valData[vOff] === 0x30) {
+                vOff++;
+                const vs = parseLength(valData, vOff);
+                vOff += vs.bytesRead;
+                // Skip INTEGER (server's total size estimate)
+                if (vOff < valData.length && valData[vOff] === 0x02) {
+                  vOff++;
+                  const il = parseLength(valData, vOff);
+                  vOff += il.bytesRead + il.length;
+                }
+                // Cookie OCTET STRING
+                if (vOff < valData.length && valData[vOff] === 0x04) {
+                  vOff++;
+                  const cl = parseLength(valData, vOff);
+                  vOff += cl.bytesRead;
+                  return valData.slice(vOff, vOff + cl.length);
+                }
+              }
+            }
+          }
+          offset = ctrlEnd;
+        }
+      }
+      break;
+    } else {
+      offset = msgEnd;
+    }
+  }
+  return new Uint8Array(0);
+}
+
+// ---------------------------------------------------------------------------
+// handleLDAPPagedSearch — RFC 2696 Simple Paged Results Control
+// ---------------------------------------------------------------------------
+
+/**
+ * POST /api/ldap/paged-search
+ * Body: { host, port=389, bindDn?, password?, baseDn, filter='(objectClass=*)',
+ *         scope=2, attributes=[], pageSize=100, cookie='', timeout=30000 }
+ *
+ * Returns: { success, entries, resultCode, cookie (hex), hasMore, entryCount, rtt }
+ *
+ * For the first request omit `cookie` or pass ''. For subsequent pages pass
+ * the hex cookie string returned by the previous response. When `hasMore`
+ * is false there are no further pages.
+ */
+export async function handleLDAPPagedSearch(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = (await request.json()) as {
+      host: string;
+      port?: number;
+      bindDn?: string;
+      bindDN?: string;
+      password?: string;
+      baseDn?: string;
+      filter?: string;
+      scope?: number;
+      attributes?: string[];
+      pageSize?: number;
+      cookie?: string;
+      timeout?: number;
+    };
+
+    const {
+      host,
+      port = 389,
+      bindDn: bodyBindDn,
+      bindDN: bodyBindDN,
+      password = '',
+      baseDn,
+      filter = '(objectClass=*)',
+      scope = 2,
+      attributes = [],
+      pageSize = 100,
+      cookie: cookieHex = '',
+      timeout = 30000,
+    } = body;
+
+    const bindDn = bodyBindDn || bodyBindDN || '';
+
+    if (!host) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    if (baseDn === undefined || baseDn === null) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'baseDn is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Decode hex cookie from previous page (empty → first page)
+    let cookieBytes = new Uint8Array(0);
+    if (cookieHex) {
+      const hex = cookieHex.replace(/\s/g, '');
+      const pairs = hex.match(/.{1,2}/g);
+      cookieBytes = new Uint8Array(
+        pairs ? pairs.map((b) => parseInt(b, 16)) : [],
+      );
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+    );
+
+    const work = (async () => {
+      const startTime = Date.now();
+      const { socket, reader, writer } = await ldapBindOnSocket(
+        host, port, bindDn, password, timeout,
+      );
+
+      try {
+        // Build SearchRequest (APPLICATION 3 = 0x63) with Paged Results Control
+        const filterBytes = encodeFilter(filter);
+        const attrList = attributes.flatMap((a) => berOctetString(a));
+        const attrSeq = berSequence(attrList);
+
+        const searchBody: number[] = [
+          ...berOctetString(baseDn),
+          ...berEnumerated(scope),
+          ...berEnumerated(0),         // derefAliases: neverDerefAliases
+          ...berInteger(0),            // sizeLimit 0 = server decides
+          ...berInteger(Math.floor(timeout / 1000)),
+          0x01, 0x01, 0x00,            // typesOnly BOOLEAN FALSE
+          ...filterBytes,
+          ...attrSeq,
+        ];
+        const searchOp = berTLV(0x63, searchBody);
+        const controls = encodePagedResultsControl(pageSize, cookieBytes);
+        const searchReq = ldapMessageWithControls(2, searchOp, controls);
+
+        await writer.write(searchReq);
+
+        const rawData = await readLDAPSearchData(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const parsed = parseLDAPSearchResults(rawData);
+
+        // Extract response cookie from SearchResultDone controls
+        const responseCookie = extractPagedResultsCookie(rawData);
+        const hasMore = responseCookie.length > 0;
+        const responseCookieHex = Array.from(responseCookie)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('');
+
+        // Unbind
+        const unbindReq = ldapMessage(3, [0x42, 0x00]);
+        await writer.write(unbindReq);
+        writer.releaseLock();
+        reader.releaseLock();
+        await socket.close();
+
+        return {
+          success: true,
+          host,
+          port,
+          baseDn,
+          scope,
+          filter,
+          pageSize,
+          entries: parsed.entries,
+          entryCount: parsed.entries.length,
+          resultCode: parsed.resultCode,
+          cookie: responseCookieHex,
+          hasMore,
+          rtt,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    return new Response(
+      JSON.stringify({
+        success: false,
+        error: error instanceof Error ? error.message : 'Paged search failed',
+      }),
+      { status: 500, headers: { 'Content-Type': 'application/json' } },
+    );
   }
 }

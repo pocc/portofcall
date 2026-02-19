@@ -26,10 +26,12 @@
  *   0x0210  ENCRYPT_AES256  — message encryption
  *
  * Values Part (0x0006):
- *   [num_values: uint16][type_codes: num_values × uint8][values: num_values × float64]
- *   Value types: 0=COUNTER, 1=GAUGE, 2=DERIVE, 3=ABSOLUTE
+ *   [num_values: uint16][type_codes: num_values × uint8][values: num_values × 8 bytes]
+ *   Value types: 0=COUNTER (uint64 BE), 1=GAUGE (float64 LE!), 2=DERIVE (int64 BE), 3=ABSOLUTE (uint64 BE)
  *
- * All integers are big-endian. Floats are IEEE 754 double-precision.
+ * String parts are NUL-terminated; the length field includes the NUL byte.
+ * All integers are big-endian (network byte order).
+ * GAUGE floats are the lone exception: IEEE 754 double in LITTLE-ENDIAN (x86 host order).
  *
  * Default Port: 25826/TCP (UDP is more common)
  *
@@ -52,7 +54,10 @@ const PART_TIME_HR     = 0x0008;
 const PART_INTERVAL_HR = 0x0009;
 
 // Value type constants
-const VALUE_GAUGE = 1;
+const VALUE_COUNTER  = 0;
+const VALUE_GAUGE    = 1;
+const VALUE_DERIVE   = 2;
+const VALUE_ABSOLUTE = 3;
 
 interface CollectdProbeRequest {
   host: string;
@@ -80,16 +85,20 @@ function validateInput(host: string, port: number): string | null {
 }
 
 /**
- * Build a collectd "string part": [type: u16][length: u16][string (no null terminator)]
+ * Build a collectd "string part": [type: u16][length: u16][string + NUL]
+ *
+ * Per the collectd binary protocol, string parts are NUL-terminated
+ * and the length field includes the 4-byte header AND the trailing NUL byte.
  */
 function buildStringPart(partType: number, value: string): Uint8Array {
   const strBytes = new TextEncoder().encode(value);
-  const length = 4 + strBytes.length; // 4-byte header + string bytes
-  const buf = new Uint8Array(length);
+  const length = 4 + strBytes.length + 1; // 4-byte header + string bytes + NUL
+  const buf = new Uint8Array(length); // Uint8Array is zero-initialized, so last byte is already 0x00
   const view = new DataView(buf.buffer);
   view.setUint16(0, partType, false);  // big-endian
   view.setUint16(2, length, false);
   buf.set(strBytes, 4);
+  // buf[length - 1] is already 0x00 (NUL terminator)
   return buf;
 }
 
@@ -110,7 +119,13 @@ function buildUint64Part(partType: number, value: number): Uint8Array {
 }
 
 /**
- * Build a collectd "values part": [type: u16][length: u16][num: u16][types: u8×n][values: f64×n]
+ * Build a collectd "values part": [type: u16][length: u16][num: u16][types: u8×n][values: n × 8 bytes]
+ *
+ * Value encoding per the collectd binary protocol:
+ *   COUNTER  (0) — uint64 big-endian
+ *   GAUGE    (1) — float64 LITTLE-ENDIAN (host byte order on x86)
+ *   DERIVE   (2) — int64 big-endian
+ *   ABSOLUTE (3) — uint64 big-endian
  */
 function buildValuesPart(valueTypes: number[], values: number[]): Uint8Array {
   const n = values.length;
@@ -124,8 +139,19 @@ function buildValuesPart(valueTypes: number[], values: number[]): Uint8Array {
   for (let i = 0; i < n; i++) {
     view.setUint8(6 + i, valueTypes[i]);
   }
+  const valuesOffset = 6 + n;
   for (let i = 0; i < n; i++) {
-    view.setFloat64(6 + n + i * 8, values[i], false); // big-endian double
+    const off = valuesOffset + i * 8;
+    if (valueTypes[i] === VALUE_GAUGE) {
+      // GAUGE: IEEE 754 double, little-endian (the lone exception in collectd)
+      view.setFloat64(off, values[i], true);
+    } else {
+      // COUNTER, DERIVE, ABSOLUTE: (u)int64 big-endian
+      // Write as two 32-bit halves for JavaScript number safety
+      const v = values[i];
+      view.setUint32(off, Math.floor(v / 0x100000000), false);
+      view.setUint32(off + 4, v >>> 0, false);
+    }
   }
   return buf;
 }
@@ -605,13 +631,16 @@ function decodeBinaryPacket(data: Uint8Array): CollectdMetric[] {
     const bodyStart = data.byteOffset + offset + 4;
     const bodyLen   = partLen - 4;
 
-    // String parts
+    // String parts — NUL-terminated per protocol; strip trailing NUL(s)
     if (
       partType === PART_HOST || partType === PART_PLUGIN ||
       partType === PART_PLUGIN_INSTANCE || partType === PART_TYPE ||
       partType === PART_TYPE_INSTANCE
     ) {
-      const str = dec.decode(data.slice(offset + 4, offset + partLen));
+      let strEnd = offset + partLen;
+      // Strip trailing NUL byte(s) that collectd includes
+      while (strEnd > offset + 4 && data[strEnd - 1] === 0) strEnd--;
+      const str = dec.decode(data.slice(offset + 4, strEnd));
       if (partType === PART_HOST)            host = str;
       else if (partType === PART_PLUGIN)     plugin = str;
       else if (partType === PART_PLUGIN_INSTANCE) pluginInstance = str;
@@ -628,7 +657,10 @@ function decodeBinaryPacket(data: Uint8Array): CollectdMetric[] {
     // Timestamp (high-res, 2^-30 s units, uint64 BE)
     else if (partType === PART_TIME_HR && bodyLen >= 8) {
       const v = new DataView(data.buffer, bodyStart, bodyLen);
-      timestamp = Number(v.getBigUint64(0, false)) / (1 << 30);
+      const raw = v.getBigUint64(0, false);
+      // Divide in BigInt space first to preserve precision, then convert
+      // The fractional part (sub-second) is discarded for our timestamp
+      timestamp = Number(raw >> 30n);
     }
 
     // Interval (seconds, uint64 BE)
@@ -637,10 +669,11 @@ function decodeBinaryPacket(data: Uint8Array): CollectdMetric[] {
       metricInterval = Number(v.getBigUint64(0, false));
     }
 
-    // Interval (high-res)
+    // Interval (high-res, 2^-30 s units, uint64 BE)
     else if (partType === PART_INTERVAL_HR && bodyLen >= 8) {
       const v = new DataView(data.buffer, bodyStart, bodyLen);
-      metricInterval = Number(v.getBigUint64(0, false)) / (1 << 30);
+      const raw = v.getBigUint64(0, false);
+      metricInterval = Number(raw >> 30n);
     }
 
     // Values part — emits one metric record
@@ -655,7 +688,21 @@ function decodeBinaryPacket(data: Uint8Array): CollectdMetric[] {
         for (let i = 0; i < numValues; i++) {
           const vtCode = v.getUint8(typeCodesOff + i);
           const vtName = VALUE_TYPE_NAMES[vtCode] ?? `UNKNOWN(${vtCode})`;
-          const val    = v.getFloat64(valuesOff + i * 8, false);
+          const off = valuesOff + i * 8;
+          let val: number;
+          if (vtCode === VALUE_GAUGE) {
+            // GAUGE: IEEE 754 double, little-endian
+            val = v.getFloat64(off, true);
+          } else if (vtCode === VALUE_DERIVE) {
+            // DERIVE: signed int64 big-endian
+            val = Number(v.getBigInt64(off, false));
+          } else if (vtCode === VALUE_COUNTER || vtCode === VALUE_ABSOLUTE) {
+            // COUNTER / ABSOLUTE: unsigned int64 big-endian
+            val = Number(v.getBigUint64(off, false));
+          } else {
+            // Unknown value type — treat as unsigned int64 big-endian
+            val = Number(v.getBigUint64(off, false));
+          }
           values.push({ type: vtName, value: val });
         }
         metrics.push({

@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface TimeClientProps {
   onBack: () => void;
@@ -106,6 +108,7 @@ export default function TimeClient({ onBack }: TimeClientProps) {
 
   return (
     <ProtocolClientLayout title="Time Protocol Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Time || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Time Server Configuration" />
 

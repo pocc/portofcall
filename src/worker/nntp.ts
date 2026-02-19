@@ -873,8 +873,13 @@ export async function handleNNTPPost(request: Request): Promise<Response> {
         );
       }
 
+      // Dot-stuffing (RFC 3977 §3.1.1): any line in the body starting
+      // with "." must have an extra "." prepended so the server doesn't
+      // mistake it for the end-of-data marker ".\r\n".
+      const stuffedBody = articleBody.replace(/^\./gm, '..');
+
       // Send article headers + body terminated by "\r\n.\r\n"
-      const article = `From: ${from}\r\nNewsgroups: ${newsgroups}\r\nSubject: ${subject}\r\n\r\n${articleBody}\r\n.\r\n`;
+      const article = `From: ${from}\r\nNewsgroups: ${newsgroups}\r\nSubject: ${subject}\r\n\r\n${stuffedBody}\r\n.\r\n`;
       await writer.write(encoder.encode(article));
 
       const articleResponseLine = await readLine(reader, decoder, buffer, timeoutPromise);

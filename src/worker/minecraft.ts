@@ -97,7 +97,7 @@ function decodeVarInt(data: Uint8Array, offset: number): [number, number] {
     bytesRead++;
     if ((byte & 0x80) === 0) break;
     shift += 7;
-    if (shift >= 35) {
+    if (shift >= 32) {
       throw new Error('VarInt too large');
     }
   }
@@ -188,48 +188,140 @@ function buildPingPacket(payload: bigint): Uint8Array {
 // --- Response Parsing ---
 
 /**
- * Read all available data from a socket with timeout
+ * Read exactly `needed` bytes from the socket, buffering across chunks.
+ * Returns exactly `needed` bytes or throws on timeout/EOF.
  */
-async function readFromSocket(
+async function readExactly(
   reader: ReadableStreamDefaultReader<Uint8Array>,
+  needed: number,
   timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
+  existingBuffer?: Uint8Array,
+): Promise<{ data: Uint8Array; leftover: Uint8Array }> {
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
 
-  // Read first chunk (blocking)
-  const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-  if (done || !value) return new Uint8Array(0);
-  chunks.push(value);
-  totalLen += value.length;
-
-  // Try to read more data with a short delay (server may split response)
-  try {
-    const shortTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('read_done')), 500),
-    );
-    while (true) {
-      const { value: next, done: nextDone } = await Promise.race([reader.read(), shortTimeout]);
-      if (nextDone || !next) break;
-      chunks.push(next);
-      totalLen += next.length;
-    }
-  } catch {
-    // Short timeout expired - we have all available data
+  // Use any leftover bytes from a previous read
+  if (existingBuffer && existingBuffer.length > 0) {
+    chunks.push(existingBuffer);
+    totalLen += existingBuffer.length;
   }
 
+  while (totalLen < needed) {
+    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+    if (done || !value) {
+      throw new Error(`Unexpected EOF: needed ${needed} bytes, got ${totalLen}`);
+    }
+    chunks.push(value);
+    totalLen += value.length;
+  }
+
+  // Combine all chunks into one buffer
   const combined = new Uint8Array(totalLen);
   let offset = 0;
   for (const chunk of chunks) {
     combined.set(chunk, offset);
     offset += chunk.length;
   }
-  return combined;
+
+  return {
+    data: combined.slice(0, needed),
+    leftover: combined.slice(needed),
+  };
 }
 
 /**
- * Parse the JSON description field into a plain text string
- * Minecraft uses either a string or a Chat component object
+ * Read a full Minecraft protocol packet from the socket.
+ *
+ * Packet structure: [VarInt Length][PacketID + Payload]
+ *
+ * This reads the VarInt length prefix first (up to 5 bytes), then reads
+ * exactly that many bytes for the packet body. This is protocol-correct
+ * and handles TCP fragmentation properly, unlike a heuristic timeout approach.
+ *
+ * Returns the raw packet body (PacketID + Payload) without the length prefix.
+ */
+async function readPacket(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutPromise: Promise<never>,
+  existingBuffer?: Uint8Array,
+): Promise<{ packetData: Uint8Array; leftover: Uint8Array }> {
+  // Step 1: Read the VarInt packet length (1-5 bytes)
+  // We need to read byte-by-byte to decode the VarInt, but sockets give
+  // us chunks. Read enough bytes to get at least the VarInt.
+  let buffer = existingBuffer || new Uint8Array(0);
+  let packetLength = 0;
+  let varIntBytes = 0;
+  let varIntComplete = false;
+
+  while (!varIntComplete) {
+    // Try to decode VarInt from what we have
+    let shift = 0;
+    let result = 0;
+    let i = 0;
+    let decoded = false;
+
+    for (; i < buffer.length && i < 5; i++) {
+      const byte = buffer[i];
+      result |= (byte & 0x7F) << shift;
+      if ((byte & 0x80) === 0) {
+        decoded = true;
+        varIntBytes = i + 1;
+        packetLength = result;
+        varIntComplete = true;
+        break;
+      }
+      shift += 7;
+      if (shift >= 32) {
+        throw new Error('VarInt too large in packet length');
+      }
+    }
+
+    if (!decoded) {
+      if (i >= 5) {
+        throw new Error('VarInt too large in packet length');
+      }
+      // Need more bytes - read from socket
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done || !value) {
+        throw new Error('Unexpected EOF while reading packet length');
+      }
+      const newBuf = new Uint8Array(buffer.length + value.length);
+      newBuf.set(buffer, 0);
+      newBuf.set(value, buffer.length);
+      buffer = newBuf;
+    }
+  }
+
+  // Step 2: Validate packet length is reasonable (prevent memory exhaustion)
+  const MAX_PACKET_LENGTH = 2 * 1024 * 1024; // 2MB - Minecraft servers rarely exceed this
+  if (packetLength > MAX_PACKET_LENGTH) {
+    throw new Error(`Packet length ${packetLength} exceeds maximum ${MAX_PACKET_LENGTH} bytes`);
+  }
+  if (packetLength < 0) {
+    throw new Error(`Invalid negative packet length: ${packetLength}`);
+  }
+
+  // Step 3: Read exactly packetLength bytes for the packet body
+  const remaining = buffer.slice(varIntBytes);
+  const { data: packetData, leftover } = await readExactly(
+    reader,
+    packetLength,
+    timeoutPromise,
+    remaining,
+  );
+
+  return { packetData, leftover };
+}
+
+/**
+ * Parse the JSON description field into a plain text string.
+ * Minecraft uses either a plain string or a Chat component object.
+ *
+ * Chat component format (wiki.vg/Chat):
+ *   - { "text": "Hello" }
+ *   - { "text": "", "extra": [{ "text": "World", "bold": true }] }
+ *   - { "translate": "multiplayer.disconnect.kicked" }
+ *   - Plain string: "A Minecraft Server"
  */
 function parseDescription(desc: unknown): string {
   if (typeof desc === 'string') return desc;
@@ -237,6 +329,8 @@ function parseDescription(desc: unknown): string {
     const obj = desc as Record<string, unknown>;
     let text = '';
     if (typeof obj.text === 'string') text += obj.text;
+    // Handle translate key (used by vanilla servers for localized MOTDs)
+    if (!text && typeof obj.translate === 'string') text += obj.translate;
     if (Array.isArray(obj.extra)) {
       for (const part of obj.extra) {
         if (typeof part === 'string') text += part;
@@ -280,7 +374,10 @@ function validateMinecraftInput(host: string, port: number): string | null {
  */
 export async function handleMinecraftStatus(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' } satisfies MinecraftStatusResponse),
+      { status: 405, headers: { 'Content-Type': 'application/json' } },
+    );
   }
 
   try {
@@ -289,7 +386,7 @@ export async function handleMinecraftStatus(request: Request): Promise<Response>
       host,
       port = 25565,
       timeout = 10000,
-      protocolVersion = 767, // 1.21.1 (current as of 2024)
+      protocolVersion = 769, // 1.21.4 — used for handshake; servers respond to status regardless of version
     } = body;
 
     const validationError = validateMinecraftInput(host, port);
@@ -335,29 +432,16 @@ export async function handleMinecraftStatus(request: Request): Promise<Response>
       combined.set(statusRequest, handshake.length);
       await writer.write(combined);
 
-      // Step 2: Read Status Response
-      const responseData = await readFromSocket(reader, timeoutPromise);
+      // Step 2: Read Status Response packet
+      const { packetData: statusPacket, leftover: statusLeftover } = await readPacket(
+        reader,
+        timeoutPromise,
+      );
 
-      if (responseData.length === 0) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
-        return new Response(
-          JSON.stringify({
-            success: false,
-            error: 'No response from server',
-          } satisfies MinecraftStatusResponse),
-          { status: 502, headers: { 'Content-Type': 'application/json' } },
-        );
-      }
-
-      // Parse: [VarInt PacketLength][VarInt PacketID][VarInt StringLength][UTF-8 JSON]
-      let offset = 0;
-      const [, lengthBytes] = decodeVarInt(responseData, offset);
-      offset += lengthBytes;
-
-      const [packetId, idBytes] = decodeVarInt(responseData, offset);
-      offset += idBytes;
+      // Parse: [VarInt PacketID][VarInt StringLength][UTF-8 JSON]
+      let parseOffset = 0;
+      const [packetId, idBytes] = decodeVarInt(statusPacket, parseOffset);
+      parseOffset += idBytes;
 
       if (packetId !== 0x00) {
         writer.releaseLock();
@@ -372,11 +456,11 @@ export async function handleMinecraftStatus(request: Request): Promise<Response>
         );
       }
 
-      const [stringLength, strLenBytes] = decodeVarInt(responseData, offset);
-      offset += strLenBytes;
+      const [stringLength, strLenBytes] = decodeVarInt(statusPacket, parseOffset);
+      parseOffset += strLenBytes;
 
       const decoder = new TextDecoder();
-      const jsonStr = decoder.decode(responseData.slice(offset, offset + stringLength));
+      const jsonStr = decoder.decode(statusPacket.slice(parseOffset, parseOffset + stringLength));
 
       // Step 3: Optional Ping/Pong for latency
       let latency: number | undefined;
@@ -386,9 +470,20 @@ export async function handleMinecraftStatus(request: Request): Promise<Response>
         const pingStart = Date.now();
         await writer.write(pingPacket);
 
-        const pongData = await readFromSocket(reader, timeoutPromise);
-        if (pongData.length >= 10) {
-          latency = Date.now() - pingStart;
+        const { packetData: pongPacket } = await readPacket(
+          reader,
+          timeoutPromise,
+          statusLeftover,
+        );
+        // Verify pong packet ID is 0x01 and payload matches
+        const [pongId, idBytes] = decodeVarInt(pongPacket, 0);
+        if (pongId === 0x01 && pongPacket.length >= idBytes + 8) {
+          // Verify the echoed payload matches what we sent
+          const view = new DataView(pongPacket.buffer, pongPacket.byteOffset + idBytes, 8);
+          const receivedPayload = view.getBigInt64(0, false); // big-endian
+          if (receivedPayload === pingPayload) {
+            latency = Date.now() - pingStart;
+          }
         }
       } catch {
         // Ping failed - not critical, skip latency
@@ -446,7 +541,10 @@ export async function handleMinecraftStatus(request: Request): Promise<Response>
  */
 export async function handleMinecraftPing(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' }),
+      { status: 405, headers: { 'Content-Type': 'application/json' } },
+    );
   }
 
   try {
@@ -455,7 +553,7 @@ export async function handleMinecraftPing(request: Request): Promise<Response> {
       host,
       port = 25565,
       timeout = 10000,
-      protocolVersion = 767,
+      protocolVersion = 769, // 1.21.4
     } = body;
 
     const validationError = validateMinecraftInput(host, port);
@@ -501,7 +599,7 @@ export async function handleMinecraftPing(request: Request): Promise<Response> {
       await writer.write(combined);
 
       // Read Status Response (required before Ping)
-      await readFromSocket(reader, timeoutPromise);
+      const { leftover: statusLeftover } = await readPacket(reader, timeoutPromise);
 
       // Send Ping
       const pingPayload = BigInt(Date.now());
@@ -510,21 +608,26 @@ export async function handleMinecraftPing(request: Request): Promise<Response> {
       await writer.write(pingPacket);
 
       // Read Pong
-      const pongData = await readFromSocket(reader, timeoutPromise);
+      const { packetData: pongPacket } = await readPacket(
+        reader,
+        timeoutPromise,
+        statusLeftover,
+      );
       const pingLatency = Date.now() - pingStart;
 
       writer.releaseLock();
       reader.releaseLock();
       socket.close();
 
-      // Verify pong
+      // Verify pong: packet ID should be 0x01 and payload should match
       let pongValid = false;
-      if (pongData.length >= 10) {
-        let offset = 0;
-        const [, lb] = decodeVarInt(pongData, offset);
-        offset += lb;
-        const [pongId] = decodeVarInt(pongData, offset);
-        pongValid = pongId === 0x01;
+      if (pongPacket.length >= 9) {
+        const [pongId, idBytes] = decodeVarInt(pongPacket, 0);
+        if (pongId === 0x01 && pongPacket.length >= idBytes + 8) {
+          const view = new DataView(pongPacket.buffer, pongPacket.byteOffset + idBytes, 8);
+          const receivedPayload = view.getBigInt64(0, false); // big-endian
+          pongValid = receivedPayload === pingPayload;
+        }
       }
 
       return new Response(

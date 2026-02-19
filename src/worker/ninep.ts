@@ -20,7 +20,7 @@
  *   100/101 = Tversion/Rversion  (version negotiation)
  *   102/103 = Tauth/Rauth        (authentication)
  *   104/105 = Tattach/Rattach     (mount root)
- *   106     = Rerror              (error response)
+ *   107     = Rerror              (error response; 106/Terror is illegal)
  *   110/111 = Twalk/Rwalk         (navigate path)
  *   112/113 = Topen/Ropen         (open file)
  *   116/117 = Tread/Rread         (read file)
@@ -167,8 +167,14 @@ function parse9PMessage(data: Uint8Array): {
  * Returns [string, bytesConsumed]
  */
 function parse9PString(body: Uint8Array, offset: number): [string, number] {
+  if (offset + 2 > body.length) {
+    throw new Error('9P string length field out of bounds');
+  }
   const view = new DataView(body.buffer, body.byteOffset);
   const len = view.getUint16(offset, true);
+  if (offset + 2 + len > body.length) {
+    throw new Error(`9P string data out of bounds (need ${offset + 2 + len}, have ${body.length})`);
+  }
   const str = new TextDecoder().decode(body.slice(offset + 2, offset + 2 + len));
   return [str, 2 + len];
 }
@@ -177,6 +183,9 @@ function parse9PString(body: Uint8Array, offset: number): [string, number] {
  * Parse a QID (13 bytes: type:uint8 + version:uint32LE + path:uint64LE)
  */
 function parseQID(body: Uint8Array, offset: number): { type: number; version: number; path: string } {
+  if (offset + 13 > body.length) {
+    throw new Error('QID out of bounds');
+  }
   const view = new DataView(body.buffer, body.byteOffset);
   const type = view.getUint8(offset);
   const version = view.getUint32(offset + 1, true);
@@ -381,6 +390,22 @@ export async function handle9PConnect(request: Request): Promise<Response> {
 
 /** Twalk: navigate a path relative to fid, producing newFid */
 function buildTwalk(fid: number, newFid: number, pathComponents: string[]): Uint8Array {
+  // Validate path components for security
+  if (pathComponents.length > 16) {
+    throw new Error('Path depth exceeds maximum (16 components)');
+  }
+  for (const component of pathComponents) {
+    if (component === '' || component === '.' || component === '..') {
+      throw new Error('Invalid path component: empty, ".", or ".." not allowed');
+    }
+    if (component.includes('/') || component.includes('\0')) {
+      throw new Error('Invalid path component: contains "/" or null byte');
+    }
+    if (component.length > 255) {
+      throw new Error('Path component exceeds maximum length (255)');
+    }
+  }
+
   const enc = new TextEncoder();
   // Body: fid(4) + newFid(4) + nwname(2) + [wname strings...]
   const nameBuffers = pathComponents.map(p => enc.encode(p));
@@ -447,9 +472,16 @@ interface Stat9P {
 }
 
 /**
- * Parse a 9P2000 stat structure from Rstat body.
- * Rstat body: size(2) + stat bytes
- * Stat: size(2)+type(2)+dev(4)+qid(13)+mode(4)+atime(4)+mtime(4)+length(8)+name+uid+gid+muid
+ * Parse a single 9P2000 stat structure.
+ *
+ * A raw stat is: size[2] type[2] dev[4] qid[13] mode[4] atime[4] mtime[4]
+ *                length[8] name[s] uid[s] gid[s] muid[s]
+ *
+ * The offset must point at the stat's own size[2] prefix.
+ *
+ * NOTE: Rstat body = nstat[2] + stat_bytes. The caller must skip the
+ * leading nstat[2] before calling this function (i.e. pass offset=2
+ * for Rstat, or the current offset within concatenated dir-read data).
  */
 function parseStat(body: Uint8Array, offset: number): Stat9P | null {
   if (offset + 2 > body.length) return null;
@@ -471,7 +503,10 @@ function parseStat(body: Uint8Array, offset: number): Stat9P | null {
   if (offset + 8 > body.length) return null;
   const lenLo = view.getUint32(offset, true);
   const lenHi = view.getUint32(offset + 4, true);
-  const length = lenHi ? `${lenHi * 2 ** 32 + lenLo}` : `${lenLo}`;
+  // Use BigInt to avoid precision loss for large files
+  const length = lenHi !== 0
+    ? (BigInt(lenHi) * BigInt(0x100000000) + BigInt(lenLo)).toString()
+    : lenLo.toString();
   offset += 8;
   const [name, ns] = parse9PString(body, offset); offset += ns;
   const [uid, us] = parse9PString(body, offset); offset += us;
@@ -520,7 +555,8 @@ async function ninePHandshake(
   writer: WritableStreamDefaultWriter<Uint8Array>,
   timeoutMs: number,
 ): Promise<{ rootFid: number; msize: number }> {
-  const timeLeft = () => Math.max(timeoutMs - 1000, 1000);
+  const startTime = Date.now();
+  const timeLeft = () => Math.max(timeoutMs - (Date.now() - startTime), 1000);
 
   const tvBody = buildTversion(DEFAULT_MSIZE);
   await writer.write(build9PMessage(Tversion, NOTAG, tvBody));
@@ -588,7 +624,12 @@ export async function handle9PStat(request: Request): Promise<Response> {
         await writer.write(build9PMessage(Tstat, 2, buildTstat(rootFid)));
         const rsData = await read9PMessage(reader, 5000);
         const rs = parse9PMessage(rsData);
-        if (rs && rs.type === Rstat) stat = parseStat(rs.body, 0);
+        // Rstat body = nstat[2] + stat_data; parseStat expects offset at the stat size field
+        if (rs && rs.type === Rstat) {
+          // Skip the 2-byte nstat prefix (should be the stat size + 2)
+          if (rs.body.length < 2) throw new Error('Rstat response too short');
+          stat = parseStat(rs.body, 2);
+        }
       } else {
         // Walk to path
         await writer.write(build9PMessage(Twalk, 2, buildTwalk(rootFid, targetFid, pathComponents)));
@@ -605,7 +646,11 @@ export async function handle9PStat(request: Request): Promise<Response> {
         await writer.write(build9PMessage(Tstat, 3, buildTstat(targetFid)));
         const rsData = await read9PMessage(reader, 5000);
         const rs = parse9PMessage(rsData);
-        if (rs && rs.type === Rstat) stat = parseStat(rs.body, 0);
+        if (rs && rs.type === Rstat) {
+          // Rstat body = nstat[2] + stat_data; skip the 2-byte nstat prefix
+          if (rs.body.length < 2) throw new Error('Rstat response too short');
+          stat = parseStat(rs.body, 2);
+        }
 
         // Clunk the new fid
         try { await writer.write(build9PMessage(Tclunk, 4, buildTclunk(targetFid))); } catch { /* ignore */ }
@@ -717,7 +762,11 @@ export async function handle9PRead(request: Request): Promise<Response> {
         bytesRead = rrView.getUint32(0, true);
         const dataBytes = rr.body.slice(4, 4 + bytesRead);
         // Return as base64 for binary safety
-        data = btoa(String.fromCharCode(...dataBytes));
+        let binary = '';
+        for (let i = 0; i < dataBytes.length; i++) {
+          binary += String.fromCharCode(dataBytes[i]);
+        }
+        data = btoa(binary);
       } else if (rr?.type === Rerror) {
         const [errMsg] = parse9PString(rr.body, 0);
         throw new Error(`Read failed: ${errMsg}`);

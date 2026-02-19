@@ -80,7 +80,7 @@ export async function handleGaduGaduConnect(request: Request): Promise<Response>
 			return Response.json(
 				{
 					success: false,
-					error: 'Invalid UIN format (must be 1-99999999)',
+					error: 'Invalid UIN format (must be a positive integer up to 4294967295)',
 				},
 				{ status: 400 }
 			);
@@ -166,7 +166,7 @@ async function openGGSession(
 	if (welcome.type !== GG_PACKET_TYPES.GG_WELCOME) {
 		throw new Error(`Expected GG_WELCOME, got ${getPacketTypeName(welcome.type)}`);
 	}
-	const seed = new DataView(welcome.payload.buffer).getUint32(0, true);
+	const seed = new DataView(welcome.payload.buffer, welcome.payload.byteOffset, welcome.payload.byteLength).getUint32(0, true);
 	const loginPayload = await buildLoginPacket(uin, password, seed, hashType);
 	await writer.write(writePacket(GG_PACKET_TYPES.GG_LOGIN80, loginPayload));
 	const loginResp = await Promise.race([readPacket(reader, 5000), deadline]);
@@ -184,12 +184,14 @@ async function openGGSession(
  *
  * GG_SEND_MSG80 (0x002D) packet format (LE):
  *   recipient:    4 bytes  — target UIN
- *   seq:          4 bytes  — sequence number
- *   time:         4 bytes  — timestamp (epoch seconds)
+ *   seq:          4 bytes  — sequence number (client-generated)
  *   msgclass:     4 bytes  — 0x0004 = chat message
- *   offset_plain: 4 bytes  — 0 (plain text starts at offset 0)
- *   offset_attrs: 4 bytes  — 0 (no rich text)
+ *   offset_plain: 4 bytes  — byte offset to plain-text within message area
+ *   offset_attrs: 4 bytes  — byte offset to attributes (0 = no rich text)
  *   message:      variable — null-terminated UTF-8 text
+ *
+ * Note: The server timestamps the message; the client does NOT include a
+ * timestamp field in GG_SEND_MSG80.
  *
  * POST /api/gadugadu/send-message
  * Body: { host, port?, senderUin, senderPassword, recipientUin, message, hashType?, timeout? }
@@ -234,20 +236,18 @@ export async function handleGaduGaduSendMessage(request: Request): Promise<Respo
 		const { reader, writer, close } = await openGGSession(host, port, senderUin, body.senderPassword!, hashType, timeout);
 
 		try {
-			// Build GG_SEND_MSG80 payload
+			// Build GG_SEND_MSG80 payload (no timestamp — server handles that)
 			const msgBytes = new TextEncoder().encode(messageText);
-			const payload = new Uint8Array(4 + 4 + 4 + 4 + 4 + 4 + msgBytes.length + 1);
+			const payload = new Uint8Array(4 + 4 + 4 + 4 + 4 + msgBytes.length + 1);
 			const view = new DataView(payload.buffer);
-			const now = Math.floor(Date.now() / 1000);
-			const seq = now & 0xFFFF;
+			const seq = Date.now() & 0x7FFFFFFF; // Client-generated sequence number
 
 			let off = 0;
-			view.setUint32(off, recipientUin, true); off += 4;
-			view.setUint32(off, seq, true); off += 4;
-			view.setUint32(off, now, true); off += 4;
-			view.setUint32(off, 0x0004, true); off += 4;  // msgclass: chat
-			view.setUint32(off, 0, true); off += 4;        // offset_plain: 0
-			view.setUint32(off, 0, true); off += 4;        // offset_attrs: 0
+			view.setUint32(off, recipientUin, true); off += 4;  // recipient UIN
+			view.setUint32(off, seq, true); off += 4;            // sequence number
+			view.setUint32(off, 0x0004, true); off += 4;        // msgclass: chat
+			view.setUint32(off, 0, true); off += 4;              // offset_plain
+			view.setUint32(off, 0, true); off += 4;              // offset_attrs
 			payload.set(msgBytes, off); off += msgBytes.length;
 			payload[off] = 0; // null terminator
 

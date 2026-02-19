@@ -402,8 +402,14 @@ export async function handleMsrpSend(request: Request): Promise<Response> {
 
 /**
  * Build an MSRP REPORT request (receipt notification).
+ *
+ * Per RFC 4975 Section 7.1.2, REPORT requests are sent by the *recipient*
+ * of a SEND request back to the original sender to indicate delivery status.
+ * REPORT requests MUST NOT be responded to with a 200 OK or any other
+ * transaction response — they are end-to-end notifications, not hop-by-hop
+ * transactions.
  */
-function encodeMsrpReport(params: {
+export function encodeMsrpReport(params: {
   transactionId: string;
   toPath: string;
   fromPath: string;
@@ -427,7 +433,7 @@ function encodeMsrpReport(params: {
 
 /**
  * Send multiple MSRP SEND messages over a single TCP connection,
- * collecting 200 OK responses and sending REPORT receipts for each.
+ * collecting 200 OK responses for each.
  */
 export async function handleMsrpSession(request: Request): Promise<Response> {
   try {
@@ -498,7 +504,7 @@ export async function handleMsrpSession(request: Request): Promise<Response> {
 
       /**
        * Read the next complete MSRP message from the stream.
-       * A message ends with the end-line: -------<tid>[$|+|-]
+       * A message ends with the end-line: -------<tid>[$|+|#]
        */
       async function readNextMsrpMessage(tid: string): Promise<string> {
         const chunks: Uint8Array[] = [];
@@ -568,17 +574,11 @@ export async function handleMsrpSession(request: Request): Promise<Response> {
 
         if (statusCode >= 200 && statusCode < 300) {
           acknowledged++;
-
-          // Send REPORT receipt notification
-          const reportMsg = encodeMsrpReport({
-            transactionId: `rpt${String(i + 1).padStart(3, '0')}`,
-            toPath,
-            fromPath,
-            messageId: msgId,
-            byteRange: `1-${contentBytes}/${contentBytes}`,
-            statusCode: 200,
-          });
-          await writer.write(new TextEncoder().encode(reportMsg));
+          // Per RFC 4975 Section 7.1.2, REPORT requests are sent by the
+          // *recipient* of a message back to the sender to indicate delivery
+          // status.  The sender (us) must NOT generate REPORTs for its own
+          // SEND transactions — the 200 OK response already confirms the
+          // hop-by-hop transaction succeeded.
         }
       }
 

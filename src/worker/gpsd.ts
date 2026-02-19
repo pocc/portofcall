@@ -21,9 +21,14 @@
  * - VERSION:  gpsd version info (release, rev, proto_major, proto_minor)
  * - DEVICES:  List of active GPS devices
  * - DEVICE:   Individual device info (path, driver, activated, flags)
+ * - WATCH:    Watch mode acknowledgement (enable, json, nmea, etc.)
  * - TPV:      Time-Position-Velocity fix (lat, lon, alt, speed, track, time)
  * - SKY:      Satellite sky view (satellites array with PRN, az, el, ss, used)
- * - POLL:     Aggregated latest fix data
+ * - GST:      GPS pseudorange noise statistics (rms, major/minor axis errors)
+ * - ATT:      Vehicle attitude (heading, pitch, roll, yaw) from INS/compass
+ * - TOFF:     Time offset between GPS and system clock (for NTP/PPS)
+ * - PPS:      Pulse-per-second timing data
+ * - POLL:     Aggregated latest fix data (contains embedded tpv[] and sky[])
  * - ERROR:    Error message
  *
  * Typical Deployments:
@@ -161,6 +166,87 @@ async function sendCommand(
         const trimmed = line.trim();
         if (trimmed) allLines.push(trimmed);
       }
+    }
+
+    const rtt = Date.now() - startTime;
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    return { lines: allLines, rtt };
+  } catch (error) {
+    socket.close();
+    throw error;
+  }
+}
+
+/**
+ * Connect to gpsd, enable WATCH, briefly pause for data collection,
+ * then send ?POLL and disable WATCH. This is required because ?POLL
+ * only returns meaningful data when WATCH is active — without it,
+ * gpsd may not be reading from the GPS device at all.
+ */
+async function sendPollCommand(
+  host: string,
+  port: number,
+  timeout: number,
+): Promise<{ lines: string[]; rtt: number }> {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
+  }
+
+  const startTime = Date.now();
+  const socket = connect(`${host}:${port}`);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+    const encoder = new TextEncoder();
+    const allLines: string[] = [];
+
+    // Read the VERSION banner
+    const banner = await readLines(reader, timeoutPromise);
+    for (const line of banner.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) allLines.push(trimmed);
+    }
+
+    // Enable WATCH so gpsd actively collects data from GPS devices
+    await writer.write(encoder.encode('?WATCH={"enable":true,"json":true};\n'));
+
+    // Read the WATCH acknowledgement (and any TPV/SKY that streams in)
+    const watchResponse = await readLines(reader, timeoutPromise);
+    for (const line of watchResponse.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) allLines.push(trimmed);
+    }
+
+    // Brief pause to let gpsd collect a GPS fix cycle (typically 1 second)
+    await new Promise(resolve => setTimeout(resolve, 1200));
+
+    // Now poll for the latest fix
+    await writer.write(encoder.encode('?POLL;\n'));
+
+    // Read the POLL response
+    const pollResponse = await readLines(reader, timeoutPromise);
+    for (const line of pollResponse.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) allLines.push(trimmed);
+    }
+
+    // Disable WATCH
+    try {
+      await writer.write(encoder.encode('?WATCH={"enable":false};\n'));
+    } catch {
+      // Ignore write errors on shutdown
     }
 
     const rtt = Date.now() - startTime;
@@ -321,7 +407,12 @@ export async function handleGPSDDevices(request: Request): Promise<Response> {
 }
 
 /**
- * Handle GPSD poll — send ?POLL; to get the latest GPS fix.
+ * Handle GPSD poll — enable WATCH, send ?POLL;, then disable WATCH.
+ *
+ * Per the GPSD protocol, ?POLL requires an active WATCH session to have
+ * data available. Without WATCH enabled, ?POLL returns stale or empty
+ * TPV/SKY objects. The POLL response is a single JSON object containing
+ * embedded "tpv" and "sky" arrays (not separate top-level objects).
  */
 export async function handleGPSDPoll(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
@@ -347,14 +438,38 @@ export async function handleGPSDPoll(request: Request): Promise<Response> {
       });
     }
 
-    // First enable WATCH to ensure data flows, then POLL
-    const { lines, rtt } = await sendCommand(host, port, timeout, '?POLL');
+    // ?POLL requires WATCH to be enabled so gpsd actively collects data.
+    // Sequence: connect -> read VERSION -> enable WATCH -> brief pause -> ?POLL -> disable WATCH
+    const { lines, rtt } = await sendPollCommand(host, port, timeout);
     const { objects } = parseLines(lines);
 
     const version = objects.find(o => o.class === 'VERSION');
     const poll = objects.find(o => o.class === 'POLL');
-    const tpv = objects.find(o => o.class === 'TPV');
-    const sky = objects.find(o => o.class === 'SKY');
+
+    // Extract TPV and SKY from inside the POLL response object.
+    // gpsd embeds them as "tpv" and "sky" arrays within the POLL class.
+    let tpv: Record<string, unknown> | null = null;
+    let sky: Record<string, unknown> | null = null;
+
+    if (poll) {
+      const tpvArray = poll.tpv as Record<string, unknown>[] | undefined;
+      if (Array.isArray(tpvArray) && tpvArray.length > 0) {
+        tpv = tpvArray[0];
+      }
+      const skyArray = poll.sky as Record<string, unknown>[] | undefined;
+      if (Array.isArray(skyArray) && skyArray.length > 0) {
+        sky = skyArray[0];
+      }
+    }
+
+    // Fall back to standalone TPV/SKY objects if present (older gpsd versions
+    // or if WATCH streamed them before the POLL response arrived)
+    if (!tpv) {
+      tpv = objects.find(o => o.class === 'TPV') || null;
+    }
+    if (!sky) {
+      sky = objects.find(o => o.class === 'SKY') || null;
+    }
 
     return new Response(JSON.stringify({
       success: true,
@@ -366,8 +481,8 @@ export async function handleGPSDPoll(request: Request): Promise<Response> {
         proto_minor: version.proto_minor,
       } : null,
       poll: poll || null,
-      tpv: tpv || null,
-      sky: sky || null,
+      tpv,
+      sky,
       raw: lines,
       rtt,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });

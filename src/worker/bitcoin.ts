@@ -38,14 +38,18 @@ const NODE_NONE = 0n;
 const NODE_NETWORK = 1n;
 const NODE_BLOOM = 4n;
 const NODE_WITNESS = 8n;
+const NODE_COMPACT_FILTERS = 64n;
 const NODE_NETWORK_LIMITED = 1024n;
+const NODE_P2P_V2 = 2048n;
 
 function decodeServices(flags: bigint): string[] {
   const services: string[] = [];
   if (flags & NODE_NETWORK) services.push('NODE_NETWORK');
   if (flags & NODE_BLOOM) services.push('NODE_BLOOM');
   if (flags & NODE_WITNESS) services.push('NODE_WITNESS');
+  if (flags & NODE_COMPACT_FILTERS) services.push('NODE_COMPACT_FILTERS');
   if (flags & NODE_NETWORK_LIMITED) services.push('NODE_NETWORK_LIMITED');
+  if (flags & NODE_P2P_V2) services.push('NODE_P2P_V2');
   if (services.length === 0) services.push('NONE');
   return services;
 }
@@ -520,6 +524,69 @@ function parseInvPayload(payload: Uint8Array): Array<{ type: number; hash: strin
 }
 
 /**
+ * Parse a Bitcoin "addr" message payload (BIP protocol, not addrv2).
+ * Each entry: 4-byte timestamp (LE uint32) + 8-byte services (LE uint64)
+ *           + 16-byte IPv6 addr + 2-byte port (BE uint16) = 30 bytes per entry.
+ * Preceded by a varint count.
+ */
+function parseAddrPayload(payload: Uint8Array): Array<{
+  timestamp: string;
+  services: string[];
+  servicesRaw: string;
+  address: string;
+  port: number;
+}> {
+  if (payload.length < 1) return [];
+  const view = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const { value: count, bytesRead } = readVarint(view, 0);
+  const peers: Array<{
+    timestamp: string;
+    services: string[];
+    servicesRaw: string;
+    address: string;
+    port: number;
+  }> = [];
+  let offset = bytesRead;
+  const maxPeers = Math.min(count, 1000); // cap to prevent runaway parsing
+  for (let i = 0; i < maxPeers; i++) {
+    if (offset + 30 > payload.length) break;
+    const ts = view.getUint32(offset, true);
+    offset += 4;
+    const svcFlags = view.getBigUint64(offset, true);
+    offset += 8;
+    // 16-byte IPv6 address (or IPv4-mapped)
+    const addrBytes = payload.slice(offset, offset + 16);
+    offset += 16;
+    const port = view.getUint16(offset, false); // big-endian
+    offset += 2;
+
+    // Detect IPv4-mapped-to-IPv6: first 10 bytes 0x00, bytes 10-11 = 0xff
+    let address: string;
+    const isIPv4Mapped = addrBytes[10] === 0xff && addrBytes[11] === 0xff &&
+      addrBytes.slice(0, 10).every(b => b === 0);
+    if (isIPv4Mapped) {
+      address = `${addrBytes[12]}.${addrBytes[13]}.${addrBytes[14]}.${addrBytes[15]}`;
+    } else {
+      // Format as IPv6
+      const parts: string[] = [];
+      for (let j = 0; j < 16; j += 2) {
+        parts.push(((addrBytes[j] << 8) | addrBytes[j + 1]).toString(16));
+      }
+      address = parts.join(':');
+    }
+
+    peers.push({
+      timestamp: new Date(ts * 1000).toISOString(),
+      services: decodeServices(svcFlags),
+      servicesRaw: `0x${svcFlags.toString(16)}`,
+      address,
+      port,
+    });
+  }
+  return peers;
+}
+
+/**
  * Handle Bitcoin getaddr request — connect and request peer addresses
  */
 export async function handleBitcoinGetAddr(request: Request): Promise<Response> {
@@ -622,12 +689,22 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
 
         // Read responses (addr message or others)
         const messages: Array<{ command: string; payloadSize: number }> = [];
+        let peers: Array<{
+          timestamp: string;
+          services: string[];
+          servicesRaw: string;
+          address: string;
+          port: number;
+        }> = [];
         try {
-          for (let i = 0; i < 5; i++) {
+          for (let i = 0; i < 10; i++) {
             const msg = await readMessage(reader, magic, 5000);
             if (!msg) break;
             messages.push({ command: msg.command, payloadSize: msg.payload.length });
-            if (msg.command === 'addr') break;
+            if (msg.command === 'addr') {
+              peers = parseAddrPayload(msg.payload);
+              break;
+            }
           }
         } catch {
           // Timeout or error reading — use what we have
@@ -645,8 +722,9 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
           network,
           nodeVersion: versionInfo.userAgent,
           blockHeight: versionInfo.startHeight,
+          peerCount: peers.length,
+          peers,
           messagesReceived: messages,
-          note: 'Sent getaddr request after handshake. Nodes may not respond immediately with addresses.',
         };
       } catch (error) {
         reader.releaseLock();
@@ -692,6 +770,7 @@ interface BitcoinMempoolRequest {
   port?: number;
   network?: string;
   timeout?: number;
+  maxTxIds?: number;
 }
 
 interface BitcoinMempoolResponse {
@@ -735,6 +814,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
         port: parseInt(url.searchParams.get('port') || '8333'),
         network: url.searchParams.get('network') || 'mainnet',
         timeout: parseInt(url.searchParams.get('timeout') || '20000'),
+        maxTxIds: parseInt(url.searchParams.get('maxTxIds') || '20'),
       };
     }
 
@@ -752,6 +832,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
     const port = options.port || 8333;
     const network = options.network || 'mainnet';
     const timeoutMs = options.timeout || 20000;
+    const maxTxIds = Math.min(Math.max(options.maxTxIds || 20, 1), 200);
 
     if (!NETWORK_MAGIC[network]) {
       return new Response(JSON.stringify({
@@ -836,7 +917,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
         let totalInvTxCount = 0;
         const invDeadline = Date.now() + 5000;
 
-        while (txIds.length < 20) {
+        while (txIds.length < maxTxIds) {
           const remaining = invDeadline - Date.now();
           if (remaining <= 0) break;
 
@@ -854,7 +935,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
             for (const item of items) {
               if (item.type === MSG_TX) {
                 totalInvTxCount++;
-                if (txIds.length < 20) {
+                if (txIds.length < maxTxIds) {
                   txIds.push(item.hash);
                 }
               }

@@ -84,14 +84,26 @@ async function readExact(
   length: number,
   timeoutPromise: Promise<never>,
 ): Promise<Uint8Array> {
-  const buf = new Uint8Array(length);
-  let off = 0;
-  while (off < length) {
+  if (length > 16 * 1024 * 1024) throw new Error('Response too large (max 16MB)');
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  while (total < length) {
     const result = await Promise.race([reader.read(), timeoutPromise]);
     if (result.done || !result.value) throw new Error('Connection closed while reading');
-    const n = Math.min(length - off, result.value.length);
-    buf.set(result.value.subarray(0, n), off);
-    off += n;
+    const needed = length - total;
+    if (result.value.length <= needed) {
+      chunks.push(result.value);
+      total += result.value.length;
+    } else {
+      chunks.push(result.value.subarray(0, needed));
+      total += needed;
+    }
+  }
+  const buf = new Uint8Array(length);
+  let off = 0;
+  for (let i = 0; i < chunks.length; i++) {
+    buf.set(chunks[i], off);
+    off += chunks[i].length;
   }
   return buf;
 }
@@ -369,6 +381,7 @@ async function cfBlock(host: string): Promise<Response | null> {
  * POST { host, port?, authKey?, timeout? }
  */
 export async function handleRethinkDBConnect(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; authKey?: string; timeout?: number;
@@ -383,8 +396,9 @@ export async function handleRethinkDBConnect(request: Request): Promise<Response
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, r) =>
-      setTimeout(() => r(new Error('Connection timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error('Connection timeout')), timeout);
+    });
 
     await Promise.race([socket.opened, timeoutPromise]);
     const connectTime = Date.now() - startTime;
@@ -392,24 +406,30 @@ export async function handleRethinkDBConnect(request: Request): Promise<Response
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    await writer.write(buildV04Handshake(authKey));
-    const response = await readNullTerminatedString(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    const detection = detectProtocolVersion(response);
+    try {
+      await writer.write(buildV04Handshake(authKey));
+      const response = await readNullTerminatedString(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+      const detection = detectProtocolVersion(response);
 
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    return new Response(JSON.stringify({
-      success: true, host, port, rtt, connectTime,
-      protocolVersion: 'V0.4',
-      isRethinkDB: detection.isRethinkDB,
-      authenticated: detection.authenticated,
-      serverVersion: detection.version,
-      rawResponse: response.substring(0, 500),
-      message: detection.message,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({
+        success: true, host, port, rtt, connectTime,
+        protocolVersion: 'V0.4',
+        isRethinkDB: detection.isRethinkDB,
+        authenticated: detection.authenticated,
+        serverVersion: detection.version,
+        rawResponse: response.substring(0, 500),
+        message: detection.message,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
+    }
 
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
@@ -422,40 +442,49 @@ export async function handleRethinkDBConnect(request: Request): Promise<Response
  * POST { host, port?, timeout? }
  */
 export async function handleRethinkDBProbe(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number; };
     const { host, port = 28015, timeout = 10000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
+    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, r) =>
-      setTimeout(() => r(new Error('Connection timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error('Connection timeout')), timeout);
+    });
 
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    await writer.write(buildV10ScramInit());
-    const response = await readNullTerminatedString(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    const detection = detectProtocolVersion(response);
+    try {
+      await writer.write(buildV10ScramInit());
+      const response = await readNullTerminatedString(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+      const detection = detectProtocolVersion(response);
 
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    return new Response(JSON.stringify({
-      success: true, host, port, rtt,
-      isRethinkDB: detection.isRethinkDB,
-      serverVersion: detection.version,
-      rawResponse: response.substring(0, 500),
-      message: detection.message,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({
+        success: true, host, port, rtt,
+        isRethinkDB: detection.isRethinkDB,
+        serverVersion: detection.version,
+        rawResponse: response.substring(0, 500),
+        message: detection.message,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
+    }
 
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
@@ -473,6 +502,7 @@ export async function handleRethinkDBProbe(request: Request): Promise<Response> 
  *   "[5]"                                → SERVER_INFO (no auth needed for query format)
  */
 export async function handleRethinkDBQuery(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; query: string; timeout?: number;
@@ -481,43 +511,51 @@ export async function handleRethinkDBQuery(request: Request): Promise<Response> 
 
     if (!host) return badRequest('Missing required parameter: host');
     if (!query) return badRequest('Missing required parameter: query');
+    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, r) =>
-      setTimeout(() => r(new Error('Connection timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error('Connection timeout')), timeout);
+    });
 
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
-    if (!authResult.success) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      return new Response(
-        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+    try {
+      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      if (!authResult.success) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      await writer.write(buildQueryPacket(1, query));
+      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      const parsed = parseReQLResponse(responseJson);
+      return new Response(JSON.stringify({
+        success: !parsed.error, host, port, rtt,
+        responseType: parsed.typeName,
+        results: parsed.results,
+        error: parsed.error,
+        rawResponse: responseJson.slice(0, 1000),
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
 
-    await writer.write(buildQueryPacket(1, query));
-    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    const parsed = parseReQLResponse(responseJson);
-    return new Response(JSON.stringify({
-      success: !parsed.error, host, port, rtt,
-      responseType: parsed.typeName,
-      results: parsed.results,
-      error: parsed.error,
-      rawResponse: responseJson.slice(0, 1000),
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
@@ -533,6 +571,7 @@ export async function handleRethinkDBQuery(request: Request): Promise<Response> 
  * ReQL AST: [1, [TABLE_LIST, [[DB, [[db_name]]]]], {}]
  */
 export async function handleRethinkDBListTables(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; db?: string; timeout?: number;
@@ -540,45 +579,53 @@ export async function handleRethinkDBListTables(request: Request): Promise<Respo
     const { host, port = 28015, password = '', db = 'rethinkdb', timeout = 15000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
+    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, r) =>
-      setTimeout(() => r(new Error('Connection timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error('Connection timeout')), timeout);
+    });
 
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
-    if (!authResult.success) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      return new Response(
-        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+    try {
+      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      if (!authResult.success) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // r.db(db).tableList()  →  [1, [TABLE_LIST, [[DB, [[db]]]]], {}]
+      const tableListQuery = JSON.stringify([1, [TERM_TABLE_LIST, [[TERM_DB, [[db]]]]], {}]);
+      await writer.write(buildQueryPacket(1, tableListQuery));
+
+      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      const parsed = parseReQLResponse(responseJson);
+      return new Response(JSON.stringify({
+        success: !parsed.error, host, port, db, rtt,
+        tables: parsed.error ? undefined : parsed.results,
+        responseType: parsed.typeName,
+        error: parsed.error,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
 
-    // r.db(db).tableList()  →  [1, [TABLE_LIST, [[DB, [[db]]]]], {}]
-    const tableListQuery = JSON.stringify([1, [TERM_TABLE_LIST, [[TERM_DB, [[db]]]]], {}]);
-    await writer.write(buildQueryPacket(1, tableListQuery));
-
-    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    const parsed = parseReQLResponse(responseJson);
-    return new Response(JSON.stringify({
-      success: !parsed.error, host, port, db, rtt,
-      tables: parsed.error ? undefined : parsed.results,
-      responseType: parsed.typeName,
-      error: parsed.error,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
@@ -593,6 +640,7 @@ export async function handleRethinkDBListTables(request: Request): Promise<Respo
  * Sends binary query [5] and returns server id, name, and version string.
  */
 export async function handleRethinkDBServerInfo(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; timeout?: number;
@@ -600,47 +648,55 @@ export async function handleRethinkDBServerInfo(request: Request): Promise<Respo
     const { host, port = 28015, password = '', timeout = 15000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
+    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, r) =>
-      setTimeout(() => r(new Error('Connection timeout')), timeout));
+    const timeoutPromise = new Promise<never>((_, r) => {
+      timeoutHandle = setTimeout(() => r(new Error('Connection timeout')), timeout);
+    });
 
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
-    if (!authResult.success) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      return new Response(
-        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+    try {
+      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      if (!authResult.success) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // SERVER_INFO: query type=5, no term → [5]
+      await writer.write(buildQueryPacket(1, '[5]'));
+      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      const parsed = parseReQLResponse(responseJson);
+      const info = parsed.results[0] as Record<string, string> | undefined;
+
+      return new Response(JSON.stringify({
+        success: !parsed.error, host, port, rtt,
+        serverId: info?.id,
+        serverName: info?.name,
+        serverVersion: info?.version,
+        responseType: parsed.typeName,
+        error: parsed.error,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
 
-    // SERVER_INFO: query type=5, no term → [5]
-    await writer.write(buildQueryPacket(1, '[5]'));
-    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    const parsed = parseReQLResponse(responseJson);
-    const info = parsed.results[0] as Record<string, string> | undefined;
-
-    return new Response(JSON.stringify({
-      success: !parsed.error, host, port, rtt,
-      serverId: info?.id,
-      serverName: info?.name,
-      serverVersion: info?.version,
-      responseType: parsed.typeName,
-      error: parsed.error,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
@@ -664,55 +720,63 @@ const TERM_TABLE = 15;
  * Response: { success, host, port, rtt, created, responseType, error? }
  */
 export async function handleRethinkDBTableCreate(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string; db?: string; name?: string; timeout?: number;
     };
     const { host, port = 28015, password = '', db = 'test', timeout = 15000 } = body;
     const name = body.name ?? `portofcall_${Date.now()}`;
-    if (!host) return new Response(
-      JSON.stringify({ success: false, error: 'host is required' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    );
+    if (!host) return badRequest('Missing required parameter: host');
+    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+
+    const block = await cfBlock(host);
+    if (block) return block;
 
     const startTime = Date.now();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
-    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout);
+    });
 
-    const socket = connect({ hostname: host, port });
+    const socket = connect(`${host}:${port}`);
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
-    if (!authResult.success) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      return new Response(
-        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+    try {
+      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      if (!authResult.success) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // r.db(db).tableCreate(name) → [1, [TABLE_CREATE, [[DB, [[db]]], [name]]], {}]
+      const query = JSON.stringify([1, [TERM_TABLE_CREATE, [[TERM_DB, [[db]]], [name]]], {}]);
+      await writer.write(buildQueryPacket(1, query));
+      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      const parsed = parseReQLResponse(responseJson);
+      const result = parsed.results[0] as Record<string, unknown> | undefined;
+
+      return new Response(JSON.stringify({
+        success: !parsed.error, host, port, rtt,
+        tableName: name, db,
+        created: (result?.tables_created as number | undefined) ?? (parsed.error ? 0 : 1),
+        responseType: parsed.typeName,
+        error: parsed.error,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
 
-    // r.db(db).tableCreate(name) → [1, [TABLE_CREATE, [[DB, [[db]]], [name]]], {}]
-    const query = JSON.stringify([1, [TERM_TABLE_CREATE, [[TERM_DB, [[db]]], [name]]], {}]);
-    await writer.write(buildQueryPacket(1, query));
-    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    const parsed = parseReQLResponse(responseJson);
-    const result = parsed.results[0] as Record<string, unknown> | undefined;
-
-    return new Response(JSON.stringify({
-      success: !parsed.error, host, port, rtt,
-      tableName: name, db,
-      created: (result?.tables_created as number | undefined) ?? (parsed.error ? 0 : 1),
-      responseType: parsed.typeName,
-      error: parsed.error,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
@@ -732,6 +796,7 @@ export async function handleRethinkDBTableCreate(request: Request): Promise<Resp
  * Response: { success, host, port, rtt, inserted, errors, responseType, error? }
  */
 export async function handleRethinkDBInsert(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string; port?: number; password?: string;
@@ -741,52 +806,59 @@ export async function handleRethinkDBInsert(request: Request): Promise<Response>
     const { host, port = 28015, password = '', db = 'test', timeout = 15000 } = body;
     const table = body.table ?? 'portofcall';
     const docs = body.docs ?? [{ source: 'portofcall', ts: Date.now() }];
-    if (!host) return new Response(
-      JSON.stringify({ success: false, error: 'host is required' }),
-      { status: 400, headers: { 'Content-Type': 'application/json' } },
-    );
+    if (!host) return badRequest('Missing required parameter: host');
+    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+
+    const block = await cfBlock(host);
+    if (block) return block;
 
     const startTime = Date.now();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
-    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout);
+    });
 
-    const socket = connect({ hostname: host, port });
+    const socket = connect(`${host}:${port}`);
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
-    if (!authResult.success) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      return new Response(
-        JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } },
-      );
+    try {
+      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      if (!authResult.success) {
+        return new Response(
+          JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
+      // r.db(db).table(name).insert(docs) →
+      //   [1, [INSERT, [[TABLE, [[DB, [[db]]], [name]]], [docs...]]], {}]
+      const query = JSON.stringify([1, [TERM_INSERT, [[TERM_TABLE, [[TERM_DB, [[db]]], [table]]], docs]], {}]);
+      await writer.write(buildQueryPacket(1, query));
+      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const rtt = Date.now() - startTime;
+
+      const parsed = parseReQLResponse(responseJson);
+      const result = parsed.results[0] as Record<string, unknown> | undefined;
+
+      return new Response(JSON.stringify({
+        success: !parsed.error, host, port, rtt,
+        db, table,
+        inserted: result?.inserted ?? 0,
+        errors: result?.errors ?? 0,
+        generatedKeys: result?.generated_keys ?? [],
+        responseType: parsed.typeName,
+        error: parsed.error,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
 
-    // r.db(db).table(name).insert(docs) →
-    //   [1, [INSERT, [[TABLE, [[DB, [[db]]], [name]]], [docs...]]], {}]
-    const query = JSON.stringify([1, [TERM_INSERT, [[TERM_TABLE, [[TERM_DB, [[db]]], [table]]], docs]], {}]);
-    await writer.write(buildQueryPacket(1, query));
-    const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
-    const rtt = Date.now() - startTime;
-    writer.releaseLock(); reader.releaseLock(); socket.close();
-
-    const parsed = parseReQLResponse(responseJson);
-    const result = parsed.results[0] as Record<string, unknown> | undefined;
-
-    return new Response(JSON.stringify({
-      success: !parsed.error, host, port, rtt,
-      db, table,
-      inserted: result?.inserted ?? 0,
-      errors: result?.errors ?? 0,
-      generatedKeys: result?.generated_keys ?? [],
-      responseType: parsed.typeName,
-      error: parsed.error,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-
   } catch (error) {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     return new Response(
       JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },

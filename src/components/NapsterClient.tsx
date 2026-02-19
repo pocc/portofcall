@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface NapsterClientProps {
   onBack: () => void;
@@ -131,6 +133,7 @@ export default function NapsterClient({ onBack }: NapsterClientProps) {
 
   return (
     <ProtocolClientLayout title="Napster Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Napster || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 

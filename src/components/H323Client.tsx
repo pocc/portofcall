@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface H323ClientProps {
   onBack: () => void;
@@ -149,6 +151,7 @@ export default function H323Client({ onBack }: H323ClientProps) {
 
   return (
     <ProtocolClientLayout title="H.323 Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.H323 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="H.323 Gateway Configuration" />
         <div className="grid md:grid-cols-2 gap-4 mb-4">

@@ -89,14 +89,12 @@ const ASDU_TYPE_NAMES: Record<number, string> = {
   101: 'C_CI_NA_1 (Counter Interrogation)',
 };
 
-// Quality descriptor bit names
+// Quality descriptor bit names (QDS per IEC 60870-5-4 Section 6.3)
 const QUALITY_BITS: Record<number, string> = {
   0x01: 'OV (Overflow)',
-  0x04: 'NT (Not Topical)',
-  0x08: 'SB (Substituted)',
   0x10: 'BL (Blocked)',
-  0x20: 'EI (Elapsed Time Invalid)',  // for integrated totals
-  0x40: 'ES (Equipment Stopped)',     // for step positions
+  0x20: 'SB (Substituted)',
+  0x40: 'NT (Not Topical)',
   0x80: 'IV (Invalid)',
 };
 
@@ -362,28 +360,21 @@ export async function handleIEC104Probe(request: Request): Promise<Response> {
 /**
  * Parse a CP56Time2a timestamp (7 bytes) into an ISO string.
  *
- * Byte layout (all little-endian unless noted):
- *   [0-1] milliseconds (0-59999, lower 10 bits)
- *   [1]   minutes (bits 0-5 of byte 1)  — note: overlaps with ms high bits
- *   [2]   minutes (bits 0-5)
- *   [3]   hours   (bits 0-4)
- *   [4]   day of week (bits 5-7) + day of month (bits 0-4)
- *   [5]   months (bits 0-3)
- *   [6]   years  (bits 0-6, offset from 2000)
- *
- * Per IEC 60870-5-4 §5.4.7:
- *   byte 0 = ms low byte
- *   byte 1 bits 7-0: [IV|RES|min5..min0] — wait, actual layout:
- *     byte 0-1 = uint16 LE, bits 15-10 = minutes (0-59), bits 9-0 = ms within minute (0-59999)
+ * Per IEC 60870-5-4 Section 6.8, byte layout:
+ *   [0-1] uint16 LE: milliseconds within the current minute (0-59999)
+ *   [2]   bits 0-5: minutes (0-59), bit 6: RES, bit 7: IV (invalid)
+ *   [3]   bits 0-4: hours (0-23), bit 5: RES, bit 7: SU (summer time)
+ *   [4]   bits 0-4: day of month (1-31), bits 5-7: day of week (1-7)
+ *   [5]   bits 0-3: month (1-12)
+ *   [6]   bits 0-6: year (offset from 2000, 0-99)
  */
 function parseCP56Time2a(data: Uint8Array, offset: number): string {
   if (offset + 7 > data.length) return 'invalid';
 
-  const msLow  = data[offset];
-  const msHigh = data[offset + 1] & 0x03; // only lower 2 bits contribute to ms
-  const ms     = (msHigh << 8) | msLow;     // ms within the current second (0-999, note: field is 0-59999 for full minute)
-  const sec    = Math.floor(ms / 1000) % 60;
-  const msRem  = ms % 1000;
+  // Bytes 0-1: milliseconds within the minute as uint16 LE (0-59999)
+  const msInMinute = data[offset] | (data[offset + 1] << 8);
+  const sec   = Math.floor(msInMinute / 1000);
+  const msRem = msInMinute % 1000;
 
   const minutes = data[offset + 2] & 0x3F;
   const hours   = data[offset + 3] & 0x1F;
@@ -392,6 +383,7 @@ function parseCP56Time2a(data: Uint8Array, offset: number): string {
   const year    = 2000 + (data[offset + 6] & 0x7F);
 
   if (month < 1 || month > 12 || day < 1 || day > 31) return 'invalid';
+  if (sec > 59 || minutes > 59 || hours > 23) return 'invalid';
 
   const pad = (n: number, w = 2) => n.toString().padStart(w, '0');
   return `${year}-${pad(month)}-${pad(day)}T${pad(hours)}:${pad(minutes)}:${pad(sec)}.${pad(msRem, 3)}Z`;
@@ -481,11 +473,15 @@ function parseASDU(asduData: Uint8Array): ASDUInfo[] {
         offset += 4;
         break;
 
-      case 5: // M_ST_NA_1 — Step Position (1 byte value + 1 byte quality)
+      case 5: // M_ST_NA_1 — Step Position (1 byte VTI + 1 byte quality)
         if (offset + 2 > asduData.length) break;
-        value   = (asduData[offset] & 0x7F) * ((asduData[offset] & 0x80) ? -1 : 1);
-        quality = asduData[offset + 1];
-        offset += 2;
+        {
+          // VTI: bit 7 = transient indicator, bits 0-6 = signed 7-bit value (-64 to +63)
+          const raw7 = asduData[offset] & 0x7F;
+          value   = raw7 >= 64 ? raw7 - 128 : raw7; // 7-bit two's complement
+          quality = asduData[offset + 1];
+          offset += 2;
+        }
         break;
 
       case 9: // M_ME_NA_1 — Normalized measured value (2 bytes + 1 byte quality)
@@ -759,9 +755,9 @@ export async function handleIEC104ReadData(request: Request): Promise<Response> 
             const flen = 2 + startdtResp[off + 1];
             if (off + flen > startdtResp.length) break;
             const cf0 = startdtResp[off + 2];
-            if ((cf0 & 0x01) === 0) {
-              // I-frame: update our N(R)
-              const serverSendSeq = ((startdtResp[off + 3] << 8) | cf0) >> 1;
+            if ((cf0 & 0x03) === 0) {
+              // I-frame (bit 0=0 AND bit 1=0): update our N(R)
+              const serverSendSeq = (((startdtResp[off + 3] << 8) | cf0) >> 1) & 0x7FFF;
               recvSeq = (serverSendSeq + 1) & 0x7FFF;
             }
             off += flen;
@@ -812,11 +808,9 @@ export async function handleIEC104ReadData(request: Request): Promise<Response> 
 
             const cf0 = collectionBuffer[off + 2];
             const cf1 = collectionBuffer[off + 3];
-            const cf2 = collectionBuffer[off + 4];
-            const cf3 = collectionBuffer[off + 5];
 
-            if ((cf0 & 0x01) === 0 && (cf0 & 0x02) === 0) {
-              // I-frame: extract ASDU (starts at byte 6 of APCI frame, i.e. offset+6)
+            if ((cf0 & 0x03) === 0) {
+              // I-frame (bit 0=0, bit 1=0): extract ASDU (starts at offset+6)
               const serverSendSeq = (((cf1 << 8) | cf0) >> 1) & 0x7FFF;
               recvSeq = (serverSendSeq + 1) & 0x7FFF;
 
@@ -825,10 +819,8 @@ export async function handleIEC104ReadData(request: Request): Promise<Response> 
                 const parsed = parseASDU(asduData);
                 allASDUs.push(...parsed);
               }
-            } else if ((cf0 & 0x03) === 0x03) {
-              // U-frame — check for STARTDT Con or TESTFR
-              void cf2; void cf3; // suppress unused warnings
             }
+            // else: S-frame or U-frame — no ASDU to extract
 
             off += flen;
           }
@@ -1048,8 +1040,8 @@ export async function handleIEC104Write(request: Request): Promise<Response> {
 
         if (ackResp && ackResp.length >= 6) {
           const cf0 = ackResp[2];
-          if ((cf0 & 0x01) === 0) {
-            // I-frame response
+          if ((cf0 & 0x03) === 0) {
+            // I-frame response (bit 0=0 AND bit 1=0; excludes S-frames)
             const flen = 2 + ackResp[1];
             if (ackResp.length >= flen && flen > 6) {
               const asduResp = ackResp.slice(6, flen);

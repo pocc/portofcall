@@ -46,3 +46,6 @@ test-results/
 # Temp files
 *.tmp
 .cache/
+
+# One-time use scripts
+scripts/one-time-use/

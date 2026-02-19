@@ -90,8 +90,8 @@ function encodeNetBIOSName(name: string, suffix: number = 0x20): Uint8Array {
 
 /**
  * Decode a first-level encoded NetBIOS name back to readable form
+ * (Currently unused - reserved for future Retarget Response or Name Query Response parsing)
  */
-// @ts-expect-error - referenced by future NetBIOS response decoder
 function decodeNetBIOSName(data: Uint8Array, offset: number): { name: string; suffix: number } {
   if (data.length < offset + 34) return { name: '', suffix: 0 };
 
@@ -112,6 +112,9 @@ function decodeNetBIOSName(data: Uint8Array, offset: number): { name: string; su
 
   return { name: name.trimEnd(), suffix };
 }
+
+// Mark as used to prevent TypeScript unused warning
+decodeNetBIOSName satisfies (data: Uint8Array, offset: number) => { name: string; suffix: number };
 
 // Well-known NetBIOS suffix types
 const SUFFIX_NAMES: Record<number, string> = {
@@ -157,9 +160,11 @@ async function readSessionPacket(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeout: number,
 ): Promise<{ type: number; flags: number; data: Uint8Array }> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeout)
-  );
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Read timeout')), timeout);
+  });
 
   const readPromise = (async () => {
     const chunks: Uint8Array[] = [];
@@ -185,10 +190,17 @@ async function readSessionPacket(
     const flags = headerBuf[1];
     const length = (headerBuf[2] << 8) | headerBuf[3];
 
+    // Validate length to prevent resource exhaustion
+    if (length > 131072) {
+      throw new Error(`Packet length ${length} exceeds maximum allowed (131072)`);
+    }
+
     // Read remaining data if any
     while (totalBytes < 4 + length) {
       const { value, done } = await reader.read();
-      if (done || !value) break;
+      if (done || !value) {
+        throw new Error(`Connection closed mid-packet (expected ${4 + length} bytes, got ${totalBytes})`);
+      }
       chunks.push(value);
       totalBytes += value.length;
     }
@@ -208,7 +220,14 @@ async function readSessionPacket(
     };
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  try {
+    const result = await Promise.race([readPromise, timeoutPromise]);
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    return result;
+  } catch (error) {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+    throw error;
+  }
 }
 
 /**
@@ -263,6 +282,8 @@ export async function handleNetBIOSConnect(request: Request): Promise<Response> 
     }
 
     const startTime = Date.now();
+
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -327,16 +348,18 @@ export async function handleNetBIOSConnect(request: Request): Promise<Response> 
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (err) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       return new Response(JSON.stringify({
         success: false,
         error: err instanceof Error ? err.message : 'Connection timeout',
@@ -690,6 +713,7 @@ export async function handleNetBIOSNameQuery(request: Request): Promise<Response
     }
 
     const startTime = Date.now();
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
@@ -784,7 +808,7 @@ export async function handleNetBIOSNameQuery(request: Request): Promise<Response
           capabilities: negResult.capabilities !== null ? `0x${negResult.capabilities.toString(16).padStart(8, '0')}` : null,
           capabilityFlags: capFlags.length > 0 ? capFlags : null,
           serverTime: negResult.serverTime,
-          serverTimezone: negResult.serverTimezone !== null ? `UTC${negResult.serverTimezone >= 0 ? '+' : ''}${-negResult.serverTimezone / 60}` : null,
+          serverTimezone: negResult.serverTimezone !== null ? `UTC${-negResult.serverTimezone / 60 >= 0 ? '+' : ''}${-negResult.serverTimezone / 60}` : null,
           serverGuid: negResult.serverGuid,
           domainName: negResult.domainName,
           serverName: negResult.serverName,
@@ -800,16 +824,18 @@ export async function handleNetBIOSNameQuery(request: Request): Promise<Response
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (err) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
       return new Response(JSON.stringify({
         success: false,
         error: err instanceof Error ? err.message : 'Connection timeout',

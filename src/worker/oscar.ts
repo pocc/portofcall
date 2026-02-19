@@ -110,7 +110,8 @@ function buildOSCARSignon(): Buffer {
 }
 
 /**
- * Parse FLAP frame header
+ * Parse FLAP frame header.
+ * Returns null if invalid start byte or incomplete frame.
  */
 function parseFLAPFrame(data: Buffer): {
   startByte: number;
@@ -134,8 +135,13 @@ function parseFLAPFrame(data: Buffer): {
   const sequence = data.readUInt16BE(2);
   const dataLength = data.readUInt16BE(4);
 
-  // Extract data (may be less than dataLength if packet is fragmented)
-  const frameData = data.subarray(6, Math.min(6 + dataLength, data.length));
+  // Verify we have complete frame data
+  if (data.length < 6 + dataLength) {
+    return null;
+  }
+
+  // Extract complete data payload
+  const frameData = data.subarray(6, 6 + dataLength);
 
   return {
     startByte,
@@ -183,9 +189,13 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -193,12 +203,13 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
       // Build and send OSCAR signon frame
       const signon = buildOSCARSignon();
 
-      const writer = socket.writable.getWriter();
+      writer = socket.writable.getWriter();
       await writer.write(signon);
       writer.releaseLock();
+      writer = null;
 
       // Read server response
-      const reader = socket.readable.getReader();
+      reader = socket.readable.getReader();
 
       const { value, done } = await Promise.race([
         reader.read(),
@@ -207,7 +218,9 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
 
       if (done || !value) {
         reader.releaseLock();
+        reader = null;
         socket.close();
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         return new Response(JSON.stringify({
           success: false,
           host,
@@ -223,7 +236,9 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
 
       if (!parsed) {
         reader.releaseLock();
+        reader = null;
         socket.close();
+        if (timeoutHandle) clearTimeout(timeoutHandle);
         return new Response(JSON.stringify({
           success: false,
           host,
@@ -238,7 +253,9 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
       const rtt = Date.now() - start;
 
       reader.releaseLock();
+      reader = null;
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
 
       // Map channel to name
       const channelNames: { [key: number]: string } = {
@@ -264,15 +281,19 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
       });
 
     } catch (error) {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       throw error;
     }
 
   } catch (error) {
+    const body = await request.json().catch(() => ({ host: '', port: 5190 })) as OSCARRequest;
     return new Response(JSON.stringify({
       success: false,
-      host: '',
-      port: 5190,
+      host: body.host || '',
+      port: body.port || 5190,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies OSCARResponse), {
       status: 500,
@@ -300,11 +321,25 @@ export async function handleOSCARPing(request: Request): Promise<Response> {
       });
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -313,13 +348,14 @@ export async function handleOSCARPing(request: Request): Promise<Response> {
       const signon = buildOSCARSignon();
       const keepalive = buildFLAPFrame(FLAPChannel.Keepalive, 1, Buffer.alloc(0));
 
-      const writer = socket.writable.getWriter();
+      writer = socket.writable.getWriter();
       await writer.write(signon);
       await writer.write(keepalive);
       writer.releaseLock();
+      writer = null;
 
       // Read responses
-      const reader = socket.readable.getReader();
+      reader = socket.readable.getReader();
 
       const chunks: Buffer[] = [];
       let totalBytes = 0;
@@ -347,7 +383,9 @@ export async function handleOSCARPing(request: Request): Promise<Response> {
       }
 
       reader.releaseLock();
+      reader = null;
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
 
       return new Response(JSON.stringify({
         success: chunks.length > 0,
@@ -360,13 +398,19 @@ export async function handleOSCARPing(request: Request): Promise<Response> {
       });
 
     } catch (error) {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       throw error;
     }
 
   } catch (error) {
+    const body = await request.json().catch(() => ({ host: '', port: 5190 })) as OSCARRequest;
     return new Response(JSON.stringify({
       success: false,
+      host: body.host || '',
+      port: body.port || 5190,
       error: error instanceof Error ? error.message : 'Unknown error',
     }), {
       status: 500,
@@ -417,6 +461,7 @@ function parseTLVs(data: Buffer): Map<number, Buffer> {
 
 /**
  * Read a full FLAP frame from the stream (header + payload).
+ * Returns null if no data received or incomplete frame.
  */
 async function readFLAP(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -426,24 +471,45 @@ async function readFLAP(
   let total = 0;
   let expectedLen = -1;
   const deadline = Date.now() + timeoutMs;
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
-  while (Date.now() < deadline) {
-    const { value, done } = await Promise.race([
-      reader.read(),
-      new Promise<{ value: undefined; done: true }>((_, rej) =>
-        setTimeout(() => rej(new Error('timeout')), deadline - Date.now())),
-    ]).catch(() => ({ value: undefined as undefined, done: true as const }));
-    if (done || !value) break;
-    chunks.push(Buffer.from(value));
-    total += value.length;
-    // Once we have the 6-byte FLAP header, know expected total length
-    if (expectedLen < 0 && total >= 6) {
-      const combined = Buffer.concat(chunks);
-      expectedLen = 6 + combined.readUInt16BE(4); // 6 header + data length
+  try {
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+
+      const { value, done } = await Promise.race([
+        reader.read(),
+        new Promise<{ value: undefined; done: true }>((_, rej) => {
+          timeoutHandle = setTimeout(() => rej(new Error('timeout')), remaining);
+        }),
+      ]).catch(() => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        return { value: undefined as undefined, done: true as const };
+      });
+
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+        timeoutHandle = null;
+      }
+
+      if (done || !value) break;
+      chunks.push(Buffer.from(value));
+      total += value.length;
+      // Once we have the 6-byte FLAP header, know expected total length
+      if (expectedLen < 0 && total >= 6) {
+        const combined = Buffer.concat(chunks);
+        expectedLen = 6 + combined.readUInt16BE(4); // 6 header + data length
+      }
+      if (expectedLen > 0 && total >= expectedLen) break;
     }
-    if (expectedLen > 0 && total >= expectedLen) break;
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
   }
+
   if (total === 0) return null;
+  // Only return if we have a complete frame
+  if (expectedLen > 0 && total < expectedLen) return null;
   return Buffer.concat(chunks).subarray(0, expectedLen > 0 ? expectedLen : total);
 }
 
@@ -463,13 +529,23 @@ export async function handleOSCARAuth(request: Request): Promise<Response> {
 
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
 
+    if (port < 1 || port > 65535) {
+      return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
+    }
+
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
-    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const tp = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('timeout')), timeout);
+    });
+
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       await Promise.race([socket.opened, tp]);
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       // Step 1: Read server signon (FLAP Channel 1)
       const serverSignon = await Promise.race([readFLAP(reader, 3000), tp]);
@@ -490,8 +566,11 @@ export async function handleOSCARAuth(request: Request): Promise<Response> {
       const resp = await Promise.race([readFLAP(reader, 5000), tp]).catch(() => null);
 
       writer.releaseLock();
+      writer = null;
       reader.releaseLock();
+      reader = null;
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
 
       let authKey: string | undefined;
       let snacFamily: number | undefined;
@@ -531,7 +610,10 @@ export async function handleOSCARAuth(request: Request): Promise<Response> {
         error: errorText,
       });
     } catch (err) {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       throw err;
     }
   } catch (err) {
@@ -560,12 +642,20 @@ export async function handleOSCARLogin(request: Request): Promise<Response> {
     if (!host || !screenName || !password) {
       return Response.json({ success: false, error: 'host, screenName, and password are required' }, { status: 400 });
     }
+    if (port < 1 || port > 65535) {
+      return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
+    }
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
-    const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const tp = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('timeout')), timeout);
+    });
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       await Promise.race([socket.opened, tp]);
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
       await Promise.race([readFLAP(reader, 3000), tp]).catch(() => null);
       await writer.write(buildFLAPFrame(FLAPChannel.Signon, 0, Buffer.from([0x00, 0x00, 0x00, 0x01])));
       await writer.write(buildFLAPFrame(FLAPChannel.SNAC, 1,
@@ -589,7 +679,12 @@ export async function handleOSCARLogin(request: Request): Promise<Response> {
       ]);
       await writer.write(buildFLAPFrame(FLAPChannel.SNAC, 2, buildSNAC(0x0017, 0x0002, loginData, 2)));
       const lrRaw = await Promise.race([readFLAP(reader, 8000), tp]);
-      writer.releaseLock(); reader.releaseLock(); socket.close();
+      writer.releaseLock();
+      writer = null;
+      reader.releaseLock();
+      reader = null;
+      socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       if (!lrRaw) throw new Error('No login response');
       const lrFlap = parseFLAPFrame(lrRaw);
       if (!lrFlap || lrFlap.channel !== FLAPChannel.SNAC || lrFlap.data.length < 10) throw new Error('Invalid login response');
@@ -613,7 +708,10 @@ export async function handleOSCARLogin(request: Request): Promise<Response> {
       return Response.json({ success: true, host, port, screenName, bosHost, bosPort,
         cookieHex: cookieB.toString('hex'), cookieLength: cookieB.length });
     } catch (err) {
+      if (writer) writer.releaseLock();
+      if (reader) reader.releaseLock();
       socket.close();
+      if (timeoutHandle) clearTimeout(timeoutHandle);
       throw err;
     }
   } catch (err) {
@@ -744,10 +842,9 @@ export async function handleOSCARBuddyList(request: Request): Promise<Response> 
         }
       }
 
-      // Send rate ACK (0x01/0x08)
-      const rateAck = Buffer.allocUnsafe(2 + rateIds.length * 2);
-      rateAck.writeUInt16BE(rateIds.length, 0);
-      rateIds.forEach((id, i) => rateAck.writeUInt16BE(id, 2 + i * 2));
+      // Send rate ACK (0x01/0x08) — payload is a flat list of uint16 class IDs (no count prefix)
+      const rateAck = Buffer.allocUnsafe(rateIds.length * 2);
+      rateIds.forEach((id, i) => rateAck.writeUInt16BE(id, i * 2));
       await bw.write(buildFLAPFrame(FLAPChannel.SNAC, 3, buildSNAC(0x0001, 0x0008, rateAck, 3)));
 
       // SSI checkout: SNAC 0x13/0x02 (request SSI data)
@@ -812,7 +909,8 @@ function md5Buffer(data: Buffer): Buffer {
 /** OSCAR LoginRequest SNAC (0x0017/0x0002) with MD5 auth hash. */
 function buildOSCARLoginRequest(screenName: string, password: string, authKey: Buffer): Buffer {
   const pwMd5 = md5Buffer(Buffer.from(password, 'ascii'));
-  const authHash = md5Buffer(Buffer.concat([authKey, pwMd5, authKey]));
+  const AIM_MD5_STRING = Buffer.from('AOL Instant Messenger (SM)', 'ascii');
+  const authHash = md5Buffer(Buffer.concat([authKey, pwMd5, AIM_MD5_STRING]));
   const snData = Buffer.concat([
     buildTLV(0x0001, Buffer.from(screenName, 'ascii')),
     buildTLV(0x0025, authHash),

@@ -63,83 +63,122 @@ async function sendHttpRequest(
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
 
+  const timeoutHandle = setTimeout(() => {}, 0);
+  clearTimeout(timeoutHandle);
+
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    const handle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    (timeoutPromise as unknown as { handle: ReturnType<typeof setTimeout> }).handle = handle;
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
 
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
+    writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
 
-  if (authHeader) {
-    request += `Authorization: ${authHeader}\r\n`;
-  }
+    let request = `${method} ${path} HTTP/1.1\r\n`;
+    request += `Host: ${host}${port !== 80 && port !== 443 ? `:${port}` : ''}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
+    if (authHeader) {
+      request += `Authorization: ${authHeader}\r\n`;
+    }
 
-  writer.releaseLock();
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+    }
 
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
-  const maxSize = 512000;
+    try {
+      writer.releaseLock();
+    } catch {
+      // ignore
+    }
+    writer = null;
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    let response = '';
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        response += decoder.decode(value, { stream: true });
+      }
+    }
+
+    try {
+      reader.releaseLock();
+    } catch {
+      // ignore
+    }
+    reader = null;
+
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      throw new Error('Invalid HTTP response: no header terminator found');
+    }
+
+    const headerSection = response.substring(0, headerEnd);
+    let bodySection = response.substring(headerEnd + 4);
+
+    const statusLine = headerSection.split('\r\n')[0];
+    const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+
+    const respHeaders: Record<string, string> = {};
+    const headerLines = headerSection.split('\r\n').slice(1);
+    for (const line of headerLines) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.substring(0, colonIdx).trim().toLowerCase();
+        const value = line.substring(colonIdx + 1).trim();
+        respHeaders[key] = value;
+      }
+    }
+
+    if (respHeaders['transfer-encoding']?.includes('chunked')) {
+      bodySection = decodeChunked(bodySection);
+    }
+
+    return { statusCode, headers: respHeaders, body: bodySection };
+  } finally {
+    clearTimeout((timeoutPromise as unknown as { handle: ReturnType<typeof setTimeout> }).handle);
+    if (writer) {
+      try {
+        writer.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
+    if (reader) {
+      try {
+        reader.releaseLock();
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      socket.close();
+    } catch {
+      // ignore
     }
   }
-
-  reader.releaseLock();
-  socket.close();
-
-  const headerEnd = response.indexOf('\r\n\r\n');
-  if (headerEnd === -1) {
-    throw new Error('Invalid HTTP response: no header terminator found');
-  }
-
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
-
-  const statusLine = headerSection.split('\r\n')[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
-
-  const respHeaders: Record<string, string> = {};
-  const headerLines = headerSection.split('\r\n').slice(1);
-  for (const line of headerLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.substring(0, colonIdx).trim().toLowerCase();
-      const value = line.substring(colonIdx + 1).trim();
-      respHeaders[key] = value;
-    }
-  }
-
-  if (respHeaders['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
-  }
-
-  return { statusCode, headers: respHeaders, body: bodySection };
 }
 
 /**
@@ -153,7 +192,14 @@ function decodeChunked(data: string): string {
     const lineEnd = remaining.indexOf('\r\n');
     if (lineEnd === -1) break;
 
-    const sizeStr = remaining.substring(0, lineEnd).trim();
+    let sizeStr = remaining.substring(0, lineEnd).trim();
+
+    // Remove chunk extensions (;name=value)
+    const semicolonIdx = sizeStr.indexOf(';');
+    if (semicolonIdx > 0) {
+      sizeStr = sizeStr.substring(0, semicolonIdx);
+    }
+
     const chunkSize = parseInt(sizeStr, 16);
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
@@ -162,6 +208,14 @@ function decodeChunked(data: string): string {
     if (chunkEnd > remaining.length) {
       result += remaining.substring(chunkStart);
       break;
+    }
+
+    // Validate CRLF after chunk data
+    if (chunkEnd + 2 <= remaining.length) {
+      const afterChunk = remaining.substring(chunkEnd, chunkEnd + 2);
+      if (afterChunk !== '\r\n') {
+        // Malformed chunked encoding, but continue anyway
+      }
     }
 
     result += remaining.substring(chunkStart, chunkEnd);
@@ -175,8 +229,9 @@ function decodeChunked(data: string): string {
  * Build Basic Auth header
  */
 function buildAuthHeader(username?: string, password?: string): string | undefined {
-  if (username && password) {
-    return `Basic ${btoa(`${username}:${password}`)}`;
+  if (username) {
+    const pass = password || '';
+    return `Basic ${btoa(`${username}:${pass}`)}`;
   }
   return undefined;
 }
@@ -184,7 +239,7 @@ function buildAuthHeader(username?: string, password?: string): string | undefin
 /**
  * Validate Solr input
  */
-function validateInput(host: string, port: number): string | null {
+function validateInput(host: string, port: number, core?: string, handler?: string): string | null {
   if (!host || host.trim().length === 0) {
     return 'Host is required';
   }
@@ -193,6 +248,22 @@ function validateInput(host: string, port: number): string | null {
   }
   if (port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
+  }
+  if (core !== undefined) {
+    if (!core || core.trim().length === 0) {
+      return 'Core name is required';
+    }
+    if (core.includes('..') || core.includes('/') || core.includes('\\')) {
+      return 'Core name contains invalid path characters';
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(core)) {
+      return 'Core name contains invalid characters';
+    }
+  }
+  if (handler !== undefined && handler.length > 0) {
+    if (handler.includes('..')) {
+      return 'Handler path contains invalid path traversal';
+    }
   }
   return null;
 }
@@ -332,17 +403,10 @@ export async function handleSolrQuery(request: Request): Promise<Response> {
       timeout = 15000,
     } = reqBody;
 
-    const validationError = validateInput(host, port);
+    const validationError = validateInput(host, port, core, handler);
     if (validationError) {
       return new Response(
         JSON.stringify({ success: false, error: validationError }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } },
-      );
-    }
-
-    if (!core || core.trim().length === 0) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Core name is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -364,6 +428,13 @@ export async function handleSolrQuery(request: Request): Promise<Response> {
     queryParams.set('q', query);
     queryParams.set('wt', 'json');
     for (const [key, value] of Object.entries(params)) {
+      // Validate param keys and values don't contain control characters
+      if (/[\x00-\x1F\x7F]/.test(key) || /[\x00-\x1F\x7F]/.test(value)) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Parameter keys or values contain invalid control characters' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
       queryParams.set(key, value);
     }
 
@@ -430,12 +501,30 @@ export async function handleSolrIndex(request: Request): Promise<Response> {
     const port = body.port || 8983;
     const timeout = body.timeout || 15000;
     const commit = body.commit !== false;
-    const authHeader = body.username
-      ? 'Basic ' + btoa(body.username + ':' + (body.password || ''))
-      : undefined;
+
+    const validationError = validateInput(host, port, body.core);
+    if (validationError) {
+      return new Response(JSON.stringify({ success: false, error: validationError }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const authHeader = buildAuthHeader(body.username, body.password);
 
     const payload = JSON.stringify(body.documents);
-    const path = '/solr/' + body.core + '/update/json/docs' + (commit ? '?commit=true' : '?commit=false');
+    const path = '/solr/' + encodeURIComponent(body.core) + '/update/json/docs' + (commit ? '?commit=true' : '?commit=false');
 
     const result = await sendHttpRequest(host, port, 'POST', path, payload, authHeader, timeout);
     const ok = result.statusCode >= 200 && result.statusCode < 300;
@@ -488,15 +577,33 @@ export async function handleSolrDelete(request: Request): Promise<Response> {
     const port = body.port || 8983;
     const timeout = body.timeout || 10000;
     const commit = body.commit !== false;
-    const authHeader = body.username
-      ? 'Basic ' + btoa(body.username + ':' + (body.password || ''))
-      : undefined;
+
+    const validationError = validateInput(host, port, body.core);
+    if (validationError) {
+      return new Response(JSON.stringify({ success: false, error: validationError }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const authHeader = buildAuthHeader(body.username, body.password);
 
     const deleteCmd = body.ids
       ? { delete: body.ids.map((id: string) => ({ id })) }
       : { delete: { query: body.query } };
     const payload = JSON.stringify(deleteCmd);
-    const path = '/solr/' + body.core + '/update' + (commit ? '?commit=true' : '?commit=false');
+    const path = '/solr/' + encodeURIComponent(body.core) + '/update' + (commit ? '?commit=true' : '?commit=false');
 
     const result = await sendHttpRequest(host, port, 'POST', path, payload, authHeader, timeout);
     const ok = result.statusCode >= 200 && result.statusCode < 300;

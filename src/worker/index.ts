@@ -45,7 +45,7 @@ import { handleOracleConnect, handleOracleTNSServices } from './oracle';
 import { handleMaxDBConnect, handleMaxDBInfo, handleMaxDBSession } from './maxdb';
 import { handleRedisConnect, handleRedisCommand, handleRedisSession } from './redis';
 import { handleMQTTConnect, handleMQTTPublish, handleMQTTSession } from './mqtt';
-import { handleLDAPConnect, handleLDAPSearch, handleLDAPAdd, handleLDAPModify, handleLDAPDelete } from './ldap';
+import { handleLDAPConnect, handleLDAPSearch, handleLDAPAdd, handleLDAPModify, handleLDAPDelete, handleLDAPPagedSearch } from './ldap';
 import { handleLDAPSConnect, handleLDAPSSearch, handleLDAPSAdd, handleLDAPSModify, handleLDAPSDelete } from './ldaps';
 import { handleSMBConnect, handleSMBNegotiate, handleSMBSession, handleSMBTreeConnect, handleSMBStat } from './smb';
 import { handleEchoTest, handleEchoWebSocket } from './echo';
@@ -170,7 +170,7 @@ import { handleRloginConnect, handleRloginBanner, handleRloginWebSocket } from '
 import { handleS7commConnect, handleS7ReadDB, handleS7WriteDB } from './s7comm';
 import { handleSNPPProbe, handleSNPPPage } from './snpp';
 import { handleRethinkDBConnect, handleRethinkDBProbe, handleRethinkDBQuery, handleRethinkDBListTables, handleRethinkDBServerInfo, handleRethinkDBTableCreate, handleRethinkDBInsert } from './rethinkdb';
-import { handleClickHouseHealth, handleClickHouseQuery } from './clickhouse';
+import { handleClickHouseHealth, handleClickHouseQuery, handleClickHouseNative } from './clickhouse';
 import { handleGearmanConnect, handleGearmanCommand, handleGearmanSubmit } from './gearman';
 import {
   handleEtherNetIPIdentity,
@@ -840,6 +840,9 @@ export default {
     }
     if (url.pathname === '/api/ldap/delete') {
       return handleLDAPDelete(request);
+    }
+    if (url.pathname === '/api/ldap/paged-search') {
+      return handleLDAPPagedSearch(request);
     }
 
     // LDAPS API endpoints
@@ -2241,6 +2244,10 @@ export default {
 
     if (url.pathname === '/api/clickhouse/query') {
       return handleClickHouseQuery(request);
+    }
+
+    if (url.pathname === '/api/clickhouse/native') {
+      return handleClickHouseNative(request);
     }
 
     // Gearman API endpoints

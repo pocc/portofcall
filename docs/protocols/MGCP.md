@@ -1,16 +1,20 @@
 # MGCP (Media Gateway Control Protocol)
 
+## Quick Reference
+
+| Property | Value |
+|---|---|
+| **RFC** | 3435 (MGCP 1.0) |
+| **Transport** | UDP (primary), TCP (alternative) |
+| **Gateway Port** | 2427/udp |
+| **Call Agent Port** | 2727/udp |
+| **Message Format** | Text-based, CRLF-delimited |
+| **Architecture** | Master/slave (Call Agent controls Media Gateway) |
+| **SDP** | Used for media description in CRCX/MDCX responses |
+
 ## Overview
 
-**MGCP** (Media Gateway Control Protocol) is a VoIP signaling protocol that implements a centralized call control architecture. Unlike SIP or H.323 where endpoints are intelligent, MGCP uses "dumb" gateways controlled by a centralized Call Agent (softswitch), making it popular for carrier-grade VoIP deployments.
-
-**Port:** 2427 (UDP, gateway), 2727 (UDP, call agent)
-**Transport:** UDP (primarily), TCP (optional)
-**RFC:** 3435 (MGCP 1.0)
-
-## Protocol Specification
-
-### Architecture
+MGCP implements a centralized call-control architecture where a Call Agent (softswitch) sends commands to "dumb" Media Gateways. Unlike SIP (peer-to-peer) or H.323 (distributed intelligence), all call logic resides in the Call Agent. The gateways simply execute instructions.
 
 ```
 +---------------+              +------------------+
@@ -18,755 +22,482 @@
 |  (Softswitch) |              | (Dumb endpoint)  |
 +---------------+              +------------------+
         |                               |
-        |                               |
     (Controls)                      (Executes)
 ```
 
 **Components:**
-- **Call Agent (CA)**: Intelligent call controller
-- **Media Gateway (MG)**: Executes commands from CA
-- **Endpoints**: Physical or virtual terminations (lines, trunks)
+- **Call Agent (CA)**: Intelligent call controller (softswitch). Sends commands, receives notifications.
+- **Media Gateway (MG)**: Executes commands from CA. Contains endpoints (lines, trunks).
+- **Endpoints**: Physical or virtual terminations on the gateway (e.g., analog line ports, DS0 channels).
+
+## RFC 3435 Protocol Specification
+
+### Transport
+
+RFC 3435 Section 1.3 specifies UDP as the primary transport. Gateways listen on port **2427/udp**; Call Agents listen on port **2727/udp**. TCP is mentioned as an alternative transport in Appendix A but is not the default.
+
+> **Implementation note**: This project uses TCP because Cloudflare Workers' `connect()` API only supports TCP sockets. Most production MGCP gateways accept TCP connections alongside UDP.
 
 ### Message Structure
 
-MGCP is a text-based protocol with two message types:
+MGCP has two message types:
 
-**Commands** (Call Agent → Gateway):
+**Commands** (CA -> GW, or GW -> CA for NTFY/RSIP):
 ```
-VERB transaction-id endpoint@gateway MGCP version
-Parameter: value
-Parameter: value
-
-SDP (optional)
-```
-
-**Responses** (Gateway → Call Agent):
-```
-response-code transaction-id comment
-Parameter: value
-
-SDP (optional)
+VERB transaction-id endpoint@domain MGCP 1.0\r\n
+Parameter: value\r\n
+Parameter: value\r\n
+\r\n
+[optional SDP body]
 ```
 
-### MGCP Commands (Verbs)
-
-- **EPCF** - EndPoint ConFiguration
-- **CRCX** - CReate ConneXion
-- **MDCX** - MoDify ConneXion
-- **DLCX** - DeLete ConneXion
-- **RQNT** - ReQuest NoTification
-- **NTFY** - NoTiFY (gateway → call agent)
-- **AUEP** - AUdit EndPoint
-- **AUCX** - AUdit ConneXion
-- **RSIP** - ReStart In Progress
-
-### Response Codes
-
-**Success (2xx):**
-- `200` - Success (command completed)
-- `250` - Connection deleted
-
-**Provisional (1xx):**
-- `100` - Transaction being executed
-
-**Failure (4xx, 5xx):**
-- `400` - Bad request
-- `401` - Protocol error
-- `403` - Forbidden
-- `404` - Endpoint not found
-- `500` - Endpoint not ready
-- `501` - Not implemented
-- `502` - Gateway overloaded
-- `510` - No endpoint available
-
-### Example CRCX Command
-
+**Responses** (echo the transaction-id from the command):
 ```
-CRCX 1234 aaln/1@rgw.example.com MGCP 1.0
-C: A3C47F21456789F0
-L: p:10, a:PCMU
-M: recvonly
-
-v=0
-o=- 25678 753849 IN IP4 128.96.41.1
-s=-
-c=IN IP4 128.96.41.1
-t=0 0
-m=audio 3456 RTP/AVP 0
+response-code transaction-id comment\r\n
+Parameter: value\r\n
+\r\n
+[optional SDP body]
 ```
 
-**Parameters:**
-- **C:** Call ID
-- **L:** Local connection options (packetization, codec)
-- **M:** Connection mode (sendrecv, sendonly, recvonly, inactive)
-- **SDP:** Session description for media
+A blank line (`\r\n\r\n`) terminates both commands and responses. SDP bodies, when present, follow the blank line.
+
+### Transaction IDs
+
+Per RFC 3435 Section 3.2, transaction identifiers are integers in the range **1 to 999999999**. Each new command must use a unique transaction ID. The response echoes back the same transaction ID from the command.
+
+### Commands (Verbs)
+
+**Call Agent -> Gateway (CA-to-GW):**
+
+| Verb | Name | RFC Section | Purpose |
+|------|------|-------------|---------|
+| `EPCF` | EndpointConfiguration | 2.3.2 | Configure endpoint properties (encoding, bearer) |
+| `CRCX` | CreateConnection | 2.3.5 | Create a new media connection on an endpoint |
+| `MDCX` | ModifyConnection | 2.3.3 | Modify an existing connection (codec, mode, remote SDP) |
+| `DLCX` | DeleteConnection | 2.3.4 | Delete a connection |
+| `RQNT` | RequestNotification | 2.3.1 | Request that the gateway watch for specific events |
+| `AUEP` | AuditEndpoint | 2.3.9 | Query endpoint state and capabilities |
+| `AUCX` | AuditConnection | 2.3.10 | Query an existing connection's parameters |
+
+**Gateway -> Call Agent (GW-to-CA):**
+
+| Verb | Name | RFC Section | Purpose |
+|------|------|-------------|---------|
+| `NTFY` | Notify | 2.3.6 | Report detected events (off-hook, digits, etc.) |
+| `RSIP` | RestartInProgress | 2.3.7 | Report gateway restart or endpoint going in/out of service |
+| `DLCX` | DeleteConnection | 2.3.4 | Gateway may also initiate DLCX |
+
+### Key Parameters
+
+| Parameter | Name | Used In | Description |
+|-----------|------|---------|-------------|
+| `C:` | CallId | CRCX, MDCX, DLCX, AUCX | Hex call identifier, groups connections |
+| `I:` | ConnectionId | MDCX, DLCX, AUCX (response: CRCX) | Identifies a specific connection |
+| `L:` | LocalConnectionOptions | CRCX, MDCX | Codec, packetization, bandwidth |
+| `M:` | Mode | CRCX, MDCX | Connection mode (sendrecv, recvonly, etc.) |
+| `X:` | RequestIdentifier | RQNT, NTFY | Correlates requests with notifications |
+| `R:` | RequestedEvents | RQNT | Events to watch for |
+| `S:` | SignalRequests | RQNT | Signals to apply (dial tone, ringback, etc.) |
+| `N:` | NotifiedEntity | RQNT, CRCX | Where to send NTFY (CA address) |
+| `F:` | RequestedInfo | AUEP, AUCX | What info to return in audit response |
+| `D:` | DigitMap | RQNT, EPCF | Digit collection pattern |
+| `O:` | ObservedEvents | NTFY | Events being reported |
+| `T:` | DetectEvents | RQNT | Events gateway should auto-detect |
+| `E:` | ReasonCode | DLCX (response) | Reason for connection deletion |
+| `B:` | BearerInformation | EPCF | Encoding law (A-law/mu-law) |
+| `Z:` | SpecificEndpointId | CRCX (response) | Wildcard endpoint resolution |
 
 ### Connection Modes
 
-- **sendrecv**: Bidirectional audio
-- **sendonly**: Send audio only
-- **recvonly**: Receive audio only
-- **confrnce**: Conference mode
-- **inactive**: No media
-- **loopback**: Echo test
-- **netwloop**: Network loopback
-- **netwtest**: Network test
+Per RFC 3435 Section 2.3.5:
+
+| Mode | Description |
+|------|-------------|
+| `sendrecv` | Full duplex audio |
+| `sendonly` | Transmit only |
+| `recvonly` | Receive only |
+| `confrnce` | Conference mode |
+| `inactive` | No media flow |
+| `loopback` | Echo audio back to sender |
+| `netwloop` | Network loopback |
+| `netwtest` | Network continuity test |
+| `conttest` | Continuity test |
+
+### Response Codes (RFC 3435 Section 2.4)
+
+**Provisional (1xx):**
+
+| Code | Meaning |
+|------|---------|
+| 100 | Transaction being executed (provisional) |
+| 101 | Transaction has been queued |
+
+**Success (2xx):**
+
+| Code | Meaning |
+|------|---------|
+| 200 | Transaction executed normally |
+| 250 | Connection was deleted |
+
+**Transient Errors (4xx):**
+
+| Code | Meaning |
+|------|---------|
+| 400 | Transient error, unspecified |
+| 401 | Phone is already off-hook |
+| 402 | Phone is already on-hook |
+| 403 | Transaction could not be executed (endpoint not ready) |
+| 404 | Insufficient bandwidth |
+| 405 | Endpoint is restarting |
+| 406 | Transaction timed out |
+| 407 | Aborted transaction |
+| 409 | Overlapping transaction |
+| 410 | No such transaction |
+
+**Permanent Errors (5xx):**
+
+| Code | Meaning |
+|------|---------|
+| 500 | Endpoint unknown |
+| 501 | Endpoint is not ready |
+| 502 | Endpoint has insufficient resources |
+| 503 | Wildcard too complicated |
+| 504 | Unknown or unsupported command |
+| 505 | Unsupported RemoteConnectionDescriptor |
+| 506 | Unable to satisfy local and remote connection options |
+| 507 | Unsupported functionality |
+| 508 | Unknown or unsupported quarantine handling |
+| 509 | Error in RemoteConnectionDescriptor |
+| 510 | Protocol error |
+| 511 | Unrecognized extension |
+| 512 | Cannot detect requested event |
+| 513 | Cannot generate requested signal |
+| 514 | Cannot send announcement |
+| 515 | Incorrect connection ID |
+| 516 | Unknown call ID |
+| 517 | Unsupported or invalid mode |
+| 518 | Unsupported or unknown package |
+| 519 | Endpoint does not have a digit map |
+| 520 | Endpoint is restarting |
+| 521 | Endpoint redirected |
+| 522 | No such event or signal |
+| 523 | Unknown action |
+| 524 | Internal inconsistency in LocalConnectionOptions |
+| 525 | Unknown extension in LocalConnectionOptions |
+| 526 | Insufficient bandwidth |
+| 527 | Missing RemoteConnectionDescriptor |
+| 528 | Incompatible protocol version |
+| 529 | Internal hardware failure |
+| 530 | CAS signaling protocol error |
+| 531 | Failure of a grouping of trunks |
+| 532 | Unsupported value(s) in LocalConnectionOptions |
+| 533 | Response too large |
+| 534 | Codec negotiation failure |
+| 535 | Packetization period not supported |
+| 536 | Unknown or unsupported RestartMethod |
+| 537 | Unknown or unsupported digit map extension |
+| 538 | Event/signal parameter error |
+
+### Endpoint Naming Convention
+
+Endpoints follow a hierarchical naming scheme:
+
+| Pattern | Description | Example |
+|---------|-------------|---------|
+| `aaln/<port>` | Analog Access Line | `aaln/1` (port 1) |
+| `ds/ds1-<span>/<channel>` | T1/E1 digital trunk | `ds/ds1-1/1` (span 1, ch 1) |
+| `an/<id>` | Announcement server | `an/0` |
+| `conf/<id>` | Conference bridge | `conf/1` |
+
+Fully qualified: `aaln/1@gw.example.com`
+
+Wildcard: `aaln/*@gw.example.com` (all analog lines)
 
 ### Event Packages
 
-MGCP uses event packages for notifications:
+| Package | Letter | Events |
+|---------|--------|--------|
+| Line | `L` | `hd` (off-hook), `hu` (on-hook), `hf` (flash-hook) |
+| DTMF | `D` | `0`-`9`, `*`, `#`, `A`-`D`, `T` (inter-digit timer) |
+| Trunk | `T` | T1/E1 signaling events |
+| Generic | `G` | Generic media events |
+| RTP | `R` | RTP statistics, packet loss |
+| Announcement | `A` | `oc` (completed), `of` (failure) |
 
-- **L**: Line package (off-hook, on-hook)
-- **D**: DTMF package (digit collection)
-- **T**: Trunk package (T1/E1 events)
-- **G**: Generic media package
-- **R**: RTP package
+Event notation: `package/event`. Example: `L/hd` = Line package, hook-down (off-hook).
 
-**Example RQNT (Request Notification):**
+## Protocol Examples
+
+### AUEP (Audit Endpoint)
+
 ```
-RQNT 5678 aaln/1@rgw.example.com MGCP 1.0
+AUEP 1209431 aaln/1@gw.example.com MGCP 1.0
+F: A, R, D, S, X, N, I, T, O, ES
+
+```
+
+Response:
+```
+200 1209431 OK
+A: a:PCMU;PCMA, p:10-40, e:on, s:off
+R: L/hd, L/hu
+D: [0-9#*T]
+X: 0000000001
+N: ca.example.com:2727
+
+```
+
+The `F:` parameter requests: capabilities (A), requested events (R), digit map (D), signal requests (S), request ID (X), notified entity (N), connection IDs (I), detect events (T), observed events (O), event states (ES).
+
+### CRCX (Create Connection)
+
+```
+CRCX 1234 aaln/1@gw.example.com MGCP 1.0
+C: A3C47F21456789F0
+L: p:20, a:PCMU
+M: recvonly
+
+```
+
+Response (200 OK with SDP):
+```
+200 1234 OK
+I: FDE234C8
+
+v=0
+o=- 25678 753849 IN IP4 192.168.1.100
+s=-
+c=IN IP4 192.168.1.100
+t=0 0
+m=audio 49152 RTP/AVP 0
+```
+
+**LocalConnectionOptions (L:) parameters:**
+- `p:20` -- packetization period in milliseconds
+- `a:PCMU` -- codec (PCMU = G.711 mu-law, PCMA = G.711 A-law)
+- `b:64` -- bandwidth in kbit/s
+- `e:on` -- echo cancellation on/off
+- `s:off` -- silence suppression on/off
+
+### MDCX (Modify Connection)
+
+```
+MDCX 5678 aaln/1@gw.example.com MGCP 1.0
+C: A3C47F21456789F0
+I: FDE234C8
+M: sendrecv
+
+v=0
+o=- 12345 67890 IN IP4 10.0.0.1
+s=-
+c=IN IP4 10.0.0.1
+t=0 0
+m=audio 5004 RTP/AVP 0
+```
+
+### DLCX (Delete Connection)
+
+```
+DLCX 9012 aaln/1@gw.example.com MGCP 1.0
+C: A3C47F21456789F0
+I: FDE234C8
+
+```
+
+Response:
+```
+250 9012 OK
+P: PS=1245, OS=62location, PR=780, OR=location, PL=10, JI=27, LA=48
+
+```
+
+The `P:` parameter returns connection statistics:
+- `PS` = packets sent, `OS` = octets sent
+- `PR` = packets received, `OR` = octets received
+- `PL` = packets lost, `JI` = jitter, `LA` = latency
+
+### RQNT (Request Notification)
+
+```
+RQNT 3456 aaln/1@gw.example.com MGCP 1.0
 X: 0123456789AB
-R: L/hd, L/hu, D/[0-9#*]
+R: L/hd(N), L/hu(N), D/[0-9#*](N)
 S: L/dl
+
 ```
 
-- **X:** Request identifier
-- **R:** Requested Events (hook down, hook up, digits)
-- **S:** Signals to apply (dial tone)
+- `X:` -- Request identifier (correlates with future NTFY)
+- `R:` -- Events to watch: off-hook, on-hook, digits. `(N)` means notify the CA.
+- `S:` -- Apply dial tone (`L/dl`)
 
-## Worker Implementation
+### NTFY (Notify, GW -> CA)
 
-```typescript
-// workers/mgcp.ts
-import { connect } from 'cloudflare:sockets';
+```
+NTFY 7890 aaln/1@gw.example.com MGCP 1.0
+X: 0123456789AB
+O: L/hd
 
-interface MGCPConfig {
-  gateway: string;
-  port?: number;
-  endpoint?: string;
-}
+```
 
-interface MGCPResponse {
-  success: boolean;
-  responseCode?: number;
-  transactionId?: string;
-  comment?: string;
-  connectionId?: string;
-  error?: string;
-}
+Gateway reports that endpoint went off-hook.
 
-const MGCPCommand = {
-  EPCF: 'EPCF',
-  CRCX: 'CRCX',
-  MDCX: 'MDCX',
-  DLCX: 'DLCX',
-  RQNT: 'RQNT',
-  NTFY: 'NTFY',
-  AUEP: 'AUEP',
-  AUCX: 'AUCX',
-  RSIP: 'RSIP',
-} as const;
+### RSIP (Restart In Progress, GW -> CA)
 
-class MGCPClient {
-  private config: Required<MGCPConfig>;
-  private socket: any = null;
-  private transactionId: number = 1000;
+```
+RSIP 100 *@gw.example.com MGCP 1.0
+RM: restart
 
-  constructor(config: MGCPConfig) {
-    this.config = {
-      gateway: config.gateway,
-      port: config.port || 2427,
-      endpoint: config.endpoint || 'aaln/1',
-    };
-  }
+```
 
-  async connect(): Promise<void> {
-    this.socket = connect({
-      hostname: this.config.gateway,
-      port: this.config.port,
-    });
-  }
+- `RM: restart` -- Gateway is restarting
+- `RM: graceful` -- Graceful restart (finish current calls first)
+- `RM: forced` -- Forced restart (drop all calls)
 
-  async createConnection(): Promise<MGCPResponse> {
-    if (!this.socket) {
-      await this.connect();
-    }
+## Implementation Details
 
-    try {
-      const txId = this.getNextTransactionId();
-      const callId = this.generateCallId();
+### API Endpoints
 
-      // Build CRCX command
-      const command = [
-        `CRCX ${txId} ${this.config.endpoint}@${this.config.gateway} MGCP 1.0`,
-        `C: ${callId}`,
-        `L: p:20, a:PCMU`,
-        `M: sendrecv`,
-        '',
-        'v=0',
-        'o=- 25678 753849 IN IP4 0.0.0.0',
-        's=-',
-        'c=IN IP4 0.0.0.0',
-        't=0 0',
-        'm=audio 0 RTP/AVP 0',
-        '',
-      ].join('\r\n');
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/mgcp/audit` | POST | Send AUEP to probe endpoint |
+| `/api/mgcp/command` | POST | Send any CA-to-GW command |
+| `/api/mgcp/call-setup` | POST | CRCX + DLCX roundtrip test |
 
-      await this.sendCommand(command);
+### `/api/mgcp/audit`
 
-      const response = await this.receiveResponse();
+Sends an AUEP with `F: A, R, D, S, X, N, I, T, O, ES` to request full endpoint state.
 
-      if (!response) {
-        return { success: false, error: 'No response from gateway' };
-      }
+```bash
+curl -X POST https://portofcall.example.com/api/mgcp/audit \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "gw.example.com",
+    "port": 2427,
+    "endpoint": "aaln/1",
+    "timeout": 10000
+  }'
+```
 
-      const parsed = this.parseResponse(response);
-
-      if (parsed.responseCode >= 200 && parsed.responseCode < 300) {
-        // Extract connection ID from response
-        const connectionIdMatch = response.match(/I:\s*([A-F0-9]+)/i);
-        const connectionId = connectionIdMatch ? connectionIdMatch[1] : undefined;
-
-        return {
-          success: true,
-          responseCode: parsed.responseCode,
-          transactionId: parsed.transactionId,
-          comment: parsed.comment,
-          connectionId,
-        };
-      } else {
-        return {
-          success: false,
-          responseCode: parsed.responseCode,
-          error: parsed.comment,
-        };
-      }
-
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-    }
-  }
-
-  async deleteConnection(connectionId: string): Promise<MGCPResponse> {
-    if (!this.socket) {
-      await this.connect();
-    }
-
-    try {
-      const txId = this.getNextTransactionId();
-      const callId = this.generateCallId();
-
-      const command = [
-        `DLCX ${txId} ${this.config.endpoint}@${this.config.gateway} MGCP 1.0`,
-        `C: ${callId}`,
-        `I: ${connectionId}`,
-        '',
-      ].join('\r\n');
-
-      await this.sendCommand(command);
-
-      const response = await this.receiveResponse();
-
-      if (!response) {
-        return { success: false, error: 'No response from gateway' };
-      }
-
-      const parsed = this.parseResponse(response);
-
-      return {
-        success: parsed.responseCode >= 200 && parsed.responseCode < 300,
-        responseCode: parsed.responseCode,
-        transactionId: parsed.transactionId,
-        comment: parsed.comment,
-      };
-
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-    }
-  }
-
-  async auditEndpoint(): Promise<MGCPResponse> {
-    if (!this.socket) {
-      await this.connect();
-    }
-
-    try {
-      const txId = this.getNextTransactionId();
-
-      const command = [
-        `AUEP ${txId} ${this.config.endpoint}@${this.config.gateway} MGCP 1.0`,
-        '',
-      ].join('\r\n');
-
-      await this.sendCommand(command);
-
-      const response = await this.receiveResponse();
-
-      if (!response) {
-        return { success: false, error: 'No response from gateway' };
-      }
-
-      const parsed = this.parseResponse(response);
-
-      return {
-        success: parsed.responseCode >= 200 && parsed.responseCode < 300,
-        responseCode: parsed.responseCode,
-        transactionId: parsed.transactionId,
-        comment: parsed.comment,
-      };
-
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      };
-    }
-  }
-
-  private parseResponse(response: string): { responseCode: number; transactionId: string; comment: string } {
-    const lines = response.split('\r\n');
-    const firstLine = lines[0];
-
-    // Response format: "code transaction-id comment"
-    const match = firstLine.match(/^(\d{3})\s+(\S+)(?:\s+(.+))?$/);
-
-    if (!match) {
-      return {
-        responseCode: 500,
-        transactionId: '',
-        comment: 'Failed to parse response',
-      };
-    }
-
-    return {
-      responseCode: parseInt(match[1], 10),
-      transactionId: match[2],
-      comment: match[3] || '',
-    };
-  }
-
-  private getNextTransactionId(): string {
-    return (this.transactionId++).toString();
-  }
-
-  private generateCallId(): string {
-    // Generate random 32-character hex string
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    return Array.from(bytes)
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('')
-      .toUpperCase();
-  }
-
-  private async sendCommand(command: string): Promise<void> {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(command);
-
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  private async receiveResponse(): Promise<string | null> {
-    const reader = this.socket.readable.getReader();
-    const { value, done } = await reader.read();
-    reader.releaseLock();
-
-    if (done || !value) {
-      return null;
-    }
-
-    const decoder = new TextDecoder();
-    return decoder.decode(value);
-  }
-
-  async close(): Promise<void> {
-    if (this.socket) {
-      await this.socket.close();
-      this.socket = null;
-    }
-  }
-}
-
-export default {
-  async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/api/mgcp/create-connection') {
-      if (request.method !== 'POST') {
-        return new Response('Method not allowed', { status: 405 });
-      }
-
-      try {
-        const config = await request.json() as MGCPConfig;
-
-        if (!config.gateway) {
-          return new Response(JSON.stringify({ error: 'Gateway is required' }), {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-
-        const client = new MGCPClient(config);
-        const response = await client.createConnection();
-        await client.close();
-
-        return new Response(JSON.stringify(response), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-      } catch (error) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-    }
-
-    if (url.pathname === '/api/mgcp/audit-endpoint') {
-      if (request.method !== 'POST') {
-        return new Response('Method not allowed', { status: 405 });
-      }
-
-      try {
-        const config = await request.json() as MGCPConfig;
-
-        if (!config.gateway) {
-          return new Response(JSON.stringify({ error: 'Gateway is required' }), {
-            status: 400,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-
-        const client = new MGCPClient(config);
-        const response = await client.auditEndpoint();
-        await client.close();
-
-        return new Response(JSON.stringify(response), {
-          headers: { 'Content-Type': 'application/json' },
-        });
-
-      } catch (error) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-    }
-
-    return new Response('Not found', { status: 404 });
+Response:
+```json
+{
+  "success": true,
+  "command": "AUEP",
+  "endpoint": "aaln/1@gw.example.com",
+  "responseCode": 200,
+  "statusText": "Transaction executed normally",
+  "transactionId": "482719305",
+  "comment": "OK",
+  "params": {
+    "A": "a:PCMU;PCMA, p:10-40",
+    "R": "L/hd, L/hu"
   },
-};
-```
-
-## Web UI Design
-
-```typescript
-// src/components/MGCPTester.tsx
-import React, { useState } from 'react';
-
-interface MGCPResponse {
-  success: boolean;
-  responseCode?: number;
-  transactionId?: string;
-  comment?: string;
-  connectionId?: string;
-  error?: string;
-}
-
-export default function MGCPTester() {
-  const [gateway, setGateway] = useState('');
-  const [port, setPort] = useState('2427');
-  const [endpoint, setEndpoint] = useState('aaln/1');
-  const [loading, setLoading] = useState(false);
-  const [response, setResponse] = useState<MGCPResponse | null>(null);
-
-  const handleCreateConnection = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoading(true);
-    setResponse(null);
-
-    try {
-      const res = await fetch('/api/mgcp/create-connection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          gateway,
-          port: parseInt(port, 10),
-          endpoint,
-        }),
-      });
-
-      const data = await res.json();
-      setResponse(data);
-    } catch (error) {
-      setResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleAuditEndpoint = async () => {
-    setLoading(true);
-    setResponse(null);
-
-    try {
-      const res = await fetch('/api/mgcp/audit-endpoint', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          gateway,
-          port: parseInt(port, 10),
-          endpoint,
-        }),
-      });
-
-      const data = await res.json();
-      setResponse(data);
-    } catch (error) {
-      setResponse({
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="max-w-2xl mx-auto p-6">
-      <h1 className="text-3xl font-bold mb-6">MGCP Tester</h1>
-
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-        <p className="text-sm text-blue-800">
-          <strong>MGCP (Media Gateway Control Protocol)</strong> implements centralized call control
-          where a Call Agent (softswitch) controls "dumb" Media Gateways, common in carrier VoIP networks.
-        </p>
-      </div>
-
-      <form onSubmit={handleCreateConnection} className="space-y-4 mb-6">
-        <div>
-          <label className="block text-sm font-medium mb-2">
-            Media Gateway
-          </label>
-          <input
-            type="text"
-            value={gateway}
-            onChange={(e) => setGateway(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg"
-            placeholder="mgw.example.com"
-            required
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Port
-            </label>
-            <input
-              type="number"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg"
-              placeholder="2427"
-              min="1"
-              max="65535"
-              required
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium mb-2">
-              Endpoint
-            </label>
-            <input
-              type="text"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg"
-              placeholder="aaln/1"
-              required
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Examples: aaln/1 (analog), ds/ds1-1/1 (trunk)
-            </p>
-          </div>
-        </div>
-
-        <div className="flex gap-2">
-          <button
-            type="submit"
-            disabled={loading}
-            className="flex-1 bg-blue-600 text-white py-2 px-4 rounded-lg hover:bg-blue-700 disabled:bg-gray-400"
-          >
-            {loading ? 'Creating...' : 'Create Connection (CRCX)'}
-          </button>
-
-          <button
-            type="button"
-            onClick={handleAuditEndpoint}
-            disabled={loading || !gateway}
-            className="flex-1 bg-green-600 text-white py-2 px-4 rounded-lg hover:bg-green-700 disabled:bg-gray-400"
-          >
-            Audit Endpoint (AUEP)
-          </button>
-        </div>
-      </form>
-
-      {/* Response display */}
-      {response && (
-        <div className={`rounded-lg p-4 ${
-          response.success ? 'bg-green-50 border border-green-200' : 'bg-red-50 border border-red-200'
-        }`}>
-          <h2 className="font-semibold mb-3">
-            {response.success ? '✓ Success' : '✗ Error'}
-          </h2>
-
-          {response.success ? (
-            <div className="space-y-2 font-mono text-sm">
-              {response.responseCode && (
-                <div><strong>Response Code:</strong> {response.responseCode}</div>
-              )}
-              {response.transactionId && (
-                <div><strong>Transaction ID:</strong> {response.transactionId}</div>
-              )}
-              {response.connectionId && (
-                <div><strong>Connection ID:</strong> {response.connectionId}</div>
-              )}
-              {response.comment && (
-                <div><strong>Comment:</strong> {response.comment}</div>
-              )}
-            </div>
-          ) : (
-            <div className="text-red-800">
-              <p className="font-mono text-sm">{response.error}</p>
-              {response.responseCode && (
-                <p className="text-sm mt-2">Response Code: {response.responseCode}</p>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Information boxes */}
-      <div className="mt-8 space-y-4">
-        <div className="p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">MGCP Commands</h3>
-          <ul className="text-sm space-y-1 text-gray-700">
-            <li><strong>CRCX:</strong> Create Connection (setup media)</li>
-            <li><strong>MDCX:</strong> Modify Connection (change codec, mode)</li>
-            <li><strong>DLCX:</strong> Delete Connection (teardown)</li>
-            <li><strong>RQNT:</strong> Request Notification (ask for events)</li>
-            <li><strong>NTFY:</strong> Notify (report events to CA)</li>
-            <li><strong>AUEP:</strong> Audit Endpoint (query state)</li>
-            <li><strong>AUCX:</strong> Audit Connection (query connection)</li>
-            <li><strong>RSIP:</strong> Restart In Progress (gateway restart)</li>
-          </li>
-        </div>
-
-        <div className="p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">Endpoint Naming</h3>
-          <ul className="text-sm space-y-1 text-gray-700 font-mono">
-            <li><strong>aaln/1</strong> - Analog Access Line, port 1</li>
-            <li><strong>ds/ds1-1/1</strong> - Digital trunk (T1/E1)</li>
-            <li><strong>an/*</strong> - Announcement server</li>
-            <li><strong>conf/*</strong> - Conference bridge</li>
-          </ul>
-        </div>
-
-        <div className="p-4 bg-gray-50 rounded-lg">
-          <h3 className="font-semibold mb-2">MGCP Use Cases</h3>
-          <ul className="text-sm space-y-1 text-gray-700 list-disc ml-5">
-            <li>Residential VoIP gateways (cable modems, FTTx)</li>
-            <li>Carrier-grade softswitches</li>
-            <li>PSTN-to-VoIP gateway control</li>
-            <li>IMS (IP Multimedia Subsystem)</li>
-            <li>PacketCable networks</li>
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
+  "raw": "200 482719305 OK\r\nA: a:PCMU;PCMA, p:10-40\r\nR: L/hd, L/hu\r\n\r\n",
+  "latencyMs": 23
 }
 ```
+
+### `/api/mgcp/command`
+
+Send any valid CA-to-GW command. Valid verbs: `AUEP`, `AUCX`, `CRCX`, `MDCX`, `DLCX`, `RQNT`, `EPCF`.
+
+```bash
+curl -X POST https://portofcall.example.com/api/mgcp/command \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "gw.example.com",
+    "port": 2427,
+    "endpoint": "aaln/1",
+    "command": "RQNT",
+    "params": {
+      "X": "0000000001",
+      "R": "L/hd(N), L/hu(N)",
+      "S": "L/dl"
+    }
+  }'
+```
+
+The `params` object maps directly to MGCP parameter lines. For commands that require a Call ID (`CRCX`, `MDCX`, `DLCX`), one is auto-generated if `C` is not in `params`.
+
+### `/api/mgcp/call-setup`
+
+Performs a CRCX followed by a DLCX to test full connection lifecycle. Parses SDP from the CRCX 200 response.
+
+```bash
+curl -X POST https://portofcall.example.com/api/mgcp/call-setup \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "gw.example.com",
+    "endpoint": "aaln/1",
+    "connectionMode": "recvonly"
+  }'
+```
+
+Response:
+```json
+{
+  "success": true,
+  "crcxCode": 200,
+  "connectionId": "FDE234C8",
+  "localSdp": {
+    "ip": "192.168.1.100",
+    "port": 49152,
+    "codec": "PCMU"
+  },
+  "dlcxCode": 250,
+  "rtt": 45
+}
+```
+
+## Known Deviations from RFC 3435
+
+1. **TCP transport**: RFC 3435 specifies UDP as the primary transport. This implementation uses TCP because Cloudflare Workers' `connect()` API only supports TCP sockets. Most gateways accept both.
+
+2. **No retransmission**: RFC 3435 Section 3.3 defines a retransmission mechanism for UDP reliability. Since we use TCP, this is handled by the transport layer.
+
+3. **No piggybacking**: RFC 3435 Section 3.5 allows piggybacking a response with a new command. This implementation uses separate transactions.
+
+4. **Single-shot connections**: Each command opens a new TCP connection. A production implementation would reuse connections.
 
 ## Security Considerations
 
-1. **No Built-in Security**: MGCP has no native encryption or authentication
-2. **IPsec**: Typically secured using IPsec at network layer
-3. **Access Control**: Restrict MGCP ports at firewall
-4. **Endpoint Authentication**: Gateway authenticates to Call Agent
-5. **SRTP**: Use Secure RTP for media encryption
-6. **Network Isolation**: Keep MGCP on management VLAN
-7. **DoS Protection**: Rate-limit command requests
-8. **Audit Logs**: Monitor MGCP transactions
+1. **No built-in security**: MGCP has no native encryption or authentication.
+2. **IPsec**: Typically secured with IPsec at the network layer.
+3. **Access control**: Restrict MGCP ports (2427, 2727) at the firewall.
+4. **SRTP**: Use Secure RTP for media encryption (negotiated via SDP `a=crypto`).
+5. **Network isolation**: Keep MGCP traffic on a management VLAN.
+6. **Rate limiting**: Protect against command floods.
 
 ## Testing
 
 ```bash
-# Monitor MGCP traffic
+# Capture MGCP traffic (production uses UDP)
 sudo tcpdump -i any port 2427 -A
 
-# Wireshark filter
+# Wireshark display filter
 mgcp
 
-# Test CRCX command
-curl -X POST http://localhost:8787/api/mgcp/create-connection \
+# Test with portofcall
+curl -X POST http://localhost:8787/api/mgcp/audit \
   -H "Content-Type: application/json" \
-  -d '{
-    "gateway": "mgw.example.com",
-    "port": 2427,
-    "endpoint": "aaln/1"
-  }'
+  -d '{"host": "gw.example.com"}'
 
-# Expected response:
-{
-  "success": true,
-  "responseCode": 200,
-  "transactionId": "1000",
-  "connectionId": "A3C47F21456789F0"
-}
-
-# Use mgcptest tool (if available)
-# Commercial gateways: Cisco, AudioCodes, Sonus
+# Common test gateways: Cisco IOS, AudioCodes Mediant,
+# Ribbon (Sonus), Metaswitch, FreeSWITCH (mod_mgcp)
 ```
+
+## Related Protocols
+
+- **Megaco/H.248** (RFC 3525): IETF/ITU-T successor, more flexible but more complex.
+- **SIP** (RFC 3261): Peer-to-peer signaling, dominant in enterprise VoIP.
+- **H.323** (ITU-T H.323): Older VoIP standard with distributed intelligence.
+- **PacketCable**: CableLabs specification that mandates MGCP for residential cable VoIP (NCS variant).
 
 ## Resources
 
-- **RFC 3435**: Media Gateway Control Protocol (MGCP) Version 1.0
-- **RFC 2705**: MGCP Version 0.1 (historical)
-- **PacketCable**: CableLabs specifications for MGCP
-- [IANA MGCP Parameters](https://www.iana.org/assignments/mgcp-packages/)
-- [Asterisk MGCP](https://wiki.asterisk.org/wiki/display/AST/Asterisk+Manager+TCP+IP+API) - chan_mgcp
-- [RFC 3525](https://www.rfc-editor.org/rfc/rfc3525) - Gateway Control Protocol (MEGACO/H.248)
-
-## Notes
-
-- **Centralized Control**: All intelligence in Call Agent, gateways are simple
-- **Text-Based**: Human-readable protocol (unlike binary protocols)
-- **UDP Primary**: Uses UDP for low latency, TCP optional
-- **Transaction-based**: Each command/response has unique transaction ID
-- **Event Packages**: Extensible event notification system
-- **SDP Integration**: Uses SDP for media description
-- **PacketCable**: MGCP is core protocol in cable VoIP (PacketCable)
-- **Alternative: Megaco/H.248**: IETF/ITU-T equivalent to MGCP
-- **Residential Gateways**: Common in cable modem voice services
-- **Carrier Grade**: Used by telcos for large-scale VoIP deployments
-- **versus SIP**: MGCP for carrier control, SIP for peer-to-peer/enterprise
+- [RFC 3435](https://www.rfc-editor.org/rfc/rfc3435) -- MGCP 1.0
+- [RFC 2705](https://www.rfc-editor.org/rfc/rfc2705) -- MGCP 0.1 (historical)
+- [RFC 3660](https://www.rfc-editor.org/rfc/rfc3660) -- Basic MGCP Packages
+- [RFC 3661](https://www.rfc-editor.org/rfc/rfc3661) -- MGCP Return Code Usage
+- [IANA MGCP Packages](https://www.iana.org/assignments/mgcp-packages/) -- Registered event packages
+- [RFC 3525](https://www.rfc-editor.org/rfc/rfc3525) -- Megaco/H.248

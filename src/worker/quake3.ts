@@ -81,10 +81,17 @@ function buildOOBPacket(command: string): Uint8Array {
  */
 function parseQ3KeyValues(data: string): Record<string, string> {
   const result: Record<string, string> = {};
+  // Handle malformed input: empty string, no leading backslash, trailing backslash
+  if (!data || !data.startsWith('\\')) return result;
+
   const parts = data.split('\\');
   // parts[0] is empty (before the first \)
   for (let i = 1; i + 1 < parts.length; i += 2) {
-    result[parts[i]] = parts[i + 1] ?? '';
+    const key = parts[i];
+    const value = parts[i + 1];
+    if (key !== undefined && value !== undefined) {
+      result[key] = value;
+    }
   }
   return result;
 }
@@ -113,32 +120,40 @@ async function readAvailable(
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
 
-  const firstDeadline = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('timeout')), firstTimeout),
-  );
+  let firstTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  const firstDeadline = new Promise<never>((_, reject) => {
+    firstTimeoutHandle = setTimeout(() => reject(new Error('timeout')), firstTimeout);
+  });
 
   try {
     const { value, done } = await Promise.race([reader.read(), firstDeadline]);
+    if (firstTimeoutHandle !== null) clearTimeout(firstTimeoutHandle);
     if (done || !value) return new Uint8Array(0);
     chunks.push(value);
     totalLen += value.length;
-  } catch {
+  } catch (err) {
+    if (firstTimeoutHandle !== null) clearTimeout(firstTimeoutHandle);
     return new Uint8Array(0);
   }
 
   // Drain any remaining data
-  try {
-    while (true) {
-      const cont = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('cont_timeout')), continueTimeout),
-      );
+  while (true) {
+    let contTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const cont = new Promise<never>((_, reject) => {
+      contTimeoutHandle = setTimeout(() => reject(new Error('cont_timeout')), continueTimeout);
+    });
+
+    try {
       const { value, done } = await Promise.race([reader.read(), cont]);
+      if (contTimeoutHandle !== null) clearTimeout(contTimeoutHandle);
       if (done || !value) break;
       chunks.push(value);
       totalLen += value.length;
+    } catch {
+      if (contTimeoutHandle !== null) clearTimeout(contTimeoutHandle);
+      // Short timeout expired
+      break;
     }
-  } catch {
-    // Short timeout expired
   }
 
   const combined = new Uint8Array(totalLen);
@@ -152,8 +167,9 @@ async function readAvailable(
 
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
-  if (!/^[a-zA-Z0-9._-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  // Allow FQDN with dots, hyphens, underscores, alphanumeric
+  if (!/^[a-zA-Z0-9._-]+(\.[a-zA-Z0-9._-]+)*$/.test(host)) return 'Host contains invalid characters';
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -204,14 +220,16 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
     );
 
     const socket = connect(`${host}:${port}`);
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       const startTime = Date.now();
       await Promise.race([socket.opened, timeoutPromise]);
       const tcpLatency = Date.now() - startTime;
 
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       // Send OOB query
       const packet = buildOOBPacket(command);
@@ -222,6 +240,8 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
 
       writer.releaseLock();
       reader.releaseLock();
+      writer = null;
+      reader = null;
       socket.close();
 
       if (responseData.length === 0) {
@@ -239,10 +259,9 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
         );
       }
 
-      const responseText = new TextDecoder('utf-8', { fatal: false }).decode(responseData);
-
       // Validate OOB header: \xFF\xFF\xFF\xFF
-      const hasOOBHeader = responseData[0] === 0xFF && responseData[1] === 0xFF &&
+      const hasOOBHeader = responseData.length >= 4 &&
+        responseData[0] === 0xFF && responseData[1] === 0xFF &&
         responseData[2] === 0xFF && responseData[3] === 0xFF;
 
       if (!hasOOBHeader) {
@@ -259,8 +278,9 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
         );
       }
 
-      // Strip the 4-byte OOB header
-      const payload = responseText.slice(4);
+      // Strip the 4-byte OOB header, decode the rest
+      const payloadBytes = responseData.slice(4);
+      const payload = new TextDecoder('utf-8', { fatal: false }).decode(payloadBytes);
       const lines = payload.split('\n');
 
       // First line: response type (e.g. "statusResponse" or "infoResponse")
@@ -275,13 +295,36 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
       };
 
       if (responseType === 'statusResponse' && lines.length > 1) {
+        // Validate response type matches command
+        if (command !== 'getstatus') {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              host,
+              port,
+              tcpLatency,
+              command,
+              error: `Server sent statusResponse but command was ${command}`,
+            } satisfies Quake3StatusResponse),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
         // Line 1: key\value pairs
-        const kvString = lines[1];
+        const kvString = lines[1] || '';
         const serverVars = parseQ3KeyValues(kvString);
         result.serverVars = serverVars;
         result.mapName = serverVars.mapname || serverVars.map || undefined;
         result.gameName = serverVars.gamename || serverVars.game || undefined;
-        result.maxPlayers = serverVars.sv_maxclients ? parseInt(serverVars.sv_maxclients, 10) : undefined;
+
+        // Safely parse integers with validation
+        const maxClientsStr = serverVars.sv_maxclients;
+        if (maxClientsStr) {
+          const parsed = parseInt(maxClientsStr, 10);
+          if (!isNaN(parsed) && parsed >= 0) {
+            result.maxPlayers = parsed;
+          }
+        }
 
         // Remaining lines: player entries
         const players: Quake3Player[] = [];
@@ -294,13 +337,43 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
         result.players = players;
         result.playerCount = players.length;
       } else if (responseType === 'infoResponse' && lines.length > 1) {
-        const kvString = lines[1];
+        // Validate response type matches command
+        if (command !== 'getinfo') {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              host,
+              port,
+              tcpLatency,
+              command,
+              error: `Server sent infoResponse but command was ${command}`,
+            } satisfies Quake3StatusResponse),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+
+        const kvString = lines[1] || '';
         const serverVars = parseQ3KeyValues(kvString);
         result.serverVars = serverVars;
         result.mapName = serverVars.mapname || undefined;
         result.gameName = serverVars.gamename || undefined;
-        result.playerCount = serverVars.clients ? parseInt(serverVars.clients, 10) : undefined;
-        result.maxPlayers = serverVars.sv_maxclients ? parseInt(serverVars.sv_maxclients, 10) : undefined;
+
+        // Safely parse integers with validation
+        const clientsStr = serverVars.clients;
+        if (clientsStr) {
+          const parsed = parseInt(clientsStr, 10);
+          if (!isNaN(parsed) && parsed >= 0) {
+            result.playerCount = parsed;
+          }
+        }
+
+        const maxClientsStr = serverVars.sv_maxclients;
+        if (maxClientsStr) {
+          const parsed = parseInt(maxClientsStr, 10);
+          if (!isNaN(parsed) && parsed >= 0) {
+            result.maxPlayers = parsed;
+          }
+        }
       } else {
         result.serverVars = { rawResponse: payload.slice(0, 500) };
       }
@@ -310,7 +383,18 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
         { status: 200, headers: { 'Content-Type': 'application/json' } },
       );
     } catch (error) {
-      socket.close();
+      // Clean up resources
+      try {
+        if (writer) {
+          try { writer.releaseLock(); } catch { /* already released */ }
+        }
+        if (reader) {
+          try { reader.releaseLock(); } catch { /* already released */ }
+        }
+        socket.close();
+      } catch {
+        // Ignore cleanup errors
+      }
       throw error;
     }
   } catch (error) {

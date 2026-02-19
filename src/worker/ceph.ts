@@ -1,22 +1,28 @@
 /**
  * Ceph Monitor MSGR Protocol Implementation
  *
- * Implements Ceph Monitor connectivity testing via the MSGR (Messenger) protocol
- * on port 6789. Ceph monitors are the central coordination daemons for Ceph
- * distributed storage clusters, responsible for maintaining cluster maps and
- * consensus via Paxos.
+ * Implements Ceph Monitor connectivity testing via the MSGR (Messenger) protocol.
+ * Default ports: 6789 (v1 legacy / combined) or 3300 (v2 msgr2-only).
+ * Ceph monitors are the central coordination daemons for Ceph distributed storage
+ * clusters, responsible for maintaining cluster maps and consensus via Paxos.
  *
- * Protocol Flow (MSGR v1 - legacy):
- * 1. Server sends banner: "ceph v027\n" (9 bytes, ASCII)
- * 2. Server sends its entity address (sockaddr_storage, 136 bytes)
- * 3. Client sends its banner + entity address
- * 4. Feature negotiation follows
+ * Protocol Flow (MSGR v1 - legacy, pre-Nautilus):
+ * 1. Server sends banner: "ceph v027\n" (9 bytes ASCII)
+ * 2. Server sends entity_addr_t: type(4 LE) + nonce(4 LE) + sockaddr_storage(128) = 136 bytes
+ * 3. Client sends its banner + entity_addr_t (same format)
+ * 4. Client sends ceph_msg_connect (features, host_type, etc.)
+ * 5. Server replies with ceph_msg_connect_reply: tag(1) + features(8 LE) + global_seq(4 LE) +
+ *    connect_seq(4 LE) + protocol_version(4 LE) + authorizer_len(4 LE) + flags(1) = 26 bytes
  *
- * Protocol Flow (MSGR v2 - modern, Ceph Nautilus+):
- * 1. Server sends banner: "ceph v2\n" (8 bytes, ASCII)
- * 2. Followed by 2x uint16 LE for banner payload length
- * 3. Banner payload contains supported/required features as 8-byte LE values
- * 4. Frame-based communication follows
+ * Protocol Flow (MSGR v2 - modern, Ceph Nautilus 14.2+):
+ * 1. Server sends banner: "ceph v2\n" (8 bytes ASCII)
+ * 2. Server sends 2x uint16 LE payload lengths (both identical, 4 bytes total)
+ * 3. Banner payload contains supported(8 LE) + required(8 LE) feature flags = 16 bytes
+ * 4. Client echoes its own banner + payload in the same format
+ * 5. Frame-based communication with optional TLS follows
+ *
+ * sockaddr_storage note: Ceph encodes sockaddr in Linux-native byte order.
+ * sa_family is little-endian, sin_port is network byte order (big-endian).
  *
  * Use Cases:
  * - Ceph cluster monitor detection and reachability testing
@@ -34,7 +40,7 @@ const BANNER_V1_PREFIX = 'ceph v0';
 // MSGR v2 banner prefix
 const BANNER_V2_PREFIX = 'ceph v2';
 
-// Entity types in Ceph
+// Entity types in Ceph (from CEPH_ENTITY_TYPE_* in msg_types.h)
 const ENTITY_TYPES: Record<number, string> = {
   0x01: 'mon',      // Monitor
   0x02: 'mds',      // Metadata Server
@@ -42,7 +48,7 @@ const ENTITY_TYPES: Record<number, string> = {
   0x08: 'client',   // Client
   0x10: 'mgr',      // Manager
   0x20: 'auth',     // Authentication
-  0x100: 'any',     // Any
+  0xFF: 'any',      // Any (CEPH_ENTITY_TYPE_ANY)
 };
 
 /**
@@ -181,20 +187,23 @@ function parseMsgrV1EntityAddr(data: Uint8Array): {
   // Nonce at offset 4
   const nonce = view.getUint32(4, true);
 
-  // After entity type + nonce, there's a sockaddr_storage structure
-  // sockaddr_in: family(2) + port(2BE) + addr(4) + zero(8)
+  // After entity type + nonce, there's a sockaddr_storage structure (128 bytes).
+  // Ceph encodes sockaddr_storage in host byte order (Linux = little-endian).
+  // sockaddr_in layout:  sa_family(2 LE) + sin_port(2 BE) + sin_addr(4) + zero(8)
+  // sockaddr_in6 layout: sa_family(2 LE) + sin6_port(2 BE) + sin6_flowinfo(4) + sin6_addr(16)
   let port: number | null = null;
   let ipAddress: string | null = null;
 
   if (data.length >= 16) {
+    // sa_family is little-endian on the wire (Linux native byte order)
     const family = view.getUint16(8, true);
     if (family === 2) {
-      // AF_INET
-      port = view.getUint16(10, false); // port is big-endian in sockaddr
+      // AF_INET: port is network byte order (big-endian)
+      port = view.getUint16(10, false);
       const a = data[12], b = data[13], c = data[14], d = data[15];
       ipAddress = `${a}.${b}.${c}.${d}`;
     } else if (family === 10 && data.length >= 32) {
-      // AF_INET6
+      // AF_INET6: port is network byte order (big-endian), addr at offset 16 within sockaddr
       port = view.getUint16(10, false);
       const parts: string[] = [];
       for (let i = 0; i < 8; i++) {
@@ -510,11 +519,13 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
       const seav = new DataView(serverEntityAddr.buffer);
       const serverEntityType = seav.getUint32(0, true);
       const serverNonce = seav.getUint32(4, true);
-      const serverAddrFamily = seav.getUint16(8, false); // big-endian in sockaddr
+      // sa_family is little-endian (Linux native byte order in sockaddr_storage)
+      const serverAddrFamily = seav.getUint16(8, true);
       let serverIp: string | null = null;
       let serverAddrPort: number | null = null;
 
       if (serverAddrFamily === 2 && serverEntityAddr.length >= 16) {
+        // sin_port is network byte order (big-endian)
         serverAddrPort = seav.getUint16(10, false);
         serverIp = `${serverEntityAddr[12]}.${serverEntityAddr[13]}.${serverEntityAddr[14]}.${serverEntityAddr[15]}`;
       }
@@ -528,7 +539,9 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
       await writer.write(connectMsg);
 
       // Step 5: Read CONNECT_REPLY
-      // Reply format: features(8) + global_seq(4) + connect_seq(4) + protocol_version(4) + auth_len(4) + flags(1) + tag(1) = 26+ bytes
+      // ceph_msg_connect_reply layout (packed struct, 26 bytes):
+      //   tag(1) + features(8 LE) + global_seq(4 LE) + connect_seq(4 LE) +
+      //   protocol_version(4 LE) + authorizer_len(4 LE) + flags(1)
       const replyTimeout = Math.min(5000, deadline - Date.now());
       let connectReply: {
         tag: number;
@@ -547,21 +560,34 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
         ));
 
         if (replyData.length >= 26) {
-          const rv = new DataView(replyData.buffer);
-          // CONNECT_REPLY body:
-          // features(8) + global_seq(4) + connect_seq(4) + protocol_version(4) + auth_len(4) + flags(1) + tag(1)
-          const features = rv.getBigUint64(0, true);
-          const globalSeq = rv.getUint32(8, true);
-          const connectSeq = rv.getUint32(12, true);
-          const protocolVersion = rv.getUint32(16, true);
-          const authLen = rv.getUint32(20, true);
-          const flags = replyData[24];
-          const tag = replyData[25]; // 0=RESETSESSION, 2=BADPROTOVER, 4=BADAUTHORIZER, 7=FEATURES, 8=SEQ, 9=RESET, 10=READY
+          const rv = new DataView(replyData.buffer, replyData.byteOffset, replyData.byteLength);
+          // Tag is the FIRST byte (CEPH_MSGR_TAG_*)
+          const tag = replyData[0];
+          const features = rv.getBigUint64(1, true);
+          const globalSeq = rv.getUint32(9, true);
+          const connectSeq = rv.getUint32(13, true);
+          const protocolVersion = rv.getUint32(17, true);
+          const authLen = rv.getUint32(21, true);
+          const flags = replyData[25];
 
+          // CEPH_MSGR_TAG_* values from include/msgr.h
           const TAG_NAMES: Record<number, string> = {
-            0: 'RESETSESSION', 1: 'WAIT', 2: 'RETRY_SESSION', 3: 'RETRY_GLOBAL',
-            4: 'FEATURES', 5: 'BADPROTOVER', 6: 'BADAUTHORIZER', 7: 'RESETSESSION2',
-            8: 'READY', 9: 'SEQ', 10: 'ACK',
+            1: 'READY',
+            2: 'RESETSESSION',
+            3: 'WAIT',
+            4: 'RETRY_SESSION',
+            5: 'RETRY_GLOBAL',
+            6: 'CLOSE',
+            7: 'MSG',
+            8: 'ACK',
+            9: 'KEEPALIVE',
+            10: 'BADPROTOVER',
+            11: 'BADAUTHORIZER',
+            12: 'FEATURES',
+            13: 'SEQ',
+            14: 'KEEPALIVE2',
+            15: 'KEEPALIVE2_ACK',
+            16: 'CHALLENGE_AUTHORIZER',
           };
 
           connectReply = {
@@ -596,8 +622,8 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
           addressFamily: serverAddrFamily === 2 ? 'IPv4' : serverAddrFamily === 10 ? 'IPv6' : `unknown(${serverAddrFamily})`,
         },
         connectReply,
-        handshakeComplete: connectReply?.tagName === 'READY' || connectReply?.tagName === 'BADAUTHORIZER',
-        authRequired: connectReply?.tagName === 'BADAUTHORIZER' || (connectReply?.authLen !== undefined && connectReply.authLen > 0),
+        handshakeComplete: connectReply?.tagName === 'READY',
+        authRequired: connectReply?.tagName === 'BADAUTHORIZER' || connectReply?.tagName === 'CHALLENGE_AUTHORIZER',
         message: connectReply
           ? `MSGR v1 handshake completed. Server tag: ${connectReply.tagName}. Protocol v${connectReply.protocolVersion}`
           : `MSGR v1 handshake partial. Server entity: ${ENTITY_TYPES[serverEntityType] ?? serverEntityType} at ${serverIp}:${serverAddrPort}`,

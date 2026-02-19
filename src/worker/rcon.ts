@@ -1,11 +1,11 @@
 /**
- * Minecraft RCON (Source RCON) Protocol Implementation
+ * Source RCON Protocol Implementation
  *
  * RCON is a binary protocol originally from Valve's Source engine,
- * adopted by Minecraft for remote server administration.
+ * also used by Minecraft for remote server administration.
  *
  * Protocol Flow:
- * 1. Client connects to server (default port 25575)
+ * 1. Client connects to server (default port 27015)
  * 2. Client sends SERVERDATA_AUTH packet with password
  * 3. Server responds with empty RESPONSE_VALUE then AUTH_RESPONSE
  * 4. Client sends SERVERDATA_EXECCOMMAND packets
@@ -92,15 +92,25 @@ function parseRCONPacket(data: Uint8Array): { id: number; type: number; body: st
   const view = new DataView(data.buffer, data.byteOffset);
   const size = view.getInt32(0, true);
 
+  // Validate packet size (max 4096 bytes per Source RCON spec)
+  if (size < 10 || size > 4096) return null;
+
   if (data.length < 4 + size) return null; // Incomplete packet
 
   const id = view.getInt32(4, true);
   const type = view.getInt32(8, true);
 
+  // Validate packet type
+  if (type !== SERVERDATA_RESPONSE_VALUE && type !== SERVERDATA_EXECCOMMAND && type !== SERVERDATA_AUTH) {
+    return null;
+  }
+
   // Body is from offset 12 to (4 + size - 2), excluding the two null terminators
   const bodyLength = size - 10; // size minus id(4) + type(4) + 2 nulls
+  if (bodyLength < 0) return null; // Corrupted packet
+
   const decoder = new TextDecoder();
-  const body = decoder.decode(data.slice(12, 12 + Math.max(0, bodyLength)));
+  const body = decoder.decode(data.slice(12, 12 + bodyLength));
 
   return {
     id,
@@ -119,26 +129,36 @@ async function readFromSocket(
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
+  const MAX_SIZE = 1024 * 1024; // 1MB limit to prevent memory exhaustion
 
   // Read first chunk (blocking)
   const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-  if (done || !value) return new Uint8Array(0);
+  if (done) throw new Error('Connection closed before data received');
+  if (!value) return new Uint8Array(0);
   chunks.push(value);
   totalLen += value.length;
 
   // Try to read more data with a short delay (for multi-packet responses)
+  let shortTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const shortTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('read_done')), 200),
-    );
-    while (true) {
+    const shortTimeout = new Promise<never>((_, reject) => {
+      shortTimeoutHandle = setTimeout(() => reject(new Error('read_done')), 200);
+    });
+    while (totalLen < MAX_SIZE) {
       const { value: next, done: nextDone } = await Promise.race([reader.read(), shortTimeout]);
       if (nextDone || !next) break;
       chunks.push(next);
       totalLen += next.length;
     }
-  } catch {
+  } catch (err) {
     // Short timeout expired - we have all data
+    if (err instanceof Error && err.message !== 'read_done') {
+      throw err;
+    }
+  } finally {
+    if (shortTimeoutHandle !== null) {
+      clearTimeout(shortTimeoutHandle);
+    }
   }
 
   // Combine
@@ -185,9 +205,12 @@ function validateRCONInput(host: string, port: number, password: string): string
  * Body: { host, port?, password, timeout? }
  */
 export async function handleRCONConnect(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let socket: ReturnType<typeof connect> | null = null;
+
   try {
     const body = (await request.json()) as RCONConnectRequest;
-    const { host, port = 25575, password, timeout = 10000 } = body;
+    const { host, port = 27015, password, timeout = 10000 } = body;
 
     const validationError = validateRCONInput(host, port, password);
     if (validationError) {
@@ -204,10 +227,11 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    const socket = connect(`${host}:${port}`);
+    socket = connect(`${host}:${port}`);
+    const REQUEST_ID = 1;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -215,49 +239,69 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send AUTH packet (type 3)
-      const authPacket = buildRCONPacket(1, SERVERDATA_AUTH, password);
-      await writer.write(authPacket);
-      writer.releaseLock();
+      try {
+        // Send AUTH packet (type 3)
+        const authPacket = buildRCONPacket(REQUEST_ID, SERVERDATA_AUTH, password);
+        await writer.write(authPacket);
+        writer.releaseLock();
 
-      // Read auth response(s)
-      // Server sends: empty RESPONSE_VALUE, then AUTH_RESPONSE
-      const responseData = await readFromSocket(reader, timeoutPromise);
-      reader.releaseLock();
+        // Read auth response(s)
+        // Server sends: empty RESPONSE_VALUE, then AUTH_RESPONSE
+        const responseData = await readFromSocket(reader, timeoutPromise);
+        reader.releaseLock();
 
-      // Parse packets from response
-      let offset = 0;
-      let authenticated = false;
+        // Parse packets from response
+        let offset = 0;
+        let authenticated = false;
+        let authResponseReceived = false;
 
-      while (offset < responseData.length) {
-        const packet = parseRCONPacket(responseData.slice(offset));
-        if (!packet) break;
-        offset += packet.bytesConsumed;
+        while (offset < responseData.length) {
+          const packet = parseRCONPacket(responseData.slice(offset));
+          if (!packet) break;
+          offset += packet.bytesConsumed;
 
-        // AUTH_RESPONSE type = 2
-        // If id == -1, auth failed
-        if (packet.type === 2) {
-          authenticated = packet.id !== -1;
+          // AUTH_RESPONSE type = 2
+          // Validate request ID matches (unless it's -1 for auth failure)
+          if (packet.type === 2) {
+            authResponseReceived = true;
+            // If id == -1, auth failed; otherwise check ID matches
+            if (packet.id === -1) {
+              authenticated = false;
+            } else if (packet.id === REQUEST_ID) {
+              authenticated = true;
+            }
+          }
         }
+
+        if (!authResponseReceived) {
+          throw new Error('No AUTH_RESPONSE received from server');
+        }
+
+        const result: RCONResponse = {
+          success: true,
+          authenticated,
+        };
+
+        if (!authenticated) {
+          result.error = 'Authentication failed - incorrect RCON password';
+        }
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } finally {
+        // Clean up locks and socket
+        try {
+          if (writer.desiredSize !== null) writer.releaseLock();
+        } catch {}
+        try {
+          reader.releaseLock();
+        } catch {}
+        socket.close();
       }
-
-      socket.close();
-
-      const result: RCONResponse = {
-        success: true,
-        authenticated,
-      };
-
-      if (!authenticated) {
-        result.error = 'Authentication failed - incorrect RCON password';
-      }
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
     } catch (error) {
-      socket.close();
+      if (socket) socket.close();
       throw error;
     }
   } catch (error) {
@@ -271,6 +315,10 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       },
     );
+  } finally {
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
   }
 }
 
@@ -281,9 +329,12 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
  * Body: { host, port?, password, command, timeout? }
  */
 export async function handleRCONCommand(request: Request): Promise<Response> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  let socket: ReturnType<typeof connect> | null = null;
+
   try {
     const body = (await request.json()) as RCONCommandRequest;
-    const { host, port = 25575, password, command, timeout = 10000 } = body;
+    const { host, port = 27015, password, command, timeout = 10000 } = body;
 
     const validationError = validateRCONInput(host, port, password);
     if (validationError) {
@@ -312,11 +363,12 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
       );
     }
 
-    if (command.length > 1446) {
+    // Max packet size is 4096, minus 14 bytes overhead = 4082 max body
+    if (command.length > 4082) {
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'Command too long (max 1446 characters, RCON body limit)',
+          error: 'Command too long (max 4082 bytes, RCON body limit)',
         } satisfies RCONResponse),
         {
           status: 400,
@@ -326,10 +378,12 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    const socket = connect(`${host}:${port}`);
+    socket = connect(`${host}:${port}`);
+    const AUTH_REQUEST_ID = 1;
+    const CMD_REQUEST_ID = 2;
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -337,77 +391,103 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Step 1: Authenticate
-      const authPacket = buildRCONPacket(1, SERVERDATA_AUTH, password);
-      await writer.write(authPacket);
+      try {
+        // Step 1: Authenticate
+        const authPacket = buildRCONPacket(AUTH_REQUEST_ID, SERVERDATA_AUTH, password);
+        await writer.write(authPacket);
 
-      // Read auth response
-      const authData = await readFromSocket(reader, timeoutPromise);
+        // Read auth response
+        const authData = await readFromSocket(reader, timeoutPromise);
 
-      let authenticated = false;
-      let authOffset = 0;
-      while (authOffset < authData.length) {
-        const packet = parseRCONPacket(authData.slice(authOffset));
-        if (!packet) break;
-        authOffset += packet.bytesConsumed;
-        if (packet.type === 2) {
-          authenticated = packet.id !== -1;
+        let authenticated = false;
+        let authResponseReceived = false;
+        let authOffset = 0;
+        while (authOffset < authData.length) {
+          const packet = parseRCONPacket(authData.slice(authOffset));
+          if (!packet) break;
+          authOffset += packet.bytesConsumed;
+          if (packet.type === 2) {
+            authResponseReceived = true;
+            // If id == -1, auth failed; otherwise check ID matches
+            if (packet.id === -1) {
+              authenticated = false;
+            } else if (packet.id === AUTH_REQUEST_ID) {
+              authenticated = true;
+            }
+          }
         }
-      }
 
-      if (!authenticated) {
+        if (!authResponseReceived) {
+          throw new Error('No AUTH_RESPONSE received from server');
+        }
+
+        if (!authenticated) {
+          return new Response(
+            JSON.stringify({
+              success: false,
+              authenticated: false,
+              error: 'Authentication failed - incorrect RCON password',
+            } satisfies RCONResponse),
+            {
+              status: 401,
+              headers: { 'Content-Type': 'application/json' },
+            },
+          );
+        }
+
+        // Step 2: Execute command
+        const cmdPacket = buildRCONPacket(CMD_REQUEST_ID, SERVERDATA_EXECCOMMAND, command);
+        await writer.write(cmdPacket);
         writer.releaseLock();
+
+        // Read command response
+        const cmdData = await readFromSocket(reader, timeoutPromise);
         reader.releaseLock();
-        socket.close();
+
+        // Parse response body - validate request IDs
+        let responseText = '';
+        let cmdOffset = 0;
+        let responseReceived = false;
+        while (cmdOffset < cmdData.length) {
+          const packet = parseRCONPacket(cmdData.slice(cmdOffset));
+          if (!packet) break;
+          cmdOffset += packet.bytesConsumed;
+          if (packet.type === SERVERDATA_RESPONSE_VALUE) {
+            // Validate response ID matches command ID
+            if (packet.id === CMD_REQUEST_ID) {
+              responseText += packet.body;
+              responseReceived = true;
+            }
+          }
+        }
+
+        if (!responseReceived) {
+          throw new Error('No valid command response received from server');
+        }
+
         return new Response(
           JSON.stringify({
-            success: false,
-            authenticated: false,
-            error: 'Authentication failed - incorrect RCON password',
+            success: true,
+            authenticated: true,
+            response: responseText || '(No output)',
           } satisfies RCONResponse),
           {
-            status: 401,
+            status: 200,
             headers: { 'Content-Type': 'application/json' },
           },
         );
+      } finally {
+        // Clean up locks and socket
+        try {
+          if (writer.desiredSize !== null) writer.releaseLock();
+        } catch {}
+        try {
+          reader.releaseLock();
+        } catch {}
+        socket.close();
       }
-
-      // Step 2: Execute command
-      const cmdPacket = buildRCONPacket(2, SERVERDATA_EXECCOMMAND, command);
-      await writer.write(cmdPacket);
-      writer.releaseLock();
-
-      // Read command response
-      const cmdData = await readFromSocket(reader, timeoutPromise);
-      reader.releaseLock();
-
-      // Parse response body
-      let responseText = '';
-      let cmdOffset = 0;
-      while (cmdOffset < cmdData.length) {
-        const packet = parseRCONPacket(cmdData.slice(cmdOffset));
-        if (!packet) break;
-        cmdOffset += packet.bytesConsumed;
-        if (packet.type === SERVERDATA_RESPONSE_VALUE) {
-          responseText += packet.body;
-        }
-      }
-
-      socket.close();
-
-      return new Response(
-        JSON.stringify({
-          success: true,
-          authenticated: true,
-          response: responseText || '(No output)',
-        } satisfies RCONResponse),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        },
-      );
     } catch (error) {
-      socket.close();
+      if (socket) socket.close();
       throw error;
     }
   } catch (error) {
@@ -421,5 +501,9 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       },
     );
+  } finally {
+    if (timeoutHandle !== null) {
+      clearTimeout(timeoutHandle);
+    }
   }
 }

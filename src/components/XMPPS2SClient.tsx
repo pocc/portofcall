@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface XMPPS2SClientProps {
   onBack: () => void;
@@ -93,6 +95,7 @@ export default function XMPPS2SClient({ onBack }: XMPPS2SClientProps) {
 
   return (
     <ProtocolClientLayout title="XMPP S2S (Server Federation) Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.XmppS2S || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Details" />
 

@@ -112,14 +112,16 @@ function buildKeepAlive(): Uint8Array {
 /**
  * Build a Station Register message.
  *
- * Layout (28 bytes):
+ * Layout (36 bytes):
  * - Bytes 0-15: Device Name (16 bytes, null-terminated)
  * - Bytes 16-19: User ID (uint32 LE)
  * - Bytes 20-23: Instance (uint32 LE)
- * - Bytes 24-27: Device Type (uint32 LE)
+ * - Bytes 24-27: IP Address (uint32 LE) — 0 = auto
+ * - Bytes 28-31: Device Type (uint32 LE)
+ * - Bytes 32-35: Max Streams (uint32 LE)
  */
 function buildRegister(deviceName: string, deviceType: number): Uint8Array {
-  const data = new ArrayBuffer(28);
+  const data = new ArrayBuffer(36);
   const view = new DataView(data);
   const arr = new Uint8Array(data);
 
@@ -135,8 +137,14 @@ function buildRegister(deviceName: string, deviceType: number): Uint8Array {
   // Instance
   view.setUint32(20, 1, true);
 
+  // IP Address (0 = auto-detect)
+  view.setUint32(24, 0, true);
+
   // Device Type
-  view.setUint32(24, deviceType, true);
+  view.setUint32(28, deviceType, true);
+
+  // Max Streams
+  view.setUint32(32, 0, true);
 
   return encodeMessage(MSG.REGISTER, arr);
 }
@@ -155,6 +163,12 @@ function parseMessages(data: Uint8Array): Array<{ messageId: number; name: strin
     const messageId = view.getUint32(8, true);
 
     const totalSize = 4 + messageLength; // length field + payload
+
+    // Bounds check: ensure totalSize doesn't exceed remaining buffer
+    if (offset + totalSize > data.length || totalSize < 12) {
+      break; // malformed message or incomplete data
+    }
+
     const msgData = data.slice(offset + 12, offset + totalSize);
 
     messages.push({
@@ -164,7 +178,6 @@ function parseMessages(data: Uint8Array): Array<{ messageId: number; name: strin
     });
 
     offset += totalSize;
-    if (totalSize < 12) break; // safety guard
   }
 
   return messages;
@@ -715,7 +728,7 @@ const CALL_MSG = {
   CAP_RESPONSE:    0x0020, // Station → CM: list supported codecs (CapabilitiesRes)
 
   // CM → Station
-  START_TONE:      0x0082, // start dial-tone / ring-back / busy
+  START_TONE:      0x0113, // start dial-tone / ring-back / busy (was 0x0082, corrected)
   STOP_TONE:       0x0083,
   CALL_STATE:      0x008F, // call state change
   CALL_INFO:       0x008B, // caller/callee display info
@@ -736,7 +749,7 @@ const CALL_STATE_NAMES: Record<number, string> = {
  */
 function buildCapabilitiesResponse(): Uint8Array {
   const codecs = [
-    { id: 4, frames: 20 }, // G.711 u-law
+    { id: 1, frames: 20 }, // G.711 u-law (codec 1, not 4)
     { id: 2, frames: 20 }, // G.711 a-law
     { id: 8, frames: 20 }, // G.729 Annex A
   ];

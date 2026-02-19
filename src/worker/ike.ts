@@ -257,8 +257,8 @@ function buildTransformPayload(nextPayload: number): Buffer {
     Buffer.from([0x80, 0x04, 0x00, 0x02]),
     // Life Type = Seconds
     Buffer.from([0x80, 0x0B, 0x00, 0x01]),
-    // Life Duration = 28800 seconds
-    Buffer.from([0x80, 0x0C, 0x00, 0x00, 0x70, 0x80]),
+    // Life Duration = 28800 seconds (0x7080 fits in 2 bytes, so use TV format)
+    Buffer.from([0x80, 0x0C, 0x70, 0x80]),
   ];
 
   const attrData = Buffer.concat(attributes);
@@ -302,17 +302,19 @@ function parseISAKMPMessage(data: Buffer): {
   const messageId = data.readUInt32BE(20);
   const length = data.readUInt32BE(24);
 
+  // Use the header's length field to bound parsing (not raw buffer size)
+  // so we don't parse trailing garbage or data from subsequent messages.
+  const messageEnd = Math.min(data.length, length);
+
   const payloads: Array<{ type: number; data: Buffer }> = [];
   let offset = 28;
   let currentPayload = nextPayload;
 
-  while (currentPayload !== PayloadType.None && offset < data.length) {
-    if (offset + 4 > data.length) break;
-
+  while (currentPayload !== PayloadType.None && offset + 4 <= messageEnd) {
     const nextPl = data.readUInt8(offset);
     const payloadLength = data.readUInt16BE(offset + 2);
 
-    if (payloadLength < 4 || offset + payloadLength > data.length) break;
+    if (payloadLength < 4 || offset + payloadLength > messageEnd) break;
 
     const payloadData = data.subarray(offset, offset + payloadLength);
     payloads.push({ type: currentPayload, data: Buffer.from(payloadData) });
@@ -531,25 +533,45 @@ export async function handleIKEVersionDetect(request: Request): Promise<Response
     const body = await request.json() as IKERequest;
     const { host, port = 500, timeout = 10000 } = body;
 
-    // Try IKEv1 first
+    // Probe IKEv1 and IKEv2 concurrently
     const v1Request = new Request(request.url, {
       method: 'POST',
       headers: request.headers,
       body: JSON.stringify({ host, port, timeout }),
     });
 
-    const v1Response = await handleIKEProbe(v1Request);
+    const v2Request = new Request(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: JSON.stringify({ host, port, timeout }),
+    });
+
+    const [v1Response, v2Response] = await Promise.all([
+      handleIKEProbe(v1Request),
+      handleIKEv2SA(v2Request),
+    ]);
+
     const v1Data = await v1Response.json() as IKEResponse;
+    const v2Data = await v2Response.json() as IKEv2Response;
+
+    const ikev1 = v1Data.success;
+    const ikev2 = v2Data.success && v2Data.version === 2;
 
     return new Response(JSON.stringify({
-      success: v1Data.success,
+      success: ikev1 || ikev2,
       host,
       port,
-      ikev1: v1Data.success,
-      ikev2: false, // IKEv2 probe would go here
-      version: v1Data.version,
+      ikev1,
+      ikev2,
+      version: ikev2 ? '2.0' : v1Data.version,
       vendorIds: v1Data.vendorIds,
-      error: v1Data.error,
+      v2SelectedEncr: v2Data.selectedEncr,
+      v2SelectedInteg: v2Data.selectedInteg,
+      v2SelectedPRF: v2Data.selectedPRF,
+      v2SelectedDHGroup: v2Data.selectedDHGroup,
+      error: !ikev1 && !ikev2
+        ? (v1Data.error || v2Data.error)
+        : undefined,
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
@@ -980,14 +1002,20 @@ export async function handleIKEv2SA(request: Request): Promise<Response> {
       // Read response
       const reader = socket.readable.getReader();
 
-      // Collect data with a read timeout
+      // Collect data with a read timeout.
+      // We need the full IKE message, not just the 28-byte header.
+      // The total length is encoded at header bytes 24-27 (big-endian uint32).
       const chunks: Buffer[] = [];
       let totalLen = 0;
+      let expectedLen = 0; // 0 = not yet known (need at least 28 bytes)
       const readDeadline = Date.now() + Math.min(timeout, 8000);
 
       while (Date.now() < readDeadline) {
         const remaining = readDeadline - Date.now();
         if (remaining <= 0) break;
+
+        // If we know the expected length and have it all, stop
+        if (expectedLen > 0 && totalLen >= expectedLen) break;
 
         const st = new Promise<{ value: undefined; done: true }>((resolve) =>
           setTimeout(() => resolve({ value: undefined, done: true }), remaining),
@@ -997,7 +1025,14 @@ export async function handleIKEv2SA(request: Request): Promise<Response> {
         if (done || !value) break;
         chunks.push(Buffer.from(value));
         totalLen += value.length;
-        if (totalLen >= 28) break; // We have at least the IKE header — stop early
+
+        // Once we have at least the header, extract the declared message length
+        if (expectedLen === 0 && totalLen >= 28) {
+          const partial = Buffer.concat(chunks, totalLen);
+          expectedLen = partial.readUInt32BE(24);
+          // Sanity: cap at 64 KB to avoid reading forever on bogus values
+          if (expectedLen > 65536) expectedLen = 65536;
+        }
       }
 
       reader.releaseLock();

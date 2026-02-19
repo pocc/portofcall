@@ -141,9 +141,9 @@ function parseVentriloStatus(data: Uint8Array): {
     // Try to extract user count (often in response)
     // Format varies, but might be in the data
     if (data.length >= 8) {
-      // Some servers send user count as 16-bit integers
-      const possibleUsers = data[4] | (data[5] << 8);
-      const possibleMaxUsers = data[6] | (data[7] << 8);
+      // Some servers send user count as 16-bit integers (big-endian/network byte order)
+      const possibleUsers = (data[4] << 8) | data[5];
+      const possibleMaxUsers = (data[6] << 8) | data[7];
 
       if (possibleUsers <= 999 && possibleMaxUsers <= 999) {
         result.users = possibleUsers;
@@ -290,35 +290,37 @@ export async function handleVentriloStatus(request: Request): Promise<Response> 
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       // Send status request
       const statusRequest = encodeVentriloStatusRequest();
       await writer.write(statusRequest);
       writer.releaseLock();
+      writer = null;
 
       // Read response
       const chunks: Uint8Array[] = [];
       let totalBytes = 0;
       const maxResponseSize = 4096;
 
-      const readTimeout = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Response timeout')), timeout);
-      });
+      const readTimeout = setTimeout(() => {
+        // Interrupt read loop
+        reader?.cancel(new Error('Response timeout'));
+      }, timeout);
 
       try {
-        // Give server time to respond
+        // Wait briefly for server to respond
         await new Promise((resolve) => setTimeout(resolve, 500));
 
         while (true) {
-          const { value, done } = await Promise.race([
-            reader.read(),
-            readTimeout,
-          ]);
+          const { value, done } = await reader.read();
 
           if (done) break;
 
@@ -326,36 +328,38 @@ export async function handleVentriloStatus(request: Request): Promise<Response> 
             chunks.push(value);
             totalBytes += value.length;
 
-            if (totalBytes > maxResponseSize) {
+            if (totalBytes >= maxResponseSize) {
               break;
             }
 
-            // Give server a moment to send all data
-            await new Promise((resolve) => setTimeout(resolve, 100));
-
-            // Check if more data is coming
-            const peek = await Promise.race([
+            // Check for more data with a short timeout
+            const hasMore = await Promise.race([
               reader.read(),
               new Promise<{ value?: Uint8Array; done: boolean }>((resolve) =>
-                setTimeout(() => resolve({ done: false }), 200)
+                setTimeout(() => resolve({ done: true }), 200)
               ),
             ]);
 
-            if (peek.value) {
-              chunks.push(peek.value);
-              totalBytes += peek.value.length;
+            if (hasMore.value) {
+              chunks.push(hasMore.value);
+              totalBytes += hasMore.value.length;
+              if (totalBytes >= maxResponseSize) {
+                break;
+              }
             }
 
-            if (peek.done || !peek.value) {
+            if (hasMore.done) {
               break;
             }
           }
         }
       } catch (error) {
-        // Socket might close after response
+        // Socket might close after response or timeout
         if (chunks.length === 0) {
           throw error;
         }
+      } finally {
+        clearTimeout(readTimeout);
       }
 
       const rtt = Date.now() - start;
@@ -368,7 +372,9 @@ export async function handleVentriloStatus(request: Request): Promise<Response> 
         offset += chunk.length;
       }
 
-      reader.releaseLock();
+      if (reader) {
+        reader.releaseLock();
+      }
       socket.close();
 
       if (combined.length === 0) {
@@ -423,6 +429,20 @@ export async function handleVentriloStatus(request: Request): Promise<Response> 
       });
 
     } catch (error) {
+      if (writer) {
+        try {
+          writer.releaseLock();
+        } catch {
+          // Ignore if already released
+        }
+      }
+      if (reader) {
+        try {
+          reader.releaseLock();
+        } catch {
+          // Ignore if already released
+        }
+      }
       socket.close();
       throw error;
     }

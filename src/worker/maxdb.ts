@@ -19,7 +19,7 @@
  *   Bytes 8+:   Payload
  *
  * Connect payload (client→listener):
- *   Null-terminated service descriptor string, e.g. "D=sql6\n\n\r"
+ *   Null-terminated service descriptor string, e.g. "D=MAXDB\n\n\r\0"
  *
  * Connect response (listener→client):
  *   4-byte X Server port (big-endian uint32) if success, or error message
@@ -95,7 +95,9 @@ function parseNIPacket(data: Uint8Array): {
   const version = data[4];
   const type = data[5];
   const rc = dv.getUint16(6, false);
-  const payload = data.slice(8, totalLen);
+  // Payload is from byte 8 to the end of the packet (limited by totalLen)
+  const payloadEnd = Math.min(totalLen, data.length);
+  const payload = data.slice(8, payloadEnd);
   return { totalLen, version, type, typeName: niTypeName(type), rc, payload };
 }
 
@@ -126,18 +128,19 @@ async function readNIResponse(
     chunks.push(result.value);
     totalRead += result.value.length;
 
-    // Once we have 4 bytes, we know the expected length
+    // Once we have 4+ bytes, extract the expected total packet length
     if (expectedLen < 0 && totalRead >= 4) {
       const combined = new Uint8Array(totalRead);
       let off = 0;
       for (const c of chunks) { combined.set(c, off); off += c.length; }
       const dv = new DataView(combined.buffer);
       expectedLen = dv.getUint32(0, false);
+      // Sanity check: if the length field is unreasonable (< 8 bytes for header, or > 1 MB),
+      // treat as non-NI data and return what we have
+      if (expectedLen < 8 || expectedLen > 1_048_576) break;
     }
 
     if (expectedLen > 0 && totalRead >= expectedLen) break;
-    // Fallback: if we got data and no length prefix parsed, return what we have
-    if (expectedLen < 0 && totalRead > 0) break;
   }
 
   const combined = new Uint8Array(totalRead);
@@ -186,8 +189,8 @@ export async function handleMaxDBConnect(request: Request): Promise<Response> {
 
       try {
         // NI CONNECT: service descriptor identifies which database to connect to
-        // Format: "D={database}\n\n\r" (SAP NI routing string)
-        const serviceDesc = enc.encode(`D=${database}\n\n\r`);
+        // Format: "D={database}\n\n\r\0" (SAP NI routing string, null-terminated)
+        const serviceDesc = enc.encode(`D=${database}\n\n\r\0`);
         const connectPkt = buildNIPacket(NI_CONNECT, serviceDesc);
         await writer.write(connectPkt);
 
@@ -297,6 +300,15 @@ export async function handleMaxDBInfo(request: Request): Promise<Response> {
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const socket = connect(`${host}:${port}`);
     const tp = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Connection timeout')), timeout));
@@ -392,7 +404,7 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
   const start = Date.now();
   try {
     const body = await request.json() as MaxDBRequest;
-    const { host, port = 7210, database = 'sql6', timeout = 15000 } = body;
+    const { host, port = 7210, database = 'MAXDB', timeout = 15000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {

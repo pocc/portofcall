@@ -5,43 +5,67 @@
  * CVS (Concurrent Versions System) pserver is a text-based protocol for
  * accessing CVS repositories over the network with password authentication.
  *
- * Protocol Flow:
- * 1. Client connects and sends "BEGIN AUTH REQUEST"
- * 2. Server responds with greeting and version info
- * 3. Client sends repository path, username, scrambled password
- * 4. Server responds with "I LOVE YOU" (success) or "I HATE YOU" (failure)
+ * Protocol Flow (Authentication):
+ * 1. Client connects to port 2401 (no server greeting)
+ * 2. Client sends: BEGIN AUTH REQUEST\n
+ * 3. Client sends: /path/to/cvsroot\n
+ * 4. Client sends: username\n
+ * 5. Client sends: scrambled_password\n
+ * 6. Client sends: END AUTH REQUEST\n
+ * 7. Server responds with "I LOVE YOU\n" (success) or "I HATE YOU\n" (failure)
+ *
+ * After authentication, the client sends protocol requests (Root, Valid-responses,
+ * valid-requests, Directory, Argument, etc.) followed by a command (co, rlog, version).
+ * Arguments to commands are sent via separate "Argument" request lines.
  */
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 /**
- * CVS password descrambling lookup table
- * CVS uses a simple substitution cipher for "security"
+ * CVS password scramble lookup table (from CVS source: scramble.c)
+ *
+ * This is the complete table mapping cleartext byte values (0-127) to their
+ * scrambled equivalents. CVS uses a simple substitution cipher — it provides
+ * no real security, only prevents casual observation of passwords in .cvspass.
+ *
+ * Index = cleartext ASCII code, value = scrambled character code.
+ * Bytes 0-31 (control chars) map to themselves. Key mappings for printable chars:
  */
-const CVS_DESCRAMBLE_MAP: Record<string, string> = {
-  t: 'A', r: 'B', v: 'C', w: 'D', n: 'E', q: 'F', x: 'G', m: 'H',
-  k: 'I', l: 'J', z: 'K', o: 'L', p: 'M', y: 'N', u: 'O', i: 'P',
-  a: 'Q', h: 'R', g: 'S', j: 'T', f: 'U', e: 'V', d: 'W', s: 'X',
-  c: 'Y', b: 'Z', T: 'a', R: 'b', V: 'c', W: 'd', N: 'e', Q: 'f',
-  X: 'g', M: 'h', K: 'i', L: 'j', Z: 'k', O: 'l', P: 'm', Y: 'n',
-  U: 'o', I: 'p', A: 'q', H: 'r', G: 's', J: 't', F: 'u', E: 'v',
-  D: 'w', S: 'x', C: 'y', B: 'z',
-};
+const CVS_SCRAMBLE_TABLE: number[] = [
+  //  0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+      0,   1,   2,   3,   4,   5,   6,   7,   8,   9,  10,  11,  12,  13,  14,  15,
+  // 16   17   18   19   20   21   22   23   24   25   26   27   28   29   30   31
+     16,  17,  18,  19,  20,  21,  22,  23,  24,  25,  26,  27,  28,  29,  30,  31,
+  //       !    "    #    $    %    &    '    (    )    *    +    ,    -    .    /
+    114, 120,  53,  79,  96, 109,  72, 108,  70,  64,  76,  67, 116,  74,  68,  87,
+  //  0    1    2    3    4    5    6    7    8    9    :    ;    <    =    >    ?
+    111,  52,  75, 119,  49,  34,  82,  81,  95,  65, 112,  86, 118, 110, 122, 105,
+  //  @    A    B    C    D    E    F    G    H    I    J    K    L    M    N    O
+     41,  57,  83,  43,  46, 102,  40,  89,  38, 103,  45,  50,  42,  123, 91,  35,
+  //  P    Q    R    S    T    U    V    W    X    Y    Z    [    \    ]    ^    _
+    125,  55,  54, 66,  124, 126,  59,  47,  92,  71, 115,  78,  88, 107, 106,  56,
+  //  `    a    b    c    d    e    f    g    h    i    j    k    l    m    n    o
+     36, 121, 117, 104, 101, 100,  69,  73,  99,  63,  94,  93,  39,  37,  61,  48,
+  //  p    q    r    s    t    u    v    w    x    y    z    {    |    }    ~  DEL
+     58, 113,  32,  90,  44,  98,  60,  51,  33,  97,  62,  77,  84,  80,  85, 223,
+];
 
 /**
- * Scramble a password using CVS's scrambling algorithm
+ * Scramble a password using CVS's scrambling algorithm.
+ * Scrambled passwords always start with 'A' (version prefix), followed by
+ * each character mapped through CVS_SCRAMBLE_TABLE.
  */
 function scrambleCVSPassword(password: string): string {
-  const scrambleMap: Record<string, string> = {};
-  for (const [scrambled, clear] of Object.entries(CVS_DESCRAMBLE_MAP)) {
-    scrambleMap[clear] = scrambled;
-  }
-
   let result = 'A'; // CVS scrambled passwords always start with 'A'
   for (let i = 0; i < password.length; i++) {
-    const char = password[i];
-    result += scrambleMap[char] || char; // Pass through unmapped characters
+    const code = password.charCodeAt(i);
+    if (code >= 0 && code < CVS_SCRAMBLE_TABLE.length) {
+      result += String.fromCharCode(CVS_SCRAMBLE_TABLE[code]);
+    } else {
+      // Characters outside the 0-127 ASCII range pass through unchanged
+      result += password[i];
+    }
   }
   return result;
 }
@@ -368,8 +392,11 @@ export async function handleCVSList(request: Request): Promise<Response> {
       // Also request server version
       await writer.write(encoder.encode('version\n'));
 
-      // Send rlog to list repository info for the module
-      await writer.write(encoder.encode(`rlog ${targetModule}\n`));
+      // Send rlog to list repository info for the module.
+      // In the CVS protocol, command arguments are sent via separate "Argument"
+      // request lines BEFORE the command itself.
+      await writer.write(encoder.encode(`Argument ${targetModule}\n`));
+      await writer.write(encoder.encode('rlog\n'));
 
       // Read all server output until timeout
       const remainingTimeout = Math.max(1000, timeout - (Date.now() - startTime));
@@ -381,12 +408,13 @@ export async function handleCVSList(request: Request): Promise<Response> {
       try { await reader.cancel(); } catch { /* ignore */ }
       try { await socket.close(); } catch { /* ignore */ }
 
-      // Parse valid-requests line
+      // Parse valid-requests response line.
+      // The server responds with "Valid-requests <list>" (no colon).
       let validRequests: string[] = [];
-      const validReqLine = responseLines.find((l) => l.startsWith('Valid-requests:'));
+      const validReqLine = responseLines.find((l) => l.startsWith('Valid-requests '));
       if (validReqLine) {
         validRequests = validReqLine
-          .replace(/^Valid-requests:\s*/, '')
+          .replace(/^Valid-requests\s+/, '')
           .split(/\s+/)
           .filter(Boolean);
       }
@@ -538,13 +566,20 @@ export async function handleCVSCheckout(request: Request): Promise<Response> {
         'wrapper-rcsOptions', 'M', 'Mbinary', 'E', 'F', 'MT',
       ].join(' ');
 
+      // CVS protocol: Directory request takes two lines:
+      //   Directory <local-dir>\n
+      //   <repository-path>\n
+      // For checkout, local-dir is "." (the working directory root)
+      // and repository-path is the full cvsroot path.
+      //
+      // Command arguments must be sent via "Argument" requests before the command.
       const commands = [
         `Root ${cvsroot}`,
         `Valid-responses ${validResponses}`,
         'valid-requests',
-        `Directory ${moduleName === '.' ? '.' : moduleName}`,
+        'Directory .',
         cvsroot,
-        `Argument -N`,          // don't shorten module paths
+        'Argument -N',          // don't shorten module paths
         `Argument ${moduleName}`,
         'co',                   // checkout command
         '',

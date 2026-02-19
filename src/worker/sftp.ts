@@ -220,7 +220,7 @@ function parseAttrs(b: Uint8Array, off: number): SFTPAttrs & { consumed: number 
   const isSymlink   = permissions !== undefined ? (permissions & 0xF000) === 0xA000 : false;
   let permissionString: string | undefined;
   if (permissions !== undefined) {
-    const chars = 'xwrxwrxwr';
+    const chars = 'rwxrwxrwx';
     let s = '';
     for (let i = 8; i >= 0; i--) {
       s += (permissions >> i) & 1 ? chars[8 - i] : '-';
@@ -513,7 +513,14 @@ export async function handleSFTPDownload(request: Request): Promise<Response> {
         size: totalBytes,
         truncated: totalBytes >= MAX_DOWNLOAD,
         isBinary,
-        content: isBinary ? btoa(String.fromCharCode(...Array.from(content))) : text,
+        content: isBinary ? (() => {
+          let binary = '';
+          const chunkSize = 32768;
+          for (let i = 0; i < content.length; i += chunkSize) {
+            binary += String.fromCharCode(...content.subarray(i, Math.min(i + chunkSize, content.length)));
+          }
+          return btoa(binary);
+        })() : text,
         encoding: isBinary ? 'base64' : 'utf-8',
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (e) {

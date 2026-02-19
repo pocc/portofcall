@@ -645,7 +645,38 @@ function hexToUrlEncoded(hex: string): string {
 /**
  * Minimal bencode parser supporting scrape/announce response structures.
  */
-type BencodeValue = number | Uint8Array | BencodeValue[] | Map<string, BencodeValue>;
+type BencodeValue = number | Uint8Array | BencodeValue[] | BencodeDict;
+
+/**
+ * Bencode dictionary that stores keys as hex-encoded byte strings.
+ * This avoids corruption when keys contain arbitrary binary data
+ * (e.g., 20-byte SHA1 info_hash keys in scrape responses).
+ */
+class BencodeDict {
+  private map = new Map<string, BencodeValue>();
+
+  /** Set a value using the raw key bytes (stored internally as hex). */
+  setRaw(keyBytes: Uint8Array, value: BencodeValue): void {
+    this.map.set(bytesToHex(keyBytes), value);
+  }
+
+  /** Get a value using an ASCII string key. */
+  get(asciiKey: string): BencodeValue | undefined {
+    const hexKey = Array.from(new TextEncoder().encode(asciiKey))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    return this.map.get(hexKey);
+  }
+
+  /** Get a value using a hex-encoded key (for binary keys like info_hash). */
+  getHex(hexKey: string): BencodeValue | undefined {
+    return this.map.get(hexKey.toLowerCase());
+  }
+
+  /** Iterate over entries (keys are hex-encoded). */
+  [Symbol.iterator](): IterableIterator<[string, BencodeValue]> {
+    return this.map[Symbol.iterator]();
+  }
+}
 
 function parseBencode(data: Uint8Array, offset = 0): [BencodeValue, number] {
   if (offset >= data.length) throw new Error('Unexpected end of bencode data');
@@ -677,13 +708,12 @@ function parseBencode(data: Uint8Array, offset = 0): [BencodeValue, number] {
   }
 
   if (ch === 0x64 /* 'd' */) {
-    const dict = new Map<string, BencodeValue>();
+    const dict = new BencodeDict();
     let pos = offset + 1;
     while (pos < data.length && data[pos] !== 0x65 /* 'e' */) {
       const [keyBytes, afterKey] = parseBencode(data, pos);
-      const key = new TextDecoder().decode(keyBytes as Uint8Array);
       const [val, afterVal] = parseBencode(data, afterKey);
-      dict.set(key, val);
+      dict.setRaw(keyBytes as Uint8Array, val);
       pos = afterVal;
     }
     return [dict, pos + 1];
@@ -692,7 +722,7 @@ function parseBencode(data: Uint8Array, offset = 0): [BencodeValue, number] {
   throw new Error(`Unknown bencode type byte: 0x${ch.toString(16)} at offset ${offset}`);
 }
 
-function bencodeGetInt(dict: Map<string, BencodeValue>, key: string): number | undefined {
+function bencodeGetInt(dict: BencodeDict, key: string): number | undefined {
   const val = dict.get(key);
   return typeof val === 'number' ? val : undefined;
 }
@@ -747,7 +777,7 @@ export async function handleBitTorrentScrape(request: Request): Promise<Response
     const latencyMs = Date.now() - startTime;
 
     const [parsed] = parseBencode(rawBytes);
-    if (!(parsed instanceof Map)) {
+    if (!(parsed instanceof BencodeDict)) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Unexpected bencode response structure',
@@ -771,7 +801,7 @@ export async function handleBitTorrentScrape(request: Request): Promise<Response
     }
 
     const files = parsed.get('files');
-    if (!(files instanceof Map)) {
+    if (!(files instanceof BencodeDict)) {
       return new Response(JSON.stringify({
         success: false,
         error: 'No "files" key in scrape response',
@@ -782,24 +812,19 @@ export async function handleBitTorrentScrape(request: Request): Promise<Response
       });
     }
 
-    let torrentStats: Map<string, BencodeValue> | undefined;
-    for (const [, val] of files) {
-      if (val instanceof Map) {
-        torrentStats = val;
-        break;
-      }
-    }
-
-    if (!torrentStats) {
+    // Look up stats for our specific info_hash (binary 20-byte key, matched via hex)
+    const torrentStatsVal = files.getHex(cleanHash);
+    if (!(torrentStatsVal instanceof BencodeDict)) {
       return new Response(JSON.stringify({
         success: false,
-        error: 'No torrent data in scrape response',
+        error: 'No torrent data in scrape response for the requested info_hash',
         latencyMs,
       }), {
         status: 502,
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    const torrentStats = torrentStatsVal;
 
     const seeders = bencodeGetInt(torrentStats, 'complete') ?? 0;
     const completed = bencodeGetInt(torrentStats, 'downloaded') ?? 0;
@@ -895,7 +920,7 @@ export async function handleBitTorrentAnnounce(request: Request): Promise<Respon
     const latencyMs = Date.now() - startTime;
 
     const [parsed] = parseBencode(rawBytes);
-    if (!(parsed instanceof Map)) {
+    if (!(parsed instanceof BencodeDict)) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Unexpected bencode response structure',
@@ -935,7 +960,7 @@ export async function handleBitTorrentAnnounce(request: Request): Promise<Respon
     } else if (Array.isArray(peersRaw)) {
       // Non-compact dict format
       for (const peer of peersRaw) {
-        if (peer instanceof Map) {
+        if (peer instanceof BencodeDict) {
           const ipBytes = peer.get('ip');
           const portVal = peer.get('port');
           if (ipBytes instanceof Uint8Array && typeof portVal === 'number') {

@@ -86,7 +86,7 @@ describe('Gadu-Gadu Protocol Integration Tests', () => {
 				body: JSON.stringify({
 					host: 'appmsg.gadu-gadu.pl',
 					port: 8074,
-					uin: 999999999, // Too large
+					uin: 4294967296, // Exceeds uint32 max
 					password: 'test123',
 				}),
 			});

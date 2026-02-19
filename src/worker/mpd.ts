@@ -71,21 +71,31 @@ interface MpdCommandResponse {
 const DEFAULT_PORT = 6600;
 const MAX_RESPONSE_SIZE = 100000;
 
-// Safe commands that don't modify state
+// Safe commands that don't modify state.
+// Note: 'idle' is excluded because it blocks the connection until an event
+// occurs, which would tie up the socket until timeout. 'config' is excluded
+// because it was removed in MPD 0.18 and only worked on local connections.
 const SAFE_COMMANDS = new Set([
   'status', 'stats', 'currentsong', 'listplaylists', 'outputs',
   'commands', 'notcommands', 'tagtypes', 'urlhandlers', 'decoders',
-  'idle', 'noidle', 'config', 'replay_gain_status',
+  'replay_gain_status',
   'list', 'find', 'search', 'count', 'listall', 'listallinfo',
   'lsinfo', 'playlistinfo', 'listplaylist', 'listplaylistinfo',
 ]);
 
 /**
- * Read data from socket until OK, ACK, or timeout
+ * Read data from socket until a termination condition is met or timeout.
+ *
+ * MPD has two response formats:
+ * - Banner (greeting): "OK MPD <version>\n" — sent once on connect
+ * - Command responses: key-value lines ending with "OK\n" or "ACK [...]\n"
+ *
+ * The `isBanner` flag controls which termination condition to use.
  */
 async function readMpdResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  timeoutMs: number
+  timeoutMs: number,
+  isBanner = false,
 ): Promise<string> {
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
@@ -97,37 +107,49 @@ async function readMpdResponse(
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('Response timeout');
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Read timeout')), remaining);
+      timer = setTimeout(() => reject(new Error('Read timeout')), remaining);
     });
 
-    const { value, done } = await Promise.race([
-      reader.read(),
-      timeoutPromise,
-    ]);
+    try {
+      const { value, done } = await Promise.race([
+        reader.read(),
+        timeoutPromise,
+      ]);
 
-    if (done) break;
+      if (done) break;
 
-    if (value) {
-      chunks.push(value);
-      totalBytes += value.length;
+      if (value) {
+        chunks.push(value);
+        totalBytes += value.length;
 
-      if (totalBytes > MAX_RESPONSE_SIZE) {
-        throw new Error('Response too large');
+        if (totalBytes > MAX_RESPONSE_SIZE) {
+          throw new Error('Response too large');
+        }
+
+        const combined = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          combined.set(chunk, offset);
+          offset += chunk.length;
+        }
+        fullText = new TextDecoder().decode(combined);
+
+        if (isBanner) {
+          // Banner line: "OK MPD <version>\n" — complete once we have a newline
+          if (fullText.includes('\n')) {
+            break;
+          }
+        } else {
+          // Command responses end with "OK\n" or "ACK [...]\n"
+          if (fullText.endsWith('OK\n') || /ACK \[.*\].*\n$/.test(fullText)) {
+            break;
+          }
+        }
       }
-
-      const combined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-      fullText = new TextDecoder().decode(combined);
-
-      // MPD responses end with "OK\n" or "ACK [...]\n"
-      if (fullText.endsWith('OK\n') || /ACK \[.*\].*\n$/.test(fullText)) {
-        break;
-      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -157,10 +179,11 @@ function parseMpdLines(text: string): MpdKeyValue[] {
 
 /**
  * Check for ACK error in response
+ * Format: ACK [error@command_listNum] {current_command} message_text
  */
 function getAckError(text: string): string | null {
-  const match = text.match(/ACK \[\d+@\d+\] \{[^}]*\} (.+)/);
-  return match ? match[1] : null;
+  const match = text.match(/^ACK \[(\d+)@(\d+)\] \{([^}]*)\} (.+)$/m);
+  return match ? match[4] : null;
 }
 
 /**
@@ -186,7 +209,7 @@ async function mpdSession(
     const reader = socket.readable.getReader();
 
     // Read banner: "OK MPD x.y.z\n"
-    const banner = await readMpdResponse(reader, timeoutMs);
+    const banner = await readMpdResponse(reader, timeoutMs, true);
     const versionMatch = banner.match(/^OK MPD (.+)/);
     if (!versionMatch) {
       throw new Error(`Unexpected banner: ${banner.substring(0, 100)}`);
@@ -195,7 +218,15 @@ async function mpdSession(
 
     // Authenticate if password provided
     if (password) {
-      await writer.write(new TextEncoder().encode(`password ${password}\n`));
+      // Validate password doesn't contain control characters
+      if (/[\r\n]/.test(password)) {
+        throw new Error('Password must not contain newlines');
+      }
+      // Quote password if it contains spaces, escape quotes
+      const quotedPassword = password.includes(' ') || password.includes('"')
+        ? `"${password.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+        : password;
+      await writer.write(new TextEncoder().encode(`password ${quotedPassword}\n`));
       const authResp = await readMpdResponse(reader, timeoutMs);
       const authErr = getAckError(authResp);
       if (authErr) {
@@ -533,6 +564,15 @@ export async function handleMpdPlay(request: Request): Promise<Response> {
     const body = await request.json() as MpdPlayRequest;
     const { host, port = DEFAULT_PORT, password, timeout = 10000 } = body;
     const songpos = body.songpos;
+    // Validate songpos is non-negative integer if provided
+    if (songpos !== undefined && (!Number.isInteger(songpos) || songpos < 0)) {
+      return new Response(JSON.stringify({
+        success: false, server: '',
+        error: 'songpos must be a non-negative integer',
+      } satisfies MpdPlaybackResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const cmd = songpos !== undefined ? `play ${songpos}` : 'play';
     try {
       const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
@@ -653,7 +693,11 @@ export async function handleMpdAdd(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    const cmd = `add ${uri}`;
+    // Quote URI if it contains spaces, escape backslashes and quotes
+    const quotedUri = uri.includes(' ') || uri.includes('"')
+      ? `"${uri.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+      : uri;
+    const cmd = `add ${quotedUri}`;
     try {
       const { version, raw, error } = await runPlaybackCommand(host, port, password, timeout, cmd);
       return buildPlaybackResponse(!error, host, port, version, cmd, raw, error);
@@ -684,6 +728,23 @@ export async function handleMpdSeek(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false, server: '',
         error: 'songpos and time are required',
+      } satisfies MpdPlaybackResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    // Validate songpos is non-negative integer and time is non-negative number
+    if (!Number.isInteger(songpos) || songpos < 0) {
+      return new Response(JSON.stringify({
+        success: false, server: '',
+        error: 'songpos must be a non-negative integer',
+      } satisfies MpdPlaybackResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof time !== 'number' || time < 0) {
+      return new Response(JSON.stringify({
+        success: false, server: '',
+        error: 'time must be a non-negative number',
       } satisfies MpdPlaybackResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });

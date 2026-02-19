@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface CDPClientProps {
   onBack: () => void;
@@ -312,6 +314,7 @@ export default function CDPClient({ onBack }: CDPClientProps) {
 
   return (
     <ProtocolClientLayout title="Chrome DevTools Protocol" onBack={onBack}>
+      <ApiExamples examples={apiExamples.CDP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 

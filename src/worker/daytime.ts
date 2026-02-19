@@ -27,11 +27,14 @@ interface DaytimeRequest {
 
 interface DaytimeResponse {
   success: boolean;
+  host: string;
+  port: number;
   time?: string;
   localTime?: string;
   remoteTimestamp?: number;
   localTimestamp?: number;
   offsetMs?: number;
+  rtt?: number;
   error?: string;
 }
 
@@ -48,8 +51,10 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
     if (!host) {
       return new Response(JSON.stringify({
         success: false,
+        host: '',
+        port,
         error: 'Host is required',
-      }), {
+      } satisfies DaytimeResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -58,8 +63,10 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
     if (port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
+        host,
+        port,
         error: 'Port must be between 1 and 65535',
-      }), {
+      } satisfies DaytimeResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -85,8 +92,8 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
 
       const reader = socket.readable.getReader();
 
-      // Server sends time immediately - just read it
-      // Read all available data (server may send multiple chunks or close quickly)
+      // RFC 867: Server sends time immediately and closes connection.
+      // Read all chunks until the server closes or we hit the size limit.
       const chunks: Uint8Array[] = [];
       let totalBytes = 0;
       const maxResponseSize = 1000; // Daytime responses are typically < 100 bytes
@@ -104,27 +111,13 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
             chunks.push(value);
             totalBytes += value.length;
 
-            // Prevent excessive data
             if (totalBytes > maxResponseSize) {
               break;
             }
           }
-
-          // Daytime servers typically send data and close immediately
-          // Break after first chunk in most cases
-          if (chunks.length > 0) {
-            // Try to read one more chunk to see if connection closed
-            try {
-              const { done: nextDone } = await reader.read();
-              if (nextDone) break;
-            } catch {
-              break;
-            }
-            break;
-          }
         }
-      } catch (error) {
-        // Connection closed by server (expected behavior)
+      } catch {
+        // Connection closed by server (expected behavior for Daytime)
         if (chunks.length === 0) {
           throw new Error('Server closed connection without sending time');
         }
@@ -170,13 +163,18 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
         // This is OK, just won't calculate offset
       }
 
+      const rtt = localTimeAfter - localTimeBefore;
+
       const result: DaytimeResponse = {
         success: true,
+        host,
+        port,
         time: timeString,
         localTime,
         remoteTimestamp,
         localTimestamp: localTimeAfter,
         offsetMs,
+        rtt,
       };
 
       return new Response(JSON.stringify(result), {
@@ -193,8 +191,10 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
+      host: '',
+      port: 13,
       error: error instanceof Error ? error.message : 'Unknown error',
-    }), {
+    } satisfies DaytimeResponse), {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });

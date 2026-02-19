@@ -1,74 +1,35 @@
-# Fluentd Forward Protocol Implementation
+# Fluentd Forward Protocol — Power User Reference
 
-## Overview
+**Port:** 24224 (default) | **Protocol:** Forward Protocol v1 (MessagePack over TCP) | **Tests:** 9/9 | **Source:** `src/worker/fluentd.ts`
 
-**Protocol**: Fluentd Forward Protocol
-**Port**: 24224 (default)
-**Transport**: TCP with MessagePack encoding
-**Status**: Active, widely deployed in cloud-native environments
+Three endpoints, each using a different Forward Protocol message mode. All open a raw TCP socket from the Cloudflare Worker. No TLS. No shared-key authentication.
 
-Fluentd is an open-source data collector for unified logging. The Forward protocol is its native inter-node transport, used for forwarding logs between Fluentd instances, Fluent Bit agents, and compatible receivers.
+---
 
-## Protocol Format
+## Endpoints
 
-### MessagePack Encoding
+| Endpoint | Method | Forward Mode | Default Tag |
+|---|---|---|---|
+| `/api/fluentd/connect` | POST | Forward (`[tag, [[t,rec],...], opts]`) | `portofcall.probe` |
+| `/api/fluentd/send` | POST | Message (`[tag, t, rec, opts]`) | `portofcall.test` |
+| `/api/fluentd/bulk` | POST | PackedForward (`[tag, bin-blob, opts]`) | `portofcall.bulk` |
 
-All Fluentd messages are encoded using [MessagePack](https://msgpack.org/), a compact binary serialization format similar to JSON but more efficient.
+All three return 405 for non-POST requests.
 
-### Message Modes
+---
 
-#### Message Mode (single event)
-```
-[tag, time, record, options]
-```
-- **tag**: String, dotted namespace (e.g., `app.access`)
-- **time**: Integer, Unix timestamp
-- **record**: Map, key-value pairs of log data
-- **options**: Map, optional settings (e.g., `{"chunk": "..."}`)
+## `/api/fluentd/connect` — Probe
 
-#### Forward Mode (multiple events)
-```
-[tag, [[time1, record1], [time2, record2], ...], options]
-```
+Sends a single hardcoded event `{message:"portofcall-probe", source:"portofcall"}` in Forward mode with a chunk ID, then waits for an ack.
 
-#### PackedForward Mode (binary stream)
-```
-[tag, msgpack-binary-stream, options]
-```
-
-### Acknowledgment
-
-When the client includes a `chunk` option, the server responds with:
+**Request:**
 ```json
-{"ack": "<chunk-id>"}
+{ "host": "fluentd.example.com", "port": 24224, "tag": "portofcall.probe", "timeout": 10000 }
 ```
 
-This confirms receipt of the forwarded data.
+All fields except `host` are optional (defaults shown).
 
-## Implementation
-
-### Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/fluentd/connect` | POST | Probe Fluentd server with test message |
-| `/api/fluentd/send` | POST | Send a custom log entry |
-
-### Server Probe (`/api/fluentd/connect`)
-
-Sends a minimal forward message with ack request to verify Fluentd connectivity.
-
-**Request Body:**
-```json
-{
-  "host": "fluentd.example.com",
-  "port": 24224,
-  "tag": "portofcall.probe",
-  "timeout": 10000
-}
-```
-
-**Response:**
+**Response (success):**
 ```json
 {
   "success": true,
@@ -76,112 +37,283 @@ Sends a minimal forward message with ack request to verify Fluentd connectivity.
   "port": 24224,
   "rtt": 42,
   "tag": "portofcall.probe",
-  "chunkId": "abc123...",
+  "chunkId": "abc123def456ghij",
   "ackReceived": true,
+  "ackChunkId": "abc123def456ghij",
   "ackMatch": true,
+  "responseData": { "ack": "abc123def456ghij" },
   "messageSizeBytes": 87,
-  "protocol": "Fluentd Forward"
+  "protocol": "Fluentd Forward",
+  "message": "Fluentd server acknowledged message in 42ms"
 }
 ```
 
-### Send Log Entry (`/api/fluentd/send`)
+- `ackChunkId` — the chunk ID value extracted from the server's ack response. May differ from `chunkId` if the server echoes a different value (would set `ackMatch: false`).
+- `responseData` — full decoded MessagePack map from server. `null` if server sent nothing.
+- `success: true` is returned even when `ackReceived: false`. The probe considers TCP connect + message delivery sufficient. Servers without `require_ack_response true` in their config will not ack.
 
-Sends a custom log entry with user-defined tag and record fields.
+**Wire exchange:**
+```
+Client → Server:  [tag, [[unix_ts, {message:"portofcall-probe", source:"portofcall"}]], {chunk:"<id>"}]
+Server → Client:  {ack:"<id>"}   (only if require_ack_response is enabled)
+```
 
-**Request Body:**
+---
+
+## `/api/fluentd/send` — Single Event
+
+Sends one user-defined event in Message mode.
+
+**Request:**
 ```json
 {
   "host": "fluentd.example.com",
   "port": 24224,
-  "tag": "app.test",
-  "record": {
-    "message": "Hello from Port of Call",
-    "level": "info",
-    "source": "browser"
-  },
+  "tag": "app.logs",
+  "record": { "message": "Hello", "level": "info", "source": "browser" },
   "timeout": 10000
 }
 ```
 
-**Response:**
+- `record` — flat `Record<string, string>`. All values are coerced to strings via `String(v)` before MessagePack encoding, so numeric values become strings on the wire.
+- Max 20 key-value pairs (excess silently truncated).
+- Total key+value string length capped at 8192 characters (returns 400 if exceeded).
+- Default record if omitted: `{ message: "Hello from Port of Call" }`.
+
+**Response (success):**
 ```json
 {
   "success": true,
   "host": "fluentd.example.com",
   "port": 24224,
   "rtt": 38,
-  "tag": "app.test",
+  "tag": "app.logs",
   "chunkId": "xyz789...",
   "ackReceived": true,
   "recordKeys": ["message", "level", "source"],
-  "messageSizeBytes": 112
+  "messageSizeBytes": 112,
+  "protocol": "Fluentd Forward",
+  "message": "Log entry sent and acknowledged in 38ms"
 }
 ```
 
-## MessagePack Encoding Details
+**Wire exchange:**
+```
+Client → Server:  [tag, unix_ts, {key1:"val1", key2:"val2"}, {chunk:"<id>"}]
+Server → Client:  {ack:"<id>"}
+```
 
-| Type | Format | Bytes |
-|------|--------|-------|
-| fixstr | `0xa0-0xbf` + data | 1 + N |
-| str 8 | `0xd9` + len(1) + data | 2 + N |
-| positive fixint | `0x00-0x7f` | 1 |
-| uint 8 | `0xcc` + value | 2 |
-| uint 16 | `0xcd` + value | 3 |
-| uint 32 | `0xce` + value | 5 |
-| fixmap | `0x80-0x8f` + entries | 1 + N |
-| fixarray | `0x90-0x9f` + items | 1 + N |
+---
 
-## Authentication
+## `/api/fluentd/bulk` — Batch Events (PackedForward)
 
-- **No built-in authentication** in the standard forward protocol
-- **TLS support**: Fluentd supports TLS encryption (not implemented in probe)
-- **Shared key**: Some Fluentd configurations use `shared_key` for authentication
-- Security typically relies on network-level controls (firewalls, VPNs)
+Sends multiple events in PackedForward mode — each `[time, record]` pair is MessagePack-encoded individually, then concatenated into a raw binary blob sent as a msgpack `bin` type.
 
-## Timeouts & Keep-alives
+**Request:**
+```json
+{
+  "host": "fluentd.example.com",
+  "port": 24224,
+  "tag": "app.batch",
+  "events": [
+    { "time": 1700000000, "record": { "message": "event1", "count": 42 } },
+    { "record": { "message": "event2" } }
+  ],
+  "timeout": 10000
+}
+```
 
-- Default connection timeout: 10 seconds
-- Fluentd accepts connections immediately (no greeting)
-- Ack response timeout: 5 seconds
-- Connection closed after each probe (stateless)
-- Fluentd supports persistent connections but not needed for probing
+- `events` — array of `{ time?: number, record: Record<string, string | number> }`. Max 100 events (excess silently truncated). `time` defaults to `Date.now()/1000` if omitted.
+- Each event's record: max 20 key-value pairs. All values coerced to strings via `String(v)` despite the type accepting `number`.
+- Default events if omitted: `[{ record: { message: "Hello from Port of Call" } }]`.
+- Options map includes `size` (event count) in addition to `chunk`.
 
-## Binary vs. Text Encoding
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "fluentd.example.com",
+  "port": 24224,
+  "tag": "app.batch",
+  "eventCount": 2,
+  "bytesSent": 198,
+  "ackReceived": true,
+  "chunkId": "abc...",
+  "rtt": 55,
+  "message": "Sent 2 events (198 bytes) in 55ms, ACK received"
+}
+```
 
-- **Entirely binary**: MessagePack encoding throughout
-- **No text mode**: Unlike many protocols, no human-readable fallback
-- **Compact**: MessagePack is ~30-50% smaller than equivalent JSON
+**Wire exchange:**
+```
+Client → Server:  [tag, <bin: [ts,rec][ts,rec]...>, {chunk:"<id>", size:N}]
+Server → Client:  {ack:"<id>"}
+```
 
-## Edge Cases
+---
 
-1. **No ack response**: Server may not have `require_ack_response` enabled. Connection still succeeds.
-2. **TLS-only servers**: Will fail on plain TCP. Not implemented (would need `connect({secureTransport: "on"})`).
-3. **Shared key auth**: Server may require authentication handshake before accepting data.
-4. **Large records**: Capped at ~8KB per record for safety.
-5. **Invalid tag format**: Tags must be alphanumeric with dots/hyphens/underscores, max 128 chars.
+## Validation Differences
 
-## Security Considerations
+| Check | `/connect` | `/send` | `/bulk` |
+|---|---|---|---|
+| `host` required | Yes (400) | Yes (400) | Yes (400) |
+| Port range 1–65535 | Yes (400) | Yes (400) | **No** |
+| Tag regex + max 128 | Yes (400) | Yes (400) | **No** |
+| Record size limit | N/A (hardcoded) | 20 entries, 8 KB | 20 entries/event, **no total size** |
+| Event count limit | N/A | N/A | 100 events |
+| Cloudflare detection | Yes (403) | Yes (403) | Yes (403) |
 
-- Probe sends minimal test data (no sensitive information)
-- Tag validated against injection patterns
-- Record size limited to prevent abuse
-- Host/port validated
-- Read-only operations (probe + one-shot send)
+The `/bulk` endpoint skips tag and port validation entirely.
 
-## Common Tags
+---
 
-| Tag Pattern | Description |
-|-------------|-------------|
-| `app.access` | Application access logs |
-| `app.error` | Application error logs |
-| `system.syslog` | System syslog forwarding |
-| `docker.container` | Docker container logs |
-| `kubernetes.pods` | Kubernetes pod logs |
-| `nginx.access` | Nginx access logs |
+## Timeout Architecture
 
-## References
+| Scope | `/connect` | `/send` | `/bulk` |
+|---|---|---|---|
+| Default overall timeout | 10 s | 10 s | 10 s |
+| Covers | `socket.opened` only | `socket.opened` only | `socket.opened` only |
+| Ack read sub-timeout | `min(timeout, 5000)` ms | `min(timeout, 5000)` ms | Hardcoded **3 s** |
+| Per-read sub-timeout | 3 s (within `readFluentdResponse`) | 3 s (within `readFluentdResponse`) | N/A (single `reader.read()`) |
+| Max ack read bytes | 8192 | 8192 | Single read buffer |
 
-- [Fluentd Forward Protocol Spec](https://github.com/fluent/fluentd/wiki/Forward-Protocol-Specification-v1)
-- [Fluentd Documentation](https://docs.fluentd.org/)
-- [Fluent Bit](https://fluentbit.io/)
-- [MessagePack Specification](https://github.com/msgpack/msgpack/blob/master/spec.md)
+The overall `timeout` only gates `socket.opened` via `Promise.race`. If the TCP connection opens in 100 ms, the remaining 9.9 s of timeout is unused — the ack wait uses its own independent sub-timeout. Setting `timeout: 60000` will not extend the ack wait beyond 5 s (or 3 s for `/bulk`).
+
+---
+
+## Ack Detection
+
+`/connect` and `/send` use `readFluentdResponse()`, which:
+1. Reads chunks in a loop with a 3 s per-read timeout
+2. After each chunk, attempts to decode the accumulated bytes as MessagePack
+3. Stops when decode succeeds (complete message) or the deadline is reached
+4. Decodes the result as a map and checks for an `ack` key
+
+`/bulk` uses a simpler strategy:
+1. Single `reader.read()` with a 3 s race timeout
+2. Decodes the raw bytes as UTF-8 text
+3. Checks if `text.includes(chunkId)` — or if `value.length > 0`
+4. **Any response bytes = `ackReceived: true`**, even if the response is an error or unrelated data
+
+This means `/bulk`'s `ackReceived` is unreliable — it reports `true` for any non-empty server response.
+
+---
+
+## MessagePack Codec
+
+### Encoder (subset)
+
+| Type | Format byte(s) | Range |
+|---|---|---|
+| positive fixint | `0x00–0x7F` | 0–127 |
+| uint 8 | `0xCC` | 0–255 |
+| uint 16 | `0xCD` | 0–65535 |
+| uint 32 | `0xCE` | 0–4294967295 |
+| fixstr | `0xA0–0xBF` | 0–31 bytes |
+| str 8 | `0xD9` | 0–255 bytes |
+| str 16 | `0xDA` | 0–65535 bytes |
+| fixmap | `0x80–0x8F` | 0–15 entries |
+| map 16 | `0xDE` | 0–65535 entries |
+| fixarray | `0x90–0x9F` | 0–15 items |
+| array 16 | `0xDC` | 0–65535 items |
+
+Missing: str 32, map 32, array 32, int types, float, bin (except inline in `/bulk`), ext, timestamp ext.
+
+**`/bulk` inline bin encoding:**
+
+| Format | Header | Max payload |
+|---|---|---|
+| bin 8 | `0xC4` + 1-byte len | 255 bytes |
+| bin 16 | `0xC5` + 2-byte len | 65535 bytes |
+
+No bin 32. If the concatenated entries blob exceeds 65535 bytes (roughly 300+ events with moderate-size records), the 2-byte length field silently overflows, producing a corrupt MessagePack message. The server will likely reject or misparse it.
+
+### Decoder (subset)
+
+Handles: nil, bool, positive/negative fixint, uint 8/16/32, fixstr/str 8/str 16/str 32, fixmap/map 16/map 32, fixarray.
+
+Missing: int 8/16/32/64, uint 64, float 32/64, bin 8/16/32, ext, array 16/array 32.
+
+Unknown type bytes silently return `{ value: null, bytesRead: 1 }`, which skips 1 byte and may corrupt subsequent map/array parsing.
+
+---
+
+## Known Quirks
+
+1. **`success: true` without ack** — All three endpoints return `success: true` after sending the message, even when `ackReceived: false`. The probe considers "TCP connect + message written" as success.
+
+2. **Numeric record values become strings** — Both `/send` and `/bulk` coerce all record values to strings (`String(v)`) before encoding, even though `/bulk`'s TypeScript type accepts `number`. A record `{ count: 42 }` is sent as `{ count: "42" }` in MessagePack.
+
+3. **`readFluentdResponse` early termination** — The function attempts to decode after each chunk. A single byte like `0x00` (positive fixint 0) decodes successfully, causing early return before the full ack map arrives. This could happen if the server sends data in tiny fragments.
+
+4. **Chunk ID: `Math.random()`** — Generated via `Math.random()` character selection from `[a-z0-9]`, 16 characters. Not cryptographically secure, but adequate for non-security-critical ack correlation.
+
+5. **map 16 dead code** — Line 200: `bytesRead: 3 + result.bytesRead - 0` — the `- 0` is a no-op leftover.
+
+6. **No method restriction bypass** — All three endpoints explicitly check for POST and return 405. Unlike some other protocol workers, there is no GET fallback.
+
+---
+
+## Limitations
+
+- **No TLS** — Plain TCP only. Servers requiring `transport tls` in `<source>` will reject the connection.
+- **No shared-key auth** — Servers with `<security>` / `shared_key` configuration will reject messages after the HELO/PING handshake, which this implementation doesn't perform.
+- **No CompressedPackedForward** — The protocol spec allows gzip-compressed entry blobs; not implemented.
+- **No EventTime (ext type)** — Forward Protocol v1 supports nanosecond timestamps via ext type 0x00; this implementation uses uint32 Unix seconds only.
+- **No heartbeat** — No keepalive or heartbeat mechanism; each request opens a fresh TCP connection.
+- **No Cloudflare detection gap** — Detection applies to the target `host` only. If Fluentd is behind a TCP load balancer at a different hostname, the check may produce false negatives or positives.
+- **bin16 overflow** — `/bulk` entries blob > 65535 bytes silently corrupts the message (no bin32 encoding).
+
+---
+
+## curl Examples
+
+**Probe:**
+```bash
+curl -X POST https://portofcall.ross.gg/api/fluentd/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"fluentd.example.com","port":24224,"timeout":5000}'
+```
+
+**Send single event:**
+```bash
+curl -X POST https://portofcall.ross.gg/api/fluentd/send \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"fluentd.example.com","tag":"app.test","record":{"message":"hello","level":"info"}}'
+```
+
+**Bulk send:**
+```bash
+curl -X POST https://portofcall.ross.gg/api/fluentd/bulk \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"fluentd.example.com","tag":"app.batch","events":[{"record":{"msg":"event1"}},{"record":{"msg":"event2"}}]}'
+```
+
+---
+
+## Local Testing
+
+```bash
+# Run Fluentd with ack enabled:
+docker run -p 24224:24224 -v /tmp/fluentd.conf:/fluentd/etc/fluent.conf:ro fluent/fluentd:v1.16-1
+
+# /tmp/fluentd.conf:
+<source>
+  @type forward
+  port 24224
+  <security>
+    self_hostname localhost
+  </security>
+  <transport tcp>
+  </transport>
+</source>
+<match **>
+  @type stdout
+  <buffer>
+    flush_interval 1s
+  </buffer>
+</match>
+
+# For ack testing, add to <source>:
+#   require_ack_response true
+```

@@ -7,14 +7,21 @@
  *
  * Protocol Flow:
  * 1. Client connects to Kibana HTTP API port (default 5601)
- * 2. Client sends HTTP/1.1 GET requests with kbn-xsrf header
- * 3. Server responds with JSON data
+ * 2. Client sends HTTP/1.1 requests
+ * 3. Mutating requests (POST/PUT/DELETE) require the kbn-xsrf header
+ * 4. Server responds with JSON data
+ *
+ * Authentication:
+ * - Basic auth: Authorization: Basic base64(user:pass)
+ * - API key: Authorization: ApiKey <encoded_key>
+ * - /api/status is unauthenticated by default
  *
  * Endpoints:
- * - GET /api/status              → Server health, version, and plugin status
- * - GET /api/features            → Available features and capabilities
- * - GET /api/saved_objects/_find → Search saved objects (dashboards, etc.)
- * - GET /api/spaces/_get_shareable_references → Space configuration
+ * - GET /api/status              -> Server health, version, and plugin status (unauthenticated)
+ * - GET /api/saved_objects/_find -> Search saved objects (dashboards, etc.)
+ * - GET /api/data_views          -> List data views / index patterns (v8+)
+ * - GET /api/alerting/rules/_find -> List alerting rules (v8+)
+ * - POST /api/console/proxy      -> Proxy queries to Elasticsearch
  *
  * Docs: https://www.elastic.co/guide/en/kibana/current/api.html
  */
@@ -27,6 +34,7 @@ const decoder = new TextDecoder();
 
 /**
  * Send a raw HTTP/1.1 GET request over a TCP socket and parse the response.
+ * Does not include kbn-xsrf (not required for GET requests) or auth headers.
  */
 async function sendHttpGet(
   host: string,
@@ -47,7 +55,6 @@ async function sendHttpGet(
   let request = `GET ${path} HTTP/1.1\r\n`;
   request += `Host: ${host}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
-  request += `kbn-xsrf: true\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
   request += `\r\n`;
@@ -109,8 +116,16 @@ async function sendHttpGet(
     while (remaining.length > 0) {
       const lineEnd = remaining.indexOf('\r\n');
       if (lineEnd === -1) break;
-      const chunkSize = parseInt(remaining.substring(0, lineEnd), 16);
-      if (isNaN(chunkSize) || chunkSize === 0) break;
+      // Strip chunk extensions (;extension=value) per RFC 7230 §4.1
+      const chunkSizeLine = remaining.substring(0, lineEnd);
+      const semiIdx = chunkSizeLine.indexOf(';');
+      const chunkSizeHex = semiIdx > 0 ? chunkSizeLine.substring(0, semiIdx) : chunkSizeLine;
+      const chunkSize = parseInt(chunkSizeHex, 16);
+      if (isNaN(chunkSize)) break;
+      if (chunkSize === 0) {
+        // Last chunk - remaining contains optional trailer headers and final CRLF
+        break;
+      }
       decoded += remaining.substring(lineEnd + 2, lineEnd + 2 + chunkSize);
       remaining = remaining.substring(lineEnd + 2 + chunkSize + 2);
     }
@@ -121,7 +136,8 @@ async function sendHttpGet(
 }
 
 /**
- * Status & Health probe: checks server status, version, and overall health
+ * Status & Health probe: checks server status, version, and overall health.
+ * Uses GET /api/status which is unauthenticated by default in Kibana.
  */
 export async function handleKibanaStatus(request: Request): Promise<Response> {
   try {
@@ -132,9 +148,9 @@ export async function handleKibanaStatus(request: Request): Promise<Response> {
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -191,11 +207,17 @@ export async function handleKibanaStatus(request: Request): Promise<Response> {
 
 /**
  * Saved objects search - find dashboards, visualizations, index patterns, etc.
+ * Uses GET /api/saved_objects/_find which requires authentication on secured deployments.
  */
 export async function handleKibanaSavedObjects(request: Request): Promise<Response> {
   try {
-    const { host, port = 5601, type = 'dashboard', perPage = 20 } = await request.json() as {
+    const {
+      host, port = 5601, type = 'dashboard', perPage = 20,
+      username, password, api_key, space, timeout = 15000,
+    } = await request.json() as {
       host: string; port?: number; type?: string; perPage?: number;
+      username?: string; password?: string; api_key?: string;
+      space?: string; timeout?: number;
     };
     if (!host) {
       return new Response(JSON.stringify({ error: 'Host is required' }), {
@@ -203,16 +225,17 @@ export async function handleKibanaSavedObjects(request: Request): Promise<Respon
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
+    const prefix = space ? `/s/${space}` : '';
     const startTime = Date.now();
-    const path = `/api/saved_objects/_find?type=${encodeURIComponent(type)}&per_page=${perPage}`;
-    const resp = await sendHttpGet(host, port, path);
+    const path = `${prefix}/api/saved_objects/_find?type=${encodeURIComponent(type)}&per_page=${perPage}`;
+    const resp = await sendHttpWithAuth(host, port, 'GET', path, undefined, username, password, api_key, timeout);
     const elapsed = Date.now() - startTime;
 
     let parsed: Record<string, unknown> | null = null;
@@ -258,6 +281,8 @@ export async function handleKibanaSavedObjects(request: Request): Promise<Respon
 
 /**
  * Send an HTTP request with optional Basic/API key auth, supporting any method.
+ * The kbn-xsrf header is only included for mutating methods (POST, PUT, DELETE)
+ * as required by the Kibana API.
  */
 async function sendHttpWithAuth(
   host: string,
@@ -281,7 +306,13 @@ async function sendHttpWithAuth(
   let req = `${method} ${path} HTTP/1.1\r\n`;
   req += `Host: ${host}:${port}\r\n`;
   req += `Accept: application/json\r\n`;
-  req += `kbn-xsrf: true\r\n`;
+
+  // kbn-xsrf is required only for mutating requests (POST, PUT, DELETE)
+  const upperMethod = method.toUpperCase();
+  if (upperMethod === 'POST' || upperMethod === 'PUT' || upperMethod === 'DELETE') {
+    req += `kbn-xsrf: true\r\n`;
+  }
+
   req += `Connection: close\r\n`;
   req += `User-Agent: PortOfCall/1.0\r\n`;
 
@@ -337,8 +368,16 @@ async function sendHttpWithAuth(
     while (remaining.length > 0) {
       const le = remaining.indexOf('\r\n');
       if (le === -1) break;
-      const cs = parseInt(remaining.substring(0, le), 16);
-      if (isNaN(cs) || cs === 0) break;
+      // Strip chunk extensions (;extension=value) per RFC 7230 §4.1
+      const chunkLine = remaining.substring(0, le);
+      const semiIdx = chunkLine.indexOf(';');
+      const chunkHex = semiIdx > 0 ? chunkLine.substring(0, semiIdx) : chunkLine;
+      const cs = parseInt(chunkHex, 16);
+      if (isNaN(cs)) break;
+      if (cs === 0) {
+        // Last chunk - remaining contains optional trailer headers and final CRLF
+        break;
+      }
       decoded += remaining.substring(le + 2, le + 2 + cs);
       remaining = remaining.substring(le + 2 + cs + 2);
     }
@@ -369,9 +408,9 @@ export async function handleKibanaIndexPatterns(request: Request): Promise<Respo
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -409,7 +448,7 @@ export async function handleKibanaIndexPatterns(request: Request): Promise<Respo
 
 /**
  * List Kibana alerting rules.
- * GET /api/alerting/rules/_find (v8+) with fallback to legacy alerts API.
+ * GET /api/alerting/rules/_find (v8+) with fallback to GET /api/alerts/_find (v7).
  *
  * Accept JSON: {host, port?, username?, password?, api_key?, space?, timeout?}
  */
@@ -428,9 +467,9 @@ export async function handleKibanaAlerts(request: Request): Promise<Response> {
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -444,7 +483,7 @@ export async function handleKibanaAlerts(request: Request): Promise<Response> {
     );
     if (resp.statusCode === 404) {
       resp = await sendHttpWithAuth(
-        host, port, 'GET', `${prefix}/api/alerts/alerts/_find?per_page=50`,
+        host, port, 'GET', `${prefix}/api/alerts/_find?per_page=50`,
         undefined, username, password, api_key, timeout,
       );
     }
@@ -478,6 +517,9 @@ export async function handleKibanaAlerts(request: Request): Promise<Response> {
  * Proxy a query through the Kibana console API to Elasticsearch.
  * POST /api/console/proxy?path=<es_path>&method=GET
  *
+ * The path parameter should contain the Elasticsearch path with literal slashes
+ * (e.g., path=/_cat/indices), not percent-encoded slashes.
+ *
  * Accept JSON: {host, port?, username?, password?, api_key?, query?, body?, space?, timeout?}
  */
 export async function handleKibanaQuery(request: Request): Promise<Response> {
@@ -496,17 +538,22 @@ export async function handleKibanaQuery(request: Request): Promise<Response> {
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Kibana', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const prefix = space ? `/s/${space}` : '';
-    const esPath = encodeURIComponent(query.startsWith('/') ? query : `/${query}`);
+    // Ensure the ES path starts with /
+    const esPath = query.startsWith('/') ? query : `/${query}`;
     const esMethod = esBody ? 'POST' : 'GET';
-    const proxyPath = `${prefix}/api/console/proxy?path=${esPath}&method=${esMethod}`;
+    // Kibana console proxy expects literal slashes in the path parameter,
+    // so we only encode characters that are not valid in a URL query value
+    // while preserving / and other path-safe characters.
+    const encodedPath = esPath.replace(/ /g, '%20');
+    const proxyPath = `${prefix}/api/console/proxy?path=${encodedPath}&method=${esMethod}`;
     const start = Date.now();
 
     const resp = await sendHttpWithAuth(

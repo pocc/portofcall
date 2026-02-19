@@ -1,327 +1,223 @@
-# Gopher Protocol Implementation Plan
+# Gopher Protocol — Power-User Reference
 
-## Overview
+**Port:** 70 (default)
+**RFC:** [1436](https://tools.ietf.org/html/rfc1436)
+**Transport:** TCP (plaintext)
+**Implementation:** `src/worker/gopher.ts`
+**Rating:** ★★★★★
 
-**Protocol:** Gopher
-**Port:** 70
-**RFC:** [RFC 1436](https://tools.ietf.org/html/rfc1436)
-**Complexity:** Low
-**Purpose:** Pre-Web hypertext browsing
+---
 
-Gopher is a **1991 internet protocol** that predates the World Wide Web. It provides document retrieval with a hierarchical menu structure - a fascinating piece of internet history.
+## Endpoint
 
-### Use Cases
-- Retro internet exploration
-- Educational - learn pre-Web protocols
-- Access Gopherspace (still active!)
-- Internet archaeology
-- Historical document browsing
+### `POST /api/gopher/fetch`
 
-## Protocol Specification
+Connects to a Gopher server, sends a selector, and returns either parsed menu items or raw text content.
 
-### Request Format
+**Request body:**
 
-```
-selector\r\n
-```
+| Field      | Type   | Default | Notes                                                      |
+|------------|--------|---------|-------------------------------------------------------------|
+| `host`     | string | —       | Required. Must match `/^[a-zA-Z0-9.-]+$/` (no underscores, no IPv6, no bare IPs with colons). |
+| `port`     | number | `70`    | 1–65535.                                                   |
+| `selector` | string | `""`    | The Gopher selector to request. Empty string = root menu. Max 1024 chars. No control chars except `\t` (allowed for search). |
+| `query`    | string | —       | If provided, appended to selector with `\t` separator (for type-7 search servers). |
+| `timeout`  | number | `10000` | Milliseconds. Applies to both the connection and each individual `reader.read()` call (same timer, not reset per read). |
 
-That's it! Just send the selector string followed by CRLF.
+**Success response (`200`):**
 
-### Response Format
-
-Menu items (one per line):
-```
-Type Display_Name TAB Selector TAB Host TAB Port
-```
-
-### Item Types
-
-| Type | Meaning |
-|------|---------|
-| 0 | Text file |
-| 1 | Directory (menu) |
-| 2 | CCSO name server |
-| 3 | Error |
-| 4 | BinHex file |
-| 5 | DOS binary |
-| 6 | uuencoded file |
-| 7 | Search server |
-| 8 | Telnet session |
-| 9 | Binary file |
-| g | GIF image |
-| I | Image file |
-| h | HTML file |
-| i | Inline text (non-selectable) |
-
-### Example Session
-
-```
-Client connects to gopher.example.com:70
-Client sends: "\r\n" (root menu)
-
-Server responds:
-i Welcome to Gopher!      (none)  (none)  0
-1 About                   /about   gopher.example.com  70
-0 README.txt              /readme  gopher.example.com  70
-9 archive.zip             /files/archive.zip  gopher.example.com  70
-.
-(period on its own line = end)
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/gopher/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface GopherItem {
-  type: string;
-  display: string;
-  selector: string;
-  host: string;
-  port: number;
-}
-
-export class GopherClient {
-  constructor(
-    private host: string,
-    private port: number = 70
-  ) {}
-
-  async fetch(selector: string = ''): Promise<GopherItem[] | string> {
-    const socket = connect(`${this.host}:${this.port}`);
-    await socket.opened;
-
-    // Send selector
-    const writer = socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(selector + '\r\n'));
-    writer.releaseLock();
-
-    // Read response
-    const reader = socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let response = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      response += decoder.decode(value, { stream: true });
-    }
-
-    await socket.close();
-
-    // Check if it's a menu or file content
-    if (this.isMenu(response)) {
-      return this.parseMenu(response);
-    } else {
-      return response;
-    }
-  }
-
-  private isMenu(content: string): boolean {
-    // Menus have lines starting with type character
-    const lines = content.split('\n');
-    return lines.some(line =>
-      line.length > 0 && /^[0-9giI+T]/.test(line)
-    );
-  }
-
-  private parseMenu(content: string): GopherItem[] {
-    const items: GopherItem[] = [];
-    const lines = content.split('\n');
-
-    for (const line of lines) {
-      if (line === '.' || line.trim() === '') continue;
-      if (line.length === 0) continue;
-
-      const type = line[0];
-      const parts = line.substring(1).split('\t');
-
-      if (parts.length >= 4) {
-        items.push({
-          type,
-          display: parts[0],
-          selector: parts[1],
-          host: parts[2],
-          port: parseInt(parts[3]) || 70,
-        });
-      } else if (type === 'i') {
-        // Inline text (no tabs)
-        items.push({
-          type,
-          display: line.substring(1),
-          selector: '',
-          host: '',
-          port: 0,
-        });
-      }
-    }
-
-    return items;
-  }
-
-  async search(searchServer: string, query: string): Promise<GopherItem[]> {
-    // Type 7 search servers append query with TAB
-    const result = await this.fetch(`${searchServer}\t${query}`);
-    return Array.isArray(result) ? result : [];
-  }
+```json
+{
+  "success": true,
+  "isMenu": true,
+  "selector": "/",
+  "items": [
+    { "type": "i", "display": "Welcome to Gopher!", "selector": "", "host": "", "port": 0 },
+    { "type": "1", "display": "About", "selector": "/about", "host": "gopher.example.com", "port": 70 },
+    { "type": "0", "display": "README", "selector": "/readme", "host": "gopher.example.com", "port": 70 }
+  ]
 }
 ```
 
-## Web UI Design
+or (non-menu content):
 
-```typescript
-// src/components/GopherBrowser.tsx
-
-export function GopherBrowser() {
-  const [host, setHost] = useState('gopher.floodgap.com');
-  const [port, setPort] = useState(70);
-  const [currentPath, setCurrentPath] = useState('');
-  const [items, setItems] = useState<GopherItem[]>([]);
-  const [content, setContent] = useState<string>('');
-  const [history, setHistory] = useState<string[]>(['/']);
-
-  const navigate = async (selector: string = '', itemHost?: string, itemPort?: number) => {
-    const response = await fetch('/api/gopher/fetch', {
-      method: 'POST',
-      body: JSON.stringify({
-        host: itemHost || host,
-        port: itemPort || port,
-        selector,
-      }),
-    });
-
-    const data = await response.json();
-
-    if (data.isMenu) {
-      setItems(data.items);
-      setContent('');
-      setHistory([...history, selector]);
-    } else {
-      setContent(data.content);
-      setItems([]);
-    }
-
-    setCurrentPath(selector);
-  };
-
-  const back = () => {
-    if (history.length > 1) {
-      const newHistory = history.slice(0, -1);
-      setHistory(newHistory);
-      navigate(newHistory[newHistory.length - 1]);
-    }
-  };
-
-  const getIcon = (type: string) => {
-    const icons: Record<string, string> = {
-      '0': '📄',
-      '1': '📁',
-      '7': '🔍',
-      '9': '📦',
-      'g': '🖼️',
-      'I': '🖼️',
-      'h': '🌐',
-      'i': '💬',
-    };
-    return icons[type] || '📎';
-  };
-
-  return (
-    <div className="gopher-browser retro-ui">
-      <div className="toolbar">
-        <button onClick={back} disabled={history.length <= 1}>
-          ← Back
-        </button>
-        <input
-          type="text"
-          value={host}
-          onChange={(e) => setHost(e.target.value)}
-        />
-        <input
-          type="number"
-          value={port}
-          onChange={(e) => setPort(Number(e.target.value))}
-        />
-        <button onClick={() => navigate()}>Go</button>
-      </div>
-
-      <div className="location-bar">
-        gopher://{host}:{port}{currentPath}
-      </div>
-
-      {items.length > 0 ? (
-        <div className="menu-list">
-          {items.map((item, i) => (
-            <div key={i} className="menu-item">
-              {item.type === 'i' ? (
-                <div className="info-text">{item.display}</div>
-              ) : (
-                <a
-                  href="#"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    navigate(item.selector, item.host, item.port);
-                  }}
-                >
-                  {getIcon(item.type)} {item.display}
-                </a>
-              )}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="content-viewer">
-          <pre>{content}</pre>
-        </div>
-      )}
-
-      <div className="info-box">
-        <h3>Gopherspace</h3>
-        <p>
-          You're browsing the pre-Web internet! Gopher was created in 1991
-          at the University of Minnesota, three years before the Web.
-        </p>
-      </div>
-    </div>
-  );
+```json
+{
+  "success": true,
+  "isMenu": false,
+  "selector": "/readme",
+  "content": "This is a plain text file.\nRetrieved from Gopher.\n"
 }
 ```
 
-## Testing
+**Error responses:**
+- `400` — validation failure (missing host, bad chars, selector too long)
+- `500` — connection timeout, response too large, socket error
 
-### Public Gopher Servers
+---
+
+## Wire Protocol
+
+1. Client opens TCP to `host:port`
+2. Client sends: `<selector>\r\n` (or `<selector>\t<query>\r\n` for search)
+3. Server sends response and closes the connection
+
+There is no persistent connection, no framing, no headers. One request per TCP socket.
+
+### Menu Line Format
 
 ```
-gopher://gopher.floodgap.com/
-gopher://gopher.club/
-gopher://sdf.org/
-gopher://gopher.quux.org/
+<type><display>\t<selector>\t<host>\t<port>\r\n
 ```
 
-### Test with Command Line
+End-of-menu marker: a line containing only `.`
+
+### Item Type Reference
+
+| Type | Meaning | Selectable |
+|------|---------|------------|
+| `0`  | Text file | Yes |
+| `1`  | Directory (submenu) | Yes |
+| `2`  | CCSO nameserver | Yes |
+| `3`  | Error | No |
+| `4`  | BinHex file | Yes |
+| `5`  | DOS binary | Yes |
+| `6`  | UUencoded file | Yes |
+| `7`  | Search server | Yes (with query) |
+| `8`  | Telnet session | Yes |
+| `9`  | Binary file | Yes |
+| `g`  | GIF image | Yes |
+| `I`  | Image (other) | Yes |
+| `h`  | HTML file | Yes |
+| `i`  | Info text (non-selectable) | No |
+| `s`  | Sound | Yes |
+| `T`  | TN3270 session | Yes |
+| `p`  | Image (PNG, extension) | Yes |
+| `w`  | Gopher+ (extension) | Yes |
+| `+`  | Redundant server | Yes |
+
+---
+
+## Implementation Details
+
+### Menu Detection Heuristic
+
+The handler does NOT rely on the selector or any server hint to decide menu vs text. Instead, `looksLikeMenu()` inspects the response body:
+
+1. Counts non-empty lines matching `/^[0-9giIhsTpw+]/` **and** containing at least one `\t`
+2. If that count is >50% of all non-empty lines, it's a menu
+
+**Gotcha:** Info-text lines (type `i`) are common in Gopher menus but often lack tabs on poorly-conforming servers. A response that is mostly `i`-type lines without tabs will be classified as plain text, not a menu. Well-formatted servers include the full 4-field tab-separated format even for `i` lines, so this works correctly against compliant servers.
+
+### Menu Parsing
+
+`parseGopherMenu()` splits the response on `\n` (not `\r\n`), leaving trailing `\r` on field values:
+
+- **`port`**: Trailing `\r` is stripped via `.replace(/\r$/, '')` before `parseInt()`
+- **`host`**: Trailing `\r` is **not** stripped — the `host` field may contain a trailing `\r` character
+- **`display`** and **`selector`**: Also not stripped of `\r`
+
+This means if you use the returned `host` value to make a follow-up request, the trailing `\r` will be caught by the host regex validation (`/^[a-zA-Z0-9.-]+$/`) and **rejected**. You need to `.trim()` the host client-side before reuse.
+
+### Info Text Handling
+
+Lines starting with `i` that have fewer than 4 tab-separated fields get special treatment:
+- `type` = `"i"`, `display` = text after the `i` prefix, `selector` = `""`, `host` = `""`, `port` = `0`
+- Only lines starting with `i` get this fallback; other types with <4 fields are silently dropped
+
+### Port Parsing Edge Case
+
+Port is parsed via `parseInt(parts[3]) || 70`. Since `parseInt('0')` returns `0` (falsy), a server advertising port 0 would be silently rewritten to port 70. Port 0 is not valid for Gopher, so this is harmless in practice.
+
+### Search Queries (Type 7)
+
+To search a type-7 server, pass both `selector` (the search server's selector) and `query`:
 
 ```bash
-# Using netcat
-echo "" | nc gopher.floodgap.com 70
-
-# Using lynx browser
-lynx gopher://gopher.floodgap.com/
+curl -X POST https://portofcall.dev/api/gopher/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"gopher.floodgap.com", "selector":"/v2/vs", "query":"internet history"}'
 ```
 
-## Resources
+The wire request becomes: `/v2/vs\tinternet history\r\n`
 
-- **RFC 1436**: [Gopher Protocol](https://tools.ietf.org/html/rfc1436)
-- **Floodgap**: [Gopher Archive](gopher://gopher.floodgap.com/)
-- **Gopher Wikipedia**: [History](https://en.wikipedia.org/wiki/Gopher_(protocol))
+---
 
-## Notes
+## Validation Rules
 
-- **Pre-dates the Web** by 3 years (1991 vs 1994)
-- **Still active!** Small but enthusiastic community
-- **Simpler than HTTP** - no headers, cookies, etc.
-- **Text-focused** with basic binary file support
-- Great for **retro computing** enthusiasts
-- Perfect **educational example** of early internet protocols
+| Check | Rule | Error |
+|-------|------|-------|
+| Host required | `host.trim().length > 0` | `"Host is required"` |
+| Host characters | `/^[a-zA-Z0-9.-]+$/` | `"Host contains invalid characters"` |
+| Port range | 1–65535 | `"Port must be between 1 and 65535"` |
+| Selector control chars | `/[\x00-\x08\x0b\x0c\x0e-\x1f]/` rejects | `"Selector contains invalid control characters"` |
+| Selector length | ≤ 1024 | `"Selector too long (max 1024 characters)"` |
+
+Note: `\t` (0x09), `\n` (0x0a), and `\r` (0x0d) are explicitly **allowed** in the selector (they are excluded from the control-char regex). Tab is needed for search queries; CR/LF in a selector would break the wire protocol but pass validation.
+
+---
+
+## Known Limitations
+
+1. **No Cloudflare detection** — Unlike most other Port of Call handlers, this one does not call `checkIfCloudflare()`. It will attempt to connect to any resolved IP.
+
+2. **No HTTP method restriction** — The route in `index.ts` does not check `request.method`. GET/PUT/DELETE etc. will reach the handler and fail at `request.json()` with a generic 500 error instead of a clean 405.
+
+3. **Trailing `\r` in parsed fields** — `host`, `display`, and `selector` fields in menu items may contain a trailing `\r`. Only `port` is cleaned.
+
+4. **512 KB response cap** — Responses exceeding 512,000 bytes are rejected. This is bytes (Uint8Array length), not characters.
+
+5. **Single timeout for everything** — The same `timeout` timer is shared between `socket.opened` and every `reader.read()`. If connection takes 8s of a 10s timeout, reads only get 2s total.
+
+6. **No binary content support** — Binary items (types `9`, `g`, `I`, `5`) are decoded as UTF-8 text. Binary data will be mangled. The response is always a JSON string, not a binary download.
+
+7. **Host regex rejects IPv6** — `[a-zA-Z0-9.-]+` excludes colons and brackets, so IPv6 addresses (`[::1]`) cannot be used.
+
+8. **Host regex rejects underscores** — Some DNS names contain underscores (e.g., `_sip._tcp.example.com`); these are rejected.
+
+9. **Error swallowing in read loop** — Socket errors other than timeout are silently caught and treated as "server closed connection" (normal Gopher behavior). This means actual I/O errors are invisible.
+
+10. **CR/LF in selector passes validation** — The control-char regex exempts `\n` (0x0a) and `\r` (0x0d), but including these in a selector would prematurely terminate the request line on the wire. The server would see a truncated selector.
+
+---
+
+## Curl Examples
+
+**Root menu:**
+```bash
+curl -X POST https://portofcall.dev/api/gopher/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"gopher.floodgap.com"}'
+```
+
+**Specific selector:**
+```bash
+curl -X POST https://portofcall.dev/api/gopher/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"gopher.floodgap.com", "selector":"/gopher/relevstreet"}'
+```
+
+**Search query (type 7):**
+```bash
+curl -X POST https://portofcall.dev/api/gopher/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"gopher.floodgap.com", "selector":"/v2/vs", "query":"gopher protocol"}'
+```
+
+**Custom timeout:**
+```bash
+curl -X POST https://portofcall.dev/api/gopher/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"gopher.floodgap.com", "timeout": 5000}'
+```
+
+---
+
+## Public Gopher Servers for Testing
+
+| Server | Port | Notes |
+|--------|------|-------|
+| `gopher.floodgap.com` | 70 | Largest active Gopherspace directory. Has search (type 7). |
+| `gopher.club` | 70 | Community phlog (Gopher blog) host |
+| `sdf.org` | 70 | SDF Public Access UNIX System |
+| `gopher.quux.org` | 70 | Historical Gopher archive |

@@ -19,7 +19,7 @@
  *   4. Parse SID_AUTH_INFO server response (logon type, server token, MPQ info)
  *
  * SID_AUTH_INFO Response Fields:
- *   Logon Type  DWORD  0=Broken SHA-1, 2=NLS v1, 3=NLS v2
+ *   Logon Type  DWORD  0=Broken SHA-1, 1=NLS v1, 2=NLS v2
  *   Server Token DWORD random value used in CD key hashing
  *   UDP Value   DWORD
  *   MPQ Filetime FILETIME (8 bytes) - Windows FILETIME for version check file
@@ -90,12 +90,17 @@ const SID_PING = 0x25;
 const SID_AUTH_INFO = 0x50;
 
 const PRODUCTS: Record<string, string> = {
+  DRTL: 'Diablo',
+  DSHR: 'Diablo (Shareware)',
   STAR: 'StarCraft',
   SEXP: 'StarCraft: Brood War',
+  SSHR: 'StarCraft (Shareware)',
+  W2BN: 'Warcraft II: Battle.net Edition',
   D2DV: 'Diablo II',
   D2XP: 'Diablo II: Lord of Destruction',
+  WAR3: 'Warcraft III: Reign of Chaos',
   W3XP: 'Warcraft III: The Frozen Throne',
-  W3DM: 'Warcraft III: Demo',
+  W3DM: 'Warcraft III (Demo)',
 };
 
 const BATTLENET_REALMS = [
@@ -168,16 +173,42 @@ function mergeChunks(chunks: Uint8Array[], total: number): Uint8Array {
 }
 
 /**
- * Read from a BNCS stream until a complete packet is buffered or timeout fires.
- * Completion is determined by comparing bytes received vs the declared length.
+ * Read from a BNCS stream until a single complete packet is buffered or timeout fires.
+ * Returns exactly one packet's worth of bytes plus any leftover bytes that belong
+ * to the next packet (which can happen when multiple packets arrive in a single
+ * TCP segment). The caller must feed `leftover` back into subsequent reads.
  */
 async function readBNCSPacket(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
-): Promise<Uint8Array> {
+  prefill?: Uint8Array,
+): Promise<{ data: Uint8Array; leftover: Uint8Array }> {
   const chunks: Uint8Array[] = [];
   let total = 0;
   const deadline = Date.now() + timeoutMs;
+
+  // Seed with leftover bytes from a previous read
+  if (prefill && prefill.length > 0) {
+    chunks.push(prefill);
+    total = prefill.length;
+  }
+
+  // Check if prefill already contains a complete packet
+  if (total >= 4) {
+    const combined = mergeChunks(chunks, total);
+    if (combined[0] === BNCS_HEADER_BYTE) {
+      const declaredLen = new DataView(combined.buffer, combined.byteOffset).getUint16(2, true);
+      if (declaredLen >= 4 && total >= declaredLen) {
+        return {
+          data: combined.slice(0, declaredLen),
+          leftover: combined.slice(declaredLen),
+        };
+      }
+    } else {
+      // Non-BNCS data — return everything
+      return { data: combined, leftover: new Uint8Array(0) };
+    }
+  }
 
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
@@ -203,13 +234,18 @@ async function readBNCSPacket(
       const combined = mergeChunks(chunks, total);
       if (combined[0] === BNCS_HEADER_BYTE) {
         const declaredLen = new DataView(combined.buffer, combined.byteOffset).getUint16(2, true);
-        if (total >= declaredLen) return combined;
+        if (declaredLen >= 4 && total >= declaredLen) {
+          return {
+            data: combined.slice(0, declaredLen),
+            leftover: combined.slice(declaredLen),
+          };
+        }
       } else {
-        return combined;
+        return { data: combined, leftover: new Uint8Array(0) };
       }
     }
   }
-  return mergeChunks(chunks, total);
+  return { data: mergeChunks(chunks, total), leftover: new Uint8Array(0) };
 }
 
 function parseBNCSPacket(data: Uint8Array): {
@@ -260,9 +296,9 @@ function parseAuthInfoResponse(payload: Uint8Array): {
   const serverInfo = dec.decode(payload.slice(off, e2));
 
   const logonLabels: Record<number, string> = {
-    0: 'Broken SHA-1 (classic)',
-    2: 'NLS v1',
-    3: 'NLS v2',
+    0: 'Broken SHA-1 (legacy)',
+    1: 'NLS v1',
+    2: 'NLS v2',
   };
 
   return {
@@ -316,7 +352,7 @@ export async function handleBattlenetConnect(request: Request): Promise<Response
         await writer.write(new Uint8Array([protocolId]));
         await writer.write(buildBNCSMessage(SID_NULL));
 
-        const data = await Promise.race([readBNCSPacket(reader, 5000), deadline]) as Uint8Array;
+        const { data } = await Promise.race([readBNCSPacket(reader, 5000), deadline]) as { data: Uint8Array; leftover: Uint8Array };
         const packet = parseBNCSPacket(data);
 
         if (!packet.valid) {
@@ -417,12 +453,16 @@ export async function handleBattlenetAuthInfo(request: Request): Promise<Respons
       await writer.write(new Uint8Array([PROTOCOL_GAME]));
       await writer.write(buildBNCSMessage(SID_AUTH_INFO, buildAuthInfoPayload(prod)));
 
-      // Read up to 4 packets; server often sends SID_PING before SID_AUTH_INFO
+      // Read up to 4 packets; server often sends SID_PING before SID_AUTH_INFO.
+      // Carry leftover bytes between reads (multiple packets can arrive in one TCP segment).
+      let leftover: Uint8Array<ArrayBufferLike> | undefined;
       for (let i = 0; i < 4; i++) {
         const remaining = globalDeadline - Date.now();
         if (remaining <= 0) break;
 
-        const data = await readBNCSPacket(reader, Math.min(remaining, 5000));
+        const read = await readBNCSPacket(reader, Math.min(remaining, 5000), leftover);
+        leftover = read.leftover;
+        const data = read.data;
         if (data.length < 4) break;
 
         const packet = parseBNCSPacket(data);
@@ -524,12 +564,12 @@ export async function handleBattlenetStatus(request: Request): Promise<Response>
         await writer.write(buildBNCSMessage(SID_NULL));
 
         const readMs = Math.min(realmTimeout, 5000);
-        const data = await Promise.race([
+        const { data } = await Promise.race([
           readBNCSPacket(reader, readMs),
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('Read timeout')), readMs)
           ),
-        ]) as Uint8Array;
+        ]) as { data: Uint8Array; leftover: Uint8Array };
 
         status.rtt = Date.now() - start;
 

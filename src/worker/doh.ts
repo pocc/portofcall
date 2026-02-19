@@ -187,6 +187,25 @@ function parseRR(data: Uint8Array, offset: number): { record: DOHRecord; bytesRe
       txtPos += len;
     }
     dataStr = parts.join(' ');
+  } else if (type === 6) {
+    // SOA — MNAME and RNAME are compressed domain names, followed by 5 x 32-bit integers
+    const mname = decodeDomainName(data, pos);
+    const rname = decodeDomainName(data, pos + mname.bytesRead);
+    const soaIntOffset = pos + mname.bytesRead + rname.bytesRead;
+    const soaView = new DataView(data.buffer, data.byteOffset);
+    const serial = soaView.getUint32(soaIntOffset, false);
+    const refresh = soaView.getUint32(soaIntOffset + 4, false);
+    const retry = soaView.getUint32(soaIntOffset + 8, false);
+    const expire = soaView.getUint32(soaIntOffset + 12, false);
+    const minimum = soaView.getUint32(soaIntOffset + 16, false);
+    dataStr = `${mname.name} ${rname.name} ${serial} ${refresh} ${retry} ${expire} ${minimum}`;
+  } else if (type === 33) {
+    // SRV — priority (2), weight (2), port (2), target (uncompressed domain name)
+    const priority = (rdata[0] << 8) | rdata[1];
+    const weight = (rdata[2] << 8) | rdata[3];
+    const port = (rdata[4] << 8) | rdata[5];
+    const target = decodeDomainName(data, pos + 6);
+    dataStr = `${priority} ${weight} ${port} ${target.name}`;
   } else {
     dataStr = Array.from(rdata).map(b => b.toString(16).padStart(2, '0')).join(' ');
   }

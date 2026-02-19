@@ -1,32 +1,18 @@
-# NTP Protocol Implementation
+# NTP — Network Time Protocol
 
-## Overview
+**Port:** 123 (UDP standard; this implementation uses TCP via Cloudflare Workers sockets)
+**RFC:** 5905 (NTPv4)
+**Implementation:** `src/worker/ntp.ts`
+**Endpoints:** 3 (`/query`, `/sync`, `/poll`)
 
-**Network Time Protocol (NTP)** is a protocol for synchronizing computer clocks over packet-switched networks. This implementation supports NTPv4 over TCP (RFC 5905).
-
-- **Port:** 123 (UDP standard, TCP supported)
-- **RFC:** RFC 5905 (NTPv4)
-- **Protocol:** TCP (Workers constraint - UDP not supported)
-- **Encoding:** Binary (48-byte fixed packet format)
-
-## Features
-
-- ✅ NTPv4 client implementation
-- ✅ High-precision time synchronization
-- ✅ Clock offset calculation
-- ✅ Round-trip delay measurement
-- ✅ Stratum level reporting (distance from reference clock)
-- ✅ Leap second indication
-- ✅ Reference clock identification
-- ✅ Root delay and dispersion metrics
-
-## API Endpoints
+## Endpoints
 
 ### POST /api/ntp/query
 
-Query an NTP server for accurate time synchronization.
+Single NTP query. Sends a client-mode NTPv4 packet over TCP, parses the server response, and returns clock offset/delay.
 
 **Request:**
+
 ```json
 {
   "host": "time.cloudflare.com",
@@ -35,429 +21,22 @@ Query an NTP server for accurate time synchronization.
 }
 ```
 
-**Response (Success):**
-```json
-{
-  "success": true,
-  "time": "2026-02-16T12:34:56.789Z",
-  "offset": -42,
-  "delay": 12,
-  "stratum": 3,
-  "precision": -6,
-  "referenceId": "192.168.1.1",
-  "rootDelay": 15.5,
-  "rootDispersion": 8.2,
-  "leapIndicator": "no warning"
-}
-```
-
-**Response (Error):**
-```json
-{
-  "success": false,
-  "error": "Connection timeout"
-}
-```
-
-### POST /api/ntp/sync
-
-Alias for `/api/ntp/query`. Returns the same synchronization information.
-
-## Common NTP Servers
-
-| Server | Provider | Notes |
-|--------|----------|-------|
-| time.cloudflare.com | Cloudflare | Fast, anycast |
-| time.google.com | Google | Smeared leap seconds |
-| time.nist.gov | NIST | US government standard |
-| pool.ntp.org | NTP Pool Project | Community pool |
-| time.apple.com | Apple | iOS/macOS default |
-| time.windows.com | Microsoft | Windows default |
-
-## Usage Examples
-
-### cURL
-
-```bash
-curl -X POST http://localhost:8787/api/ntp/query \
-  -H "Content-Type: application/json" \
-  -d '{
-    "host": "time.cloudflare.com",
-    "port": 123
-  }'
-```
-
-### JavaScript
-
-```javascript
-const response = await fetch('/api/ntp/query', {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({
-    host: 'time.cloudflare.com',
-  }),
-});
-
-const data = await response.json();
-console.log('Server time:', data.time);
-console.log('Clock offset:', data.offset, 'ms');
-console.log('Stratum:', data.stratum);
-```
-
-## Protocol Details
-
-### NTP Packet Structure
-
-```
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|LI | VN  |Mode |    Stratum    |     Poll      |   Precision   |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                         Root Delay                            |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                      Root Dispersion                          |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                    Reference Identifier                       |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                  Reference Timestamp (64 bits)                |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                  Origin Timestamp (64 bits)                   |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                  Receive Timestamp (64 bits)                  |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-|                  Transmit Timestamp (64 bits)                 |
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-```
-
-### NTP Timestamp Format
-
-- **64 bits total**
-  - 32 bits: Seconds since 1900-01-01 00:00:00 UTC
-  - 32 bits: Fractional seconds (1/2^32 resolution ≈ 233 picoseconds)
-- **Range:** 1900 to 2036 (136 years)
-- **Resolution:** ~0.23 nanoseconds (theoretical)
-
-### Leap Indicator (LI)
-
-| Value | Meaning |
-|-------|---------|
-| 0 | No warning |
-| 1 | Last minute of the day has 61 seconds |
-| 2 | Last minute of the day has 59 seconds |
-| 3 | Alarm condition (clock unsynchronized) |
-
-### Stratum Levels
-
-| Stratum | Description | Example Sources |
-|---------|-------------|-----------------|
-| 0 | Unspecified/invalid | - |
-| 1 | Primary reference | GPS, atomic clock, radio clock |
-| 2 | Secondary reference | Synced from Stratum 1 |
-| 3-15 | Secondary reference | Synced from Stratum N-1 |
-| 16 | Unsynchronized | - |
-
-### Time Calculation
-
-**Four timestamps are used:**
-- **t1:** Client transmit time (sent in request)
-- **t2:** Server receive time (from response)
-- **t3:** Server transmit time (from response)
-- **t4:** Client receive time (current time)
-
-**Clock offset:**
-```
-offset = ((t2 - t1) + (t3 - t4)) / 2
-```
-
-**Round-trip delay:**
-```
-delay = (t4 - t1) - (t3 - t2)
-```
-
-**True time:**
-```
-true_time = t4 + offset
-```
-
-## Authentication
-
-### NTPv4 (This Implementation)
-
-- ⚠️ **No authentication** - open protocol
-- Any client can query any server
-- Vulnerable to man-in-the-middle attacks
-
-### NTP Authentication (Not Implemented)
-
-- **Symmetric keys:** Pre-shared secrets (MD5/SHA1)
-- **Autokey:** Public-key cryptography
-- **NTS (Network Time Security):** Modern encrypted NTP (RFC 8915)
-
-**Security Note:** This implementation does NOT support authentication. Use trusted NTP servers and consider implementing NTS for production use.
-
-## Timeouts and Keep-Alives
-
-### Connection Timeout
-
-- Default: 10 seconds
-- Configurable via `timeout` parameter
-- Applies to entire query (connect + request + response)
-
-### No Keep-Alives
-
-- NTP is stateless (single request-response)
-- TCP connection opened, query sent, response received, connection closed
-- No persistent connections needed
-
-### Retry Strategy (Not Implemented)
-
-Standard NTP clients typically:
-- Query multiple servers
-- Use exponential backoff (poll intervals: 64s, 128s, 256s, ...)
-- Maintain long-term statistics
-
-This implementation performs a single query without retries.
-
-## Binary Encoding
-
-### Request Encoding
-
-- **Wire Format:** Binary (48 bytes minimum)
-- **API Input:** JSON (text)
-- **Conversion:** JSON → Binary packet in Worker
-
-### Response Encoding
-
-- **Wire Format:** Binary (48 bytes minimum)
-- **API Output:** JSON (text)
-- **Conversion:** Binary packet → JSON in Worker
-
-### Timestamp Precision
-
-- **NTP:** 64-bit (32.32 fixed point)
-- **JavaScript:** 64-bit floating point (millisecond precision)
-- **Loss of Precision:** Fractional milliseconds may be lost
-
-### Endianness
-
-- **NTP:** Big-endian (network byte order)
-- **JavaScript:** Platform-dependent (typically little-endian)
-- **Conversion:** Manual byte swapping required
-
-## Error Handling
-
-### Common Errors
-
-**❌ "Connection timeout"**
-- Server is unreachable
-- Firewall blocking port 123
-- Incorrect host/port
-
-**❌ "Invalid NTP mode"**
-- Server sent non-server response
-- Wrong protocol on port 123
-- Malformed response
-
-**❌ "Invalid NTP packet: too short"**
-- Truncated response
-- Non-NTP response on port 123
-
-**❌ "No response from NTP server"**
-- Server didn't respond
-- Connection dropped mid-query
-
-### Stratum 0 or 16
-
-- **Stratum 0:** Invalid/unspecified
-- **Stratum 16:** Unsynchronized
-- Both indicate the server is not suitable for time synchronization
-
-### Large Offset
-
-- Offset > 100ms: Clock likely needs synchronization
-- Offset > 1000ms: Significant clock drift
-- Offset > 10000ms: Check system time settings
-
-### Kiss-o'-Death (KoD)
-
-NTP servers can send "Kiss-o'-Death" packets to rate-limit or reject clients. This implementation does NOT handle KoD packets (not in basic NTPv4).
-
-## Limitations
-
-### What's Supported
-
-- ✅ NTPv4 client queries
-- ✅ TCP transport
-- ✅ Clock offset and delay calculation
-- ✅ Stratum, precision, reference ID
-- ✅ Single-shot queries
-
-### What's NOT Supported
-
-- ❌ Authentication (MD5, SHA1, Autokey, NTS)
-- ❌ UDP transport (Workers limitation)
-- ❌ Server mode (responding to queries)
-- ❌ Broadcast/multicast mode
-- ❌ Kiss-o'-Death packet handling
-- ❌ Multiple server queries for redundancy
-- ❌ Long-term clock discipline algorithms
-- ❌ NTPv1/v2/v3 (only NTPv4)
-
-### TCP vs. UDP
-
-**Standard:** NTP uses UDP (port 123)
-
-**This Implementation:** Uses TCP due to Cloudflare Workers' TCP-only sockets API
-
-**Impact:**
-- Some NTP servers may not support TCP (most modern ones do)
-- TCP adds overhead (handshake, ack packets)
-- Slightly higher latency than UDP
-
-## Performance
-
-### Typical Query Time
-
-- Fast servers (Cloudflare, Google): 10-50ms
-- Moderate servers: 50-200ms
-- Slow/distant servers: 200-1000ms
-
-### Accuracy
-
-- **Best case:** ±10ms (local network, low-latency server)
-- **Typical:** ±50ms (internet, mid-latency server)
-- **Worst case:** ±200ms (high-latency, distant server)
-
-**Note:** TCP overhead slightly reduces accuracy compared to UDP.
-
-### Optimization
-
-- Use geographically close servers
-- Use anycast servers (time.cloudflare.com, time.google.com)
-- Query multiple servers and average results (not implemented)
-
-## Testing
-
-### Public NTP Servers
-
-```bash
-# Cloudflare (anycast, fast)
-Host: time.cloudflare.com
-Port: 123
-
-# Google (anycast, smeared leap seconds)
-Host: time.google.com
-Port: 123
-
-# NIST (US government standard)
-Host: time.nist.gov
-Port: 123
-
-# NTP Pool (community pool)
-Host: pool.ntp.org
-Port: 123
-```
-
-### Test with Example Client
-
-```bash
-# Open the test client
-open examples/ntp-test.html
-
-# Or use the deployed version
-https://portofcall.ross.gg/examples/ntp-test.html
-```
-
-### Verify Time Accuracy
-
-```bash
-# Compare with system time
-date -u && curl -X POST http://localhost:8787/api/ntp/query \
-  -H "Content-Type: application/json" \
-  -d '{"host":"time.cloudflare.com"}' | jq -r '.time'
-```
-
-## Security Considerations
-
-### No Encryption
-
-- ⚠️ NTP packets are plaintext
-- ⚠️ Vulnerable to eavesdropping and MITM attacks
-- ⚠️ No authentication of server identity
-
-### Time-Based Security Implications
-
-- Incorrect time can break TLS/SSL certificates
-- Kerberos authentication requires synchronized clocks (±5 minutes)
-- Log timestamps may be incorrect
-
-**Best Practices:**
-- Use trusted NTP servers (Cloudflare, Google, NIST)
-- Consider implementing NTS (Network Time Security) for sensitive applications
-- Validate reasonable time values (not too far in past/future)
-- Cross-check with multiple servers
-
-### Rate Limiting
-
-- Many NTP servers rate-limit aggressive clients
-- Recommended: Query interval ≥ 64 seconds for production
-- This implementation is stateless (no rate limiting)
-
-## Use Cases
-
-### Browser-Based Time Sync
-
-Synchronize client-side time with authoritative sources (useful for time-sensitive web apps)
-
-### Clock Skew Detection
-
-Measure offset between client and server clocks
-
-### Distributed Systems
-
-Ensure consistent time across distributed systems (though ntpd/chrony preferred for production)
-
-### Time Zone Independent Operations
-
-NTP provides UTC time (no time zone conversions needed)
-
-## Future Enhancements
-
-- [ ] NTS (Network Time Security) support (RFC 8915)
-- [ ] Multiple server queries with best-of-N selection
-- [ ] Long-term clock discipline algorithm
-- [ ] Kiss-o'-Death packet handling
-- [ ] NTP pool rotation
-- [ ] WebSocket-based continuous time sync
-- [ ] NTP server mode (respond to queries)
-
-## References
-
-- [RFC 5905 - NTPv4 Specification](https://www.rfc-editor.org/rfc/rfc5905)
-- [RFC 8915 - Network Time Security (NTS)](https://www.rfc-editor.org/rfc/rfc8915)
-- [NTP Pool Project](https://www.pool.ntp.org/)
-- [Cloudflare Time Services](https://www.cloudflare.com/time/)
-- [Google Public NTP](https://developers.google.com/time)
-
-## Example Output
+| Field     | Type   | Default | Required | Notes |
+|-----------|--------|---------|----------|-------|
+| `host`    | string | —       | yes      | NTP server hostname or IP |
+| `port`    | number | `123`   | no       | Validated: 1–65535 |
+| `timeout` | number | `10000` | no       | Milliseconds. Covers entire operation (connect + send + receive) |
+
+**Response (success):**
 
 ```json
 {
   "success": true,
-  "time": "2026-02-16T18:30:45.123Z",
+  "time": "2026-02-17T12:34:56.789Z",
   "offset": -15,
   "delay": 8,
   "stratum": 2,
-  "precision": -6,
+  "precision": -20,
   "referenceId": "192.168.1.1",
   "rootDelay": 12.5,
   "rootDispersion": 6.8,
@@ -465,13 +44,245 @@ NTP provides UTC time (no time zone conversions needed)
 }
 ```
 
-**Interpretation:**
-- Server time is 2026-02-16 18:30:45.123 UTC
-- Your clock is 15ms behind the server (fast)
-- Round-trip delay is 8ms
-- Server is Stratum 2 (synced from a Stratum 1 reference)
-- Server clock precision is 2^-6 ≈ 15.6ms
-- Server is synced to 192.168.1.1 (likely a local Stratum 1 server)
-- Total delay to primary reference is 12.5ms
-- Total dispersion (uncertainty) is 6.8ms
-- No leap second warning
+| Field             | Type   | Notes |
+|-------------------|--------|-------|
+| `time`            | string | ISO 8601 UTC. Computed as `t4 + offset` (client receive time adjusted by clock offset) |
+| `offset`          | number | Clock offset in whole milliseconds (`Math.round`). Negative = your clock is ahead |
+| `delay`           | number | Round-trip delay in whole milliseconds (`Math.round`) |
+| `stratum`         | number | 0=unspecified, 1=primary (GPS/atom), 2–15=secondary, 16=unsynchronized |
+| `precision`       | number | Server clock precision as signed log2 seconds (e.g. -20 = ~1 us) |
+| `referenceId`     | string | Stratum 0–1: ASCII code ("GPS", "ATOM", "PPS"). Stratum 2+: IPv4 dotted-quad (see quirk below) |
+| `rootDelay`       | number | Total delay to primary source in ms, rounded to 2 decimal places |
+| `rootDispersion`  | number | Total dispersion to primary source in ms, rounded to 2 decimal places |
+| `leapIndicator`   | string | One of: `"no warning"`, `"61 seconds"`, `"59 seconds"`, `"alarm (clock unsynchronized)"` |
+
+**Error responses:**
+
+| HTTP | Condition |
+|------|-----------|
+| 400  | `host` missing, or `port` out of 1–65535 range |
+| 403  | Cloudflare detection triggered (`isCloudflare: true`) |
+| 500  | Connection timeout, truncated packet, wrong NTP mode, or other failure |
+
+---
+
+### POST /api/ntp/sync
+
+Dead alias — calls `handleNTPQuery(request)` directly and returns the identical response. No additional logic, no multi-server averaging, no different behavior. Exists as a route placeholder.
+
+---
+
+### POST /api/ntp/poll
+
+Multi-sample NTP query with statistics. Opens a new TCP connection per sample, waits `intervalMs` between samples, and computes offset/RTT statistics.
+
+**Request:**
+
+```json
+{
+  "host": "time.cloudflare.com",
+  "port": 123,
+  "count": 4,
+  "intervalMs": 1000,
+  "timeout": 10000
+}
+```
+
+| Field        | Type   | Default | Range     | Notes |
+|--------------|--------|---------|-----------|-------|
+| `host`       | string | —       | —         | Required |
+| `port`       | number | `123`   | —         | **No range validation** (unlike /query) |
+| `count`      | number | `4`     | 1–10      | Clamped with `Math.min(Math.max(...))` |
+| `intervalMs` | number | `1000`  | 100–5000  | Clamped. Delay between samples |
+| `timeout`    | number | `10000` | —         | Per-sample timeout. Also 5s hard deadline on reads |
+
+**Response (success):**
+
+```json
+{
+  "success": true,
+  "host": "time.cloudflare.com",
+  "port": 123,
+  "count": 4,
+  "requested": 4,
+  "intervalMs": 1000,
+  "offsetMs": {
+    "min": -18,
+    "max": -12,
+    "avg": -15.25,
+    "jitter": 2.17
+  },
+  "rttMs": {
+    "min": 6,
+    "max": 11,
+    "avg": 8.5
+  },
+  "samples": [
+    { "offset": -15, "rtt": 8, "stratum": 2, "timestamp": "2026-02-17T12:34:56.789Z" }
+  ],
+  "errors": ["Sample 3: Timeout"],
+  "message": "3/4 samples: avg offset -15.25ms, jitter 2.17ms"
+}
+```
+
+| Field             | Notes |
+|-------------------|-------|
+| `count`           | Number of successful samples |
+| `requested`       | Number of samples requested |
+| `offsetMs.jitter` | Population standard deviation of offsets (sqrt of variance) |
+| `samples[].timestamp` | `new Date().toISOString()` captured after parse — is t4-ish, not server time |
+| `errors`          | Present only if any samples failed. Partial success is possible |
+| `message`         | Human-readable summary string |
+
+**If all samples fail:** returns HTTP 500 with `success: false` and `errors` array.
+
+---
+
+## Wire Protocol
+
+### Request Packet (48 bytes)
+
+Built by `createNTPRequest()`:
+
+| Byte(s) | Field | Value |
+|---------|-------|-------|
+| 0       | LI=0, VN=4, Mode=3 (client) | `0x23` |
+| 1       | Stratum | `0` (unspecified) |
+| 2       | Poll interval | `6` (2^6 = 64s) |
+| 3       | Precision | `0xFA` (-6, ~15ms) |
+| 4–7     | Root Delay | `0` |
+| 8–11    | Root Dispersion | `0` |
+| 12–15   | Reference Identifier | `0` |
+| 16–23   | Reference Timestamp | `0` |
+| 24–31   | Origin Timestamp | `0` |
+| 32–39   | Receive Timestamp | `0` |
+| 40–47   | Transmit Timestamp | Current time as NTP timestamp (see t1 gap quirk) |
+
+### Response Parsing
+
+Strict mode 4 (SERVER) check — any other mode throws `"Invalid NTP mode"`.
+
+**Timestamp math:**
+- `t1` = `Date.now()` captured right before `socket.opened` (not from the packet's Transmit Timestamp)
+- `t2` = server Receive Timestamp (bytes 32–39)
+- `t3` = server Transmit Timestamp (bytes 40–47)
+- `t4` = `Date.now()` captured after `reader.read()` returns
+
+```
+offset = ((t2 - t1) + (t3 - t4)) / 2
+delay  = (t4 - t1) - (t3 - t2)
+time   = t4 + offset
+```
+
+**NTP timestamp conversion:** 32 bits seconds (since 1900-01-01) + 32 bits fraction. Converted to Unix ms: `(seconds - 2208988800) * 1000 + floor(fraction / 2^32 * 1000)`. Sub-millisecond precision lost.
+
+**Root Delay/Dispersion:** Read as unsigned 16.16 fixed-point, divided by 65536, multiplied by 1000 for ms.
+
+---
+
+## Known Bugs and Quirks
+
+### 1. Single-read fragmentation bug in /query
+
+`handleNTPQuery` does exactly one `reader.read()` (line ~316) and passes the result directly to `parseNTPResponse`. If TCP delivers the 48-byte response across multiple chunks (which is legal and does happen), the parse will either fail with "too short" or silently parse a truncated packet.
+
+**Workaround:** Use `/api/ntp/poll` with `count: 1` — it correctly accumulates chunks until 48 bytes are received.
+
+`handleNTPPoll` has a proper multi-chunk read loop with a deadline.
+
+### 2. t1 timing gap
+
+`createNTPRequest()` calls `Date.now()` internally to write the Transmit Timestamp into the packet. Then `t1 = Date.now()` is captured separately, after `createNTPRequest()` returns. These two calls are microseconds apart but are different values. The server echoes back the packet's Transmit Timestamp as its Origin Timestamp, but the offset calculation uses the separately-captured `t1`, not the value in the packet.
+
+Impact: negligible for ms-level accuracy, but a protocol purist would note this makes the Origin Timestamp validation impossible (which is why it's commented out at line ~210).
+
+### 3. /sync is a dead alias
+
+`handleNTPSync` literally returns `handleNTPQuery(request)`. No multi-server logic, no different response shape. Use `/query` or `/poll` instead.
+
+### 4. referenceId always displayed as IPv4 for stratum >= 2
+
+For stratum 2+, the 4-byte Reference Identifier is always formatted as `x.x.x.x`. Per RFC 5905, when the server's upstream peer is an IPv6 address, this field contains the first 4 bytes of the MD5 hash of that IPv6 address — not a real IPv4 address. The displayed "IP" will be meaningless in that case.
+
+### 5. Kiss-o'-Death (KoD) packets not flagged
+
+If an NTP server is rate-limiting or rejecting a client, it responds with stratum=0 and an ASCII code in the Reference Identifier (e.g. "DENY", "RSTR", "RATE"). This implementation will return `stratum: 0` and `referenceId: "DENY"` without flagging it as a KoD. The caller must check for `stratum === 0` and interpret the `referenceId` accordingly.
+
+Common KoD codes: DENY (access denied), RSTR (rate limited), RATE (poll too fast), INIT (association not yet initialized).
+
+### 6. Origin Timestamp not validated
+
+RFC 5905 §8 says the client should verify that the server's Origin Timestamp matches the client's Transmit Timestamp (to detect misdirected or replayed responses). This check is not performed. A response from a different request would be silently accepted.
+
+### 7. No port validation in /poll
+
+`handleNTPQuery` rejects port values outside 1–65535, but `handleNTPPoll` does not validate port at all. A port of 0 or 99999 is passed directly to `connect()`.
+
+### 8. NTP version not returned
+
+The response version number is parsed (`(byte0 >>> 3) & 0x7`) but discarded. If the server responds with NTPv3 instead of NTPv4, there's no way for the caller to know from the response. The version check would also be useful for diagnosing compatibility issues.
+
+### 9. Strict mode 4 check
+
+The parser rejects any response with mode != 4 (SERVER). Some NTP implementations respond with mode 2 (SYMMETRIC_PASSIVE) to client queries. These would produce an error.
+
+### 10. Precision resolution loss
+
+Both `offset` and `delay` are `Math.round()`'d to whole milliseconds. For comparing high-quality NTP servers where the offset difference is sub-millisecond, the response always shows integers.
+
+---
+
+## Timeout Architecture
+
+| Endpoint | Default | Scope |
+|----------|---------|-------|
+| `/query` | 10000ms | Single `setTimeout` race covers connect + send + read |
+| `/sync`  | 10000ms | (alias for /query) |
+| `/poll`  | 10000ms per sample | Also 5000ms hard deadline on read loop (`Math.min(timeout, 5000)`) |
+
+For `/poll`, the total wall-clock time is approximately `count * (timeout + intervalMs)` in the worst case (all samples failing at timeout). With defaults: 4 * (10000 + 1000) = 44 seconds max.
+
+---
+
+## Cloudflare Detection
+
+All three endpoints (`/query`, `/sync`, `/poll`) call `checkIfCloudflare(host)` before connecting. Returns HTTP 403 with `isCloudflare: true` if the NTP server hostname resolves to a Cloudflare IP.
+
+---
+
+## curl Examples
+
+```bash
+# Basic time query
+curl -s -X POST https://portofcall.ross.gg/api/ntp/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"time.cloudflare.com"}' | jq .
+
+# Multi-sample poll (8 samples, 500ms apart)
+curl -s -X POST https://portofcall.ross.gg/api/ntp/poll \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"time.google.com","count":8,"intervalMs":500}' | jq .
+
+# Quick single-sample via poll (avoids single-read fragmentation bug)
+curl -s -X POST https://portofcall.ross.gg/api/ntp/poll \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"time.cloudflare.com","count":1}' | jq .
+
+# Custom port with short timeout
+curl -s -X POST https://portofcall.ross.gg/api/ntp/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"time.nist.gov","port":123,"timeout":5000}' | jq .
+```
+
+---
+
+## Limitations
+
+- **TCP only** — NTP is traditionally UDP; some servers may not accept TCP on port 123 (most modern ones do, including Cloudflare, Google, and NIST)
+- **No authentication** — no symmetric key (MD5/SHA1), no Autokey, no NTS (RFC 8915)
+- **No KoD handling** — rate-limiting responses not flagged (see quirk #5)
+- **No server mode** — client queries only
+- **No broadcast/multicast** — not applicable over TCP
+- **Millisecond resolution** — sub-ms precision lost in JS `Date.now()` and `Math.round()`
+- **POST only** — all endpoints require POST with JSON body; no GET support
+- **NTPv4 only** — always sends version 4; NTPv3 responses may work if server responds with mode 4

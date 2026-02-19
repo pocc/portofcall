@@ -155,24 +155,27 @@ function buildCheckPacket(
 
   let offset = 0;
 
-  // Packet version (int16) = 3
-  view.setInt16(offset, 3);
+  // Packet version (int16, big-endian) = 3
+  view.setInt16(offset, 3, false);
   offset += 2;
 
-  // Padding (2 bytes to align)
+  // Padding (2 bytes to align to 4-byte boundary)
   offset += 2;
 
-  // CRC32 placeholder (uint32) - will be filled in after
+  // CRC32 placeholder (uint32, big-endian) - will be filled in after
   const crcOffset = offset;
-  view.setUint32(offset, 0);
+  view.setUint32(offset, 0, false);
   offset += 4;
 
-  // Timestamp (uint32)
-  view.setUint32(offset, timestamp);
+  // Timestamp (uint32, big-endian - network byte order)
+  view.setUint32(offset, timestamp, false);
   offset += 4;
 
-  // Return code (int16)
-  view.setInt16(offset, returnCode);
+  // Return code (int16, big-endian)
+  view.setInt16(offset, returnCode, false);
+  offset += 2;
+
+  // Padding (2 bytes after return code for alignment)
   offset += 2;
 
   // Host name (64 bytes, null-terminated)
@@ -189,9 +192,9 @@ function buildCheckPacket(
   const outputBytes = new TextEncoder().encode(output.substring(0, PLUGIN_OUTPUT_V3_SIZE - 1));
   packet.set(outputBytes, offset);
 
-  // Calculate and set CRC32
+  // Calculate CRC32 with checksum field set to 0, then update it
   const checksum = crc32(packet);
-  view.setUint32(crcOffset, checksum);
+  view.setUint32(crcOffset, checksum, false);
 
   return packet;
 }
@@ -229,77 +232,94 @@ export async function handleNSCAProbe(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
 
       const reader = socket.readable.getReader();
 
-      // Read the 132-byte initialization packet
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
+      try {
+        // Read the 132-byte initialization packet
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const MAX_CHUNKS = 100;
+        let chunkCount = 0;
 
-      while (totalBytes < NSCA_INIT_PACKET_SIZE) {
-        const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-        if (done || !value) break;
-        chunks.push(value);
-        totalBytes += value.length;
-      }
+        while (totalBytes < NSCA_INIT_PACKET_SIZE) {
+          if (chunkCount++ >= MAX_CHUNKS) {
+            throw new Error('Too many chunks received');
+          }
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (timeoutId !== null) clearTimeout(timeoutId);
+          if (!value) {
+            if (done) break;
+            continue;
+          }
+          chunks.push(value);
+          totalBytes += value.length;
+        }
 
-      const rtt = Date.now() - startTime;
+        const rtt = Date.now() - startTime;
 
-      reader.releaseLock();
-      socket.close();
+        if (totalBytes < NSCA_INIT_PACKET_SIZE) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Incomplete init packet: received ${totalBytes} of ${NSCA_INIT_PACKET_SIZE} bytes`,
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      if (totalBytes < NSCA_INIT_PACKET_SIZE) {
-        return new Response(JSON.stringify({
-          success: false,
-          error: `Incomplete init packet: received ${totalBytes} of ${NSCA_INIT_PACKET_SIZE} bytes`,
-        }), {
-          status: 500,
+        // Combine chunks
+        const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
+        let offset = 0;
+        for (const chunk of chunks) {
+          const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
+          initPacket.set(chunk.subarray(0, toCopy), offset);
+          offset += toCopy;
+        }
+
+        // Parse: first 128 bytes = IV, last 4 bytes = timestamp (big-endian)
+        const iv = initPacket.subarray(0, NSCA_IV_SIZE);
+        const timestampBytes = initPacket.subarray(NSCA_IV_SIZE, NSCA_IV_SIZE + NSCA_TIMESTAMP_SIZE);
+        const timestampView = new DataView(timestampBytes.buffer, timestampBytes.byteOffset, NSCA_TIMESTAMP_SIZE);
+        const timestamp = timestampView.getUint32(0, false); // big-endian
+
+        // Convert IV to hex (first 32 bytes for display)
+        const ivHex = Array.from(iv.subarray(0, 32))
+          .map(b => b.toString(16).padStart(2, '0'))
+          .join('') + '...';
+
+        const result: NSCAProbeResponse = {
+          success: true,
+          host,
+          port,
+          ivHex,
+          timestamp,
+          timestampDate: new Date(timestamp * 1000).toISOString(),
+          rtt,
+        };
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+
+      } finally {
+        reader.releaseLock();
+        socket.close();
+        if (timeoutId !== null) clearTimeout(timeoutId);
       }
-
-      // Combine chunks
-      const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
-      let offset = 0;
-      for (const chunk of chunks) {
-        const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
-        initPacket.set(chunk.subarray(0, toCopy), offset);
-        offset += toCopy;
-      }
-
-      // Parse: first 128 bytes = IV, last 4 bytes = timestamp
-      const iv = initPacket.subarray(0, NSCA_IV_SIZE);
-      const timestampView = new DataView(initPacket.buffer, NSCA_IV_SIZE, NSCA_TIMESTAMP_SIZE);
-      const timestamp = timestampView.getUint32(0);
-
-      // Convert IV to hex (first 32 bytes for display)
-      const ivHex = Array.from(iv.subarray(0, 32))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('') + '...';
-
-      const result: NSCAProbeResponse = {
-        success: true,
-        host,
-        port,
-        ivHex,
-        timestamp,
-        timestampDate: new Date(timestamp * 1000).toISOString(),
-        rtt,
-      };
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
 
     } catch (error) {
       socket.close();
+      if (timeoutId !== null) clearTimeout(timeoutId);
       throw error;
     }
 
@@ -408,90 +428,104 @@ export async function handleNSCASend(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
 
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      // Read the 132-byte initialization packet
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
+      try {
+        // Read the 132-byte initialization packet
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const MAX_CHUNKS = 100;
+        let chunkCount = 0;
 
-      while (totalBytes < NSCA_INIT_PACKET_SIZE) {
-        const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-        if (done || !value) break;
-        chunks.push(value);
-        totalBytes += value.length;
-      }
+        while (totalBytes < NSCA_INIT_PACKET_SIZE) {
+          if (chunkCount++ >= MAX_CHUNKS) {
+            throw new Error('Too many chunks received');
+          }
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (timeoutId !== null) clearTimeout(timeoutId);
+          if (!value) {
+            if (done) break;
+            continue;
+          }
+          chunks.push(value);
+          totalBytes += value.length;
+        }
 
-      if (totalBytes < NSCA_INIT_PACKET_SIZE) {
+        if (totalBytes < NSCA_INIT_PACKET_SIZE) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Incomplete init packet: received ${totalBytes} of ${NSCA_INIT_PACKET_SIZE} bytes`,
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Combine chunks into init packet
+        const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
+        let offset = 0;
+        for (const chunk of chunks) {
+          const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
+          initPacket.set(chunk.subarray(0, toCopy), offset);
+          offset += toCopy;
+        }
+
+        // Parse IV and timestamp (big-endian)
+        const iv = initPacket.subarray(0, NSCA_IV_SIZE);
+        const timestampBytes = initPacket.subarray(NSCA_IV_SIZE, NSCA_IV_SIZE + NSCA_TIMESTAMP_SIZE);
+        const timestampView = new DataView(timestampBytes.buffer, timestampBytes.byteOffset, NSCA_TIMESTAMP_SIZE);
+        const timestamp = timestampView.getUint32(0, false); // big-endian
+
+        // Build check result packet
+        let packet = buildCheckPacket(hostName, service, returnCode, output, timestamp);
+
+        // Encrypt if needed
+        const encryptionNames: Record<number, string> = { 0: 'None', 1: 'XOR' };
+        if (encryption === 1) {
+          packet = xorEncrypt(packet, iv, password);
+        }
+
+        // Send the encrypted packet
+        await writer.write(packet);
+
+        const rtt = Date.now() - startTime;
+
+        const result: NSCASendResponse = {
+          success: true,
+          host,
+          port,
+          hostName,
+          service,
+          returnCode,
+          encryption: encryptionNames[encryption] || `Method ${encryption}`,
+          rtt,
+        };
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+
+      } finally {
         reader.releaseLock();
         writer.releaseLock();
         socket.close();
-        return new Response(JSON.stringify({
-          success: false,
-          error: `Incomplete init packet: received ${totalBytes} of ${NSCA_INIT_PACKET_SIZE} bytes`,
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        if (timeoutId !== null) clearTimeout(timeoutId);
       }
-
-      // Combine chunks into init packet
-      const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
-      let offset = 0;
-      for (const chunk of chunks) {
-        const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
-        initPacket.set(chunk.subarray(0, toCopy), offset);
-        offset += toCopy;
-      }
-
-      // Parse IV and timestamp
-      const iv = initPacket.subarray(0, NSCA_IV_SIZE);
-      const timestampView = new DataView(initPacket.buffer, NSCA_IV_SIZE, NSCA_TIMESTAMP_SIZE);
-      const timestamp = timestampView.getUint32(0);
-
-      // Build check result packet
-      let packet = buildCheckPacket(hostName, service, returnCode, output, timestamp);
-
-      // Encrypt if needed
-      const encryptionNames: Record<number, string> = { 0: 'None', 1: 'XOR' };
-      if (encryption === 1) {
-        packet = xorEncrypt(packet, iv, password);
-      }
-
-      // Send the encrypted packet
-      await writer.write(packet);
-
-      const rtt = Date.now() - startTime;
-
-      reader.releaseLock();
-      writer.releaseLock();
-      socket.close();
-
-      const result: NSCASendResponse = {
-        success: true,
-        host,
-        port,
-        hostName,
-        service,
-        returnCode,
-        encryption: encryptionNames[encryption] || `Method ${encryption}`,
-        rtt,
-      };
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
 
     } catch (error) {
       socket.close();
+      if (timeoutId !== null) clearTimeout(timeoutId);
       throw error;
     }
 
@@ -757,106 +791,125 @@ export async function handleNSCAEncrypted(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
+      if (timeoutId !== null) clearTimeout(timeoutId);
 
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      // Read 132-byte init packet: 128-byte IV + 4-byte timestamp
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
-      while (totalBytes < NSCA_INIT_PACKET_SIZE) {
-        const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-        if (done || !value) break;
-        chunks.push(value);
-        totalBytes += value.length;
-      }
+      try {
+        // Read 132-byte init packet: 128-byte IV + 4-byte timestamp
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        const MAX_CHUNKS = 100;
+        let chunkCount = 0;
 
-      if (totalBytes < NSCA_INIT_PACKET_SIZE) {
-        reader.releaseLock();
-        writer.releaseLock();
-        socket.close();
+        while (totalBytes < NSCA_INIT_PACKET_SIZE) {
+          if (chunkCount++ >= MAX_CHUNKS) {
+            throw new Error('Too many chunks received');
+          }
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (timeoutId !== null) clearTimeout(timeoutId);
+          if (!value) {
+            if (done) break;
+            continue;
+          }
+          chunks.push(value);
+          totalBytes += value.length;
+        }
+
+        if (totalBytes < NSCA_INIT_PACKET_SIZE) {
+          return new Response(JSON.stringify({
+            cipher,
+            cipherName,
+            encrypted: false,
+            submitted: false,
+            error: `Incomplete init packet: ${totalBytes}/${NSCA_INIT_PACKET_SIZE} bytes`,
+          } satisfies NSCAEncryptedResponse), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Assemble init packet
+        const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
+        let offset = 0;
+        for (const chunk of chunks) {
+          const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
+          initPacket.set(chunk.subarray(0, toCopy), offset);
+          offset += toCopy;
+        }
+
+        const serverIV = initPacket.subarray(0, NSCA_IV_SIZE);
+        const timestampBytes = initPacket.subarray(NSCA_IV_SIZE, NSCA_IV_SIZE + NSCA_TIMESTAMP_SIZE);
+        const timestampView = new DataView(timestampBytes.buffer, timestampBytes.byteOffset, NSCA_TIMESTAMP_SIZE);
+        const timestamp = timestampView.getUint32(0, false); // big-endian
+
+        // Build plaintext check packet
+        let packet = buildCheckPacket(hostname, service, state, message, timestamp);
+
+        const pwBytes = new TextEncoder().encode(password);
+
+        if (cipher === 1) {
+          // XOR: encrypt with server IV and password
+          packet = xorEncrypt(packet, serverIV, password);
+        } else if (cipher === 14) {
+          // AES-128/CBC: key = MD5(password)[0..15], IV = serverIV[0..15]
+          const keyBytes = md5(pwBytes);
+          const iv = serverIV.subarray(0, 16);
+          packet = await aesCbcEncrypt(keyBytes, iv, packet);
+        } else if (cipher === 16) {
+          // AES-256/CBC: key = SHA-256(password), IV = serverIV[0..15]
+          const hashBuf = await crypto.subtle.digest('SHA-256', pwBytes);
+          const keyBytes = new Uint8Array(hashBuf);
+          const iv = serverIV.subarray(0, 16);
+          packet = await aesCbcEncrypt(keyBytes, iv, packet);
+        }
+
+        await writer.write(packet);
+
+        const rtt = Date.now() - startTime;
+
         return new Response(JSON.stringify({
           cipher,
           cipherName,
-          encrypted: false,
-          submitted: false,
-          error: `Incomplete init packet: ${totalBytes}/${NSCA_INIT_PACKET_SIZE} bytes`,
+          encrypted: true,
+          submitted: true,
+          host,
+          port,
+          rtt,
         } satisfies NSCAEncryptedResponse), {
-          status: 500,
+          status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+        if (timeoutId !== null) clearTimeout(timeoutId);
       }
-
-      // Assemble init packet
-      const initPacket = new Uint8Array(NSCA_INIT_PACKET_SIZE);
-      let offset = 0;
-      for (const chunk of chunks) {
-        const toCopy = Math.min(chunk.length, NSCA_INIT_PACKET_SIZE - offset);
-        initPacket.set(chunk.subarray(0, toCopy), offset);
-        offset += toCopy;
-      }
-
-      const serverIV = initPacket.subarray(0, NSCA_IV_SIZE);
-      const timestampView = new DataView(initPacket.buffer, NSCA_IV_SIZE, NSCA_TIMESTAMP_SIZE);
-      const timestamp = timestampView.getUint32(0);
-
-      // Build plaintext check packet
-      let packet = buildCheckPacket(hostname, service, state, message, timestamp);
-
-      const pwBytes = new TextEncoder().encode(password);
-
-      if (cipher === 1) {
-        // XOR: encrypt with server IV and password
-        packet = xorEncrypt(packet, serverIV, password);
-      } else if (cipher === 14) {
-        // AES-128/CBC: key = MD5(password)[0..15], IV = serverIV[0..15]
-        const keyBytes = md5(pwBytes);
-        const iv = serverIV.subarray(0, 16);
-        packet = await aesCbcEncrypt(keyBytes, iv, packet);
-      } else if (cipher === 16) {
-        // AES-256/CBC: key = SHA-256(password), IV = serverIV[0..15]
-        const hashBuf = await crypto.subtle.digest('SHA-256', pwBytes);
-        const keyBytes = new Uint8Array(hashBuf);
-        const iv = serverIV.subarray(0, 16);
-        packet = await aesCbcEncrypt(keyBytes, iv, packet);
-      }
-
-      await writer.write(packet);
-
-      const rtt = Date.now() - startTime;
-
-      reader.releaseLock();
-      writer.releaseLock();
-      socket.close();
-
-      return new Response(JSON.stringify({
-        cipher,
-        cipherName,
-        encrypted: true,
-        submitted: true,
-        host,
-        port,
-        rtt,
-      } satisfies NSCAEncryptedResponse), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
 
     } catch (error) {
       socket.close();
+      if (timeoutId !== null) clearTimeout(timeoutId);
       throw error;
     }
 
   } catch (error) {
+    const body = await request.json().catch(() => ({ cipher: 14 })) as { cipher?: number };
+    const errorCipher = body.cipher ?? 14;
+    const errorCipherName = CIPHER_NAMES[errorCipher] ?? `cipher-${errorCipher}`;
+
     return new Response(JSON.stringify({
-      cipher: 14,
-      cipherName: 'AES-128',
+      cipher: errorCipher,
+      cipherName: errorCipherName,
       encrypted: false,
       submitted: false,
       error: error instanceof Error ? error.message : 'Unknown error',

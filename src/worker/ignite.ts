@@ -8,7 +8,7 @@
  * Thin Client Handshake (Port 10800):
  *   Client -> Server:
  *     [length: 4 bytes LE][version_major: 2 LE][version_minor: 2 LE]
- *     [version_patch: 2 LE][client_code: 1 byte (2 = thin client)]
+ *     [version_patch: 2 LE][client_code: 1 byte (1 = thin client)]
  *
  *   Server -> Client (success):
  *     [length: 4 LE][success: 1 byte (1)][node_uuid: 16 bytes][features...]
@@ -23,21 +23,23 @@
  *   Response: [length: 4 LE][request_id: 8 LE][status: 4 LE][data...]
  *
  * Operation Codes:
+ *   OP_CACHE_GET                   = 1000  (0x03E8)
+ *   OP_CACHE_PUT                   = 1001  (0x03E9)
+ *   OP_CACHE_REMOVE_KEY            = 1016  (0x03F8)
  *   OP_CACHE_GET_NAMES             = 1050  (0x041A)
  *   OP_CACHE_GET_OR_CREATE_WITH_NAME = 1052 (0x041C)
- *   OP_CACHE_GET                   = 1001  (0x03E9)
- *   OP_CACHE_PUT                   = 1001  ... note: varies by version
  *
  * Ignite type codes (for values in GET/PUT):
  *   1  = byte
- *   3  = short
- *   4  = int
- *   6  = float
- *   8  = double
- *   9  = char
- *   10 = bool
+ *   2  = short
+ *   3  = int
+ *   4  = long
+ *   5  = float
+ *   6  = double
+ *   7  = char
+ *   8  = bool
  *   9  = String (UTF-8, length-prefixed as int32 LE)
- *   13 = String type code in some contexts
+ *   101 = null
  *
  * String encoding in Ignite thin client:
  *   [type_code: 1 byte (9 for String)] [length: int32 LE] [UTF-8 bytes...]
@@ -50,14 +52,14 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 
 // ---- protocol constants -------------------------------------------------------
 
-const CLIENT_CODE_THIN = 2;
+const CLIENT_CODE_THIN = 1;
 
-// Operation codes
+// Operation codes (from Apache Ignite ClientOperation enum)
 const OP_CACHE_GET_NAMES              = 1050; // 0x041A
 const OP_CACHE_GET_OR_CREATE_WITH_NAME = 1052; // 0x041C
-const OP_CACHE_GET                    = 1001; // 0x03E9
-const OP_CACHE_PUT                    = 1002; // 0x03EA
-const OP_CACHE_REMOVE                 = 1013; // 0x03F5
+const OP_CACHE_GET                    = 1000; // 0x03E8
+const OP_CACHE_PUT                    = 1001; // 0x03E9
+const OP_CACHE_REMOVE                 = 1016; // 0x03F8 (CACHE_REMOVE_KEY)
 
 // Ignite type codes
 const TYPE_STRING = 9;
@@ -146,6 +148,19 @@ function encodeCacheName(name: string): Uint8Array {
   return out;
 }
 
+/**
+ * Compute a cache ID from the cache name using Java's String.hashCode() algorithm.
+ * Ignite uses this hash as the integer cache ID in GET/PUT/REMOVE operations.
+ * The algorithm operates on UTF-16 code units (matching Java's char[]).
+ */
+function cacheNameToId(name: string): number {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = (Math.imul(31, hash) + name.charCodeAt(i)) | 0;
+  }
+  return hash;
+}
+
 // ---- response readers --------------------------------------------------------
 
 /**
@@ -223,11 +238,13 @@ function parseResponseHeader(data: Uint8Array): {
 
 /**
  * Parse UUID bytes (16 bytes) at offset.
- * Ignite uses a specific mixed-endian byte order.
+ * Ignite serializes node UUIDs as two consecutive 64-bit integers in little-endian
+ * (MSB long first, then LSB long). To reconstruct the canonical UUID string, reverse
+ * each 8-byte half independently.
  */
 function parseUUID(data: Uint8Array, offset: number): string {
   const h = (i: number) => data[offset + i].toString(16).padStart(2, '0');
-  return `${h(3)}${h(2)}${h(1)}${h(0)}-${h(5)}${h(4)}-${h(7)}${h(6)}-${h(8)}${h(9)}-${h(10)}${h(11)}${h(12)}${h(13)}${h(14)}${h(15)}`;
+  return `${h(7)}${h(6)}${h(5)}${h(4)}-${h(3)}${h(2)}-${h(1)}${h(0)}-${h(15)}${h(14)}-${h(13)}${h(12)}${h(11)}${h(10)}${h(9)}${h(8)}`;
 }
 
 /**
@@ -363,6 +380,7 @@ export async function handleIgniteConnect(request: Request): Promise<Response> {
           if (response.length >= 21) result.nodeId = parseUUID(response, 5);
           if (payloadLength > 17) { result.featuresPresent = true; result.payloadSize = payloadLength; }
         } else {
+          result.success  = false;
           result.handshake = 'rejected';
           if (response.length >= 11) {
             result.serverVersion = `${view.getInt16(5, true)}.${view.getInt16(7, true)}.${view.getInt16(9, true)}`;
@@ -626,11 +644,8 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
-      // The cache ID is in the create response (int32 LE at payload offset 0)
-      let cacheId = 0;
-      if (createHeader.payload.length >= 4) {
-        cacheId = new DataView(createHeader.payload.buffer, createHeader.payload.byteOffset).getInt32(0, true);
-      }
+      // Cache ID is the Java String.hashCode() of the cache name
+      const cacheId = cacheNameToId(cacheName);
 
       // Step 2: OP_CACHE_GET
       // Payload: [cache_id: int32 LE] [flags: 1 byte (0)] [key: typed value]
@@ -659,7 +674,7 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
 
       if (valPayload.length > 0) {
         const typeCode = valPayload[0];
-        if (typeCode === TYPE_NULL || typeCode === 0) {
+        if (typeCode === TYPE_NULL) {
           value = null; // key not found
         } else if (typeCode === TYPE_STRING && valPayload.length >= 5) {
           const strLen = new DataView(valPayload.buffer, valPayload.byteOffset).getInt32(1, true);
@@ -745,9 +760,9 @@ export async function handleIgniteCachePut(request: Request): Promise<Response> 
           host, port, cacheName, key,
         }), { headers: { 'Content-Type': 'application/json' } });
       }
-      const cacheId = createHeader.payload.length >= 4
-        ? new DataView(createHeader.payload.buffer, createHeader.payload.byteOffset).getInt32(0, true)
-        : 0;
+
+      // Cache ID is the Java String.hashCode() of the cache name
+      const cacheId = cacheNameToId(cacheName);
 
       // Step 2: OP_CACHE_PUT — payload: [cache_id: int32 LE][flags: 1 byte][key: typed][value: typed]
       const keyEncoded   = encodeString(key);
@@ -808,7 +823,6 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
   if (key === undefined || key === null) return igniteError('key is required', 400);
   if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
-  const { checkIfCloudflare, getCloudflareErrorMessage } = await import('./cloudflare-detector');
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
@@ -831,9 +845,9 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
           host, port, cacheName, key,
         }), { headers: { 'Content-Type': 'application/json' } });
       }
-      const cacheId = createHeader.payload.length >= 4
-        ? new DataView(createHeader.payload.buffer, createHeader.payload.byteOffset).getInt32(0, true)
-        : 0;
+
+      // Cache ID is the Java String.hashCode() of the cache name
+      const cacheId = cacheNameToId(cacheName);
 
       // OP_CACHE_REMOVE — payload: [cache_id: int32 LE][flags: 1 byte][key: typed]
       const keyEncoded    = encodeString(key);
@@ -854,11 +868,17 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
-      // Response payload is a boolean: 1 byte, 0x02=null or boolean type, then value
+      // Response payload is a typed boolean value:
+      //   If key existed:   [type_code: 8 (bool)] [value: 1 byte (1=true)]
+      //   If key not found: [type_code: 8 (bool)] [value: 1 byte (0=false)]
       let removed = false;
-      if (removeHeader.payload.length >= 2) {
-        // bool type code is 8, value follows
-        removed = removeHeader.payload[1] === 1;
+      if (removeHeader.payload.length >= 1) {
+        const typeCode = removeHeader.payload[0];
+        if (typeCode === 8 && removeHeader.payload.length >= 2) {
+          // Bool type: byte 1 is the boolean value
+          removed = removeHeader.payload[1] === 1;
+        }
+        // TYPE_NULL (101) or unexpected type: removed stays false
       }
 
       return new Response(JSON.stringify({

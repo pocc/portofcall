@@ -372,15 +372,15 @@ export async function handleNATSPublish(request: Request): Promise<Response> {
  * Handle NATS subscribe — SUB to a subject and collect messages.
  * POST /api/nats/subscribe
  *
- * Accept JSON: {host, port?, username?, password?, subject, max_msgs?, timeout_ms?, queue_group?}
+ * Accept JSON: {host, port?, user?, pass?, subject, max_msgs?, timeout_ms?, queue_group?}
  */
 export async function handleNATSSubscribe(request: Request): Promise<Response> {
   try {
     const {
-      host, port = 4222, username, password,
+      host, port = 4222, user, pass,
       subject, max_msgs = 5, timeout_ms = 5000, queue_group,
     } = await request.json() as {
-      host: string; port?: number; username?: string; password?: string;
+      host: string; port?: number; user?: string; pass?: string;
       subject: string; max_msgs?: number; timeout_ms?: number; queue_group?: string;
     };
 
@@ -424,8 +424,8 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
 
       // CONNECT
       const authOpts: Record<string, unknown> = { verbose: false, pedantic: false, lang: 'portofcall' };
-      if (username) authOpts.user = username;
-      if (password) authOpts.pass = password;
+      if (user) authOpts.user = user;
+      if (pass) authOpts.pass = pass;
       await writer.write(encoder.encode(`CONNECT ${JSON.stringify(authOpts)}\r\n`));
 
       // SUB
@@ -506,13 +506,14 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
 async function withNATSSession<T>(
   host: string,
   port: number,
-  username: string | undefined,
-  password: string | undefined,
+  user: string | undefined,
+  pass: string | undefined,
   token: string | undefined,
   timeoutMs: number,
   work: (
     writer: WritableStreamDefaultWriter<Uint8Array>,
     jsRequest: (subject: string, payload: unknown, waitMs?: number) => Promise<unknown>,
+    readMsg: (inboxSubject: string, waitMs?: number) => Promise<string | null>,
   ) => Promise<T>,
 ): Promise<T> {
   const socket = connect(`${host}:${port}`);
@@ -547,7 +548,7 @@ async function withNATSSession<T>(
     return line;
   }
 
-  async function readMsg(inboxSubject: string, waitMs: number): Promise<string | null> {
+  async function readMsg(inboxSubject: string, waitMs = 5000): Promise<string | null> {
     const untilMs = Date.now() + waitMs;
     while (Date.now() < untilMs) {
       const rem = Math.max(1, untilMs - Date.now());
@@ -586,7 +587,7 @@ async function withNATSSession<T>(
     // CONNECT
     const connectOpts: Record<string, unknown> = { verbose: false, pedantic: false, lang: 'portofcall', protocol: 1 };
     if (token) connectOpts.auth_token = token;
-    else if (username) { connectOpts.user = username; connectOpts.pass = password; }
+    else if (user) { connectOpts.user = user; connectOpts.pass = pass; }
     await writer.write(encoder.encode(`CONNECT ${JSON.stringify(connectOpts)}\r\n`));
 
     // Create an inbox for JetStream API responses
@@ -610,7 +611,7 @@ async function withNATSSession<T>(
       }
     }
 
-    const result = await work(writer, jsRequest);
+    const result = await work(writer, jsRequest, readMsg);
 
     try { socket.close(); } catch { /* ignore */ }
     return result;
@@ -788,11 +789,11 @@ export async function handleNATSJetStreamPublish(request: Request): Promise<Resp
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const result = await withNATSSession(host, port, user, pass, token, timeout, async (writer, jsRequest) => {
+    const result = await withNATSSession(host, port, user, pass, token, timeout, async (writer, _jsRequest, readMsg) => {
       const encoder = new TextEncoder();
       const inbox = `_JS_INBOX.ack.${Math.random().toString(36).substring(2)}`;
 
-      // Subscribe to ack inbox
+      // Subscribe to ack inbox before publishing
       await writer.write(encoder.encode(`SUB ${inbox} 2\r\n`));
 
       // Build NATS message with optional Nats-Msg-Id header for deduplication
@@ -818,13 +819,18 @@ export async function handleNATSJetStreamPublish(request: Request): Promise<Resp
         await writer.write(encoder.encode('\r\n'));
       }
 
-      // Read the JetStream PubAck
-      // Actually jsRequest does the pub+read, but here we already published
-      // We need to read the MSG from inbox directly
-      // Reuse jsRequest for a dummy call to trigger read... no, let's read manually
-      // The withNATSSession already has readMsg in scope, but we can't access it directly
-      // So let's use jsRequest with a passthrough
-      const ack = await jsRequest(`$JS.API.STREAM.NAMES`, {}); // dummy to trigger read
+      // Read the actual PubAck from the ack inbox
+      const ackResponse = await readMsg(inbox, 5000);
+      if (ackResponse === null) {
+        throw new Error('No PubAck received from JetStream — the subject may not be bound to a stream');
+      }
+
+      let ack: unknown;
+      try {
+        ack = JSON.parse(ackResponse);
+      } catch {
+        ack = { raw: ackResponse };
+      }
 
       return { subject, payloadSize: payloadBytes.length, ack, msgId };
     });
@@ -934,15 +940,15 @@ export async function handleNATSJetStreamPull(request: Request): Promise<Respons
  * Handle NATS request-reply — PUB to a subject with a reply inbox and wait for response.
  * POST /api/nats/request
  *
- * Accept JSON: {host, port?, username?, password?, subject, payload?, timeout_ms?}
+ * Accept JSON: {host, port?, user?, pass?, subject, payload?, timeout_ms?}
  */
 export async function handleNATSRequest(request: Request): Promise<Response> {
   try {
     const {
-      host, port = 4222, username, password,
+      host, port = 4222, user, pass,
       subject, payload = '', timeout_ms = 5000,
     } = await request.json() as {
-      host: string; port?: number; username?: string; password?: string;
+      host: string; port?: number; user?: string; pass?: string;
       subject: string; payload?: string; timeout_ms?: number;
     };
 
@@ -981,8 +987,8 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
 
       // CONNECT
       const authOpts: Record<string, unknown> = { verbose: false, pedantic: false, lang: 'portofcall' };
-      if (username) authOpts.user = username;
-      if (password) authOpts.pass = password;
+      if (user) authOpts.user = user;
+      if (pass) authOpts.pass = pass;
       await writer.write(encoder.encode(`CONNECT ${JSON.stringify(authOpts)}\r\n`));
 
       // SUB inbox
@@ -1032,7 +1038,7 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
 
       return new Response(JSON.stringify({
         success: true, host, port, subject, inboxSubject,
-        responsed: responsePayload !== null,
+        responded: responsePayload !== null,
         responseSubject, response: responsePayload,
       }), { headers: { 'Content-Type': 'application/json' } });
 

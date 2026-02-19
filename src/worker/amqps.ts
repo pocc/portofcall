@@ -73,7 +73,15 @@ function readLongString(data: Uint8Array, offset: number): { value: string; byte
   return { value, bytesRead: 4 + len };
 }
 
-/** Parse an AMQP field table into a Record<string, string> */
+/**
+ * Parse an AMQP field table into a Record<string, string>.
+ *
+ * Handles all standard AMQP 0-9-1 field types: S (long string), s (short string),
+ * F (nested table), I (int32), t (boolean), l (int64), d (double), T (timestamp),
+ * D (decimal), A (array), b/B (byte), u (unsigned short).
+ * For genuinely unknown types, bails out of the table rather than advancing by
+ * 1 byte, which would corrupt subsequent field reads for multi-byte types.
+ */
 function readFieldTable(data: Uint8Array, offset: number): { value: Record<string, string>; bytesRead: number } {
   const view = new DataView(data.buffer, data.byteOffset + offset, 4);
   const tableLen = view.getUint32(0, false);
@@ -113,14 +121,55 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         pos += 4;
         break;
       }
-      case 't': {
-        table[nameResult.value] = data[pos] === 1 ? 'true' : 'false';
+      case 't': { // boolean
+        table[nameResult.value] = data[pos] !== 0 ? 'true' : 'false';
         pos += 1;
         break;
       }
-      default:
-        // Skip unknown type - just advance 1 byte (not robust but works for probing)
+      case 'l': { // signed 64-bit int
+        const longView = new DataView(data.buffer, data.byteOffset + pos, 8);
+        table[nameResult.value] = longView.getBigInt64(0, false).toString();
+        pos += 8;
+        break;
+      }
+      case 'd': { // double (IEEE 754, 8 bytes)
+        const dblView = new DataView(data.buffer, data.byteOffset + pos, 8);
+        table[nameResult.value] = dblView.getFloat64(0, false).toString();
+        pos += 8;
+        break;
+      }
+      case 'T': { // timestamp (uint64, seconds since Unix epoch)
+        const tsView = new DataView(data.buffer, data.byteOffset + pos, 8);
+        table[nameResult.value] = tsView.getBigUint64(0, false).toString();
+        pos += 8;
+        break;
+      }
+      case 'D': { // decimal (1-byte scale + 4-byte unsigned int mantissa = 5 bytes)
+        pos += 5;
+        break;
+      }
+      case 'A': { // array (4-byte length prefix + elements)
+        const arrView = new DataView(data.buffer, data.byteOffset + pos, 4);
+        const arrLen = arrView.getUint32(0, false);
+        pos += 4 + arrLen;
+        break;
+      }
+      case 'b': case 'B': { // signed/unsigned byte (1 byte)
         pos += 1;
+        break;
+      }
+      case 'u': { // unsigned short (2 bytes) — RabbitMQ extension
+        pos += 2;
+        break;
+      }
+      default: {
+        // Unknown type: bail out of table parsing rather than misaligning the
+        // read cursor by advancing only 1 byte (which would corrupt all
+        // subsequent field reads for multi-byte types like int64, double, etc.).
+        table[nameResult.value] = `<type:${type}>`;
+        pos = end;
+        break;
+      }
     }
   }
 
@@ -192,12 +241,13 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
         throw new Error(`Expected METHOD frame (1), got ${frameType}`);
       }
 
-      // Read frame payload + frame-end byte
-      const framePayload = await readExact(reader, frameSize + 1);
-      const frameEnd     = framePayload[frameSize];
+      // Read frame payload, then frame-end byte separately so the payload
+      // slice used for parsing does not include the frame-end sentinel.
+      const framePayload = await readExact(reader, frameSize);
+      const frameEndBuf  = await readExact(reader, 1);
 
-      if (frameEnd !== FRAME_END) {
-        throw new Error(`Expected frame-end marker (0xCE), got 0x${frameEnd.toString(16)}`);
+      if (frameEndBuf[0] !== FRAME_END) {
+        throw new Error(`Expected frame-end marker (0xCE), got 0x${frameEndBuf[0].toString(16)}`);
       }
 
       // Parse method class-id and method-id
@@ -226,9 +276,7 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
 
       const localesResult = readLongString(framePayload, offset);
 
-      await writer.close();
-      await reader.cancel();
-      await socket.close();
+      // Cleanup is handled by the finally block below; no explicit close here.
 
       return new Response(
         JSON.stringify({
@@ -283,6 +331,8 @@ export async function handleAMQPSPublish(request: Request): Promise<Response> {
       password?: string;
       vhost?: string;
       exchange?: string;
+      exchangeType?: string;
+      durable?: boolean;
       routingKey?: string;
       message?: string;
       timeout?: number;
@@ -290,14 +340,16 @@ export async function handleAMQPSPublish(request: Request): Promise<Response> {
 
     const {
       host,
-      port       = 5671,
-      username   = 'guest',
-      password   = 'guest',
-      vhost      = '/',
-      exchange   = '',
-      routingKey = '',
-      message    = '',
-      timeout    = 15000,
+      port         = 5671,
+      username     = 'guest',
+      password     = 'guest',
+      vhost        = '/',
+      exchange     = '',
+      exchangeType = 'direct',
+      durable      = false,
+      routingKey   = '',
+      message      = '',
+      timeout      = 15000,
     } = body;
 
     if (!host || typeof host !== 'string' || host.trim() === '') {
@@ -321,7 +373,7 @@ export async function handleAMQPSPublish(request: Request): Promise<Response> {
 
     const params: AMQPPublishParams = {
       host, port, username, password, vhost,
-      exchange, routingKey, message, timeout,
+      exchange, exchangeType, durable, routingKey, message, timeout,
       secureTransport: 'on',
     };
 
@@ -398,7 +450,7 @@ export async function handleAMQPSConsume(request: Request): Promise<Response> {
       );
     }
 
-    const { checkIfCloudflare, getCloudflareErrorMessage } = await import('./cloudflare-detector');
+    // Use the already-imported checkIfCloudflare from the static import at the top.
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(

@@ -75,9 +75,13 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
     // Connect to Active Users server
     const socket = connect(`${host}:${port}`);
 
-    // Set up timeout
+    // Set up timeout with cleanup
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => {
+        socket.close();
+        reject(new Error('Connection timeout'));
+      }, timeout);
     });
 
     try {
@@ -89,13 +93,15 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
 
       const reader = socket.readable.getReader();
 
-      // Read response (server sends data immediately)
-      const { value: responseBytes } = await Promise.race([
-        reader.read(),
+      // Read all response data until connection closes or timeout
+      // RFC 866: Server sends list and closes connection
+      const remainingTimeout = timeout - (Date.now() - startTime);
+      const responseBytes = await Promise.race([
+        readAllBytes(reader, remainingTimeout > 0 ? remainingTimeout : 1000),
         timeoutPromise
       ]);
 
-      if (!responseBytes) {
+      if (responseBytes.length === 0) {
         throw new Error('No response received from server');
       }
 
@@ -116,6 +122,9 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
       }
 
       // Clean up
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
       reader.releaseLock();
       socket.close();
 
@@ -133,6 +142,9 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
 
     } catch (error) {
       // Connection or read error
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
       socket.close();
       throw error;
     }
@@ -199,20 +211,32 @@ export async function handleActiveUsersQuery(request: Request): Promise<Response
     const { host, port = 11, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        socket.close();
+        reject(new Error('Connection timeout'));
+      }, timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
-      const allBytes = await Promise.race([readAllBytes(reader, timeout - (Date.now() - startTime)), timeoutPromise]);
+      const remainingTimeout = timeout - (Date.now() - startTime);
+      const allBytes = await Promise.race([readAllBytes(reader, remainingTimeout > 0 ? remainingTimeout : 1000), timeoutPromise]);
       const latencyMs = Date.now() - startTime;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       reader.releaseLock(); socket.close();
       const raw = new TextDecoder().decode(allBytes);
       const lines = raw.split(/\r?\n/);
       const users: ActiveUser[] = lines.map(parseUserLine).filter((u): u is ActiveUser => u !== null);
       return new Response(JSON.stringify({ success: true, users, rawCount: lines.filter(l => l.trim()).length, raw, latencyMs }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (err) { socket.close(); throw err; }
+    } catch (err) { if (timeoutId !== undefined) clearTimeout(timeoutId); socket.close(); throw err; }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
@@ -227,17 +251,30 @@ export async function handleActiveUsersRaw(request: Request): Promise<Response> 
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 11, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        socket.close();
+        reject(new Error('Connection timeout'));
+      }, timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
-      const allBytes = await Promise.race([readAllBytes(reader, timeout - (Date.now() - startTime)), timeoutPromise]);
+      const remainingTimeout = timeout - (Date.now() - startTime);
+      const allBytes = await Promise.race([readAllBytes(reader, remainingTimeout > 0 ? remainingTimeout : 1000), timeoutPromise]);
       const latencyMs = Date.now() - startTime;
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
       reader.releaseLock(); socket.close();
       return new Response(JSON.stringify({ success: true, raw: new TextDecoder().decode(allBytes), latencyMs }), { headers: { 'Content-Type': 'application/json' } });
-    } catch (err) { socket.close(); throw err; }
+    } catch (err) { if (timeoutId !== undefined) clearTimeout(timeoutId); socket.close(); throw err; }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }

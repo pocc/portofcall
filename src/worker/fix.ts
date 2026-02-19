@@ -160,6 +160,9 @@ async function readResponse(
   let totalBytes = 0;
   const maxBytes = 64 * 1024;
   const deadline = Date.now() + timeoutMs;
+  // Keep a rolling tail of the last 10 bytes to detect checksum across chunk boundaries
+  // (10=NNN\x01 is at most 8 bytes: "10=000\x01")
+  let tail = '';
 
   while (true) {
     const remaining = deadline - Date.now();
@@ -176,16 +179,11 @@ async function readResponse(
     totalBytes += result.value.length;
     if (totalBytes >= maxBytes) break;
 
-    // Check if we have a complete FIX message (ends with 10=xxx<SOH>)
-    const combined = new Uint8Array(totalBytes);
-    let offset = 0;
-    for (const chunk of chunks) {
-      combined.set(chunk, offset);
-      offset += chunk.length;
-    }
-    const text = new TextDecoder().decode(combined);
-    // A complete FIX message contains 10= followed by 3 digits and SOH
-    if (/10=\d{3}\x01/.test(text)) break;
+    // Check if we have a complete FIX message by examining the boundary region
+    const chunkText = new TextDecoder().decode(result.value);
+    const boundary = tail + chunkText;
+    tail = boundary.slice(-10);
+    if (/10=\d{3}\x01/.test(boundary)) break;
   }
 
   const combined = new Uint8Array(totalBytes);
@@ -434,16 +432,23 @@ function execTypeName(type: string): string {
   return names[type] || `Unknown(${type})`;
 }
 
+/** A parsed FIX message with its raw text and structured fields */
+interface FIXMessageResult {
+  raw: string;
+  fields: Map<number, string>;
+  msgType: string | undefined;
+}
+
 /**
  * Read multiple FIX messages from the stream until a specific MsgType appears
- * or the timeout is reached. Returns all messages received.
+ * or the timeout is reached. Returns all messages received, each individually parsed.
  */
 async function readFIXUntilMsgType(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   targetMsgType: string,
   timeoutMs: number
-): Promise<string[]> {
-  const messages: string[] = [];
+): Promise<FIXMessageResult[]> {
+  const messages: FIXMessageResult[] = [];
   const deadline = Date.now() + timeoutMs;
   let buffer = '';
 
@@ -463,20 +468,21 @@ async function readFIXUntilMsgType(
     // Extract complete FIX messages (each ends with 10=xxx<SOH>)
     const msgRegex = /8=FIX[^\x01]*(?:\x01[^\x01=]+=[^\x01]*)*\x0110=\d{3}\x01/g;
     let match: RegExpExecArray | null;
+    let lastMatchEnd = 0;
     while ((match = msgRegex.exec(buffer)) !== null) {
-      const msg = match[0];
-      messages.push(msg);
-      const parsed = parseFIXMessage(msg);
-      if (parsed.get(35) === targetMsgType) {
+      const raw = match[0];
+      const fields = parseFIXMessage(raw);
+      const msgType = fields.get(35);
+      messages.push({ raw, fields, msgType });
+      lastMatchEnd = match.index + raw.length;
+      if (msgType === targetMsgType) {
         return messages;
       }
     }
 
-    // Remove fully-parsed messages from buffer
-    const lastComplete = buffer.lastIndexOf('\x0110=');
-    const lastSOH = buffer.indexOf('\x01', lastComplete + 1);
-    if (lastComplete >= 0 && lastSOH >= 0) {
-      buffer = buffer.slice(lastSOH + 1);
+    // Remove fully-parsed messages from buffer, keeping only unmatched remainder
+    if (lastMatchEnd > 0) {
+      buffer = buffer.slice(lastMatchEnd);
     }
   }
 
@@ -601,10 +607,13 @@ export async function handleFIXOrder(request: Request): Promise<Response> {
       await writer.write(new TextEncoder().encode(logonMsg));
 
       // Read until we get a Logon ack (35=A), Reject, or Logout
-      const logonRawMsgs = await readFIXUntilMsgType(reader, 'A', Math.min(timeout - (Date.now() - startTime), 5000));
-      const logonRaw = logonRawMsgs.join('');
-      const logonParsed = parseFIXMessage(logonRaw);
-      const logonMsgType = logonParsed.get(35);
+      const logonResults = await readFIXUntilMsgType(reader, 'A', Math.min(timeout - (Date.now() - startTime), 5000));
+      // Find the Logon ack specifically (not other messages like SequenceReset)
+      const logonResult = logonResults.find(m => m.msgType === 'A');
+      const lastResult = logonResults[logonResults.length - 1];
+      const logonParsed = logonResult?.fields ?? lastResult?.fields ?? new Map<number, string>();
+      const logonMsgType = logonResult?.msgType ?? lastResult?.msgType;
+      const logonRaw = logonResults.map(m => m.raw).join('');
 
       const logonAck = logonMsgType === 'A';
 
@@ -662,9 +671,12 @@ export async function handleFIXOrder(request: Request): Promise<Response> {
       await writer.write(new TextEncoder().encode(orderMsg));
 
       // ---- Step 3: Read ExecutionReport (35=8) ----
-      const execRawMsgs = await readFIXUntilMsgType(reader, '8', Math.min(timeout - (Date.now() - startTime), 5000));
-      const execRaw = execRawMsgs.join('');
-      const execParsed = parseFIXMessage(execRaw);
+      const execResults = await readFIXUntilMsgType(reader, '8', Math.min(timeout - (Date.now() - startTime), 5000));
+      // Find the ExecutionReport specifically, fall back to last message received
+      const execResult = execResults.find(m => m.msgType === '8');
+      const lastExecResult = execResults[execResults.length - 1];
+      const execParsed = execResult?.fields ?? lastExecResult?.fields ?? new Map<number, string>();
+      const execRaw = execResult?.raw ?? lastExecResult?.raw ?? '';
 
       const execMsgType = execParsed.get(35);
       const execId = execParsed.get(FIX_TAG_EXECID);

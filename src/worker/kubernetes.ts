@@ -48,6 +48,73 @@ function validateInput(host: string, port: number): string | null {
   return null;
 }
 
+/** Known irregular plurals for Kubernetes resource kinds */
+const KIND_PLURALS: Record<string, string> = {
+  endpoints: 'endpoints',
+  ingress: 'ingresses',
+  networkpolicy: 'networkpolicies',
+  resourcequota: 'resourcequotas',
+  limitrange: 'limitranges',
+  storageclass: 'storageclasses',
+  ingressclass: 'ingressclasses',
+  runtimeclass: 'runtimeclasses',
+  priorityclass: 'priorityclasses',
+};
+
+/**
+ * Cluster-scoped resource kinds — these have no namespace segment in their
+ * API paths (e.g. /apis/rbac.authorization.k8s.io/v1/clusterroles, not
+ * /namespaces/{ns}/clusterroles).
+ *
+ * FIX: was missing; handleKubernetesApply was routing all resources to
+ * namespaced paths, causing 404s for cluster-scoped kinds.
+ */
+const CLUSTER_SCOPED_KINDS = new Set([
+  'namespace',
+  'node',
+  'persistentvolume',
+  'clusterrole',
+  'clusterrolebinding',
+  'storageclass',
+  'ingressclass',
+  'runtimeclass',
+  'priorityclass',
+  'customresourcedefinition',
+  'mutatingwebhookconfiguration',
+  'validatingwebhookconfiguration',
+  'validatingadmissionpolicy',
+  'validatingadmissionpolicybinding',
+  'apiservice',
+  'certificatesigningrequest',
+  'flowschema',
+  'prioritylevelconfiguration',
+  'volumeattachment',
+]);
+
+/** Pluralize a Kubernetes Kind to its REST resource name */
+function pluralizeKind(kind: string): string {
+  const lower = kind.toLowerCase();
+  if (KIND_PLURALS[lower]) return KIND_PLURALS[lower];
+  // Standard English pluralization rules.
+  // NOTE: do NOT short-circuit on endsWith('s') — Kubernetes Kinds are always
+  // singular, so a Kind ending in 's' still needs a proper plural form. The
+  // only real exception (Endpoints) is already handled in KIND_PLURALS above.
+  if (lower.endsWith('y') && !/[aeiou]y$/.test(lower)) {
+    return lower.slice(0, -1) + 'ies';
+  }
+  return lower + 's';
+}
+
+/**
+ * Build the API base path from an apiVersion string.
+ * Core resources use apiVersion "v1" -> path "/api/v1".
+ * Grouped resources use apiVersion "group/version" -> path "/apis/group/version".
+ */
+function getApiBasePath(apiVersion: string): string {
+  if (apiVersion === 'v1') return '/api/v1';
+  return `/apis/${apiVersion}`;
+}
+
 /** Read all available HTTP response data */
 async function readHTTPResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -85,15 +152,21 @@ async function readHTTPResponse(
       const text = decoder.decode(combined);
       if (text.includes('\r\n\r\n') || text.includes('\n\n')) {
         // Check if we have the full body (Content-Length or chunked)
-        const headerEnd = Math.max(text.indexOf('\r\n\r\n'), text.indexOf('\n\n'));
+        const crlfIdx = text.indexOf('\r\n\r\n');
+        const lfIdx = text.indexOf('\n\n');
+        // Use the earliest header terminator found (not Math.max)
+        const headerEnd = crlfIdx >= 0 && lfIdx >= 0
+          ? Math.min(crlfIdx, lfIdx)
+          : crlfIdx >= 0 ? crlfIdx : lfIdx;
         const headers = text.slice(0, headerEnd);
         const clMatch = headers.match(/content-length:\s*(\d+)/i);
         if (clMatch) {
-          const bodyStart = headerEnd + (text.includes('\r\n\r\n') ? 4 : 2);
+          const bodyStart = headerEnd + (crlfIdx >= 0 && crlfIdx === headerEnd ? 4 : 2);
           const expectedBodyLen = parseInt(clMatch[1], 10);
-          if (text.length - bodyStart >= expectedBodyLen) break;
-        } else if (!headers.includes('transfer-encoding: chunked') &&
-          !headers.includes('Transfer-Encoding: chunked')) {
+          // Compare byte length, not character length, for Content-Length accuracy
+          const bodyBytes = new TextEncoder().encode(text.slice(bodyStart));
+          if (bodyBytes.length >= expectedBodyLen) break;
+        } else if (!/transfer-encoding:\s*chunked/i.test(headers)) {
           break; // No Content-Length and not chunked — assume complete
         }
       }
@@ -141,6 +214,33 @@ function parseHTTPResponse(raw: string): {
   const body = lines.slice(bodyStart).join('\n').trim();
 
   return { statusCode, statusText, headers, body };
+}
+
+/**
+ * Detect Kubernetes-specific indicators in an HTTP response.
+ * A plain HTTP server returning any non-zero status code would otherwise pass
+ * the old `statusCode > 0` check. We look for known Kubernetes signals:
+ * - Server header containing "kube-apiserver"
+ * - Response body of exactly "ok" (healthz)
+ * - Www-Authenticate header using Kubernetes auth schemes
+ * - Content-Type of application/json with apiVersion field (status objects)
+ *
+ * FIX: replaces `parsed.statusCode > 0` which flagged any HTTP server as Kubernetes.
+ */
+function detectKubernetes(
+  statusCode: number,
+  headers: Record<string, string>,
+  body: string,
+): boolean {
+  if (statusCode === 0) return false;
+  const server = (headers['server'] || '').toLowerCase();
+  if (server.includes('kube-apiserver')) return true;
+  if (body.trim().toLowerCase() === 'ok') return true;
+  const wwwAuth = headers['www-authenticate'] || '';
+  if (wwwAuth.includes('Bearer realm=\"kubernetes')) return true;
+  // Status objects and version objects carry apiVersion
+  if (body.includes('\"apiVersion\"') && body.includes('\"kind\"')) return true;
+  return false;
 }
 
 /**
@@ -254,7 +354,7 @@ export async function handleKubernetesProbe(request: Request): Promise<Response>
           host,
           port,
           tcpLatency,
-          isKubernetes: parsed.statusCode > 0,
+          isKubernetes: detectKubernetes(parsed.statusCode, parsed.headers, parsed.body),
           isHealthy,
           healthStatus: parsed.body.trim() || undefined,
           httpStatus: parsed.statusCode,
@@ -352,8 +452,8 @@ export async function handleKubernetesQuery(request: Request): Promise<Response>
         ? `Authorization: Bearer ${bearerToken}\r\n`
         : '';
 
-      // Sanitize path — only allow safe characters
-      const safePath = path.replace(/[^a-zA-Z0-9/_\-.=?&]/g, '');
+      // Sanitize path — allow characters valid in Kubernetes API paths and query strings
+      const safePath = path.replace(/[^a-zA-Z0-9/_\-.=?&:,%+()~]/g, '');
 
       const httpRequest = [
         `GET ${safePath} HTTP/1.1\r\n`,
@@ -426,11 +526,11 @@ export async function handleKubernetesQuery(request: Request): Promise<Response>
  * Fetch Kubernetes pod logs.
  * GET /api/v1/namespaces/{ns}/pods/{pod}/log?container={container}&tailLines={N}&timestamps=true
  *
- * GET /api/kubernetes/logs
+ * POST /api/kubernetes/logs
  * Body: { host, port?, token?, namespace, pod, container?, tailLines?, timeout? }
  */
 export async function handleKubernetesLogs(request: Request): Promise<Response> {
-  if (request.method !== 'GET' && request.method !== 'POST') {
+  if (request.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 });
   }
 
@@ -496,7 +596,7 @@ export async function handleKubernetesLogs(request: Request): Promise<Response> 
       const reader = socket.readable.getReader();
 
       const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
-      const safePath = logPath.replace(/[^a-zA-Z0-9/_\-.=?&]/g, '');
+      const safePath = logPath.replace(/[^a-zA-Z0-9/_\-.=?&:,%+()~]/g, '');
 
       const httpRequest = [
         `GET ${safePath} HTTP/1.1\r\n`,
@@ -567,11 +667,11 @@ export async function handleKubernetesLogs(request: Request): Promise<Response> 
  * GET /api/v1/namespaces/{ns}/pods  or  GET /api/v1/pods (all namespaces)
  * Returns pod names, status, and node.
  *
- * GET /api/kubernetes/pods
+ * POST /api/kubernetes/pod-list
  * Body: { host, port?, token?, namespace?, labelSelector?, timeout? }
  */
 export async function handleKubernetesPodList(request: Request): Promise<Response> {
-  if (request.method !== 'GET' && request.method !== 'POST') {
+  if (request.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 });
   }
 
@@ -624,7 +724,7 @@ export async function handleKubernetesPodList(request: Request): Promise<Respons
       const reader = socket.readable.getReader();
 
       const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
-      const safePath = fullPath.replace(/[^a-zA-Z0-9/_\-.=?&,!]/g, '');
+      const safePath = fullPath.replace(/[^a-zA-Z0-9/_\-.=?&,:,%+()~!]/g, '');
 
       const httpRequest = [
         `GET ${safePath} HTTP/1.1\r\n`,
@@ -719,9 +819,9 @@ export async function handleKubernetesPodList(request: Request): Promise<Respons
 
 /**
  * Apply a Kubernetes resource manifest via server-side apply.
- * Detects kind + name from the manifest, then:
- * PATCH /api/v1/namespaces/{ns}/{kind}s/{name}
- * Content-Type: application/apply-patch+yaml
+ * Detects kind, apiVersion + name from the manifest, then:
+ * PATCH {apiBasePath}/namespaces/{ns}/{resource}/{name}?fieldManager=portofcall&force=true
+ * Content-Type: application/apply-patch+json
  *
  * POST /api/kubernetes/apply
  * Body: { host, port?, token?, namespace, manifest, timeout? }
@@ -758,13 +858,6 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
       );
     }
 
-    if (!namespace) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'namespace is required' }),
-        { status: 400, headers: { 'Content-Type': 'application/json' } },
-      );
-    }
-
     if (!manifest || typeof manifest !== 'object') {
       return new Response(
         JSON.stringify({ success: false, error: 'manifest must be a JSON object' }),
@@ -789,9 +882,27 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
       );
     }
 
-    // Build the API path — lowercase plural kind
-    const kindPlural = kind.toLowerCase() + 's';
-    const applyPath = `/api/v1/namespaces/${namespace}/${kindPlural}/${name}?fieldManager=portofcall&force=true`;
+    // Determine scope and validate namespace requirement
+    const isClusterScopedKind = CLUSTER_SCOPED_KINDS.has(kind.toLowerCase());
+    if (!isClusterScopedKind && !namespace) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'namespace is required for namespaced resources' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Map kind to its plural resource name and API group path
+    const kindPlural = pluralizeKind(kind);
+    const apiVersion = (manifest['apiVersion'] as string | undefined) || 'v1';
+    const apiBasePath = getApiBasePath(apiVersion);
+
+    // FIX: cluster-scoped resources must NOT include /namespaces/{ns}/ in
+    // their path. Previously all resources were routed through the namespaced
+    // path, causing 404s for ClusterRole, Node, Namespace, StorageClass, etc.
+    const isClusterScoped = isClusterScopedKind;
+    const applyPath = isClusterScoped
+      ? `${apiBasePath}/${kindPlural}/${name}?fieldManager=portofcall&force=true`
+      : `${apiBasePath}/namespaces/${namespace}/${kindPlural}/${name}?fieldManager=portofcall&force=true`;
 
     const manifestBody = JSON.stringify(manifest);
     const bodyBytes = new TextEncoder().encode(manifestBody);
@@ -810,13 +921,13 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
       const reader = socket.readable.getReader();
 
       const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
-      const safePath = applyPath.replace(/[^a-zA-Z0-9/_\-.=?&]/g, '');
+      const safePath = applyPath.replace(/[^a-zA-Z0-9/_\-.=?&:,%+()~]/g, '');
 
       const requestLine =
         `PATCH ${safePath} HTTP/1.1\r\n` +
         `Host: ${host}\r\n` +
         authHeader +
-        `Content-Type: application/apply-patch+yaml\r\n` +
+        `Content-Type: application/apply-patch+json\r\n` +
         `Accept: application/json\r\n` +
         `Content-Length: ${bodyBytes.length}\r\n` +
         `Connection: close\r\n` +
@@ -857,9 +968,10 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
           success: parsed.statusCode >= 200 && parsed.statusCode < 300,
           host,
           port,
-          namespace,
+          namespace: isClusterScoped ? null : namespace,
           kind,
           name,
+          clusterScoped: isClusterScoped,
           httpStatus: parsed.statusCode,
           httpStatusText: parsed.statusText || undefined,
           body: jsonBody,

@@ -4,23 +4,46 @@
  * Hazelcast is an in-memory data grid (IMDG) platform for distributed caching,
  * computing, and messaging. It uses a binary open client protocol over TCP.
  *
- * Hazelcast Open Binary Client Protocol v2 frame format:
- *   [frame_length: uint32 LE] [flags: uint16 LE] [message_type: uint32 LE]
- *   [correlation_id: uint64 LE] [partition_id: int32 LE] [payload...]
+ * Hazelcast Open Binary Client Protocol v2 (Hazelcast 4.x / 5.x) uses a
+ * multi-frame message model. Each frame has a 6-byte header:
+ *   [frame_length: int32 LE] [flags: uint16 LE]
  *
- * Frame flags:
- *   0x0080 = IS_FINAL        (last frame of a multi-frame message)
- *   0x2000 = BEGIN_FRAGMENT  (first frame)
- *   0x4000 = END_FRAGMENT    (last fragment)
- *   0x8000 = UNFRAGMENTED    (single-frame message)
- *   0xC000 = BEGIN + END     (common for single-packet messages)
+ * The initial frame of every request/response carries a fixed preamble in
+ * its content area (immediately after the 6-byte frame header):
+ *   [message_type: int32 LE] [correlation_id: int64 LE] [partition_id: int32 LE]
  *
- * Key message types:
- *   0x00000 = PING
- *   0x000C8 = CLIENT_AUTHENTICATION
- *   0x00130 = MAP_SIZE
- *   0x00134 = MAP_GET
- *   0x00138 = MAP_PUT
+ * For this implementation we treat the initial frame as a single "request
+ * header" of 22 bytes (6 frame-header + 16 content-preamble), followed by
+ * the operation-specific payload.
+ *
+ * Frame flags (bit positions):
+ *   0x8000 = BEGIN_FRAME     (first frame of a message fragment)
+ *   0x4000 = END_FRAME       (last frame of a message fragment)
+ *   0x2000 = IS_FINAL        (last frame of the entire message)
+ *   0x1000 = BEGIN_DATA_STRUCTURE
+ *   0x0800 = END_DATA_STRUCTURE
+ *   0x0400 = IS_NULL
+ *   0x0200 = IS_EVENT
+ *   0x0100 = BACKUP_AWARE
+ *   0x0080 = BACKUP_EVENT
+ *
+ * For single-frame request messages the flags are typically:
+ *   0xE000 = BEGIN_FRAME | END_FRAME | IS_FINAL
+ *
+ * Key message types (request IDs):
+ *   0x000100 = CLIENT_AUTHENTICATION
+ *   0x000D00 = CLIENT_PING
+ *   0x012E00 = MAP_SIZE           (service 1, method 0x2E)
+ *   0x010100 = MAP_PUT            (service 1, method 0x01)
+ *   0x010200 = MAP_GET            (service 1, method 0x02)
+ *   0x010300 = MAP_REMOVE         (service 1, method 0x03)
+ *   0x030200 = QUEUE_OFFER        (service 3, method 0x02)
+ *   0x030400 = QUEUE_POLL         (service 3, method 0x04)
+ *   0x030800 = QUEUE_SIZE         (service 3, method 0x08)
+ *   0x040100 = TOPIC_PUBLISH      (service 4, method 0x01)
+ *   0x060100 = SET_ADD            (service 6, method 0x01)
+ *   0x060200 = SET_CONTAINS       (service 6, method 0x02)
+ *   0x060300 = SET_REMOVE         (service 6, method 0x03)
  *
  * Default Port: 5701
  *
@@ -34,19 +57,27 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 
 // ---- protocol constants -------------------------------------------------------
 
-// Frame header size (fixed 18 bytes)
-const FRAME_HEADER_SIZE = 18;
+// Frame header: 6 bytes (length + flags).  The initial frame's content starts
+// with a 16-byte preamble (message_type + correlation_id + partition_id), so the
+// minimum initial-frame size is 6 + 16 = 22 bytes.
+const FRAME_HEADER_SIZE = 6;
+const INITIAL_FRAME_PREAMBLE = 16; // message_type(4) + correlation_id(8) + partition_id(4)
+const MIN_INITIAL_FRAME_SIZE = FRAME_HEADER_SIZE + INITIAL_FRAME_PREAMBLE; // 22
 
 // Frame flags
-const FLAG_UNFRAGMENTED = 0xC000; // BEGIN_FRAGMENT | END_FRAGMENT
+const FLAG_BEGIN_FRAME = 0x8000;
+const FLAG_END_FRAME   = 0x4000;
+const FLAG_IS_FINAL    = 0x2000;
+// Single-frame request: BEGIN + END + FINAL
+const FLAG_UNFRAGMENTED = FLAG_BEGIN_FRAME | FLAG_END_FRAME | FLAG_IS_FINAL; // 0xE000
 
-// Message type codes
-const MSG_AUTHENTICATION = 0x000C8;
-const MSG_PING           = 0x00000;
-const MSG_MAP_SIZE       = 0x00130;
-const MSG_MAP_GET        = 0x00134;
-const MSG_MAP_PUT        = 0x00138;
-const MSG_MAP_REMOVE     = 0x0013C;
+// Message type codes (protocol v2 encoding)
+const MSG_AUTHENTICATION = 0x000100;
+const MSG_PING           = 0x000D00;
+const MSG_MAP_PUT        = 0x010100;
+const MSG_MAP_GET        = 0x010200;
+const MSG_MAP_REMOVE     = 0x010300;
+const MSG_MAP_SIZE       = 0x012E00;
 const MSG_QUEUE_OFFER    = 0x030200;
 const MSG_QUEUE_POLL     = 0x030400;
 const MSG_QUEUE_SIZE     = 0x030800;
@@ -168,8 +199,16 @@ function readString(data: Uint8Array, offset: number): { value: string; nextOffs
 }
 
 /**
- * Build a Hazelcast frame.
- * Frame header: [frame_length 4][flags 2][message_type 4][correlation_id 8][partition_id 4]
+ * Build a Hazelcast initial frame (single-frame message).
+ *
+ * Wire layout (protocol v2):
+ *   [frame_length: int32 LE]      offset 0   (includes the 6-byte header)
+ *   [flags:        uint16 LE]     offset 4
+ *   --- content area (initial-frame preamble) ---
+ *   [message_type:  int32 LE]     offset 6
+ *   [correlation_id: int64 LE]    offset 10
+ *   [partition_id:   int32 LE]    offset 18
+ *   --- operation-specific payload ---          offset 22
  */
 function buildFrame(
   messageType: number,
@@ -177,16 +216,21 @@ function buildFrame(
   partitionId: number,
   payload: Uint8Array,
 ): Uint8Array {
-  const totalLen = FRAME_HEADER_SIZE + payload.length;
+  const totalLen = MIN_INITIAL_FRAME_SIZE + payload.length;
   const buf  = new Uint8Array(totalLen);
   const view = new DataView(buf.buffer);
 
+  // Frame header (6 bytes)
   view.setUint32(0, totalLen, true);            // frame_length
-  view.setUint16(4, FLAG_UNFRAGMENTED, true);   // flags
-  view.setUint32(6, messageType, true);         // message_type
-  view.setBigUint64(10, correlationId, true);   // correlation_id
-  view.setInt32(18 - 4, partitionId, true);     // partition_id (last 4 bytes of header)
-  buf.set(payload, FRAME_HEADER_SIZE);
+  view.setUint16(4, FLAG_UNFRAGMENTED, true);   // flags (BEGIN + END + FINAL)
+
+  // Initial-frame preamble (16 bytes of content)
+  view.setInt32(6, messageType, true);          // message_type   at offset 6
+  view.setBigInt64(10, correlationId, true);    // correlation_id at offset 10
+  view.setInt32(18, partitionId, true);         // partition_id   at offset 18
+
+  // Operation-specific payload
+  buf.set(payload, MIN_INITIAL_FRAME_SIZE);
 
   return buf;
 }
@@ -303,27 +347,28 @@ async function readFrame(
       const combined = mergeChunks(chunks, total);
       const declared = new DataView(combined.buffer, combined.byteOffset).getUint32(0, true);
       if (declared < FRAME_HEADER_SIZE || declared > 4 * 1024 * 1024) break; // sanity
+      // For response frames, the initial frame must be at least 22 bytes
       if (total >= declared) return combined;
     }
   }
   return mergeChunks(chunks, total);
 }
 
-/** Parse the correlation ID from a frame */
+/** Parse the correlation ID from an initial frame (offset 10, 8 bytes) */
 function frameCorrelation(data: Uint8Array): bigint {
-  if (data.length < 18) return BigInt(0);
-  return new DataView(data.buffer, data.byteOffset).getBigUint64(10, true);
+  if (data.length < MIN_INITIAL_FRAME_SIZE) return BigInt(0);
+  return new DataView(data.buffer, data.byteOffset).getBigInt64(10, true);
 }
 
-/** Parse message type from a frame */
+/** Parse message type from an initial frame (offset 6, 4 bytes) */
 function frameMessageType(data: Uint8Array): number {
   if (data.length < 10) return -1;
-  return new DataView(data.buffer, data.byteOffset).getUint32(6, true);
+  return new DataView(data.buffer, data.byteOffset).getInt32(6, true);
 }
 
-/** Return payload slice (after 18-byte header) */
+/** Return payload slice (after the 22-byte initial-frame preamble) */
 function framePayload(data: Uint8Array): Uint8Array {
-  return data.slice(FRAME_HEADER_SIZE);
+  return data.slice(MIN_INITIAL_FRAME_SIZE);
 }
 
 /** Parse authentication response */
@@ -434,13 +479,13 @@ export async function handleHazelcastProbe(request: Request): Promise<Response> 
       const authType = frameMessageType(authResp);
 
       // If we got a valid Hazelcast frame back from ping, it's a Hazelcast server
-      if (pingResp.length >= FRAME_HEADER_SIZE || authResp.length >= FRAME_HEADER_SIZE) {
+      if (pingResp.length >= MIN_INITIAL_FRAME_SIZE || authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         result.isHazelcast = true;
       }
 
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const correlation = frameCorrelation(authResp);
-        if (correlation === BigInt(2) || authType === MSG_AUTHENTICATION || authResp.length > FRAME_HEADER_SIZE) {
+        if (correlation === BigInt(2) || authType === MSG_AUTHENTICATION || authResp.length > MIN_INITIAL_FRAME_SIZE) {
           const payload = framePayload(authResp);
           const parsed  = parseAuthResponse(payload);
           result.authStatus = parsed.status;
@@ -461,7 +506,7 @@ export async function handleHazelcastProbe(request: Request): Promise<Response> 
             result.error       = `Auth status: ${parsed.statusLabel}`;
           }
         }
-      } else if (pingResp.length >= FRAME_HEADER_SIZE) {
+      } else if (pingResp.length >= MIN_INITIAL_FRAME_SIZE) {
         // Got a ping response but no auth — server is reachable
         result.isHazelcast = true;
         result.success     = true;
@@ -557,7 +602,7 @@ export async function handleHazelcastMapGet(request: Request): Promise<Response>
       await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
       const authResp = await readFrame(reader, Math.min(timeout, 6000));
 
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const authPayload = framePayload(authResp);
         const authParsed  = parseAuthResponse(authPayload);
 
@@ -573,7 +618,7 @@ export async function handleHazelcastMapGet(request: Request): Promise<Response>
       await writer.write(buildMapSizeFrame(mapName, BigInt(2)));
       const sizeResp = await readFrame(reader, Math.min(timeout, 5000));
 
-      if (sizeResp.length >= FRAME_HEADER_SIZE + 4) {
+      if (sizeResp.length >= MIN_INITIAL_FRAME_SIZE + 4) {
         const sizePayload = framePayload(sizeResp);
         if (sizePayload.length >= 4) {
           result.size = new DataView(sizePayload.buffer, sizePayload.byteOffset).getInt32(0, true);
@@ -584,7 +629,7 @@ export async function handleHazelcastMapGet(request: Request): Promise<Response>
       await writer.write(buildMapGetFrame(mapName, key, BigInt(3)));
       const getResp = await readFrame(reader, Math.min(timeout, 5000));
 
-      if (getResp.length >= FRAME_HEADER_SIZE) {
+      if (getResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const getPayload = framePayload(getResp);
         if (getPayload.length === 0) {
           result.value = null; // key not found
@@ -634,40 +679,6 @@ function mapError(msg: string): Response {
 }
 
 // ---- MAP_PUT / MAP_REMOVE helpers --------------------------------------------
-
-interface HazelcastMapSetRequest extends HazelcastRequest {
-  mapName: string;
-  key: string;
-  value: string;
-  ttl?: number;
-}
-
-interface HazelcastMapDeleteRequest extends HazelcastRequest {
-  mapName: string;
-  key: string;
-}
-
-interface HazelcastMapSetResponse {
-  success: boolean;
-  mapName?: string;
-  key?: string;
-  set?: boolean;
-  previousValue?: string | null;
-  error?: string;
-  isCloudflare?: boolean;
-  rtt?: number;
-}
-
-interface HazelcastMapDeleteResponse {
-  success: boolean;
-  mapName?: string;
-  key?: string;
-  deleted?: boolean;
-  removedValue?: string | null;
-  error?: string;
-  isCloudflare?: boolean;
-  rtt?: number;
-}
 
 /**
  * Build MAP_PUT frame.
@@ -813,7 +824,7 @@ export async function handleHazelcastMapSet(request: Request): Promise<Response>
       await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
       const authResp = await readFrame(reader, Math.min(timeout, 6000));
 
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const authParsed = parseAuthResponse(framePayload(authResp));
         if (authParsed.status !== AUTH_STATUS_AUTHENTICATED) {
           result.error = `Authentication failed: ${authParsed.statusLabel}`;
@@ -829,7 +840,7 @@ export async function handleHazelcastMapSet(request: Request): Promise<Response>
 
       result.rtt = Date.now() - startTime;
 
-      if (putResp.length >= FRAME_HEADER_SIZE) {
+      if (putResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const putPayload = framePayload(putResp);
         // MAP_PUT returns the previous value (or empty payload if key didn't exist)
         result.previousValue = decodeValuePayload(putPayload);
@@ -921,7 +932,7 @@ export async function handleHazelcastMapDelete(request: Request): Promise<Respon
       await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
       const authResp = await readFrame(reader, Math.min(timeout, 6000));
 
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const authParsed = parseAuthResponse(framePayload(authResp));
         if (authParsed.status !== AUTH_STATUS_AUTHENTICATED) {
           result.error = `Authentication failed: ${authParsed.statusLabel}`;
@@ -937,7 +948,7 @@ export async function handleHazelcastMapDelete(request: Request): Promise<Respon
 
       result.rtt = Date.now() - startTime;
 
-      if (removeResp.length >= FRAME_HEADER_SIZE) {
+      if (removeResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const removePayload = framePayload(removeResp);
         // MAP_REMOVE returns the removed value (or empty payload if key didn't exist)
         result.removedValue = decodeValuePayload(removePayload);
@@ -1051,7 +1062,7 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
     try {
       await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
       const authResp = await readFrame(reader, Math.min(timeout, 6000));
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const parsed = parseAuthResponse(framePayload(authResp));
         if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
           result.error = `Authentication failed: ${parsed.statusLabel}`;
@@ -1062,7 +1073,7 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
       // Get queue size before offer
       await writer.write(buildQueueSizeFrame(queueName, BigInt(2)));
       const sizeResp = await readFrame(reader, 4000);
-      if (sizeResp.length >= FRAME_HEADER_SIZE + 4) {
+      if (sizeResp.length >= MIN_INITIAL_FRAME_SIZE + 4) {
         const sp = framePayload(sizeResp);
         if (sp.length >= 4) result.sizeBefore = new DataView(sp.buffer, sp.byteOffset).getInt32(0, true);
       }
@@ -1077,7 +1088,7 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
       // Get queue size after offer
       await writer.write(buildQueueSizeFrame(queueName, BigInt(4)));
       const sizeResp2 = await readFrame(reader, 4000);
-      if (sizeResp2.length >= FRAME_HEADER_SIZE + 4) {
+      if (sizeResp2.length >= MIN_INITIAL_FRAME_SIZE + 4) {
         const sp2 = framePayload(sizeResp2);
         if (sp2.length >= 4) result.sizeAfter = new DataView(sp2.buffer, sp2.byteOffset).getInt32(0, true);
       }
@@ -1140,7 +1151,7 @@ export async function handleHazelcastQueuePoll(request: Request): Promise<Respon
     try {
       await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
       const authResp = await readFrame(reader, Math.min(timeout, 6000));
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const parsed = parseAuthResponse(framePayload(authResp));
         if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
           result.error = `Authentication failed: ${parsed.statusLabel}`;
@@ -1225,7 +1236,7 @@ async function handleHazelcastSetOp(
     try {
       await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
       const authResp = await readFrame(reader, Math.min(timeout, 6000));
-      if (authResp.length >= FRAME_HEADER_SIZE) {
+      if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
         const parsed = parseAuthResponse(framePayload(authResp));
         if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
           result.error = `Authentication failed: ${parsed.statusLabel}`;
@@ -1314,7 +1325,7 @@ async function hazelcastConnect(
   const reader = socket.readable.getReader();
   await writer.write(buildAuthFrame(clusterName, username, password, BigInt(1)));
   const authResp = await readFrame(reader, Math.min(timeout, 6000));
-  if (authResp.length >= FRAME_HEADER_SIZE) {
+  if (authResp.length >= MIN_INITIAL_FRAME_SIZE) {
     const parsed = parseAuthResponse(framePayload(authResp));
     if (parsed.status !== AUTH_STATUS_AUTHENTICATED) {
       reader.releaseLock(); writer.releaseLock(); socket.close();
@@ -1348,7 +1359,7 @@ export async function handleHazelcastTopicPublish(request: Request): Promise<Res
     try {
       await writer.write(buildTopicPublishFrame(topicName, message, BigInt(2)));
       const pubResp = await readFrame(reader, Math.min(timeout, 6000));
-      result.success = pubResp.length >= FRAME_HEADER_SIZE;
+      result.success = pubResp.length >= MIN_INITIAL_FRAME_SIZE;
       if (!result.success) result.error = 'No ack received';
     } finally { reader.releaseLock(); writer.releaseLock(); }
     socket.close();

@@ -101,18 +101,27 @@ const DEVICE_TYPES: Record<number, string> = {
   0xC8: 'Embedded Component',
 };
 
-// Device status bit descriptions
+// Identity Object status word individual bit flags (CIP Vol 1, Table 5A-2.11)
+// Bits 4-7 are the Extended Device Status 4-bit field, handled separately.
 const DEVICE_STATUS_BITS: Record<number, string> = {
   0x0001: 'Owned',
   0x0004: 'Configured',
-  0x0010: 'Extended Device Status (Minor Recoverable Fault)',
-  0x0020: 'Extended Device Status (Minor Unrecoverable Fault)',
-  0x0030: 'Extended Device Status (Major Recoverable Fault)',
-  0x0040: 'Extended Device Status (Major Unrecoverable Fault)',
   0x0100: 'Minor Recoverable Fault',
   0x0200: 'Minor Unrecoverable Fault',
   0x0400: 'Major Recoverable Fault',
   0x0800: 'Major Unrecoverable Fault',
+};
+
+// Extended Device Status (bits 4-7 of the status word, a 4-bit field)
+const EXTENDED_DEVICE_STATUS: Record<number, string> = {
+  0x0: 'Unknown',
+  0x1: 'Firmware Update In Progress',
+  0x2: 'At Least One Faulted I/O Connection',
+  0x3: 'No I/O Connections Established',
+  0x4: 'Non-Volatile Configuration Bad',
+  0x5: 'Major Fault',
+  0x6: 'At Least One I/O Connection In Run Mode',
+  0x7: 'At Least One I/O Connection In Idle Mode',
 };
 
 // Device state values
@@ -127,6 +136,7 @@ const DEVICE_STATES: Record<number, string> = {
 };
 
 // EtherNet/IP encapsulation commands
+const EIP_CMD_LIST_IDENTITY      = 0x0063;
 const EIP_CMD_REGISTER_SESSION   = 0x0065;
 const EIP_CMD_UNREGISTER_SESSION = 0x0066;
 const EIP_CMD_SEND_RR_DATA       = 0x006F;
@@ -191,7 +201,7 @@ function buildListIdentityRequest(): Uint8Array {
   const view = new DataView(header.buffer);
 
   // Command: ListIdentity (0x0063) - little-endian
-  view.setUint16(0, 0x0063, true);
+  view.setUint16(0, EIP_CMD_LIST_IDENTITY, true);
   // Length: 0 (no command-specific data)
   view.setUint16(2, 0, true);
   // Session Handle: 0 (not needed for ListIdentity)
@@ -220,7 +230,7 @@ function parseIdentityItem(data: Uint8Array, offset: number, length: number): De
   const identity: DeviceIdentity = {};
   const view = new DataView(data.buffer, data.byteOffset + offset, length);
 
-  if (length < 33) return identity; // minimum identity item size
+  if (length < 34) return identity; // minimum identity item size (through serial + 1 name len byte)
 
   let pos = 0;
 
@@ -265,9 +275,20 @@ function parseIdentityItem(data: Uint8Array, offset: number, length: number): De
   // Status (2 bytes LE)
   identity.status = view.getUint16(pos, true);
   const statusParts: string[] = [];
+  // Check individual bit flags (bits 0,2,8-11)
   for (const [bit, desc] of Object.entries(DEVICE_STATUS_BITS)) {
     if (identity.status & parseInt(bit)) {
       statusParts.push(desc);
+    }
+  }
+  // Extract Extended Device Status (bits 4-7 as a 4-bit field)
+  const extStatus = (identity.status >> 4) & 0x0F;
+  if (extStatus !== 0) {
+    const extDesc = EXTENDED_DEVICE_STATUS[extStatus];
+    if (extDesc) {
+      statusParts.push(extDesc);
+    } else {
+      statusParts.push(`Extended Device Status (${extStatus})`);
     }
   }
   identity.statusDescription = statusParts.length > 0 ? statusParts.join(', ') : 'OK';

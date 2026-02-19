@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface SLPProps {
   onBack: () => void;
@@ -164,8 +166,7 @@ export default function SLPClient({ onBack }: SLPProps) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
-      {/* Header */}
+    <div className="max-w-4xl mx-auto">      {/* Header */}
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
@@ -182,6 +183,7 @@ export default function SLPClient({ onBack }: SLPProps) {
               <circle cx="12" cy="12" r="1.5" fill="currentColor" className="text-white" />
             </svg>
           </div>
+
           <div>
             <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>SLP Client</h1>
             <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
@@ -217,6 +219,7 @@ export default function SLPClient({ onBack }: SLPProps) {
         <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
           Connection Settings
         </h2>
+      <ApiExamples examples={apiExamples.SLP || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</label>

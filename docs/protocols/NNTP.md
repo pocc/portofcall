@@ -375,7 +375,7 @@ Subject: <subject>\r\n
 
 **Missing required headers:** RFC 5536 requires `Date:` and `Message-ID:` in every article. This implementation sends neither. Well-configured servers will inject these, but some reject articles missing them.
 
-**No dot-stuffing applied to `body`:** If the article body contains a line that is exactly `.`, the server will interpret it as the end-of-article marker, silently truncating the article. To safely include literal dots, the body would need lines starting with `.` prefixed with an additional `.` — this is not done here.
+**Dot-stuffing is applied** (RFC 3977 §3.1.1): Lines in the body starting with `.` are prefixed with an additional `.` via `articleBody.replace(/^\./gm, '..')`. This prevents premature end-of-article detection.
 
 **No crosspost validation:** The `newsgroups` field is sent verbatim.
 
@@ -506,7 +506,7 @@ Commands not exposed as endpoints: `HEAD`, `BODY`, `STAT`, `NEXT`, `LAST`, `LIST
 | No MODE READER | `/list`, `/post`, `/auth` | These send LIST/POST/AUTHINFO without MODE READER first |
 | 20-article cap | `/group` | Only last 20 articles fetched via OVER |
 | OVER not XOVER | `/group` | Older servers (RFC 2980) may need XOVER; silent empty result |
-| No dot-stuffing | `/post` | Body lines starting with `.` terminate article early |
+| Dot-stuffing applied | `/post` | RFC 3977 §3.1.1 compliant; lines starting with `.` are double-dotted |
 | Missing Date+Message-ID | `/post` | RFC 5536 requires both; some servers reject |
 | No folded header support | `/article` | RFC 5536 §3.2.7 continuation lines are silently dropped |
 | Duplicate header clobber | `/article` | Last `Header: value` wins for same field name |

@@ -789,7 +789,7 @@ export async function handleFTPSDelete(request: Request): Promise<Response> {
       type?: 'file' | 'dir';
       timeout?: number;
     };
-    const { host, port = 21, username, password, path, type = 'file', timeout = 10000 } = body;
+    const { host, port = 990, username, password, path, type = 'file', timeout = 10000 } = body;
     if (!host || !username || !path) {
       return new Response(JSON.stringify({ success: false, error: 'host, username, path required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -837,7 +837,7 @@ export async function handleFTPSMkdir(request: Request): Promise<Response> {
       path: string;
       timeout?: number;
     };
-    const { host, port = 21, username, password, path, timeout = 10000 } = body;
+    const { host, port = 990, username, password, path, timeout = 10000 } = body;
     if (!host || !username || !path) {
       return new Response(JSON.stringify({ success: false, error: 'host, username, path required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -887,7 +887,7 @@ export async function handleFTPSRename(request: Request): Promise<Response> {
       to: string;
       timeout?: number;
     };
-    const { host, port = 21, username, password, from, to, timeout = 10000 } = body;
+    const { host, port = 990, username, password, from, to, timeout = 10000 } = body;
     if (!host || !username || !from || !to) {
       return new Response(JSON.stringify({ success: false, error: 'host, username, from, to required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }

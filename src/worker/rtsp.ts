@@ -373,22 +373,34 @@ export async function handleRtspDescribe(request: Request): Promise<Response> {
         const responseText = await readRtspTextResponse(reader, decoder, timeoutPromise);
         const rtspResponse = parseRtspResponse(responseText);
 
-        const sdpInfo: Record<string, string> = {};
+        const sdpInfo: Record<string, string | string[]> = {};
         if (rtspResponse.body) {
           const sdpLines = rtspResponse.body.split('\r\n');
+          const controlUrls: string[] = [];
           for (const line of sdpLines) {
             if (line.startsWith('s=')) sdpInfo.sessionName = line.substring(2);
             if (line.startsWith('i=')) sdpInfo.sessionInfo = line.substring(2);
             if (line.startsWith('m=')) {
               if (!sdpInfo.mediaTypes) sdpInfo.mediaTypes = '';
-              sdpInfo.mediaTypes += (sdpInfo.mediaTypes ? ', ' : '') + line.substring(2);
+              sdpInfo.mediaTypes += ((sdpInfo.mediaTypes as string) ? ', ' : '') + line.substring(2);
             }
-            if (line.startsWith('a=control:')) sdpInfo.controlUrl = line.substring(10);
+            if (line.startsWith('a=control:')) {
+              const ctrl = line.substring(10).trim();
+              if (ctrl && ctrl !== '*') {
+                controlUrls.push(ctrl);
+              }
+            }
             if (line.startsWith('a=rtpmap:')) {
               if (!sdpInfo.codecs) sdpInfo.codecs = '';
-              sdpInfo.codecs += (sdpInfo.codecs ? ', ' : '') + line.substring(9);
+              sdpInfo.codecs += ((sdpInfo.codecs as string) ? ', ' : '') + line.substring(9);
             }
           }
+          // Keep first track's control URL as primary (usually video)
+          if (controlUrls.length > 0) {
+            sdpInfo.controlUrl = controlUrls[0];
+          }
+          // Expose all track control URLs
+          sdpInfo.controlUrls = controlUrls;
         }
 
         await socket.close();

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface PCEPResult {
   success: boolean;
@@ -55,8 +57,7 @@ export default function PCEPClient({ onBack }: { onBack: () => void }) {
   };
 
   return (
-    <div className="max-w-4xl mx-auto">
-      <button
+    <div className="max-w-4xl mx-auto">      <button
         onClick={onBack}
         className="mb-6 text-slate-400 hover:text-slate-200 flex items-center gap-2"
       >
@@ -70,8 +71,10 @@ export default function PCEPClient({ onBack }: { onBack: () => void }) {
             <h2 className="text-xl font-bold text-white">PCEP — Path Computation Element Protocol</h2>
             <p className="text-slate-400 text-sm">Port 4189 · RFC 5440 · SDN/MPLS Path Computation</p>
           </div>
+
         </div>
 
+      <ApiExamples examples={apiExamples.PCEP || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-slate-400 text-sm mb-1">Host</label>

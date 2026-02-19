@@ -61,7 +61,7 @@ function buildRiakMessage(msgCode: number, payload?: Uint8Array): Uint8Array {
   const packet = new Uint8Array(4 + msgLen);
   const view = new DataView(packet.buffer);
 
-  view.setUint32(0, msgLen); // Length (big-endian)
+  view.setUint32(0, msgLen, false); // Length (big-endian, explicit)
   packet[4] = msgCode;
 
   if (payload && payloadLen > 0) {
@@ -103,7 +103,7 @@ async function readRiakResponse(
   }
 
   const view = new DataView(headerBuf.buffer);
-  const msgLen = view.getUint32(0); // includes msg code
+  const msgLen = view.getUint32(0, false); // includes msg code (big-endian)
   const msgCode = headerBuf[4];
   const totalNeeded = 4 + msgLen;
 
@@ -159,6 +159,7 @@ function parseServerInfo(payload: Uint8Array): { node: string; serverVersion: st
         shift += 7;
         if ((b & 0x80) === 0) break;
       }
+      strLen >>>= 0; // Ensure unsigned for values > 2^31
 
       const strBytes = payload.slice(i, i + strLen);
       const str = decoder.decode(strBytes);
@@ -201,6 +202,7 @@ function parseErrorResp(payload: Uint8Array): { errmsg: string; errcode: number 
         strLen |= (b & 0x7f) << shift; shift += 7;
         if ((b & 0x80) === 0) break;
       }
+      strLen >>>= 0; // Ensure unsigned for values > 2^31
       const strBytes = payload.slice(i, i + strLen);
       i += strLen;
       if (fieldNumber === 1) errmsg = decoder.decode(strBytes);
@@ -212,6 +214,7 @@ function parseErrorResp(payload: Uint8Array): { errmsg: string; errcode: number 
         val |= (b & 0x7f) << shift; shift += 7;
         if ((b & 0x80) === 0) break;
       }
+      val >>>= 0; // Ensure unsigned for values > 2^31
       if (fieldNumber === 2) errcode = val;
     } else {
       break;
@@ -266,6 +269,7 @@ function pbDecodeBytes(data: Uint8Array, fieldNum: number): Uint8Array | undefin
         len |= (b & 0x7f) << shift; shift += 7;
         if ((b & 0x80) === 0) break;
       }
+      len >>>= 0; // Ensure unsigned for values > 2^31
       if (fNum === fieldNum) return data.slice(i, i + len);
       i += len;
     } else if (wireType === 0) {
@@ -305,6 +309,12 @@ export async function handleRiakPing(request: Request): Promise<Response> {
       });
     }
 
+    if (timeout < 0 || timeout > 600000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 0 and 600000 ms' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -315,8 +325,9 @@ export async function handleRiakPing(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -325,48 +336,49 @@ export async function handleRiakPing(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send RpbPingReq
-      const pingMsg = buildRiakMessage(MSG_PING_REQ);
-      await writer.write(pingMsg);
+      try {
+        // Send RpbPingReq
+        const pingMsg = buildRiakMessage(MSG_PING_REQ);
+        await writer.write(pingMsg);
 
-      // Read response
-      const resp = await readRiakResponse(reader, timeoutPromise);
-      const rtt = Date.now() - startTime;
+        // Read response
+        const resp = await readRiakResponse(reader, timeoutPromise);
+        const rtt = Date.now() - startTime;
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
-      if (resp.msgCode === MSG_PING_RESP) {
-        return new Response(JSON.stringify({
-          success: true,
-          host,
-          port,
-          message: 'Riak node is alive (pong)',
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      } else if (resp.msgCode === MSG_ERROR_RESP) {
-        const err = parseErrorResp(resp.payload);
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: err.errmsg || 'Riak error response',
-          errorCode: err.errcode,
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      } else {
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: `Unexpected response code: ${resp.msgCode}`,
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (resp.msgCode === MSG_PING_RESP) {
+          return new Response(JSON.stringify({
+            success: true,
+            host,
+            port,
+            message: 'Riak node is alive (pong)',
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } else if (resp.msgCode === MSG_ERROR_RESP) {
+          const err = parseErrorResp(resp.payload);
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: err.errmsg || 'Riak error response',
+            errorCode: err.errcode,
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } else {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: `Unexpected response code: ${resp.msgCode}`,
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      } finally {
+        writer.releaseLock();
+        reader.releaseLock();
       }
-    } catch (error) {
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
-      throw error;
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -403,6 +415,12 @@ export async function handleRiakInfo(request: Request): Promise<Response> {
       });
     }
 
+    if (timeout < 0 || timeout > 600000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 0 and 600000 ms' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -413,8 +431,9 @@ export async function handleRiakInfo(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -423,61 +442,62 @@ export async function handleRiakInfo(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send RpbGetServerInfoReq
-      const infoMsg = buildRiakMessage(MSG_GET_SERVER_INFO_REQ);
-      await writer.write(infoMsg);
+      try {
+        // Send RpbGetServerInfoReq
+        const infoMsg = buildRiakMessage(MSG_GET_SERVER_INFO_REQ);
+        await writer.write(infoMsg);
 
-      // Read response
-      const resp = await readRiakResponse(reader, timeoutPromise);
-      const rtt = Date.now() - startTime;
+        // Read response
+        const resp = await readRiakResponse(reader, timeoutPromise);
+        const rtt = Date.now() - startTime;
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        if (resp.rawLength === 0) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: 'No response — Riak PBC port may not be accessible',
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
 
-      if (resp.rawLength === 0) {
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: 'No response — Riak PBC port may not be accessible',
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        if (resp.msgCode === MSG_GET_SERVER_INFO_RESP) {
+          const info = parseServerInfo(resp.payload);
+          return new Response(JSON.stringify({
+            success: true,
+            host,
+            port,
+            node: info.node,
+            serverVersion: info.serverVersion,
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } else if (resp.msgCode === MSG_ERROR_RESP) {
+          const err = parseErrorResp(resp.payload);
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: err.errmsg || 'Riak error response',
+            errorCode: err.errcode,
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } else {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: `Unexpected response code: ${resp.msgCode}`,
+            responseCode: resp.msgCode,
+            rtt,
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      } finally {
+        writer.releaseLock();
+        reader.releaseLock();
       }
-
-      if (resp.msgCode === MSG_GET_SERVER_INFO_RESP) {
-        const info = parseServerInfo(resp.payload);
-        return new Response(JSON.stringify({
-          success: true,
-          host,
-          port,
-          node: info.node,
-          serverVersion: info.serverVersion,
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      } else if (resp.msgCode === MSG_ERROR_RESP) {
-        const err = parseErrorResp(resp.payload);
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: err.errmsg || 'Riak error response',
-          errorCode: err.errcode,
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      } else {
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: `Unexpected response code: ${resp.msgCode}`,
-          responseCode: resp.msgCode,
-          rtt,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-    } catch (error) {
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
-      throw error;
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -513,6 +533,25 @@ export async function handleRiakGet(request: Request): Promise<Response> {
       });
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 0 || timeout > 600000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 0 and 600000 ms' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const enc = new TextEncoder();
     const reqFields: number[] = [
       ...pbBytesField(1, enc.encode(bucket)),
@@ -522,9 +561,10 @@ export async function handleRiakGet(request: Request): Promise<Response> {
     const reqPayload = new Uint8Array(reqFields);
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error('Timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('Timeout')), timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
@@ -533,7 +573,7 @@ export async function handleRiakGet(request: Request): Promise<Response> {
         const startTime = Date.now();
 
         await writer.write(buildRiakMessage(MSG_GET_REQ, reqPayload));
-        const resp = await Promise.race([readRiakResponse(reader, timeoutPromise), timeoutPromise]);
+        const resp = await readRiakResponse(reader, timeoutPromise);
         const rtt = Date.now() - startTime;
 
         if (resp.msgCode === MSG_ERROR_RESP) {
@@ -571,11 +611,10 @@ export async function handleRiakGet(request: Request): Promise<Response> {
       } finally {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
       }
-    } catch (error) {
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
-      throw error;
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -614,6 +653,25 @@ export async function handleRiakPut(request: Request): Promise<Response> {
       });
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 0 || timeout > 600000) {
+      return new Response(JSON.stringify({ success: false, error: 'Timeout must be between 0 and 600000 ms' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const enc = new TextEncoder();
     // RpbContent: field 1 = value, field 2 = content_type
     const contentFields = new Uint8Array([
@@ -631,9 +689,10 @@ export async function handleRiakPut(request: Request): Promise<Response> {
     const reqPayload = new Uint8Array(reqFields);
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error('Timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('Timeout')), timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
@@ -642,7 +701,7 @@ export async function handleRiakPut(request: Request): Promise<Response> {
         const startTime = Date.now();
 
         await writer.write(buildRiakMessage(MSG_PUT_REQ, reqPayload));
-        const resp = await Promise.race([readRiakResponse(reader, timeoutPromise), timeoutPromise]);
+        const resp = await readRiakResponse(reader, timeoutPromise);
         const rtt = Date.now() - startTime;
 
         if (resp.msgCode === MSG_ERROR_RESP) {
@@ -668,11 +727,10 @@ export async function handleRiakPut(request: Request): Promise<Response> {
       } finally {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
       }
-    } catch (error) {
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       socket.close();
-      throw error;
     }
   } catch (error) {
     return new Response(JSON.stringify({

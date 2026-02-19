@@ -185,7 +185,7 @@ export async function handleSyslogSend(request: Request): Promise<Response> {
       });
     }
 
-    if (severity < 0 || severity > 7) {
+    if (typeof severity !== 'number' || !Number.isFinite(severity) || severity < 0 || severity > 7) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Severity must be between 0 and 7',
@@ -195,7 +195,7 @@ export async function handleSyslogSend(request: Request): Promise<Response> {
       });
     }
 
-    if (facility < 0 || facility > 23) {
+    if (typeof facility !== 'number' || !Number.isFinite(facility) || facility < 0 || facility > 23) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Facility must be between 0 and 23',
@@ -205,7 +205,7 @@ export async function handleSyslogSend(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || !Number.isFinite(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface GitClientProps {
   onBack: () => void;
@@ -127,9 +129,7 @@ export default function GitClient({ onBack }: GitClientProps) {
         >
           <span aria-hidden="true">&larr;</span> Back to Protocol List
         </button>
-      </div>
-
-      <div className="bg-slate-800 border border-slate-600 rounded-xl p-8 mb-6">
+      </div>      <div className="bg-slate-800 border border-slate-600 rounded-xl p-8 mb-6">
         <div className="flex items-center gap-4 mb-6">
           <div className="text-5xl" aria-hidden="true">
             <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
@@ -141,6 +141,8 @@ export default function GitClient({ onBack }: GitClientProps) {
               <line x1="24" y1="24" x2="32" y2="24" stroke="#F05032" strokeWidth="2.5" />
             </svg>
           </div>
+
+
           <div>
             <h1 className="text-3xl font-bold text-white">Git Protocol</h1>
             <p className="text-slate-400">
@@ -149,6 +151,7 @@ export default function GitClient({ onBack }: GitClientProps) {
           </div>
         </div>
 
+      <ApiExamples examples={apiExamples.Git || []} />
         <div className="space-y-4">
           <div className="flex gap-2 flex-wrap">
             {EXAMPLE_REPOS.map((example) => (

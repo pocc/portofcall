@@ -6,8 +6,14 @@
  * Its telnet interface accepts text commands terminated by newlines:
  *   - version: Returns server version
  *   - stats: Returns server statistics
- *   - suggest type=metrics [q=prefix]: Suggests metric names
- *   - put <metric> <timestamp> <value> [tags]: Write data points
+ *   - suggest <type> [<query>] [<max>]: Suggests metric names (positional args)
+ *   - put <metric> <timestamp> <value> <tagk>=<tagv> [...]: Write data points
+ *
+ * Key protocol notes:
+ *   - At least one tag is REQUIRED for put commands
+ *   - Metric/tag names allow: [a-zA-Z0-9._\-/]
+ *   - Timestamps can be seconds (10-digit) or milliseconds (13-digit)
+ *   - put is fire-and-forget on success; errors return an error line
  *
  * Spec: http://opentsdb.net/docs/build/html/api_telnet/
  */
@@ -118,9 +124,15 @@ export async function handleOpenTSDBVersion(request: Request): Promise<Response>
           version: versionLine || '(empty response)',
         };
       } catch (error) {
-        reader.releaseLock();
-        writer.releaseLock();
-        await socket.close();
+        try {
+          reader.releaseLock();
+        } catch {}
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          await socket.close();
+        } catch {}
         throw error;
       }
     })();
@@ -242,9 +254,15 @@ export async function handleOpenTSDBStats(request: Request): Promise<Response> {
           raw: response.trim(),
         };
       } catch (error) {
-        reader.releaseLock();
-        writer.releaseLock();
-        await socket.close();
+        try {
+          reader.releaseLock();
+        } catch {}
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          await socket.close();
+        } catch {}
         throw error;
       }
     })();
@@ -322,6 +340,16 @@ export async function handleOpenTSDBSuggest(request: Request): Promise<Response>
       });
     }
 
+    // Validate max parameter (OpenTSDB typically caps at 25000)
+    if (max < 1 || max > 25000) {
+      return new Response(JSON.stringify({
+        error: 'Invalid max parameter. Must be between 1 and 25000',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -344,10 +372,11 @@ export async function handleOpenTSDBSuggest(request: Request): Promise<Response>
       const writer = socket.writable.getWriter();
 
       try {
-        // Build suggest command
-        let cmd = `suggest type=${suggestType}`;
-        if (query) cmd += ` q=${query}`;
-        cmd += ` max=${max}`;
+        // Build suggest command — telnet format uses positional args:
+        // suggest <type> [<query>] [<max>]
+        let cmd = `suggest ${suggestType}`;
+        if (query) cmd += ` ${query}`;
+        cmd += ` ${max}`;
         cmd += '\n';
 
         const sendTime = Date.now();
@@ -375,9 +404,15 @@ export async function handleOpenTSDBSuggest(request: Request): Promise<Response>
           suggestions,
         };
       } catch (error) {
-        reader.releaseLock();
-        writer.releaseLock();
-        await socket.close();
+        try {
+          reader.releaseLock();
+        } catch {}
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          await socket.close();
+        } catch {}
         throw error;
       }
     })();
@@ -436,9 +471,22 @@ export async function handleOpenTSDBPut(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (typeof options.value !== 'number') {
+    if (typeof options.value !== 'number' || !isFinite(options.value)) {
       return new Response(JSON.stringify({
-        error: 'value must be a number',
+        error: 'value must be a finite number',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Validate metric name: OpenTSDB allows [a-zA-Z0-9._\-/], max 255 bytes
+    if (!/^[a-zA-Z0-9._\-/]+$/.test(options.metric)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid metric name. Allowed characters: a-z, A-Z, 0-9, period, underscore, hyphen, forward slash.',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (options.metric.length > 255) {
+      return new Response(JSON.stringify({
+        error: 'Metric name too long. Maximum 255 bytes.',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -446,7 +494,39 @@ export async function handleOpenTSDBPut(request: Request): Promise<Response> {
     const port = options.port || 4242;
     const timeoutMs = options.timeout || 10000;
     const timestamp = options.timestamp || Math.floor(Date.now() / 1000);
-    const tags = options.tags || { host: 'portofcall' };
+
+    // Validate timestamp is within safe integer range
+    if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+      return new Response(JSON.stringify({
+        error: 'Invalid timestamp. Must be a non-negative safe integer.',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // OpenTSDB requires at least one tag per data point
+    const tags = (options.tags && Object.keys(options.tags).length > 0) ? options.tags : { host: 'portofcall' };
+
+    // OpenTSDB supports up to 8 tags per data point
+    if (Object.keys(tags).length > 8) {
+      return new Response(JSON.stringify({
+        error: 'Too many tags. OpenTSDB supports maximum 8 tags per data point.',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Validate tag keys and values: OpenTSDB allows [a-zA-Z0-9._\-/], max 255 bytes each
+    const tagPattern = /^[a-zA-Z0-9._\-/]+$/;
+    for (const [k, v] of Object.entries(tags)) {
+      if (!tagPattern.test(k) || !tagPattern.test(v)) {
+        return new Response(JSON.stringify({
+          error: `Invalid tag: ${k}=${v}. Tag keys and values allow: a-z, A-Z, 0-9, period, underscore, hyphen, forward slash.`,
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+      if (k.length > 255 || v.length > 255) {
+        return new Response(JSON.stringify({
+          error: `Tag key or value too long: ${k}=${v}. Maximum 255 bytes each.`,
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
     const tagStr = Object.entries(tags).map(([k, v]) => `${k}=${v}`).join(' ');
 
     const cfCheck = await checkIfCloudflare(host);
@@ -479,9 +559,15 @@ export async function handleOpenTSDBPut(request: Request): Promise<Response> {
         }
         return { success: true, message: `Data point written: ${options.metric} = ${options.value}`, host, port, rtt, metric: options.metric, timestamp, value: options.value, tags, command: cmd.trim() };
       } catch (err) {
-        reader.releaseLock();
-        writer.releaseLock();
-        await socket.close();
+        try {
+          reader.releaseLock();
+        } catch {}
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          await socket.close();
+        } catch {}
         throw err;
       }
     })();
@@ -537,6 +623,23 @@ export async function handleOpenTSDBQuery(request: Request): Promise<Response> {
     const aggregator = options.aggregator || 'sum';
     const tags = options.tags || {};
 
+    // Validate URL construction
+    if (!/^[a-zA-Z0-9.-]+$/.test(host)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid host format',
+      }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        error: 'Invalid port. Must be 1-65535.',
+      }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
@@ -561,6 +664,7 @@ export async function handleOpenTSDBQuery(request: Request): Promise<Response> {
         body: JSON.stringify(queryBody),
         signal: controller.signal,
       });
+
       clearTimeout(timer);
       const rtt = Date.now() - startTime;
       const data = await resp.json() as unknown;

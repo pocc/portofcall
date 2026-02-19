@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface DNP3ClientProps {
   onBack: () => void;
@@ -217,9 +219,7 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
           ← Back
         </button>
         <h1 className="text-3xl font-bold text-white">DNP3 Client</h1>
-      </div>
-
-      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
+      </div>      <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* Warning Banner */}
         <div className="bg-yellow-900/30 border border-yellow-600/50 rounded-lg p-4 mb-6">
           <div className="flex items-start gap-2">
@@ -231,6 +231,8 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
                 This client supports READ-ONLY operations. Only connect to devices you are authorized to access.
               </p>
             </div>
+
+
           </div>
         </div>
 
@@ -242,6 +244,7 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
 
+      <ApiExamples examples={apiExamples.DNP3 || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
           <div>
             <label htmlFor="dnp3-host" className="block text-sm font-medium text-slate-300 mb-1">

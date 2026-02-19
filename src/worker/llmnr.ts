@@ -85,6 +85,8 @@ function decodeDomainName(data: Uint8Array, offset: number): { name: string; nex
   let cur = offset;
   let jumped = false;
   let endOffset = offset;
+  const maxJumps = 20; // Guard against malicious compression pointer loops
+  let jumpCount = 0;
 
   while (cur < data.length) {
     const len = data[cur];
@@ -93,11 +95,15 @@ function decodeDomainName(data: Uint8Array, offset: number): { name: string; nex
       break;
     }
     if ((len & 0xc0) === 0xc0) {
+      if (cur + 1 >= data.length) break; // Bounds check for pointer target byte
       if (!jumped) endOffset = cur + 2;
       jumped = true;
+      jumpCount++;
+      if (jumpCount > maxJumps) break; // Prevent infinite pointer loops
       cur = ((len & 0x3f) << 8) | data[cur + 1];
       continue;
     }
+    if (cur + 1 + len > data.length) break; // Bounds check for label data
     labels.push(new TextDecoder().decode(data.slice(cur + 1, cur + 1 + len)));
     cur += 1 + len;
     if (!jumped) endOffset = cur;
@@ -106,17 +112,36 @@ function decodeDomainName(data: Uint8Array, offset: number): { name: string; nex
   return { name: labels.join('.'), nextOffset: jumped ? endOffset : cur + 1 };
 }
 
+/**
+ * Build an LLMNR query packet per RFC 4795 Section 2.
+ *
+ * Header layout (12 bytes):
+ *   Offset 0:  ID       — random 16-bit transaction identifier
+ *   Offset 2:  FLAGS    — 0x0000 for a standard query (QR=0, C=0, TC=0, T=0)
+ *   Offset 4:  QDCOUNT  — 1 (exactly one question per RFC 4795)
+ *   Offset 6:  ANCOUNT  — 0
+ *   Offset 8:  NSCOUNT  — 0
+ *   Offset 10: ARCOUNT  — 0
+ *
+ * Question section:
+ *   QNAME  — encoded domain name
+ *   QTYPE  — 2 bytes (A=1, AAAA=28, PTR=12, ANY=255)
+ *   QCLASS — 2 bytes (IN=1)
+ */
 function buildLLMNRQuery(name: string, type: number): Uint8Array {
   const id = Math.floor(Math.random() * 0x10000);
   const nameBytes = encodeDomainName(name);
   const pkt = new Uint8Array(12 + nameBytes.length + 4);
   const dv = new DataView(pkt.buffer);
-  dv.setUint16(0, id, false);
-  dv.setUint16(2, 0,  false);
-  dv.setUint16(4, 1,  false);
+  dv.setUint16(0,  id, false);       // ID
+  dv.setUint16(2,  0,  false);       // FLAGS: QR=0, OPCODE=0, C=0, TC=0, T=0, Z=0, RCODE=0
+  dv.setUint16(4,  1,  false);       // QDCOUNT = 1
+  dv.setUint16(6,  0,  false);       // ANCOUNT = 0
+  dv.setUint16(8,  0,  false);       // NSCOUNT = 0
+  dv.setUint16(10, 0,  false);       // ARCOUNT = 0
   pkt.set(nameBytes, 12);
-  dv.setUint16(12 + nameBytes.length,     type,         false);
-  dv.setUint16(12 + nameBytes.length + 2, DNS_CLASS.IN, false);
+  dv.setUint16(12 + nameBytes.length,     type,         false); // QTYPE
+  dv.setUint16(12 + nameBytes.length + 2, DNS_CLASS.IN, false); // QCLASS
   return pkt;
 }
 
@@ -154,16 +179,68 @@ async function readAtLeast(
   return out;
 }
 
-function parseLLMNRResponse(data: Uint8Array): { answers: LLMNRRecord[]; flags: number } {
+/**
+ * Decoded LLMNR flags per RFC 4795 Section 2.2.
+ *
+ * Header flags layout (16 bits):
+ *   Bit 15:    QR     — 0 = query, 1 = response
+ *   Bits 14-11: OPCODE — must be 0 for LLMNR
+ *   Bit 10:    C      — conflict; set when a responder detects a name conflict
+ *   Bit 9:     TC     — truncation; response was too large for UDP
+ *   Bit 8:     T      — tentative; sender has not yet verified name uniqueness
+ *   Bits 7-4:  Z      — reserved, must be zero
+ *   Bits 3-0:  RCODE  — 0 = no error, non-zero = error
+ */
+interface LLMNRFlags {
+  raw: number;
+  qr: boolean;       // true = response
+  opcode: number;    // should be 0
+  conflict: boolean; // C bit — name conflict detected
+  tc: boolean;       // TC bit — truncated, retry over TCP
+  tentative: boolean;// T bit — name not yet verified unique
+  rcode: number;     // 0 = NOERROR, 1 = FORMERR, 2 = SERVFAIL, 3 = NXDOMAIN
+  rcodeName: string;
+}
+
+function decodeLLMNRFlags(raw: number): LLMNRFlags {
+  const rcode = raw & 0x000f;
+  const rcodeNames: Record<number, string> = {
+    0: 'NOERROR', 1: 'FORMERR', 2: 'SERVFAIL', 3: 'NXDOMAIN',
+    4: 'NOTIMP', 5: 'REFUSED',
+  };
+  return {
+    raw,
+    qr:        (raw & 0x8000) !== 0,
+    opcode:    (raw >> 11) & 0x0f,
+    conflict:  (raw & 0x0400) !== 0,
+    tc:        (raw & 0x0200) !== 0,
+    tentative: (raw & 0x0100) !== 0,
+    rcode,
+    rcodeName: rcodeNames[rcode] ?? `RCODE${rcode}`,
+  };
+}
+
+interface LLMNRParsedResponse {
+  id: number;
+  answers: LLMNRRecord[];
+  flags: LLMNRFlags;
+}
+
+function parseLLMNRResponse(data: Uint8Array): LLMNRParsedResponse {
   if (data.length < 12) throw new Error('Response too short');
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
-  const flags   = dv.getUint16(2, false);
+  const id      = dv.getUint16(0, false);
+  const rawFlags = dv.getUint16(2, false);
+  const flags   = decodeLLMNRFlags(rawFlags);
+  const qdcount = dv.getUint16(4, false);
   const ancount = dv.getUint16(6, false);
   let offset = 12;
 
-  // Skip question section
-  const q = decodeDomainName(data, offset);
-  offset = q.nextOffset + 4;
+  // Skip question section — use QDCOUNT rather than assuming 1
+  for (let i = 0; i < qdcount && offset < data.length; i++) {
+    const q = decodeDomainName(data, offset);
+    offset = q.nextOffset + 4; // skip QTYPE (2) + QCLASS (2)
+  }
 
   const answers: LLMNRRecord[] = [];
   for (let i = 0; i < ancount && offset + 10 <= data.length; i++) {
@@ -191,7 +268,7 @@ function parseLLMNRResponse(data: Uint8Array): { answers: LLMNRRecord[]; flags: 
     answers.push({ name, type, typeName: dnsTypeName(type), class: rclass, ttl, value });
   }
 
-  return { answers, flags };
+  return { id, answers, flags };
 }
 
 function ipv4ToPTRName(ip: string): string {
@@ -201,14 +278,19 @@ function ipv4ToPTRName(ip: string): string {
 }
 
 function ipv6ToPTRName(ip: string): string {
+  // Handle :: compression by inserting the appropriate number of zero groups
   const halves = ip.split('::');
-  let left  = halves[0] ? halves[0].split(':') : [];
-  const right = halves.length > 1 && halves[1] ? halves[1].split(':') : [];
+  let left  = halves[0] ? halves[0].split(':').filter(g => g) : [];
+  const right = halves.length > 1 && halves[1] ? halves[1].split(':').filter(g => g) : [];
   const missing = 8 - left.length - right.length;
-  for (let i = 0; i < missing; i++) left.push('0');
-  const groups = left.concat(right);
+  const zeros = Array(Math.max(0, missing)).fill('0');
+  const groups = [...left, ...zeros, ...right];
+
+  // Pad each group to 4 hex digits, then split into nibbles
   const nibbles: string[] = [];
-  for (const g of groups) nibbles.push(...g.padStart(4, '0').split(''));
+  for (const g of groups) {
+    nibbles.push(...g.padStart(4, '0').split(''));
+  }
   return nibbles.reverse().join('.') + '.ip6.arpa';
 }
 

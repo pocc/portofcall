@@ -99,17 +99,17 @@ function buildNRPEQuery(command: string, version: number = NRPE_PACKET_VERSION_2
   const packet = new Uint8Array(NRPE_V2_PACKET_LEN);
   const view = new DataView(packet.buffer);
 
-  // Protocol version (big-endian int16)
-  view.setInt16(0, version);
+  // Protocol version (big-endian uint16)
+  view.setUint16(0, version);
 
-  // Packet type: query
-  view.setInt16(2, QUERY_PACKET);
+  // Packet type: query (big-endian uint16)
+  view.setUint16(2, QUERY_PACKET);
 
   // CRC32: set to 0 initially (computed over entire packet with CRC field = 0)
   view.setUint32(4, 0);
 
-  // Result code: 0 for queries
-  view.setInt16(8, 0);
+  // Result code: 0 for queries (big-endian uint16)
+  view.setUint16(8, 0);
 
   // Buffer: null-terminated command string
   const encoder = new TextEncoder();
@@ -118,8 +118,8 @@ function buildNRPEQuery(command: string, version: number = NRPE_PACKET_VERSION_2
   packet.set(commandBytes.subarray(0, copyLen), 10);
   // Remaining buffer bytes are already 0 (null terminated)
 
-  // Padding: 0
-  view.setInt16(1034, 0);
+  // Padding: 0 (big-endian uint16)
+  view.setUint16(1034, 0);
 
   // Compute CRC32 over the entire packet (with CRC field = 0)
   const checksum = crc32(packet);
@@ -152,17 +152,18 @@ function parseNRPEResponse(data: Uint8Array): {
 
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
 
-  const version = view.getInt16(0);
-  const packetType = view.getInt16(2);
+  const version = view.getUint16(0);
+  const packetType = view.getUint16(2);
   const receivedCrc = view.getUint32(4);
-  const resultCode = view.getInt16(8);
+  const resultCode = view.getUint16(8);
 
-  // Extract null-terminated string from buffer
-  let output = '';
-  for (let i = 10; i < 10 + NRPE_BUFFER_LEN; i++) {
-    if (data[i] === 0) break;
-    output += String.fromCharCode(data[i]);
+  // Extract null-terminated string from buffer (UTF-8 decode for proper character handling)
+  let endPos = 10;
+  while (endPos < 10 + NRPE_BUFFER_LEN && data[endPos] !== 0) {
+    endPos++;
   }
+  const decoder = new TextDecoder('utf-8');
+  const output = decoder.decode(data.subarray(10, endPos));
 
   // Verify CRC32
   const checkPacket = new Uint8Array(data);
@@ -244,8 +245,9 @@ export async function handleNRPEQuery(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutId: number | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout) as unknown as number;
     });
 
     try {
@@ -254,39 +256,44 @@ export async function handleNRPEQuery(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Build and send NRPE query
-      const queryPacket = buildNRPEQuery(command, version);
-      await writer.write(queryPacket);
+      try {
+        // Build and send NRPE query
+        const queryPacket = buildNRPEQuery(command, version);
+        await writer.write(queryPacket);
 
-      // Read response (fixed 1036 bytes)
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
+        // Read response (fixed 1036 bytes)
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
 
-      while (totalBytes < NRPE_V2_PACKET_LEN) {
-        const { value, done } = await Promise.race([
-          reader.read(),
-          timeoutPromise,
-        ]);
+        while (totalBytes < NRPE_V2_PACKET_LEN) {
+          const { value, done } = await Promise.race([
+            reader.read(),
+            timeoutPromise,
+          ]);
 
-        if (done || !value) break;
+          if (done || !value) break;
 
-        chunks.push(value);
-        totalBytes += value.length;
-      }
+          chunks.push(value);
+          totalBytes += value.length;
+        }
 
-      const rtt = Date.now() - startTime;
+        const rtt = Date.now() - startTime;
 
-      // Combine chunks
-      const responseData = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        responseData.set(chunk, offset);
-        offset += chunk.length;
-      }
+        // Combine chunks
+        const responseData = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          responseData.set(chunk, offset);
+          offset += chunk.length;
+        }
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
 
       if (totalBytes === 0) {
         return new Response(JSON.stringify({
@@ -302,31 +309,60 @@ export async function handleNRPEQuery(request: Request): Promise<Response> {
         });
       }
 
-      const parsed = parseNRPEResponse(responseData);
+        const parsed = parseNRPEResponse(responseData);
 
-      const result: NRPEQueryResponse = {
-        success: true,
-        host,
-        port,
-        command,
-        protocolVersion: parsed.version,
-        resultCode: parsed.resultCode,
-        resultCodeName: RESULT_CODES[parsed.resultCode] || `UNKNOWN(${parsed.resultCode})`,
-        output: parsed.output,
-        rtt,
-      };
+        // Validate response version matches request
+        if (parsed.version !== version) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            command,
+            error: `Protocol version mismatch: sent v${version}, received v${parsed.version}`,
+            rtt,
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      if (!parsed.valid) {
-        result.error = 'Response CRC32 mismatch or unexpected packet type — response may be corrupted';
+        const result: NRPEQueryResponse = {
+          success: true,
+          host,
+          port,
+          command,
+          protocolVersion: parsed.version,
+          resultCode: parsed.resultCode,
+          resultCodeName: RESULT_CODES[parsed.resultCode] || `UNKNOWN(${parsed.resultCode})`,
+          output: parsed.output,
+          rtt,
+        };
+
+        if (!parsed.valid) {
+          result.error = 'Response CRC32 mismatch or unexpected packet type — response may be corrupted';
+        }
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } finally {
+        // Ensure locks are released even on error
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          reader.releaseLock();
+        } catch {}
       }
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
     } catch (error) {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
       socket.close();
       throw error;
+    } finally {
+      socket.close();
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -411,8 +447,9 @@ export async function handleNRPETLS(request: Request): Promise<Response> {
     // Use secureTransport: 'on' for TLS — the key difference from handleNRPEQuery
     const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
 
+    let timeoutId: number | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout) as unknown as number;
     });
 
     try {
@@ -421,39 +458,44 @@ export async function handleNRPETLS(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Build and send NRPE query packet (same format as plain-text)
-      const queryPacket = buildNRPEQuery(command, version);
-      await writer.write(queryPacket);
+      try {
+        // Build and send NRPE query packet (same format as plain-text)
+        const queryPacket = buildNRPEQuery(command, version);
+        await writer.write(queryPacket);
 
-      // Read response (fixed 1036 bytes)
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
+        // Read response (fixed 1036 bytes)
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
 
-      while (totalBytes < NRPE_V2_PACKET_LEN) {
-        const { value, done } = await Promise.race([
-          reader.read(),
-          timeoutPromise,
-        ]);
+        while (totalBytes < NRPE_V2_PACKET_LEN) {
+          const { value, done } = await Promise.race([
+            reader.read(),
+            timeoutPromise,
+          ]);
 
-        if (done || !value) break;
+          if (done || !value) break;
 
-        chunks.push(value);
-        totalBytes += value.length;
-      }
+          chunks.push(value);
+          totalBytes += value.length;
+        }
 
-      const rtt = Date.now() - startTime;
+        const rtt = Date.now() - startTime;
 
-      // Combine chunks
-      const responseData = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        responseData.set(chunk, offset);
-        offset += chunk.length;
-      }
+        // Combine chunks
+        const responseData = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          responseData.set(chunk, offset);
+          offset += chunk.length;
+        }
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
 
       if (totalBytes === 0) {
         return new Response(JSON.stringify({
@@ -470,32 +512,62 @@ export async function handleNRPETLS(request: Request): Promise<Response> {
         });
       }
 
-      const parsed = parseNRPEResponse(responseData);
+        const parsed = parseNRPEResponse(responseData);
 
-      const result: NRPEQueryResponse & { tls: boolean } = {
-        success: true,
-        tls: true,
-        host,
-        port,
-        command,
-        protocolVersion: parsed.version,
-        resultCode: parsed.resultCode,
-        resultCodeName: RESULT_CODES[parsed.resultCode] || `UNKNOWN(${parsed.resultCode})`,
-        output: parsed.output,
-        rtt,
-      };
+        // Validate response version matches request
+        if (parsed.version !== version) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            command,
+            tls: true,
+            error: `Protocol version mismatch: sent v${version}, received v${parsed.version}`,
+            rtt,
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      if (!parsed.valid) {
-        result.error = 'Response CRC32 mismatch or unexpected packet type — response may be corrupted';
+        const result: NRPEQueryResponse & { tls: boolean } = {
+          success: true,
+          tls: true,
+          host,
+          port,
+          command,
+          protocolVersion: parsed.version,
+          resultCode: parsed.resultCode,
+          resultCodeName: RESULT_CODES[parsed.resultCode] || `UNKNOWN(${parsed.resultCode})`,
+          output: parsed.output,
+          rtt,
+        };
+
+        if (!parsed.valid) {
+          result.error = 'Response CRC32 mismatch or unexpected packet type — response may be corrupted';
+        }
+
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } finally {
+        // Ensure locks are released even on error
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          reader.releaseLock();
+        } catch {}
       }
-
-      return new Response(JSON.stringify(result), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
     } catch (error) {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
       socket.close();
       throw error;
+    } finally {
+      socket.close();
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -550,8 +622,9 @@ export async function handleNRPEVersion(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
 
+    let timeoutId: number | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout) as unknown as number;
     });
 
     try {
@@ -560,38 +633,43 @@ export async function handleNRPEVersion(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send _NRPE_CHECK query (v2)
-      const queryPacket = buildNRPEQuery('_NRPE_CHECK', NRPE_PACKET_VERSION_2);
-      await writer.write(queryPacket);
+      try {
+        // Send _NRPE_CHECK query (v2)
+        const queryPacket = buildNRPEQuery('_NRPE_CHECK', NRPE_PACKET_VERSION_2);
+        await writer.write(queryPacket);
 
-      // Read response
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
+        // Read response
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
 
-      while (totalBytes < NRPE_V2_PACKET_LEN) {
-        const { value, done } = await Promise.race([
-          reader.read(),
-          timeoutPromise,
-        ]);
+        while (totalBytes < NRPE_V2_PACKET_LEN) {
+          const { value, done } = await Promise.race([
+            reader.read(),
+            timeoutPromise,
+          ]);
 
-        if (done || !value) break;
+          if (done || !value) break;
 
-        chunks.push(value);
-        totalBytes += value.length;
-      }
+          chunks.push(value);
+          totalBytes += value.length;
+        }
 
-      const rtt = Date.now() - startTime;
+        const rtt = Date.now() - startTime;
 
-      const responseData = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        responseData.set(chunk, offset);
-        offset += chunk.length;
-      }
+        const responseData = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          responseData.set(chunk, offset);
+          offset += chunk.length;
+        }
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+        if (timeoutId !== undefined) {
+          clearTimeout(timeoutId);
+        }
+
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
 
       if (totalBytes === 0) {
         return new Response(JSON.stringify({
@@ -606,29 +684,43 @@ export async function handleNRPEVersion(request: Request): Promise<Response> {
         });
       }
 
-      const parsed = parseNRPEResponse(responseData);
+        const parsed = parseNRPEResponse(responseData);
 
-      // Extract version from output (format: "NRPE v4.1.0" or "NRPE v3.2.1")
-      const versionMatch = parsed.output.match(/NRPE\s+v?([\d.]+)/i);
+        // Extract version from output (format: "NRPE v4.1.0" or "NRPE v3.2.1")
+        const versionMatch = parsed.output.match(/NRPE\s+v?([\d.]+)/i);
 
-      return new Response(JSON.stringify({
-        success: true,
-        host,
-        port,
-        nrpeVersion: versionMatch ? versionMatch[1] : null,
-        output: parsed.output,
-        protocolVersion: parsed.version,
-        resultCode: parsed.resultCode,
-        resultCodeName: RESULT_CODES[parsed.resultCode] || 'UNKNOWN',
-        valid: parsed.valid,
-        rtt,
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
+        return new Response(JSON.stringify({
+          success: true,
+          host,
+          port,
+          nrpeVersion: versionMatch ? versionMatch[1] : null,
+          output: parsed.output,
+          protocolVersion: parsed.version,
+          resultCode: parsed.resultCode,
+          resultCodeName: RESULT_CODES[parsed.resultCode] || 'UNKNOWN',
+          valid: parsed.valid,
+          rtt,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      } finally {
+        // Ensure locks are released even on error
+        try {
+          writer.releaseLock();
+        } catch {}
+        try {
+          reader.releaseLock();
+        } catch {}
+      }
     } catch (error) {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
       socket.close();
       throw error;
+    } finally {
+      socket.close();
     }
   } catch (error) {
     return new Response(JSON.stringify({

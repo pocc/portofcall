@@ -147,7 +147,6 @@ export async function handleNNTPSConnect(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const rtt = Date.now() - startTime;
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       const decoder = new TextDecoder();
@@ -193,6 +192,9 @@ export async function handleNNTPSConnect(request: Request): Promise<Response> {
       } catch {
         // Some servers don't require MODE READER
       }
+
+      // Measure RTT after full application-layer handshake (welcome + CAPABILITIES + MODE READER)
+      const rtt = Date.now() - startTime;
 
       // Send QUIT
       try {
@@ -290,6 +292,13 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
       );
     }
 
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -306,6 +315,8 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    const startTime = Date.now();
 
     // Connect with implicit TLS
     const socket = connect(`${host}:${port}`, {
@@ -392,6 +403,8 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
         }
       }
 
+      const rtt = Date.now() - startTime;
+
       // QUIT
       try {
         await sendCommand(writer, encoder, 'QUIT');
@@ -411,6 +424,7 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
           first,
           last,
           articles: articles.reverse(),
+          rtt,
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
@@ -462,6 +476,13 @@ export async function handleNNTPSArticle(request: Request): Promise<Response> {
     if (!/^[a-zA-Z0-9][a-zA-Z0-9.+-]*$/.test(group)) {
       return new Response(
         JSON.stringify({ success: false, error: 'Group name contains invalid characters' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -539,8 +560,12 @@ export async function handleNNTPSArticle(request: Request): Promise<Response> {
       const articleLines = await readMultiline(reader, decoder, buffer, timeoutPromise);
 
       // Split into headers and body
+      // RFC 5536 §3.2.7 / RFC 5322 §2.2.3: folded headers have continuation
+      // lines that begin with a space or tab character. They must be unfolded
+      // (appended to the previous header value) rather than silently dropped.
       const headers: Record<string, string> = {};
       let bodyStartIndex = 0;
+      let lastHeaderKey = '';
 
       for (let i = 0; i < articleLines.length; i++) {
         if (articleLines[i] === '') {
@@ -548,11 +573,20 @@ export async function handleNNTPSArticle(request: Request): Promise<Response> {
           break;
         }
 
-        const colonIndex = articleLines[i].indexOf(':');
+        const line = articleLines[i];
+
+        // Folded continuation: line starts with space or tab
+        if ((line.startsWith(' ') || line.startsWith('	')) && lastHeaderKey) {
+          headers[lastHeaderKey] += ' ' + line.trim();
+          continue;
+        }
+
+        const colonIndex = line.indexOf(':');
         if (colonIndex > 0) {
-          const key = articleLines[i].substring(0, colonIndex).trim();
-          const value = articleLines[i].substring(colonIndex + 1).trim();
+          const key = line.substring(0, colonIndex).trim();
+          const value = line.substring(colonIndex + 1).trim();
           headers[key] = value;
+          lastHeaderKey = key;
         }
       }
 
@@ -842,7 +876,12 @@ export async function handleNNTPSPost(request: Request): Promise<Response> {
         );
       }
 
-      const article = `From: ${from}\r\nNewsgroups: ${newsgroups}\r\nSubject: ${subject}\r\n\r\n${articleBody}\r\n.\r\n`;
+      // Dot-stuffing (RFC 3977 §3.1.1): any line in the body starting
+      // with "." must have an extra "." prepended so the server doesn't
+      // mistake it for the end-of-data marker ".\r\n".
+      const stuffedBody = articleBody.replace(/^\./gm, '..');
+
+      const article = `From: ${from}\r\nNewsgroups: ${newsgroups}\r\nSubject: ${subject}\r\n\r\n${stuffedBody}\r\n.\r\n`;
       await writer.write(encoder.encode(article));
 
       const articleResponseLine = await readLine(reader, decoder, buffer, timeoutPromise);

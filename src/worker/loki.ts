@@ -132,9 +132,9 @@ export async function handleLokiHealth(request: Request): Promise<Response> {
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Loki', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip ?? host) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -226,9 +226,9 @@ export async function handleLokiQuery(request: Request): Promise<Response> {
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Loki', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip ?? host) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -282,9 +282,9 @@ export async function handleLokiMetrics(request: Request): Promise<Response> {
       });
     }
 
-    const isCloudflare = await checkIfCloudflare(host);
-    if (isCloudflare) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage('Loki', host) }), {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare) {
+      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip ?? host) }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -384,10 +384,21 @@ export async function handleLokiPush(request: Request): Promise<Response> {
     const host = body.host;
     const port = body.port || 3100;
     const timeout = body.timeout || 10000;
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip ?? host) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const labels = body.labels || { job: 'portofcall' };
+    // Loki push API requires nanosecond-precision timestamps.
+    // Use string concatenation to avoid JavaScript Number precision loss
+    // (nanosecond timestamps exceed Number.MAX_SAFE_INTEGER).
     const tsNs = body.timestamp
-      ? String(body.timestamp * 1_000_000_000)
-      : String(Date.now() * 1_000_000);
+      ? String(body.timestamp) + '000000000'
+      : String(Date.now()) + '000000';
 
     const labelsStr = '{' + Object.entries(labels).map(([k, v]) => k + '="' + v + '"').join(', ') + '}';
     const entries = body.lines.map(line => [tsNs, line]);
@@ -456,8 +467,11 @@ export async function handleLokiRangeQuery(request: Request): Promise<Response> 
     const port = body.port || 3100;
     const timeout = body.timeout || 15000;
     const now = Date.now();
-    const start = body.start || String(Math.floor((now - 3600000) * 1e6)); // 1hr ago in ns
-    const end = body.end || String(Math.floor(now * 1e6));
+    // Loki accepts nanosecond Unix epoch for start/end.
+    // Use string concatenation to avoid JavaScript Number precision loss
+    // (nanosecond timestamps exceed Number.MAX_SAFE_INTEGER).
+    const start = body.start || String(now - 3600000) + '000000'; // 1hr ago in ns
+    const end = body.end || String(now) + '000000';
     const limit = body.limit || 100;
     const direction = body.direction || 'backward';
 

@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface RserveClientProps {
   onBack: () => void;
@@ -185,6 +187,7 @@ export default function RserveClient({ onBack }: RserveClientProps) {
 
   return (
     <ProtocolClientLayout title="Rserve Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Rserve || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Rserve Endpoint" />
 

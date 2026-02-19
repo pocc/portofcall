@@ -222,12 +222,16 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
       const size = readI32(data, offset);
       offset += 4;
       const items: string[] = [];
-      for (let i = 0; i < size && i < 20; i++) {
+      const displayLimit = 20;
+      for (let i = 0; i < size; i++) {
         const item = readFieldValue(data, offset, elemType);
-        items.push(item.value);
+        if (i < displayLimit) {
+          items.push(item.value);
+        }
         offset = item.newOffset;
       }
-      return { value: `[${items.join(', ')}]`, newOffset: offset };
+      const suffix = size > displayLimit ? `, ...(${size - displayLimit} more)` : '';
+      return { value: `[${items.join(', ')}${suffix}]`, newOffset: offset };
     }
     case T_MAP: {
       const keyType = data[offset++];
@@ -235,29 +239,38 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
       const size = readI32(data, offset);
       offset += 4;
       const entries: string[] = [];
-      for (let i = 0; i < size && i < 20; i++) {
+      const displayLimit = 20;
+      for (let i = 0; i < size; i++) {
         const key = readFieldValue(data, offset, keyType);
         offset = key.newOffset;
         const val = readFieldValue(data, offset, valType);
         offset = val.newOffset;
-        entries.push(`${key.value}=${val.value}`);
+        if (i < displayLimit) {
+          entries.push(`${key.value}=${val.value}`);
+        }
       }
-      return { value: `{${entries.join(', ')}}`, newOffset: offset };
+      const suffix = size > displayLimit ? `, ...(${size - displayLimit} more)` : '';
+      return { value: `{${entries.join(', ')}${suffix}}`, newOffset: offset };
     }
     case T_SET: {
       const elemType = data[offset++];
       const size = readI32(data, offset);
       offset += 4;
       const items: string[] = [];
-      for (let i = 0; i < size && i < 20; i++) {
+      const displayLimit = 20;
+      for (let i = 0; i < size; i++) {
         const item = readFieldValue(data, offset, elemType);
-        items.push(item.value);
+        if (i < displayLimit) {
+          items.push(item.value);
+        }
         offset = item.newOffset;
       }
-      return { value: `(${items.join(', ')})`, newOffset: offset };
+      const suffix = size > displayLimit ? `, ...(${size - displayLimit} more)` : '';
+      return { value: `(${items.join(', ')}${suffix})`, newOffset: offset };
     }
     default:
-      return { value: `<unknown type ${type}>`, newOffset: offset };
+      // Skip 1 byte for unknown types to avoid infinite loops in struct parsing
+      return { value: `<unknown type ${type}>`, newOffset: offset + 1 };
   }
 }
 

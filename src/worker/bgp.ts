@@ -129,6 +129,7 @@ function parseBGPMessage(data: Uint8Array): {
   routerId?: string;
   optParamLen?: number;
   capabilities?: string[];
+  fourByteAS?: boolean;
   // NOTIFICATION fields
   errorCode?: number;
   errorSubcode?: number;
@@ -168,7 +169,9 @@ function parseBGPMessage(data: Uint8Array): {
 
     // Parse optional parameters for capabilities
     if (result.optParamLen && result.optParamLen > 0 && data.length >= 29 + result.optParamLen) {
-      result.capabilities = parseCapabilities(data.slice(29, 29 + result.optParamLen));
+      const parsed = parseCapabilities(data.slice(29, 29 + result.optParamLen));
+      result.capabilities = parsed.names;
+      result.fourByteAS = parsed.codes.has(65);
     }
   }
 
@@ -188,10 +191,12 @@ function parseBGPMessage(data: Uint8Array): {
 }
 
 /**
- * Parse BGP optional parameters / capabilities
+ * Parse BGP optional parameters / capabilities.
+ * Returns both human-readable capability names and the set of capability codes.
  */
-function parseCapabilities(data: Uint8Array): string[] {
-  const caps: string[] = [];
+function parseCapabilities(data: Uint8Array): { names: string[]; codes: Set<number> } {
+  const names: string[] = [];
+  const codes = new Set<number>();
   let offset = 0;
 
   const capNames: Record<number, string> = {
@@ -218,7 +223,8 @@ function parseCapabilities(data: Uint8Array): string[] {
         const capCode = data[offset + capOffset];
         const capLen = data[offset + capOffset + 1];
         const name = capNames[capCode] || `Capability(${capCode})`;
-        caps.push(name);
+        names.push(name);
+        codes.add(capCode);
         capOffset += 2 + capLen;
       }
     }
@@ -226,7 +232,7 @@ function parseCapabilities(data: Uint8Array): string[] {
     offset += paramLen;
   }
 
-  return caps;
+  return { names, codes };
 }
 
 /**
@@ -316,7 +322,7 @@ function buildOpenMessageWithCaps(localAS: number, holdTime: number, routerId: s
  *   variable — Path attributes (type, flags, length, value)
  *   variable — NLRI (reachable routes, rest of message)
  */
-function parseUpdateMessage(data: Uint8Array): {
+function parseUpdateMessage(data: Uint8Array, fourByteAS = false): {
   withdrawn: BGPRoute[];
   reachable: BGPRoute[];
   attributes: Record<string, unknown>;
@@ -378,7 +384,10 @@ function parseUpdateMessage(data: Uint8Array): {
       case 1: // ORIGIN
         attributes.origin = routeAttrs.origin = (['IGP', 'EGP', 'INCOMPLETE'])[av[0]] ?? `UNKNOWN(${av[0]})`;
         break;
-      case 2: { // AS_PATH — segments: type(1) + count(1) + count×2 bytes
+      case 2: { // AS_PATH — segments: type(1) + count(1) + count×asSize bytes
+        // Per RFC 6793: when 4-octet AS capability is negotiated, each ASN
+        // in the AS_PATH is encoded as 4 bytes; otherwise 2 bytes.
+        const asSize = fourByteAS ? 4 : 2;
         const segments: string[] = [];
         const asList: number[] = [];
         let sp = 0;
@@ -386,8 +395,13 @@ function parseUpdateMessage(data: Uint8Array): {
           const segType  = av[sp++];
           const segCount = av[sp++];
           const asns: number[] = [];
-          for (let i = 0; i < segCount && sp + 2 <= av.length; i++) {
-            asns.push(avView.getUint16(sp, false)); sp += 2;
+          for (let i = 0; i < segCount && sp + asSize <= av.length; i++) {
+            if (fourByteAS) {
+              asns.push(avView.getUint32(sp, false));
+            } else {
+              asns.push(avView.getUint16(sp, false));
+            }
+            sp += asSize;
           }
           asList.push(...asns);
           segments.push(segType === 1 ? `{${asns.join(',')}}` : asns.join(' '));
@@ -413,7 +427,11 @@ function parseUpdateMessage(data: Uint8Array): {
         attributes.atomicAggregate = true;
         break;
       case 7: // AGGREGATOR
-        if (av.length >= 6) {
+        // Per RFC 6793: AGGREGATOR uses 4-byte AS (8 bytes total) when
+        // 4-octet AS is negotiated, otherwise 2-byte AS (6 bytes total).
+        if (fourByteAS && av.length >= 8) {
+          attributes.aggregator = { as: avView.getUint32(0, false), ip: `${av[4]}.${av[5]}.${av[6]}.${av[7]}` };
+        } else if (av.length >= 6) {
           attributes.aggregator = { as: avView.getUint16(0, false), ip: `${av[2]}.${av[3]}.${av[4]}.${av[5]}` };
         }
         break;
@@ -572,6 +590,11 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
         // 3. Send KEEPALIVE to confirm session
         await writer.write(buildKeepaliveMessage());
 
+        // Detect if both sides negotiated 4-octet AS capability (RFC 6793).
+        // We always advertise capability 65 in buildOpenMessageWithCaps, so
+        // the capability is negotiated when the peer also advertises it.
+        const peerFourByteAS = peerOpen.fourByteAS === true;
+
         // 4. Collect UPDATE messages
         const routes: BGPRoute[] = [];
         const withdrawnRoutes: BGPRoute[] = [];
@@ -605,7 +628,7 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
               await writer.write(buildKeepaliveMessage());
             } else if (parsed.type === MSG_UPDATE) {
               updateCount++;
-              const update = parseUpdateMessage(msgData);
+              const update = parseUpdateMessage(msgData, peerFourByteAS);
               for (const r of update.reachable) {
                 if (routes.length < maxRoutes) routes.push(r);
               }

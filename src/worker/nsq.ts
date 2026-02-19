@@ -37,17 +37,24 @@ const NSQ_MAGIC_V2 = '  V2'; // Two spaces + "V2"
 /**
  * Read a framed response from nsqd
  * Frame format: [size:4 bytes big-endian][frame_type:4 bytes big-endian][data]
+ *
+ * Returns both raw bytes and text-decoded data. For FrameTypeResponse (0) and
+ * FrameTypeError (1), the text `data` field is authoritative. For
+ * FrameTypeMessage (2), callers MUST use the `rawData` bytes because the
+ * message frame contains binary fields (timestamp, attempts, message ID) that
+ * are corrupted by UTF-8 text decoding.
  */
 async function readFrame(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeout: number,
-): Promise<{ frameType: number; data: string }> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeout)
-  );
+): Promise<{ frameType: number; data: string; rawData: Uint8Array }> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error('Read timeout')), timeout);
+  });
 
   const readPromise = (async () => {
-    // Read enough bytes for the frame
+    // Read enough bytes for the frame header (8 bytes: 4-byte size + 4-byte frame_type)
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
     const maxSize = 64 * 1024; // 64KB max
@@ -59,7 +66,7 @@ async function readFrame(
       totalBytes += value.length;
     }
 
-    // Combine all chunks
+    // Combine all chunks into a single buffer
     const buffer = new Uint8Array(totalBytes);
     let offset = 0;
     for (const chunk of chunks) {
@@ -78,9 +85,9 @@ async function readFrame(
     // Parse frame type (4 bytes big-endian)
     const frameType = view.getInt32(4, false);
 
-    // We may need more data
-    let dataBytes = totalBytes - 8;
-    const neededBytes = size - 4; // size includes frame_type
+    // Calculate how many data bytes we need beyond the header
+    const neededBytes = size - 4; // size field includes frame_type (4) + data (size-4)
+    let dataBytes = totalBytes - 8; // bytes we already have past the 8-byte header
 
     while (dataBytes < neededBytes) {
       const { value, done } = await reader.read();
@@ -90,7 +97,7 @@ async function readFrame(
       totalBytes += value.length;
     }
 
-    // Recombine
+    // Recombine all chunks
     const fullBuffer = new Uint8Array(totalBytes);
     let off = 0;
     for (const chunk of chunks) {
@@ -98,14 +105,56 @@ async function readFrame(
       off += chunk.length;
     }
 
-    // Extract data portion (after 4-byte size + 4-byte frame_type)
-    const dataSlice = fullBuffer.slice(8, 8 + neededBytes);
-    const data = new TextDecoder().decode(dataSlice);
+    // Extract raw data portion (after 4-byte size + 4-byte frame_type)
+    const rawData = fullBuffer.slice(8, 8 + neededBytes);
+    // Text decode is safe for FrameTypeResponse and FrameTypeError; lossy for FrameTypeMessage
+    const data = new TextDecoder().decode(rawData);
 
-    return { frameType, data };
+    return { frameType, data, rawData };
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  try {
+    const result = await Promise.race([readPromise, timeoutPromise]);
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    return result;
+  } catch (error) {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+    throw error;
+  }
+}
+
+/**
+ * Parse an NSQ message from the raw bytes of a FrameTypeMessage frame.
+ *
+ * Wire format: [timestamp:8 BE int64][attempts:2 BE uint16][messageId:16 bytes][body...]
+ *
+ * The 16-byte message ID is hex-encoded by nsqd, so the raw bytes are printable
+ * ASCII hex characters. We decode them as-is (they are valid UTF-8/ASCII).
+ */
+function parseNSQMessage(raw: Uint8Array): {
+  timestamp: bigint;
+  attempts: number;
+  messageId: string;
+  body: string;
+} | null {
+  // Minimum message size: 8 (timestamp) + 2 (attempts) + 16 (message ID) = 26 bytes
+  if (raw.length < 26) return null;
+
+  const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+
+  // 8-byte nanosecond timestamp (int64 big-endian)
+  const timestamp = view.getBigInt64(0, false);
+
+  // 2-byte attempt count (uint16 big-endian)
+  const attempts = view.getUint16(8, false);
+
+  // 16-byte message ID (hex-encoded ASCII bytes)
+  const messageId = new TextDecoder().decode(raw.slice(10, 26));
+
+  // Remaining bytes are the message body
+  const body = new TextDecoder().decode(raw.slice(26));
+
+  return { timestamp, attempts, messageId, body };
 }
 
 /**
@@ -450,6 +499,13 @@ export async function handleNSQSubscribe(request: Request): Promise<Response> {
     const host = body.host;
     const port = body.port || 4150;
     const channel = body.channel || 'portofcall';
+
+    // Validate channel name (same rules as topic)
+    if (!/^[a-zA-Z0-9._-]{1,64}$/.test(channel)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid channel name' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const maxMessages = body.max_messages || 10;
     const collectMs = body.collect_ms || 2000;
     const timeout = body.timeout || 15000;
@@ -511,20 +567,17 @@ export async function handleNSQSubscribe(request: Request): Promise<Response> {
                 await writer.write(new TextEncoder().encode('NOP\n'));
               }
             } else if (frame.frameType === 2) {
-              // FrameTypeMessage — format: [timestamp:8][attempts:2][messageId:16][body]
-              const raw = frame.data;
-              if (raw.length >= 26) {
-                const msgId = raw.slice(10, 26);
-                const msgBody = raw.slice(26);
-                const attemptBytes = raw.charCodeAt(8) * 256 + raw.charCodeAt(9);
+              // FrameTypeMessage — MUST use rawData, not text-decoded data
+              const parsed = parseNSQMessage(frame.rawData);
+              if (parsed) {
                 messages.push({
-                  messageId: msgId,
-                  attempts: attemptBytes,
-                  body: msgBody,
-                  timestamp: Date.now(),
+                  messageId: parsed.messageId,
+                  attempts: parsed.attempts,
+                  body: parsed.body,
+                  timestamp: Number(parsed.timestamp / BigInt(1000000)), // Convert nanoseconds to milliseconds
                 });
                 // FIN to acknowledge
-                await writer.write(new TextEncoder().encode(`FIN ${msgId}\n`));
+                await writer.write(new TextEncoder().encode(`FIN ${parsed.messageId}\n`));
               }
             }
           } catch {

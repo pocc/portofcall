@@ -75,10 +75,13 @@ const UPNP_DESCRIPTION_PATHS = [
 
 /**
  * Extract the text content of the first XML element matching `tag`.
+ * Uses non-greedy match to handle nested elements and CDATA sections.
  */
 function xmlValue(xml: string, tag: string): string {
-  const re = new RegExp(`<${tag}[^>]*>([^<]*)<\/${tag}>`, 'i');
-  return xml.match(re)?.[1]?.trim() ?? '';
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\/${tag}>`, 'i');
+  const match = xml.match(re)?.[1]?.trim() ?? '';
+  // Strip CDATA sections if present
+  return match.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
 }
 
 /**
@@ -604,9 +607,10 @@ export async function handleSSDPSearch(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
+    // Per UPnP spec, HOST header MUST be multicast address even for unicast M-SEARCH
     const msearch = [
       'M-SEARCH * HTTP/1.1',
-      `HOST: ${host}:${port}`,
+      'HOST: 239.255.255.250:1900',
       'MAN: "ssdp:discover"',
       `MX: ${mx}`,
       `ST: ${st}`,
@@ -656,7 +660,8 @@ export async function handleSSDPSearch(request: Request): Promise<Response> {
         const headers: Record<string, string> = {};
         const lines = buf.split('\r\n');
         const statusLine = lines[0] ?? '';
-        const isOk = statusLine.includes('200') || statusLine.includes('HTTP/1');
+        const statusCode = parseInt(statusLine.match(/HTTP\/[\d.]+ (\d+)/)?.[1] ?? '0', 10);
+        const isOk = statusCode === 200;
 
         for (let i = 1; i < lines.length; i++) {
           const line = lines[i].trim();

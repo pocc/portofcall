@@ -332,13 +332,22 @@ export async function handleIMAPList(request: Request): Promise<Response> {
 
         // Parse mailbox list
         const mailboxes: string[] = [];
-        const lines = listResp.split('\n');
+        const lines = listResp.split('\r\n');
 
         for (const line of lines) {
-          // IMAP LIST response: * LIST (\HasNoChildren) "/" "INBOX"
-          const match = line.match(/\* LIST \([^)]*\) "([^"]*)" "([^"]*)"/);
-          if (match) {
-            mailboxes.push(match[2]);
+          // RFC 3501 LIST response format:
+          //   * LIST (\Flags) "delimiter" "mailbox name"
+          //   * LIST (\Flags) "delimiter" mailbox (unquoted)
+          //   * LIST (\Flags) NIL "mailbox name"
+          //   * LIST (\Flags) NIL mailbox
+          const listMatch = line.match(/^\* LIST \([^)]*\)\s+(NIL|"(?:[^"\\]|\\.)*")\s+(.+)$/);
+          if (listMatch) {
+            let name = listMatch[2].trim();
+            // Remove surrounding quotes and unescape if quoted
+            if (name.startsWith('"') && name.endsWith('"')) {
+              name = name.slice(1, -1).replace(/\\(.)/g, '$1');
+            }
+            mailboxes.push(name);
           }
         }
 

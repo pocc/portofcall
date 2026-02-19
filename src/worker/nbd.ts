@@ -42,7 +42,7 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 const NBDMAGIC = new Uint8Array([0x4e, 0x42, 0x44, 0x4d, 0x41, 0x47, 0x49, 0x43]); // "NBDMAGIC"
 const IHAVEOPT = new Uint8Array([0x49, 0x48, 0x41, 0x56, 0x45, 0x4f, 0x50, 0x54]); // "IHAVEOPT"
 
-// Reply magic: 0x3e889045565a9 (8 bytes big-endian)
+// Option reply magic: 0x0003e889045565a9 (8 bytes big-endian)
 const REPLY_MAGIC = new Uint8Array([0x00, 0x03, 0xe8, 0x89, 0x04, 0x55, 0x65, 0xa9]);
 
 // Handshake flags (server)
@@ -80,6 +80,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 
 /**
  * Read exactly `needed` bytes from a reader with timeout.
+ * Returns exactly the requested number of bytes, no more, no less.
  */
 async function readExact(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -98,11 +99,14 @@ async function readExact(
     total += result.value.length;
   }
 
-  const combined = new Uint8Array(total);
+  // Combine chunks and return exactly `needed` bytes (trim overshoot)
+  const combined = new Uint8Array(needed);
   let offset = 0;
   for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
+    const toCopy = Math.min(chunk.length, needed - offset);
+    combined.set(chunk.subarray(0, toCopy), offset);
+    offset += toCopy;
+    if (offset >= needed) break;
   }
   return combined;
 }
@@ -258,11 +262,13 @@ async function readExportList(
 ): Promise<{ exports: string[]; error?: string }> {
   const exports: string[] = [];
   const maxExports = 100;
+  const maxDataLen = 1024 * 1024; // 1MB limit for reply data
 
   try {
     let buffer = new Uint8Array(0);
 
     for (let i = 0; i < maxExports + 1; i++) {
+      // Read header (20 bytes minimum)
       while (buffer.length < 20) {
         const result = await Promise.race([reader.read(), timeoutPromise]);
         if (result.done || !result.value) return { exports };
@@ -273,9 +279,16 @@ async function readExportList(
       }
 
       const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-      const dataLen = view.getUint32(16, false);
+      const dataLen = view.getUint32(16, false); // network byte order (big-endian)
+
+      // Validate dataLen to prevent memory exhaustion
+      if (dataLen > maxDataLen) {
+        return { exports, error: `Reply data length ${dataLen} exceeds maximum ${maxDataLen}` };
+      }
+
       const totalNeeded = 20 + dataLen;
 
+      // Read data segment
       while (buffer.length < totalNeeded) {
         const result = await Promise.race([reader.read(), timeoutPromise]);
         if (result.done || !result.value) return { exports };
@@ -311,6 +324,7 @@ async function readExportList(
 /**
  * Format raw bytes as a hex dump string with ASCII sidebar.
  * Produces output like: "0000  4e 42 44 4d  |NBDM|"
+ * Non-printable bytes (< 0x20 or >= 0x7F) are shown as '.'
  */
 function formatHexDump(data: Uint8Array, maxBytes = 512): string {
   const lines: string[] = [];
@@ -322,8 +336,9 @@ function formatHexDump(data: Uint8Array, maxBytes = 512): string {
       .map(b => b.toString(16).padStart(2, '0'))
       .join(' ')
       .padEnd(47, ' ');
+    // Only ASCII printable characters (0x20-0x7E); everything else is '.'
     const ascii = Array.from(rowBytes)
-      .map(b => (b >= 0x20 && b < 0x7f) ? String.fromCharCode(b) : '.')
+      .map(b => (b >= 0x20 && b <= 0x7e) ? String.fromCharCode(b) : '.')
       .join('');
     lines.push(`${i.toString(16).padStart(4, '0')}  ${hex}  |${ascii}|`);
   }
@@ -335,6 +350,7 @@ function formatHexDump(data: Uint8Array, maxBytes = 512): string {
  * Handle NBD connection test — performs newstyle handshake and lists exports.
  */
 export async function handleNBDConnect(request: Request): Promise<Response> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const body = await request.json() as {
       host: string;
@@ -378,12 +394,17 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      socket.close();
+      throw error;
+    }
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
@@ -416,6 +437,7 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
 
     const rtt = Date.now() - startTime;
 
+    if (timeoutId !== null) clearTimeout(timeoutId);
     writer.releaseLock();
     reader.releaseLock();
     socket.close();
@@ -443,6 +465,8 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
     });
 
   } catch (error) {
+    // Ensure timeout is cleared on error path
+    if (timeoutId !== null) clearTimeout(timeoutId);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -457,6 +481,7 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
  * Handle NBD probe — lightweight check for NBD magic bytes.
  */
 export async function handleNBDProbe(request: Request): Promise<Response> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const body = await request.json() as {
       host: string;
@@ -490,23 +515,24 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
 
-    const reader = socket.readable.getReader();
-    const handshakeData = await readExact(reader, 18, timeoutPromise);
-    const rtt = Date.now() - startTime;
+      const reader = socket.readable.getReader();
+      const handshakeData = await readExact(reader, 18, timeoutPromise);
+      const rtt = Date.now() - startTime;
 
-    const handshake = parseHandshake(handshakeData);
+      const handshake = parseHandshake(handshakeData);
 
-    reader.releaseLock();
-    socket.close();
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      reader.releaseLock();
+      socket.close();
 
-    return new Response(JSON.stringify({
+      return new Response(JSON.stringify({
       success: true,
       host,
       port,
@@ -515,15 +541,20 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
       isNewstyle: handshake.isNewstyle,
       fixedNewstyle: handshake.fixedNewstyle,
       noZeroes: handshake.noZeroes,
-      message: handshake.isNBD
-        ? `NBD server detected (${handshake.isNewstyle ? 'newstyle' : 'oldstyle'}).`
-        : 'Not an NBD server.',
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
+        message: handshake.isNBD
+          ? `NBD server detected (${handshake.isNewstyle ? 'newstyle' : 'oldstyle'}).`
+          : 'Not an NBD server.',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      throw error;
+    }
 
   } catch (error) {
+    if (timeoutId !== null) clearTimeout(timeoutId);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -547,6 +578,7 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
  * Default read_size is 512 bytes (one sector). Offset defaults to 0.
  */
 export async function handleNBDRead(request: Request): Promise<Response> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const body = await request.json() as {
       host: string;
@@ -590,6 +622,16 @@ export async function handleNBDRead(request: Request): Promise<Response> {
       });
     }
 
+    if (offset < 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'offset must be non-negative',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -604,96 +646,116 @@ export async function handleNBDRead(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
 
-    const writer = socket.writable.getWriter();
-    const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
 
-    // Step 1: Read handshake (18 bytes)
-    const handshakeData = await readExact(reader, 18, timeoutPromise);
-    const handshake = parseHandshake(handshakeData);
+      // Step 1: Read handshake (18 bytes)
+      const handshakeData = await readExact(reader, 18, timeoutPromise);
+      const handshake = parseHandshake(handshakeData);
 
-    if (!handshake.isNBD) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Server does not speak the NBD protocol',
-        rawHex: Array.from(handshakeData).map(b => b.toString(16).padStart(2, '0')).join(' '),
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+      if (!handshake.isNBD) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Server does not speak the NBD protocol',
+          rawHex: Array.from(handshakeData).map(b => b.toString(16).padStart(2, '0')).join(' '),
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
-    if (!handshake.isNewstyle || !handshake.fixedNewstyle) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'NBD server does not support fixed newstyle negotiation required for export selection',
-        isNBD: true,
-        isNewstyle: handshake.isNewstyle,
-        fixedNewstyle: handshake.fixedNewstyle,
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+      if (!handshake.isNewstyle || !handshake.fixedNewstyle) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'NBD server does not support fixed newstyle negotiation required for export selection',
+          isNBD: true,
+          isNewstyle: handshake.isNewstyle,
+          fixedNewstyle: handshake.fixedNewstyle,
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
-    // Step 2: Send client flags
-    const clientFlags = buildClientFlags(true, handshake.noZeroes);
-    await writer.write(clientFlags);
+      // Step 2: Send client flags
+      const clientFlags = buildClientFlags(true, handshake.noZeroes);
+      await writer.write(clientFlags);
 
-    // Step 3: Send NBD_OPT_EXPORT_NAME to select the export and enter transmission mode
-    // After NBD_OPT_EXPORT_NAME, if server accepts, it sends:
-    // export_size[8B] + transmission_flags[2B] + (if not NO_ZEROES: 124 zero bytes)
-    const exportNameReq = buildExportNameRequest(exportName);
-    await writer.write(exportNameReq);
+      // Step 3: Send NBD_OPT_EXPORT_NAME to select the export and enter transmission mode
+      // After NBD_OPT_EXPORT_NAME, if server accepts, it sends:
+      // export_size[8B] + transmission_flags[2B] + (if not NO_ZEROES: 124 zero bytes)
+      const exportNameReq = buildExportNameRequest(exportName);
+      await writer.write(exportNameReq);
 
-    // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
-    const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
-    const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
-    const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
-    const exportSize = exportView.getBigUint64(0, false);
-    const transmissionFlags = exportView.getUint16(8, false);
+      // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
+      const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
+      const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
+      const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
+      const exportSize = exportView.getBigUint64(0, false); // big-endian per NBD spec
+      const transmissionFlags = exportView.getUint16(8, false);
 
-    // Step 4: Send READ request
-    const handle = BigInt(0x1234567890ABCDEF);
-    const readReq = buildReadRequest(handle, BigInt(offset), readSize);
-    await writer.write(readReq);
+      // Step 4: Send READ request
+      const handle = BigInt(0x1234567890ABCDEF);
+      const readReq = buildReadRequest(handle, BigInt(offset), readSize);
+      await writer.write(readReq);
 
-    // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
-    const replyHeader = await readExact(reader, 16, timeoutPromise);
-    const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
-    const replyMagic = replyView.getUint32(0, false);
-    const replyError = replyView.getUint32(4, false);
+      // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
+      const replyHeader = await readExact(reader, 16, timeoutPromise);
+      const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
+      const replyMagic = replyView.getUint32(0, false); // big-endian
+      const replyError = replyView.getUint32(4, false);
+      const replyHandle = replyView.getBigUint64(8, false);
 
-    if (replyMagic !== NBD_REPLY_MAGIC) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: `Invalid NBD reply magic: 0x${replyMagic.toString(16)} (expected 0x${NBD_REPLY_MAGIC.toString(16)})`,
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
+      if (replyMagic !== NBD_REPLY_MAGIC) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Invalid NBD reply magic: 0x${replyMagic.toString(16)} (expected 0x${NBD_REPLY_MAGIC.toString(16)})`,
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
-    if (replyError !== 0) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
+      // Validate handle matches request (RFC 7143 §2.6.2)
+      if (replyHandle !== handle) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Handle mismatch: received 0x${replyHandle.toString(16)}, expected 0x${handle.toString(16)}`,
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (replyError !== 0) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
         success: false,
         error: `NBD server returned error code: ${replyError} (errno ${replyError})`,
         exportSize: exportSize.toString(),
@@ -704,52 +766,58 @@ export async function handleNBDRead(request: Request): Promise<Response> {
       });
     }
 
-    // Step 6: Read block data
-    const blockData = await readExact(reader, readSize, timeoutPromise);
-    const rtt = Date.now() - startTime;
+      // Step 6: Read block data
+      const blockData = await readExact(reader, readSize, timeoutPromise);
+      const rtt = Date.now() - startTime;
 
-    // Step 7: Send DISCONNECT
-    try {
-      const disconnectReq = buildDisconnectRequest();
-      await writer.write(disconnectReq);
-    } catch {
-      // Ignore write errors during cleanup
+      // Step 7: Send DISCONNECT
+      try {
+        const disconnectReq = buildDisconnectRequest();
+        await writer.write(disconnectReq);
+      } catch {
+        // Ignore write errors during cleanup
+      }
+
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      // Format hex dump
+      const hexDump = formatHexDump(blockData);
+      const rawHex = Array.from(blockData).map(b => b.toString(16).padStart(2, '0')).join(' ');
+
+      // Basic analysis of block data
+      const isAllZero = blockData.every(b => b === 0);
+      const uniqueBytes = new Set(blockData).size;
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        exportName: exportName || '(default)',
+        exportSize: exportSize.toString(),
+        transmissionFlags,
+        offset,
+        readSize,
+        bytesRead: blockData.length,
+        isAllZero,
+        uniqueByteValues: uniqueBytes,
+        hexDump,
+        rawHex: rawHex.substring(0, 1024), // first 512 bytes in hex
+        message: `Read ${blockData.length} bytes at offset ${offset} from export '${exportName || 'default'}'`,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      throw error;
     }
 
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
-
-    // Format hex dump
-    const hexDump = formatHexDump(blockData);
-    const rawHex = Array.from(blockData).map(b => b.toString(16).padStart(2, '0')).join(' ');
-
-    // Basic analysis of block data
-    const isAllZero = blockData.every(b => b === 0);
-    const uniqueBytes = new Set(blockData).size;
-
-    return new Response(JSON.stringify({
-      success: true,
-      host,
-      port,
-      rtt,
-      exportName: exportName || '(default)',
-      exportSize: exportSize.toString(),
-      transmissionFlags,
-      offset,
-      readSize,
-      bytesRead: blockData.length,
-      isAllZero,
-      uniqueByteValues: uniqueBytes,
-      hexDump,
-      rawHex: rawHex.substring(0, 1024), // first 512 bytes in hex
-      message: `Read ${blockData.length} bytes at offset ${offset} from export '${exportName || 'default'}'`,
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-
   } catch (error) {
+    if (timeoutId !== null) clearTimeout(timeoutId);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',
@@ -795,6 +863,7 @@ function buildWriteRequest(handle: bigint, offset: bigint, data: Uint8Array): Ui
  *   data: hex string (e.g. "deadbeef") or array of byte values
  */
 export async function handleNBDWrite(request: Request): Promise<Response> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const body = await request.json() as {
       host: string;
@@ -847,9 +916,29 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
           headers: { 'Content-Type': 'application/json' },
         });
       }
+      // Validate hex characters
+      if (!/^[0-9a-fA-F]+$/.test(hex)) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'data hex string contains invalid characters',
+        }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       writeData = new Uint8Array(hex.length / 2);
       for (let i = 0; i < writeData.length; i++) {
-        writeData[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+        const byte = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+        if (isNaN(byte)) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Invalid hex byte at position ${i * 2}: ${hex.slice(i * 2, i * 2 + 2)}`,
+          }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        writeData[i] = byte;
       }
     } else if (Array.isArray(data)) {
       writeData = new Uint8Array(data);
@@ -873,6 +962,16 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
       });
     }
 
+    if (offset < 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'offset must be non-negative',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -889,150 +988,178 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
     const socket = connect(`${host}:${port}`);
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutId = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
-
-    const writer = socket.writable.getWriter();
-    const reader = socket.readable.getReader();
-
-    // Step 1: Read handshake (18 bytes)
-    const handshakeData = await readExact(reader, 18, timeoutPromise);
-    const handshake = parseHandshake(handshakeData);
-
-    if (!handshake.isNBD) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Server does not speak the NBD protocol',
-        rawHex: Array.from(handshakeData).map(b => b.toString(16).padStart(2, '0')).join(' '),
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (!handshake.isNewstyle || !handshake.fixedNewstyle) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'NBD server does not support fixed newstyle negotiation required for export selection',
-        isNBD: true,
-        isNewstyle: handshake.isNewstyle,
-        fixedNewstyle: handshake.fixedNewstyle,
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Step 2: Send client flags
-    const clientFlags = buildClientFlags(true, handshake.noZeroes);
-    await writer.write(clientFlags);
-
-    // Step 3: Send NBD_OPT_EXPORT_NAME to select the export and enter transmission mode
-    const exportNameReq = buildExportNameRequest(exportName);
-    await writer.write(exportNameReq);
-
-    // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
-    const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
-    const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
-    const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
-    const exportSize = exportView.getBigUint64(0, false);
-    const transmissionFlags = exportView.getUint16(8, false);
-
-    // Check that write is not prohibited (NBD_FLAG_READ_ONLY = bit 1)
-    const NBD_FLAG_READ_ONLY = 1 << 1;
-    if (transmissionFlags & NBD_FLAG_READ_ONLY) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'NBD export is read-only (NBD_FLAG_READ_ONLY is set)',
-        exportSize: exportSize.toString(),
-        transmissionFlags,
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    // Step 4: Send WRITE request (type=1, NBD_CMD_WRITE)
-    const handle = BigInt(0xABCDEF1234567890);
-    const writeReq = buildWriteRequest(handle, BigInt(offset), writeData);
-    await writer.write(writeReq);
-
-    // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
-    const replyHeader = await readExact(reader, 16, timeoutPromise);
-    const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
-    const replyMagic = replyView.getUint32(0, false);
-    const replyError = replyView.getUint32(4, false);
-
-    if (replyMagic !== NBD_REPLY_MAGIC) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: `Invalid NBD reply magic: 0x${replyMagic.toString(16)} (expected 0x${NBD_REPLY_MAGIC.toString(16)})`,
-      }), {
-        status: 502,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    if (replyError !== 0) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-      return new Response(JSON.stringify({
-        success: false,
-        error: `NBD server returned write error code: ${replyError} (errno ${replyError})`,
-        exportSize: exportSize.toString(),
-        transmissionFlags,
-      }), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
-    }
-
-    const rtt = Date.now() - startTime;
-
-    // Step 6: Send DISCONNECT
     try {
-      const disconnectReq = buildDisconnectRequest();
-      await writer.write(disconnectReq);
-    } catch {
-      // Ignore write errors during cleanup
+      await Promise.race([socket.opened, timeoutPromise]);
+
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
+      // Step 1: Read handshake (18 bytes)
+      const handshakeData = await readExact(reader, 18, timeoutPromise);
+      const handshake = parseHandshake(handshakeData);
+
+      if (!handshake.isNBD) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Server does not speak the NBD protocol',
+          rawHex: Array.from(handshakeData).map(b => b.toString(16).padStart(2, '0')).join(' '),
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (!handshake.isNewstyle || !handshake.fixedNewstyle) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'NBD server does not support fixed newstyle negotiation required for export selection',
+          isNBD: true,
+          isNewstyle: handshake.isNewstyle,
+          fixedNewstyle: handshake.fixedNewstyle,
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Step 2: Send client flags
+      const clientFlags = buildClientFlags(true, handshake.noZeroes);
+      await writer.write(clientFlags);
+
+      // Step 3: Send NBD_OPT_EXPORT_NAME to select the export and enter transmission mode
+      const exportNameReq = buildExportNameRequest(exportName);
+      await writer.write(exportNameReq);
+
+      // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
+      const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
+      const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
+      const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
+      const exportSize = exportView.getBigUint64(0, false); // big-endian per NBD spec
+      const transmissionFlags = exportView.getUint16(8, false);
+
+      // Check that write is not prohibited (NBD_FLAG_READ_ONLY = bit 1)
+      const NBD_FLAG_READ_ONLY = 1 << 1;
+      if (transmissionFlags & NBD_FLAG_READ_ONLY) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'NBD export is read-only (NBD_FLAG_READ_ONLY is set)',
+          exportSize: exportSize.toString(),
+          transmissionFlags,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Step 4: Send WRITE request (type=1, NBD_CMD_WRITE)
+      const handle = BigInt(0xABCDEF1234567890);
+      const writeReq = buildWriteRequest(handle, BigInt(offset), writeData);
+      await writer.write(writeReq);
+
+      // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
+      const replyHeader = await readExact(reader, 16, timeoutPromise);
+      const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
+      const replyMagic = replyView.getUint32(0, false); // big-endian
+      const replyError = replyView.getUint32(4, false);
+      const replyHandle = replyView.getBigUint64(8, false);
+
+      if (replyMagic !== NBD_REPLY_MAGIC) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Invalid NBD reply magic: 0x${replyMagic.toString(16)} (expected 0x${NBD_REPLY_MAGIC.toString(16)})`,
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Validate handle matches request (RFC 7143 §2.6.2)
+      if (replyHandle !== handle) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Handle mismatch: received 0x${replyHandle.toString(16)}, expected 0x${handle.toString(16)}`,
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      if (replyError !== 0) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        writer.releaseLock();
+        reader.releaseLock();
+        socket.close();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `NBD server returned write error code: ${replyError} (errno ${replyError})`,
+          exportSize: exportSize.toString(),
+          transmissionFlags,
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      const rtt = Date.now() - startTime;
+
+      // Step 6: Send DISCONNECT
+      try {
+        const disconnectReq = buildDisconnectRequest();
+        await writer.write(disconnectReq);
+      } catch {
+        // Ignore write errors during cleanup
+      }
+
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        exportName: exportName || '(default)',
+        exportSize: exportSize.toString(),
+        transmissionFlags,
+        offset,
+        bytesWritten: writeData.length,
+        message: `Successfully wrote ${writeData.length} bytes at offset ${offset} to export '${exportName || 'default'}'`,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } catch (error) {
+      if (timeoutId !== null) clearTimeout(timeoutId);
+      throw error;
     }
-
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
-
-    return new Response(JSON.stringify({
-      success: true,
-      host,
-      port,
-      rtt,
-      exportName: exportName || '(default)',
-      exportSize: exportSize.toString(),
-      transmissionFlags,
-      offset,
-      bytesWritten: writeData.length,
-      message: `Successfully wrote ${writeData.length} bytes at offset ${offset} to export '${exportName || 'default'}'`,
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
 
   } catch (error) {
+    if (timeoutId !== null) clearTimeout(timeoutId);
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Unknown error',

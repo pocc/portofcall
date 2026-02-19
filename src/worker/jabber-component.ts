@@ -77,11 +77,11 @@ interface JabberComponentResponse {
  * Build Jabber Component stream initialization
  */
 function buildComponentStreamInit(componentName: string): string {
-  return `<?xml version='1.0'?>
-<stream:stream
-  xmlns='jabber:component:accept'
-  xmlns:stream='http://etherx.jabber.org/streams'
-  to='${componentName}'>`;
+  return `<?xml version='1.0'?>` +
+    `<stream:stream ` +
+    `xmlns='jabber:component:accept' ` +
+    `xmlns:stream='http://etherx.jabber.org/streams' ` +
+    `to='${xmlEscape(componentName)}'>`;
 }
 
 /**
@@ -130,8 +130,8 @@ function parseStreamResponse(data: string): {
     result.from = fromMatch[1];
   }
 
-  // Check for handshake success (empty <handshake/> element)
-  if (data.includes('<handshake/>') || data.includes('<handshake />')) {
+  // Check for handshake success (empty <handshake/> element or <handshake></handshake>)
+  if (data.includes('<handshake/>') || data.includes('<handshake />') || data.includes('<handshake></handshake>')) {
     result.hasHandshakeSuccess = true;
   }
 
@@ -139,7 +139,7 @@ function parseStreamResponse(data: string): {
   if (data.includes('<stream:error>') || data.includes('</error>')) {
     result.hasError = true;
 
-    // Identify error type
+    // Identify error type (RFC 6120 section 4.9.3 stream error conditions)
     if (data.includes('<not-authorized')) {
       result.errorType = 'not-authorized';
     } else if (data.includes('<host-unknown')) {
@@ -148,6 +148,12 @@ function parseStreamResponse(data: string): {
       result.errorType = 'invalid-namespace';
     } else if (data.includes('<invalid-xml')) {
       result.errorType = 'invalid-xml';
+    } else if (data.includes('<connection-timeout')) {
+      result.errorType = 'connection-timeout';
+    } else if (data.includes('<system-shutdown')) {
+      result.errorType = 'system-shutdown';
+    } else if (data.includes('<conflict')) {
+      result.errorType = 'conflict';
     } else {
       result.errorType = 'unknown';
     }
@@ -682,10 +688,9 @@ export async function handleJabberComponentSend(request: Request): Promise<Respo
       let stanzaResponseRaw = '';
 
       if (messageBody) {
-        // Send message stanza
+        // Send message stanza (no explicit xmlns — inherits jabber:component:accept from stream)
         const messageStanza =
-          `<message from='${xmlEscape(from)}' to='${xmlEscape(to)}'` +
-          ` xmlns='jabber:client'>` +
+          `<message from='${xmlEscape(from)}' to='${xmlEscape(to)}'>` +
           `<body>${xmlEscape(messageBody)}</body>` +
           `</message>`;
         await writer.write(new TextEncoder().encode(messageStanza));
@@ -694,10 +699,9 @@ export async function handleJabberComponentSend(request: Request): Promise<Respo
         // Read any immediate response (routing acknowledgement or error)
         stanzaResponseRaw = await readWithDeadline(reader, Math.min(timeout, 3000));
       } else {
-        // Send IQ ping
+        // Send IQ ping (no explicit xmlns on <iq> — inherits from stream)
         const pingStanza =
-          `<iq type='get' from='${xmlEscape(from)}' to='${xmlEscape(to)}' id='ping1'` +
-          ` xmlns='jabber:client'>` +
+          `<iq type='get' from='${xmlEscape(from)}' to='${xmlEscape(to)}' id='ping1'>` +
           `<ping xmlns='urn:ietf:params:xml:ns:xmpp-ping'/>` +
           `</iq>`;
         await writer.write(new TextEncoder().encode(pingStanza));

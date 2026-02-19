@@ -348,17 +348,14 @@ export async function handleXmppS2SConnect(request: Request): Promise<Response> 
 
             // Also break if we get stream opening and some content
             if (responseText.includes('<stream:stream') && totalBytes > 200) {
-              // Give it a moment to get features
-              await new Promise((resolve) => setTimeout(resolve, 500));
-              const { value: extraValue } = await Promise.race([
-                reader.read(),
-                new Promise<{ value?: Uint8Array; done: boolean }>((resolve) =>
-                  setTimeout(() => resolve({ done: false }), 100)
-                ),
-              ]);
-              if (extraValue) {
-                chunks.push(extraValue);
-                totalBytes += extraValue.length;
+              // Wait a bit more for features to arrive
+              const extraTimeout = new Promise<{ value: undefined; done: boolean }>((resolve) =>
+                setTimeout(() => resolve({ value: undefined, done: false }), 500)
+              );
+              const extraResult = await Promise.race([reader.read(), extraTimeout]);
+              if (extraResult.value) {
+                chunks.push(extraResult.value);
+                totalBytes += extraResult.value.length;
               }
               break;
             }
@@ -603,7 +600,7 @@ export async function handleXmppS2SPing(request: Request): Promise<Response> {
       const hasPingResponse = responseText.includes(`id='${pingId}'`) ||
                               responseText.includes(`id="${pingId}"`);
       const hasError = responseText.includes('<stream:error>') ||
-                       responseText.includes("<error");
+                       (responseText.includes('<error') && responseText.includes('type=\'error\''));
 
       return new Response(JSON.stringify({
         success: hasPingResponse && !hasError,
@@ -659,24 +656,33 @@ async function readS2SUntil(
   while (true) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) break;
-    const { value, done } = await Promise.race([
+    const result = await Promise.race([
       reader.read(),
-      new Promise<{ value?: Uint8Array; done: boolean }>((resolve) =>
-        setTimeout(() => resolve({ value: undefined, done: true }), remaining)),
+      new Promise<{ value: undefined; done: boolean }>((resolve) =>
+        setTimeout(() => resolve({ value: undefined, done: false }), remaining)),
     ]);
-    if (done || !value) break;
-    chunks.push(value);
-    total += value.length;
+    if (result.done || !result.value) break;
+    chunks.push(result.value);
+    total += result.value.length;
     if (total > maxBytes) break;
-    const text = dec.decode(chunks.reduce((a, c) => {
-      const m = new Uint8Array(a.length + c.length); m.set(a); m.set(c, a.length); return m;
-    }));
+    // Combine chunks efficiently
+    const combined = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const text = dec.decode(combined);
     if (text.includes(sentinel)) return text;
   }
   if (chunks.length === 0) return '';
-  return dec.decode(chunks.reduce((a, c) => {
-    const m = new Uint8Array(a.length + c.length); m.set(a); m.set(c, a.length); return m;
-  }));
+  const combined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return dec.decode(combined);
 }
 
 /**
@@ -707,7 +713,8 @@ export async function handleXMPPS2SConnect(request: Request): Promise<Response> 
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       try {
-        const header = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
+        // RFC 6120 Section 4.7: Stream opening with proper namespace declarations
+        const header = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
         await writer.write(new TextEncoder().encode(header));
         writer.releaseLock();
 
@@ -774,8 +781,9 @@ export async function handleXMPPS2SDialback(request: Request): Promise<Response>
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       try {
-        // Step 1: Send stream header
-        const header = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' xmlns:db='jabber:server:dialback' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
+        // Step 1: Send stream header with proper namespaces (RFC 6120 Section 4.7)
+        // XEP-0220 dialback namespace is declared when sending db:result, not in stream header
+        const header = `<?xml version='1.0'?><stream:stream xmlns='jabber:server' xmlns:stream='http://etherx.jabber.org/streams' to='${escapeXml(toDomain)}' from='${escapeXml(fromDomain)}' version='1.0'>`;
         await writer.write(new TextEncoder().encode(header));
 
         // Step 2: Read stream features
@@ -784,9 +792,9 @@ export async function handleXMPPS2SDialback(request: Request): Promise<Response>
         const features = parseStreamFeatures(raw);
         const tlsOffered = features.includes('STARTTLS');
 
-        // Step 3: Send dialback key
+        // Step 3: Send dialback key (XEP-0220 Section 2.1)
         const key = generateDialbackKey();
-        const dbResult = `<db:result from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
+        const dbResult = `<db:result xmlns:db='jabber:server:dialback' from='${escapeXml(fromDomain)}' to='${escapeXml(toDomain)}'>${key}</db:result>`;
         await writer.write(new TextEncoder().encode(dbResult));
         writer.releaseLock();
 

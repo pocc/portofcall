@@ -72,6 +72,9 @@ interface LspConnectResponse {
 
 /**
  * Encode a JSON-RPC message with LSP Content-Length framing.
+ *
+ * Per the LSP spec, Content-Length counts bytes (not characters), and the
+ * header block is terminated by \r\n\r\n.
  */
 function encodeLspMessage(message: unknown): Uint8Array {
   const json = JSON.stringify(message);
@@ -85,28 +88,61 @@ function encodeLspMessage(message: unknown): Uint8Array {
 }
 
 /**
- * Parse an LSP-framed message from a buffer string.
- * Returns { message, remaining } or null if incomplete.
+ * Concatenate two Uint8Array buffers into a new one.
  */
-function parseLspMessage(buffer: string): { message: unknown; remaining: string } | null {
-  const headerEnd = buffer.indexOf('\r\n\r\n');
+function concatBytes(a: Uint8Array<ArrayBufferLike>, b: Uint8Array<ArrayBufferLike>): Uint8Array {
+  const result = new Uint8Array(a.byteLength + b.byteLength);
+  result.set(a, 0);
+  result.set(b, a.byteLength);
+  return result;
+}
+
+/**
+ * Find the byte offset of the \r\n\r\n header terminator in a Uint8Array.
+ * Returns -1 if not found.
+ */
+function findHeaderEnd(buf: Uint8Array): number {
+  // Search for 0x0D 0x0A 0x0D 0x0A (\r\n\r\n)
+  for (let i = 0; i <= buf.byteLength - 4; i++) {
+    if (buf[i] === 0x0d && buf[i + 1] === 0x0a && buf[i + 2] === 0x0d && buf[i + 3] === 0x0a) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Parse an LSP-framed message from a byte buffer.
+ *
+ * Content-Length is specified in bytes per the LSP spec, so we operate on
+ * raw bytes rather than decoded strings to avoid multi-byte UTF-8 character
+ * miscounts.
+ *
+ * Returns { message, remaining } or null if the buffer is incomplete.
+ */
+function parseLspMessage(buffer: Uint8Array): { message: unknown; remaining: Uint8Array } | null {
+  const headerEnd = findHeaderEnd(buffer);
   if (headerEnd === -1) return null;
 
-  const headerSection = buffer.substring(0, headerEnd);
+  // Headers are always ASCII, safe to decode as a string
+  const decoder = new TextDecoder();
+  const headerSection = decoder.decode(buffer.subarray(0, headerEnd));
   const contentLengthMatch = headerSection.match(/Content-Length:\s*(\d+)/i);
   if (!contentLengthMatch) return null;
 
   const contentLength = parseInt(contentLengthMatch[1], 10);
-  const bodyStart = headerEnd + 4;
+  const bodyStart = headerEnd + 4; // skip \r\n\r\n
 
-  if (buffer.length < bodyStart + contentLength) return null;
+  if (buffer.byteLength < bodyStart + contentLength) return null;
 
-  const bodyStr = buffer.substring(bodyStart, bodyStart + contentLength);
-  const remaining = buffer.substring(bodyStart + contentLength);
+  // Decode exactly contentLength bytes as the JSON body
+  const bodyBytes = buffer.subarray(bodyStart, bodyStart + contentLength);
+  const bodyStr = decoder.decode(bodyBytes);
+  const remaining = buffer.subarray(bodyStart + contentLength);
 
   try {
     const message = JSON.parse(bodyStr);
-    return { message, remaining };
+    return { message, remaining: new Uint8Array(remaining) };
   } catch {
     return null;
   }
@@ -121,8 +157,7 @@ async function readLspResponse(
   targetId: number,
   timeout: number,
 ): Promise<LspInitializeResult> {
-  const decoder = new TextDecoder();
-  let buffer = '';
+  let buffer = new Uint8Array(0);
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => reject(new Error('LSP response timeout')), timeout);
@@ -133,7 +168,7 @@ async function readLspResponse(
     if (done) throw new Error('Connection closed before receiving response');
 
     if (value) {
-      buffer += decoder.decode(value, { stream: true });
+      buffer = concatBytes(buffer, value);
     }
 
     // Try to parse complete messages from buffer
@@ -193,7 +228,7 @@ function extractCapabilityList(caps: LspCapabilities): string[] {
 }
 
 /**
- * Handle LSP connect — send initialize request and return server capabilities.
+ * Handle LSP connect -- send initialize request and return server capabilities.
  */
 export async function handleLspConnect(request: Request): Promise<Response> {
   let host: string | undefined;
@@ -220,7 +255,7 @@ export async function handleLspConnect(request: Request): Promise<Response> {
       const response: LspConnectResponse = {
         success: false,
         cloudflare: true,
-        error: 'Host is protected by Cloudflare — direct TCP connection is not possible',
+        error: 'Host is protected by Cloudflare -- direct TCP connection is not possible',
       };
       return new Response(JSON.stringify(response), {
         headers: { 'Content-Type': 'application/json' },
@@ -239,7 +274,7 @@ export async function handleLspConnect(request: Request): Promise<Response> {
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    // Build initialize request
+    // Build initialize request per LSP 3.17 spec
     const initializeRequest = {
       jsonrpc: '2.0',
       id: 1,
@@ -317,16 +352,18 @@ async function sendLSPMessage(
 
 /**
  * Read one complete Content-Length framed LSP message from the reader.
- * Accumulates bytes until a full message is available, then returns the
- * parsed JSON and releases any leftover bytes into a remainder string.
+ *
+ * Accumulates raw bytes until a full message is available, then returns the
+ * parsed JSON and updates the byte buffer with any remainder.
+ *
+ * Uses byte-level buffering to correctly handle Content-Length (which counts
+ * bytes, not characters) even when JSON payloads contain multi-byte UTF-8.
  */
 async function readLSPMessage(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  bufferRef: { value: string },
+  bufferRef: { value: Uint8Array },
   timeoutMs: number,
 ): Promise<unknown> {
-  const decoder = new TextDecoder();
-
   const deadline = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('LSP read timeout')), timeoutMs)
   );
@@ -341,7 +378,7 @@ async function readLSPMessage(
     const { value, done } = await Promise.race([reader.read(), deadline]);
     if (done) throw new Error('Connection closed while waiting for LSP message');
     if (value) {
-      bufferRef.value += decoder.decode(value, { stream: true });
+      bufferRef.value = concatBytes(bufferRef.value, value);
     }
   }
 }
@@ -358,7 +395,7 @@ interface LspSessionRequest {
 
 /**
  * Handle a full LSP session:
- * initialize → initialized → (optional) didOpen → hover → completion → shutdown → exit
+ * initialize -> initialized -> (optional) didOpen -> hover -> completion -> shutdown -> exit
  */
 export async function handleLSPSession(request: Request): Promise<Response> {
   let host: string | undefined;
@@ -384,7 +421,7 @@ export async function handleLSPSession(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         cloudflare: true,
-        error: 'Host is protected by Cloudflare — direct TCP connection is not possible',
+        error: 'Host is protected by Cloudflare -- direct TCP connection is not possible',
       }), { headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -398,8 +435,8 @@ export async function handleLSPSession(request: Request): Promise<Response> {
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
-    // Shared accumulation buffer passed by reference between readLSPMessage calls
-    const buf: { value: string } = { value: '' };
+    // Shared byte buffer passed by reference between readLSPMessage calls
+    const buf: { value: Uint8Array } = { value: new Uint8Array(0) };
     const msgTimeout = Math.min(timeout, 10000);
 
     // 1. Send initialize
@@ -446,7 +483,7 @@ export async function handleLSPSession(request: Request): Promise<Response> {
       // Skip notifications (no id) that arrive before the response
     }
 
-    // 2. Send initialized notification
+    // 2. Send initialized notification (JSON-RPC 2.0 requires params field)
     await sendLSPMessage(writer, {
       jsonrpc: '2.0',
       method: 'initialized',
@@ -501,7 +538,7 @@ export async function handleLSPSession(request: Request): Promise<Response> {
       try {
         msg = await readLSPMessage(reader, buf, msgTimeout) as typeof msg;
       } catch {
-        // Timeout waiting for hover/completion — server may not support them
+        // Timeout waiting for hover/completion -- server may not support them
         break;
       }
       if (msg.id === 2) hoverResult = msg.result ?? null;
@@ -519,7 +556,7 @@ export async function handleLSPSession(request: Request): Promise<Response> {
       }
     }
 
-    // 6. shutdown (id=4)
+    // 6. shutdown (id=4) -- JSON-RPC 2.0 requires params field even for void methods
     await sendLSPMessage(writer, { jsonrpc: '2.0', id: 4, method: 'shutdown', params: null });
 
     // Wait for shutdown response (id=4), tolerating a timeout
@@ -533,7 +570,7 @@ export async function handleLSPSession(request: Request): Promise<Response> {
       // Ignore timeout on shutdown
     }
 
-    // 7. exit notification (no id, no response expected)
+    // 7. exit notification -- JSON-RPC 2.0 requires params field for all messages
     await sendLSPMessage(writer, { jsonrpc: '2.0', method: 'exit', params: null });
 
     const rtt = Date.now() - start;

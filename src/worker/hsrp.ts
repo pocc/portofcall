@@ -370,50 +370,80 @@ export async function handleHSRPListen(request: Request): Promise<Response> {
 // ── HSRPv2 support ──────────────────────────────────────────────────────────
 
 /**
- * Build an HSRPv2 Hello TLV packet.
+ * Build an HSRPv2 Hello TLV packet (IPv4 Group State).
  *
- * HSRPv2 uses TLV encoding with type=1 for the Group State TLV.
- * Group State TLV (42 bytes total: type+len+40 data):
- *   type(1)=1 | length(1)=40 | version(1)=1 | op_code(1) | state(1) | ip_version(1)
- *   | hello_time_ms(4,BE) | hold_time_ms(4,BE) | priority(1) | group_id(1)
- *   | reserved(2) | active_group_MAC(6) | virtual_IP(16) | standby_IP(16)
+ * HSRPv2 uses TLV encoding. The Group State TLV for IPv4:
+ *   Offset  Field                Size
+ *   ------  -------------------  ----
+ *   0       TLV Type             1     (1 = Group State)
+ *   1       TLV Length           1     (34 = data bytes that follow)
+ *   2       Version              1     (2 = HSRPv2)
+ *   3       Op Code              1     (0=Hello, 1=Coup, 2=Resign)
+ *   4       State                1     (0=Initial,1=Learn,2=Listen,4=Speak,8=Standby,16=Active)
+ *   5       IP Version           1     (4=IPv4, 6=IPv6)
+ *   6       Group Number         2     (0-4095, big-endian)
+ *   8       Identifier           6     (MAC address of sender)
+ *   14      Priority             4     (0-255 in first byte; 3 reserved)
+ *   18      Hello Time (ms)      4     (big-endian, default 3000)
+ *   22      Hold Time (ms)       4     (big-endian, default 10000)
+ *   26      Virtual IP           4     (IPv4 address)
+ *   ---     Total               30+6 = 36 bytes (type+length+34 data)
  */
 function buildHSRPv2Hello(
   group: number,
   priority: number,
   virtualIP = '0.0.0.0',
 ): Uint8Array {
-  const tlv = new Uint8Array(42);
-  tlv[0] = 1;   // TLV type: Group State
-  tlv[1] = 40;  // TLV length
-  tlv[2] = 1;   // HSRPv2 version
-  tlv[3] = 0;   // Op code: Hello
-  tlv[4] = 8;   // State: Listen (safe probe state) — value 8 = Standby in HSRPv2
-  tlv[5] = 4;   // IP version: 4 (IPv4)
-
+  const TLV_DATA_LEN = 34;
+  const tlv = new Uint8Array(2 + TLV_DATA_LEN); // 36 bytes total
   const dv = new DataView(tlv.buffer);
-  dv.setUint32(6, 3000, false);   // Hello time: 3000ms
-  dv.setUint32(10, 10000, false); // Hold time: 10000ms
 
+  tlv[0] = 1;              // TLV type: Group State
+  tlv[1] = TLV_DATA_LEN;   // TLV length (data bytes only)
+  tlv[2] = 2;              // HSRPv2 version (was incorrectly 1)
+  tlv[3] = 0;              // Op code: Hello
+  tlv[4] = 2;              // State: Listen (safe probe state; 2=Listen per RFC)
+  tlv[5] = 4;              // IP version: IPv4
+
+  // Group number: 2 bytes big-endian (supports 0-4095 in HSRPv2)
+  dv.setUint16(6, group & 0x0FFF, false);
+
+  // Identifier (sender MAC): bytes 8-13, leave as zeros for probe
+
+  // Priority: byte 14 (bytes 15-17 reserved, left as zero)
   tlv[14] = priority;
-  tlv[15] = group & 0xFF;
-  // MAC + IPs: leave mostly zero; write virtual IP in bytes [24-27]
+
+  // Hello time: 3000ms (big-endian uint32)
+  dv.setUint32(18, 3000, false);
+
+  // Hold time: 10000ms (big-endian uint32)
+  dv.setUint32(22, 10000, false);
+
+  // Virtual IP address: 4 bytes at offset 26
   const ipParts = virtualIP.split('.').map(p => parseInt(p) || 0);
-  tlv[24] = ipParts[0];
-  tlv[25] = ipParts[1];
-  tlv[26] = ipParts[2];
-  tlv[27] = ipParts[3];
+  tlv[26] = ipParts[0];
+  tlv[27] = ipParts[1];
+  tlv[28] = ipParts[2];
+  tlv[29] = ipParts[3];
 
   return tlv;
 }
 
 /**
- * Build an HSRPv1 Coup packet (op_code=1, priority=255).
+ * Build an HSRPv1 Coup packet (op_code=1).
  *
  * A Coup is sent by a router that wants to become Active by preempting the
  * current Active router. priority=255 is the maximum and wins any election.
+ *
+ * Per RFC 2281, the authentication field defaults to "cisco" (padded to 8
+ * bytes with NULs). A packet with mismatched auth is silently dropped by
+ * compliant routers, so we include the default to maximize probe success.
  */
-function buildHSRPv1Coup(group: number, priority: number): Uint8Array {
+function buildHSRPv1Coup(
+  group: number,
+  priority: number,
+  authentication: string = 'cisco',
+): Uint8Array {
   const packet = new Uint8Array(20);
   packet[0] = 0;               // Version: HSRPv1
   packet[1] = 1;               // Op Code: Coup
@@ -422,7 +452,12 @@ function buildHSRPv1Coup(group: number, priority: number): Uint8Array {
   packet[4] = 10;              // Hold time: 10s
   packet[5] = priority;        // Priority (255 = max)
   packet[6] = group & 0xFF;    // Group
-  // bytes [7..15] = 0 (reserved + no auth)
+  packet[7] = 0;               // Reserved
+
+  // Authentication Data (8 bytes, NUL-padded) — default "cisco" per RFC 2281
+  const authBytes = new TextEncoder().encode(authentication.substring(0, 8));
+  packet.set(authBytes, 8);
+
   // bytes [16..19] = 0.0.0.0 (virtual IP unknown for probe)
   return packet;
 }
@@ -436,7 +471,7 @@ function buildHSRPv1Coup(group: number, priority: number): Uint8Array {
  * and the configured virtual IP.
  *
  * POST /api/hsrp/coup
- * Body: { host, port=1985, group=0, priority=255, timeout=10000 }
+ * Body: { host, port=1985, group=0, priority=255, authentication="cisco", timeout=10000 }
  */
 export async function handleHSRPCoup(request: Request): Promise<Response> {
   try {
@@ -445,9 +480,10 @@ export async function handleHSRPCoup(request: Request): Promise<Response> {
       port?: number;
       group?: number;
       priority?: number;
+      authentication?: string;
       timeout?: number;
     };
-    const { host, port = 1985, group = 0, priority = 255, timeout = 10000 } = body;
+    const { host, port = 1985, group = 0, priority = 255, authentication = 'cisco', timeout = 10000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
@@ -467,7 +503,7 @@ export async function handleHSRPCoup(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
 
       try {
-        await writer.write(buildHSRPv1Coup(group, priority));
+        await writer.write(buildHSRPv1Coup(group, priority, authentication));
 
         const { value, done } = await Promise.race([
           reader.read(),
@@ -591,7 +627,8 @@ export async function handleHSRPv2Probe(request: Request): Promise<Response> {
         reader.releaseLock();
         socket.close();
 
-        if (done || !value || value.length < 42) {
+        // HSRPv2 IPv4 Group State TLV is 36 bytes (2 header + 34 data)
+        if (done || !value || value.length < 30) {
           return {
             success: true,
             host, port, group, priority,
@@ -611,11 +648,16 @@ export async function handleHSRPv2Probe(request: Request): Promise<Response> {
         const opCode    = value[3];
         const state     = value[4];
         const ipVersion = value[5];
-        const helloTimeMs = dv.getUint32(6, false);
-        const holdTimeMs  = dv.getUint32(10, false);
+        // Group number: 2 bytes big-endian at offset 6 (supports 0-4095)
+        const respGroup = dv.getUint16(6, false);
+        // Identifier (sender MAC): bytes 8-13
+        // Priority: byte 14 (bytes 15-17 reserved)
         const respPrio  = value[14];
-        const respGroup = value[15];
-        const vip = `${value[24]}.${value[25]}.${value[26]}.${value[27]}`;
+        // Hello/Hold times: 4 bytes big-endian each at offsets 18 and 22
+        const helloTimeMs = dv.getUint32(18, false);
+        const holdTimeMs  = dv.getUint32(22, false);
+        // Virtual IP: 4 bytes at offset 26 (IPv4)
+        const vip = `${value[26]}.${value[27]}.${value[28]}.${value[29]}`;
 
         const opNames: Record<number, string>    = { 0: 'Hello', 1: 'Coup', 2: 'Resign' };
         const stateNames: Record<number, string> = { 0: 'Initial', 1: 'Learn', 2: 'Listen', 4: 'Speak', 8: 'Standby', 16: 'Active' };

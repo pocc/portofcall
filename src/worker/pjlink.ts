@@ -158,7 +158,7 @@ async function sendCommand(
  */
 async function computeMD5(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
-  const hashBuffer = await crypto.subtle.digest('MD5', new Uint8Array(data));
+  const hashBuffer = await crypto.subtle.digest('MD5', data);
   const hashArray = new Uint8Array(hashBuffer);
   return Array.from(hashArray).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -228,7 +228,7 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
     const body = await request.json() as PJLinkRequest;
     const { host, port = 4352, timeout = 10000, password = '' } = body;
 
-    if (!host) {
+    if (!host || host.trim() === '') {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
@@ -242,6 +242,16 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 300000 milliseconds',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -262,6 +272,11 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
+    let globalTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const globalTimeout = new Promise<never>((_, reject) => {
+      globalTimeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
       await socket.opened;
@@ -269,9 +284,10 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout')), timeout)
-      );
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      });
 
       try {
         // Step 1: Read greeting
@@ -289,11 +305,15 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
           if (password) {
             const hash = await computeMD5(random + password);
             authPrefix = hash;
-            authenticated = true; // We'll know for sure after first command
+            // Authentication status will be determined by first command response
           } else {
-            writer.releaseLock();
-            reader.releaseLock();
-            socket.close();
+            if (timeoutHandle) clearTimeout(timeoutHandle);
+            if (globalTimeoutHandle) clearTimeout(globalTimeoutHandle);
+            try {
+              writer.releaseLock();
+              reader.releaseLock();
+              socket.close();
+            } catch {}
 
             return {
               success: true,
@@ -313,16 +333,26 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
         }
 
         const projectorInfo: ProjectorInfo = {};
+        let firstCommandSent = false;
 
         // Helper to send command with optional auth prefix
         const query = async (cmd: string): Promise<string | null> => {
-          const fullCmd = authPrefix ? `${authPrefix}%1${cmd} ?\r` : `%1${cmd} ?`;
-          const response = await sendCommand(writer, reader, timeoutPromise, fullCmd.replace(/\r$/, ''));
+          const fullCmd = authPrefix ? `${authPrefix}%1${cmd} ?` : `%1${cmd} ?`;
+          const response = await sendCommand(writer, reader, timeoutPromise, fullCmd);
 
           if (response.includes('ERRA')) {
-            authenticated = false;
+            // Authentication error - only relevant for first command with auth
+            if (!firstCommandSent && authRequired) {
+              authenticated = false;
+            }
             return null;
           }
+
+          // If we got a non-error response and auth was required, we're authenticated
+          if (!firstCommandSent && authRequired) {
+            authenticated = true;
+          }
+          firstCommandSent = true;
 
           const parsed = parseResponse(response);
           if (!parsed || parsed.error) return null;
@@ -374,9 +404,14 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
         const avmt = await query('AVMT');
         if (avmt) projectorInfo.avMute = AVMUTE_STATES[avmt] || `Unknown (${avmt})`;
 
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (globalTimeoutHandle) clearTimeout(globalTimeoutHandle);
+
+        try {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+        } catch {}
 
         return {
           success: true,
@@ -389,16 +424,16 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
         } as PJLinkResponse;
 
       } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (globalTimeoutHandle) clearTimeout(globalTimeoutHandle);
+        try {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+        } catch {}
         throw error;
       }
     })();
-
-    const globalTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
 
     const result = await Promise.race([connectionPromise, globalTimeout]);
     return new Response(JSON.stringify(result), {
@@ -431,7 +466,7 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
     const body = await request.json() as PJLinkRequest & { action: 'on' | 'off' | 'query' };
     const { host, port = 4352, timeout = 10000, password = '', action = 'query' } = body;
 
-    if (!host) {
+    if (!host || host.trim() === '') {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
@@ -445,6 +480,16 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (timeout < 1 || timeout > 300000) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Timeout must be between 1 and 300000 milliseconds',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -465,6 +510,11 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
+    let globalTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const globalTimeout = new Promise<never>((_, reject) => {
+      globalTimeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
     const connectionPromise = (async () => {
       const socket = connect(`${host}:${port}`);
       await socket.opened;
@@ -472,9 +522,10 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Connection timeout')), timeout)
-      );
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      });
 
       try {
         const greeting = await readLine(reader, timeoutPromise);
@@ -493,9 +544,14 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
         const cmd = authPrefix ? `${authPrefix}%1POWR ${param}` : `%1POWR ${param}`;
         const response = await sendCommand(writer, reader, timeoutPromise, cmd);
 
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (globalTimeoutHandle) clearTimeout(globalTimeoutHandle);
+
+        try {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+        } catch {}
 
         const parsed = parseResponse(response);
         if (!parsed) {
@@ -522,16 +578,16 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
         };
 
       } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (globalTimeoutHandle) clearTimeout(globalTimeoutHandle);
+        try {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+        } catch {}
         throw error;
       }
     })();
-
-    const globalTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
 
     const result = await Promise.race([connectionPromise, globalTimeout]);
     return new Response(JSON.stringify(result), {

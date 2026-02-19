@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface DoTClientProps {
   onBack: () => void;
@@ -159,6 +161,7 @@ export default function DoTClient({ onBack }: DoTClientProps) {
 
   return (
     <ProtocolClientLayout title="DNS over TLS (DoT) Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.DoT || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Encrypted DNS Query" />
 

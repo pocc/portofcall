@@ -4,14 +4,15 @@
  *
  * Munin is a monitoring tool that uses a simple text-based protocol.
  * The node sends a banner on connect: "# munin node at <hostname>"
- * Commands are newline-delimited; multi-line responses end with "." alone.
+ * Commands are newline-delimited; multi-line responses end with "." alone on a line.
  *
  * Commands:
- *   list         - List available plugins
- *   config <p>   - Get plugin configuration (graph metadata)
- *   fetch <p>    - Fetch current values from a plugin
- *   version      - Get munin-node version
- *   cap          - List capabilities
+ *   list [node]  - List available plugins (optionally for a specific virtual node)
+ *   nodes        - List virtual nodes served by this munin-node (dot-terminated)
+ *   config <p>   - Get plugin configuration / graph metadata (dot-terminated)
+ *   fetch <p>    - Fetch current values from a plugin (dot-terminated)
+ *   version      - Get munin-node version (single line)
+ *   cap <caps>   - Negotiate capabilities (single line response)
  *   quit         - Close connection
  */
 
@@ -22,20 +23,31 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Read lines from the socket until we see the dot terminator or timeout
+ * Read lines from the socket until we see the dot terminator or timeout.
  * Munin multi-line responses end with a line containing only "."
+ *
+ * The dot terminator patterns we must detect:
+ *   - "\n.\n"  (dot on its own line, more data follows — shouldn't happen but be safe)
+ *   - "\n.\n" at end of buffer
+ *   - "\n."   at end of buffer (no trailing newline yet)
+ *   - ".\n"   when the entire response is just the terminator (empty result)
+ *   - ".\r\n"  some implementations use CRLF
  */
 async function readMuninResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
   expectDotTerminator: boolean = true
 ): Promise<string> {
-  const chunks: string[] = [];
   let buffer = '';
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
-  const timeoutPromise = new Promise<string>((resolve) =>
-    setTimeout(() => resolve(buffer + chunks.join('')), timeoutMs)
-  );
+  // Fix: clear timeout to prevent resource leak
+  const timeoutPromise = new Promise<string>((resolve) => {
+    timeoutId = setTimeout(() => {
+      timeoutId = null;
+      resolve(buffer);
+    }, timeoutMs);
+  });
 
   const readPromise = (async () => {
     while (true) {
@@ -46,11 +58,20 @@ async function readMuninResponse(
 
       if (expectDotTerminator) {
         // Check if response is complete (line with just ".")
-        if (buffer.includes('\n.\n') || buffer.endsWith('\n.\n') || buffer.endsWith('\n.')) {
+        // Handle both LF and CRLF line endings
+        // Fix: \n.\r was incorrect — should be \r\n. for CRLF-then-dot
+        if (
+          buffer.includes('\n.\n') ||
+          buffer.includes('\n.\r\n') ||
+          buffer.endsWith('\n.') ||
+          buffer.endsWith('\r\n.') ||
+          buffer === '.\n' ||
+          buffer === '.\r\n'
+        ) {
           break;
         }
       } else {
-        // Single-line response (like banner, list, version)
+        // Single-line response (like banner, list, version, cap)
         if (buffer.includes('\n')) {
           break;
         }
@@ -59,7 +80,14 @@ async function readMuninResponse(
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  const result = await Promise.race([readPromise, timeoutPromise]);
+
+  // Clear timeout if still active
+  if (timeoutId !== null) {
+    clearTimeout(timeoutId);
+  }
+
+  return result;
 }
 
 /**
@@ -111,6 +139,16 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
     const port = options.port || 4949;
     const timeoutMs = options.timeout || 10000;
 
+    // Fix: validate port range
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -139,22 +177,38 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
         // Get version
         const versionResp = (await sendCommand(writer, reader, 'version', 3000, false)).trim();
 
-        // Get capabilities
-        const capResp = (await sendCommand(writer, reader, 'cap', 3000, true)).trim();
+        // Get capabilities — cap response is a single line: "cap <cap1> <cap2> ..."
+        const capResp = (await sendCommand(writer, reader, 'cap multigraph', 3000, false)).trim();
         const capabilities = capResp
-          .split('\n')
-          .filter(l => l.trim() && l.trim() !== '.')
-          .map(l => l.replace(/^cap\s+/, '').trim());
+          .replace(/^cap\s+/, '')
+          .split(/\s+/)
+          .filter(c => c.length > 0);
 
-        // List available plugins
+        // Get virtual nodes — nodes response is dot-terminated, one node name per line
+        const nodesResp = (await sendCommand(writer, reader, 'nodes', 3000, true)).trim();
+        const nodes = nodesResp
+          .split('\n')
+          .map(l => l.trim())
+          .filter(l => l && l !== '.');
+
+        // List available plugins — response is space-separated on single line, but some plugins have no space
+        // Fix: remove leading "list: " if present, and filter out empty strings after splitting
         const listResp = (await sendCommand(writer, reader, 'list', 3000, false)).trim();
-        const plugins = listResp.split(/\s+/).filter(p => p.trim());
+        const cleanedList = listResp.replace(/^list:\s*/i, '');
+        const plugins = cleanedList.split(/\s+/).filter(p => p.length > 0);
 
         // Send quit
         await writer.write(encoder.encode('quit\n'));
 
-        writer.releaseLock();
+        // Fix: wait for socket write to flush before closing
+        try {
+          await writer.close();
+        } catch (e) {
+          // Ignore close errors
+        }
+
         reader.releaseLock();
+        writer.releaseLock();
         await socket.close();
 
         // Parse banner for hostname
@@ -171,27 +225,41 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
           nodeName,
           version: versionResp,
           capabilities,
+          nodes,
           pluginCount: plugins.length,
           plugins,
         };
       } catch (error) {
-        reader.releaseLock();
-        writer.releaseLock();
-        await socket.close();
+        // Fix: ensure locks are released even if already released
+        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch {}
+        try { await socket.close(); } catch {}
         throw error;
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
+    // Fix: track timeout ID to clear on success
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        timeoutId = null;
+        reject(new Error('Connection timeout'));
+      }, timeoutMs);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
+
+      // Clear timeout if still active
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (timeoutError) {
+      // Timeout already cleared itself
       return new Response(JSON.stringify({
         success: false,
         error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',
@@ -257,6 +325,16 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
     const plugin = options.plugin;
     const timeoutMs = options.timeout || 10000;
 
+    // Fix: validate port range
+    if (port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -290,16 +368,31 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
         // Send quit
         await writer.write(encoder.encode('quit\n'));
 
-        writer.releaseLock();
+        // Fix: wait for socket write to flush before closing
+        try {
+          await writer.close();
+        } catch (e) {
+          // Ignore close errors
+        }
+
         reader.releaseLock();
+        writer.releaseLock();
         await socket.close();
 
         // Parse fetch response: "field.value VALUE\n" lines, terminated by "."
         const lines = fetchResp.trim().split('\n').filter(l => l.trim() && l.trim() !== '.');
         const values: { field: string; value: string }[] = [];
 
-        // Check for error
-        const isError = lines.some(l => l.startsWith('# Unknown') || l.startsWith('# Bad'));
+        // Check for error — munin-node error responses start with "# "
+        // Common patterns: "# Unknown service", "# Bad exit", "# Error", "# Timeout"
+        const errorLine = lines.find(l =>
+          l.startsWith('# Unknown') ||
+          l.startsWith('# Bad') ||
+          l.startsWith('# Error') ||
+          l.startsWith('# Timeout') ||
+          l.startsWith('# Not')
+        );
+        const isError = !!errorLine;
 
         if (!isError) {
           for (const line of lines) {
@@ -312,7 +405,7 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
 
         return {
           success: !isError,
-          message: isError ? `Plugin error: ${lines[0]}` : `Fetched ${values.length} value(s) from ${plugin}`,
+          message: isError ? `Plugin error: ${errorLine || lines[0]}` : `Fetched ${values.length} value(s) from ${plugin}`,
           host,
           port,
           plugin,
@@ -323,23 +416,36 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
           raw: fetchResp.trim(),
         };
       } catch (error) {
-        reader.releaseLock();
-        writer.releaseLock();
-        await socket.close();
+        // Fix: ensure locks are released even if already released
+        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch {}
+        try { await socket.close(); } catch {}
         throw error;
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
+    // Fix: track timeout ID to clear on success
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => {
+        timeoutId = null;
+        reject(new Error('Connection timeout'));
+      }, timeoutMs);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
+
+      // Clear timeout if still active
+      if (timeoutId !== null) {
+        clearTimeout(timeoutId);
+      }
+
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
     } catch (timeoutError) {
+      // Timeout already cleared itself
       return new Response(JSON.stringify({
         success: false,
         error: timeoutError instanceof Error ? timeoutError.message : 'Connection timeout',

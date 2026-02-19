@@ -91,44 +91,140 @@ const SAFE_ACTIONS = new Set([
   'queuestatus', 'queuesummary',
   'parkedcalls', 'bridgelist',
   'presencestate', 'devicestatelist',
-  'loggerrotate',
 ]);
 
 /**
- * Read a complete AMI response block (terminated by \r\n\r\n).
+ * Buffered AMI stream reader. Maintains leftover data between reads so that
+ * multi-message TCP segments are not lost.
  */
-async function readAMIBlock(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  timeoutMs: number,
-): Promise<string> {
-  const decoder = new TextDecoder();
-  let buffer = '';
+class AMIReader {
+  private reader: ReadableStreamDefaultReader<Uint8Array>;
+  private decoder = new TextDecoder();
+  private buffer = '';
 
-  const deadline = Date.now() + timeoutMs;
+  constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    this.reader = reader;
+  }
 
-  while (true) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('Read timeout');
+  /**
+   * Read raw data from the stream until the buffer satisfies `predicate`.
+   * Returns the portion of the buffer up to and including the matched
+   * delimiter; leftover bytes remain in the internal buffer for the next call.
+   */
+  private async readUntil(
+    predicate: (buf: string) => number,
+    timeoutMs: number,
+  ): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Read timeout')), remaining);
-    });
-
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-
-    if (done) {
-      if (buffer.length > 0) return buffer;
-      throw new Error('Connection closed by server');
+    // Check if the buffer already contains a complete message
+    const idx = predicate(this.buffer);
+    if (idx !== -1) {
+      const block = this.buffer.substring(0, idx);
+      this.buffer = this.buffer.substring(idx);
+      return block;
     }
 
-    if (value) {
-      buffer += decoder.decode(value, { stream: true });
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Read timeout');
 
-      // AMI blocks are terminated by \r\n\r\n
-      if (buffer.includes('\r\n\r\n')) {
-        return buffer;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Read timeout')), remaining);
+      });
+
+      const { value, done } = await Promise.race([
+        this.reader.read(),
+        timeoutPromise,
+      ]);
+
+      if (done) {
+        if (this.buffer.length > 0) {
+          const block = this.buffer;
+          this.buffer = '';
+          return block;
+        }
+        throw new Error('Connection closed by server');
+      }
+
+      if (value) {
+        this.buffer += this.decoder.decode(value, { stream: true });
+
+        const splitIdx = predicate(this.buffer);
+        if (splitIdx !== -1) {
+          const block = this.buffer.substring(0, splitIdx);
+          this.buffer = this.buffer.substring(splitIdx);
+          return block;
+        }
       }
     }
+  }
+
+  /**
+   * Read the initial AMI banner line. The banner is a single line terminated
+   * by \r\n (e.g. "Asterisk Call Manager/X.X.X\r\n"), NOT a full \r\n\r\n
+   * block. Some servers may follow it with an extra \r\n, so we consume
+   * everything up to and including the first \r\n.
+   */
+  async readBanner(timeoutMs: number): Promise<string> {
+    const block = await this.readUntil((buf) => {
+      const idx = buf.indexOf('\r\n');
+      if (idx === -1) return -1;
+      return idx + 2; // consume through the \r\n
+    }, timeoutMs);
+    return block;
+  }
+
+  /**
+   * Read a complete AMI response/event block terminated by \r\n\r\n.
+   */
+  async readBlock(timeoutMs: number): Promise<string> {
+    const block = await this.readUntil((buf) => {
+      const idx = buf.indexOf('\r\n\r\n');
+      if (idx === -1) return -1;
+      return idx + 4; // consume through the \r\n\r\n
+    }, timeoutMs);
+    return block;
+  }
+
+  /**
+   * Read raw data until a specific sentinel string is found (used by the
+   * Command action which terminates with --END COMMAND--).
+   */
+  async readUntilSentinel(sentinel: string, timeoutMs: number): Promise<string> {
+    const block = await this.readUntil((buf) => {
+      const idx = buf.indexOf(sentinel);
+      if (idx === -1) return -1;
+      // Find the end of the line containing the sentinel
+      const endIdx = buf.indexOf('\r\n', idx);
+      if (endIdx === -1) return -1;
+      return endIdx + 2;
+    }, timeoutMs);
+    return block;
+  }
+
+  /**
+   * Read a block that matches a specific ActionID, skipping over any
+   * unsolicited events (e.g. FullyBooted after login).
+   */
+  async readBlockByActionID(actionID: string, timeoutMs: number): Promise<string> {
+    const deadline = Date.now() + timeoutMs;
+    while (true) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Read timeout waiting for ActionID: ' + actionID);
+      const block = await this.readBlock(remaining);
+      const parsed = parseAMIBlock(block);
+      // Accept blocks that match our ActionID, or blocks without an ActionID
+      // (some responses omit it), or Response blocks (which are replies)
+      if (parsed['ActionID'] === actionID || parsed['Response'] || !parsed['Event']) {
+        return block;
+      }
+      // Otherwise it's an unsolicited event; skip it and keep reading
+    }
+  }
+
+  releaseLock(): void {
+    this.reader.releaseLock();
   }
 }
 
@@ -229,12 +325,12 @@ export async function handleAMIProbe(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const reader = socket.readable.getReader();
+      const amiReader = new AMIReader(socket.readable.getReader());
       const writer = socket.writable.getWriter();
 
-      // Read the AMI banner
-      const bannerBlock = await readAMIBlock(reader, timeout);
-      const banner = bannerBlock.trim();
+      // Read the AMI banner (single \r\n-terminated line)
+      const bannerRaw = await amiReader.readBanner(timeout);
+      const banner = bannerRaw.trim();
       const version = parseAMIVersion(banner);
 
       // Send Logoff to be polite
@@ -243,7 +339,7 @@ export async function handleAMIProbe(request: Request): Promise<Response> {
       const rtt = Date.now() - start;
 
       writer.releaseLock();
-      reader.releaseLock();
+      amiReader.releaseLock();
       socket.close();
 
       const isAMI = banner.includes('Asterisk Call Manager');
@@ -397,17 +493,17 @@ export async function handleAMICommand(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      const reader = socket.readable.getReader();
+      const amiReader = new AMIReader(socket.readable.getReader());
       const writer = socket.writable.getWriter();
 
-      // Read banner
-      const bannerBlock = await readAMIBlock(reader, timeout);
-      const banner = bannerBlock.trim();
+      // Read banner (single \r\n-terminated line)
+      const bannerRaw = await amiReader.readBanner(timeout);
+      const banner = bannerRaw.trim();
       transcript.push(`S: ${banner}`);
 
       if (!banner.includes('Asterisk Call Manager')) {
         writer.releaseLock();
-        reader.releaseLock();
+        amiReader.releaseLock();
         socket.close();
         return new Response(
           JSON.stringify({
@@ -431,7 +527,8 @@ export async function handleAMICommand(request: Request): Promise<Response> {
         ActionID: 'login-1',
       });
 
-      const loginBlock = await readAMIBlock(reader, timeout);
+      // Read login response, skipping unsolicited events (e.g. FullyBooted)
+      const loginBlock = await amiReader.readBlockByActionID('login-1', timeout);
       const loginResponse = parseAMIBlock(loginBlock);
       transcript.push(`S: Response: ${loginResponse['Response'] || 'Unknown'}`);
       if (loginResponse['Message']) {
@@ -442,7 +539,7 @@ export async function handleAMICommand(request: Request): Promise<Response> {
         // Logoff and close
         await sendAMIAction(writer, 'Logoff');
         writer.releaseLock();
-        reader.releaseLock();
+        amiReader.releaseLock();
         socket.close();
         return new Response(
           JSON.stringify({
@@ -464,8 +561,8 @@ export async function handleAMICommand(request: Request): Promise<Response> {
       }
       await sendAMIAction(writer, action, actionParams);
 
-      // Read response (may include multiple event blocks)
-      const responseBlock = await readAMIBlock(reader, timeout);
+      // Read response, skipping unsolicited events
+      const responseBlock = await amiReader.readBlockByActionID('action-1', timeout);
       const response = parseAMIBlock(responseBlock);
 
       for (const [key, value] of Object.entries(response)) {
@@ -481,7 +578,7 @@ export async function handleAMICommand(request: Request): Promise<Response> {
         let maxEvents = 50;
         while (maxEvents-- > 0) {
           try {
-            const eventBlock = await readAMIBlock(reader, 5000);
+            const eventBlock = await amiReader.readBlock(5000);
             const event = parseAMIBlock(eventBlock);
             events.push(event);
             transcript.push(`S: Event: ${event['Event'] || 'data'}`);
@@ -499,7 +596,7 @@ export async function handleAMICommand(request: Request): Promise<Response> {
       transcript.push(`C: Action: Logoff`);
       await sendAMIAction(writer, 'Logoff');
       try {
-        const logoffBlock = await readAMIBlock(reader, 3000);
+        const logoffBlock = await amiReader.readBlock(3000);
         const logoffResponse = parseAMIBlock(logoffBlock);
         transcript.push(`S: Response: ${logoffResponse['Response'] || 'OK'}`);
       } catch {
@@ -509,7 +606,7 @@ export async function handleAMICommand(request: Request): Promise<Response> {
       const rtt = Date.now() - start;
 
       writer.releaseLock();
-      reader.releaseLock();
+      amiReader.releaseLock();
       socket.close();
 
       const actionSuccess = response['Response'] === 'Success' || response['Response'] === 'Follows';
@@ -592,52 +689,6 @@ interface AMISendTextRequest {
   timeout?: number;
 }
 
-
-// ---------------------------------------------------------------------------
-// Write actions
-// ---------------------------------------------------------------------------
-
-interface AMIOriginateRequest {
-  host: string;
-  port?: number;
-  username: string;
-  secret: string;
-  channel: string;
-  context: string;
-  exten: string;
-  priority: string | number;
-  callerID?: string;
-  timeout?: number;
-}
-
-interface AMIHangupRequest {
-  host: string;
-  port?: number;
-  username: string;
-  secret: string;
-  channel: string;
-  timeout?: number;
-}
-
-interface AMICliCommandRequest {
-  host: string;
-  port?: number;
-  username: string;
-  secret: string;
-  command: string;
-  timeout?: number;
-}
-
-interface AMISendTextRequest {
-  host: string;
-  port?: number;
-  username: string;
-  secret: string;
-  channel: string;
-  message: string;
-  timeout?: number;
-}
-
 /**
  * Helper: Login to AMI, run a callback, then logoff.
  */
@@ -648,7 +699,7 @@ async function withAMISession<T>(
   secret: string,
   timeoutMs: number,
   fn: (
-    reader: ReadableStreamDefaultReader<Uint8Array>,
+    amiReader: AMIReader,
     writer: WritableStreamDefaultWriter<Uint8Array>,
     transcript: string[],
   ) => Promise<T>,
@@ -668,17 +719,18 @@ async function withAMISession<T>(
 
   await Promise.race([socket.opened, timeoutPromise]);
 
-  const reader = socket.readable.getReader();
+  const amiReader = new AMIReader(socket.readable.getReader());
   const writer = socket.writable.getWriter();
 
   try {
-    const bannerBlock = await readAMIBlock(reader, timeoutMs);
-    const banner = bannerBlock.trim();
+    // Read banner (single \r\n-terminated line)
+    const bannerRaw = await amiReader.readBanner(timeoutMs);
+    const banner = bannerRaw.trim();
     transcript.push(`S: ${banner}`);
 
     if (!banner.includes('Asterisk Call Manager')) {
       writer.releaseLock();
-      reader.releaseLock();
+      amiReader.releaseLock();
       socket.close();
       throw new Error(`Not an AMI server: ${banner.substring(0, 100)}`);
     }
@@ -692,7 +744,8 @@ async function withAMISession<T>(
       ActionID: 'login-1',
     });
 
-    const loginBlock = await readAMIBlock(reader, timeoutMs);
+    // Read login response, skipping unsolicited events
+    const loginBlock = await amiReader.readBlockByActionID('login-1', timeoutMs);
     const loginResponse = parseAMIBlock(loginBlock);
     transcript.push(`S: Response: ${loginResponse['Response'] || 'Unknown'}`);
     if (loginResponse['Message']) {
@@ -702,17 +755,17 @@ async function withAMISession<T>(
     if (loginResponse['Response'] !== 'Success') {
       await sendAMIAction(writer, 'Logoff');
       writer.releaseLock();
-      reader.releaseLock();
+      amiReader.releaseLock();
       socket.close();
       throw new Error(`Login failed: ${loginResponse['Message'] || 'Authentication rejected'}`);
     }
 
-    const result = await fn(reader, writer, transcript);
+    const result = await fn(amiReader, writer, transcript);
 
     transcript.push('C: Action: Logoff');
     await sendAMIAction(writer, 'Logoff');
     try {
-      const logoffBlock = await readAMIBlock(reader, 3000);
+      const logoffBlock = await amiReader.readBlock(3000);
       const logoffResponse = parseAMIBlock(logoffBlock);
       transcript.push(`S: Response: ${logoffResponse['Response'] || 'OK'}`);
     } catch {
@@ -720,13 +773,13 @@ async function withAMISession<T>(
     }
 
     writer.releaseLock();
-    reader.releaseLock();
+    amiReader.releaseLock();
     socket.close();
 
     return result;
   } catch (error) {
     try { writer.releaseLock(); } catch { /* already released */ }
-    try { reader.releaseLock(); } catch { /* already released */ }
+    try { amiReader.releaseLock(); } catch { /* already released */ }
     socket.close();
     throw error;
   }
@@ -760,7 +813,7 @@ export async function handleAMIOriginate(request: Request): Promise<Response> {
     const start = Date.now();
     const { response, transcript } = await withAMISession(
       host, port, username, secret, timeout,
-      async (reader, writer, transcript) => {
+      async (amiReader, writer, transcript) => {
         const params: Record<string, string> = {
           Channel: channel,
           Context: context,
@@ -774,7 +827,7 @@ export async function handleAMIOriginate(request: Request): Promise<Response> {
         for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
         await sendAMIAction(writer, 'Originate', params);
 
-        const responseBlock = await readAMIBlock(reader, timeout);
+        const responseBlock = await amiReader.readBlockByActionID('originate-1', timeout);
         const response = parseAMIBlock(responseBlock);
         for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
         return { response, transcript };
@@ -803,13 +856,13 @@ export async function handleAMIHangup(request: Request): Promise<Response> {
     const start = Date.now();
     const { response, transcript } = await withAMISession(
       host, port, username, secret, timeout,
-      async (reader, writer, transcript) => {
+      async (amiReader, writer, transcript) => {
         const params: Record<string, string> = { Channel: channel, ActionID: 'hangup-1' };
         transcript.push('C: Action: Hangup');
         for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
         await sendAMIAction(writer, 'Hangup', params);
 
-        const responseBlock = await readAMIBlock(reader, timeout);
+        const responseBlock = await amiReader.readBlockByActionID('hangup-1', timeout);
         const response = parseAMIBlock(responseBlock);
         for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
         return { response, transcript };
@@ -838,36 +891,44 @@ export async function handleAMICliCommand(request: Request): Promise<Response> {
     const start = Date.now();
     const { response, output, transcript } = await withAMISession(
       host, port, username, secret, timeout,
-      async (reader, writer, transcript) => {
+      async (amiReader, writer, transcript) => {
         const params: Record<string, string> = { Command: command, ActionID: 'cmd-1' };
         transcript.push('C: Action: Command');
         for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
         await sendAMIAction(writer, 'Command', params);
 
-        // Read until "--END COMMAND--" sentinel or error
-        const decoder = new TextDecoder();
-        let buffer = '';
-        const deadline = Date.now() + timeout;
-
-        while (true) {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) throw new Error('Read timeout waiting for command output');
-          const tmout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Read timeout')), remaining));
-          const { value, done } = await Promise.race([reader.read(), tmout]);
-          if (done) break;
-          if (value) {
-            buffer += decoder.decode(value, { stream: true });
-            if (buffer.includes('--END COMMAND--')) break;
-            if (buffer.includes('\r\n\r\n') && buffer.includes('Response: Error')) break;
-          }
+        // The Command action is special: Asterisk responds with
+        // "Response: Follows" followed by raw output lines, terminated by
+        // "--END COMMAND--\r\n". On error, a normal Response: Error block
+        // is returned instead. We first try reading until the sentinel;
+        // if we get an error response block first, we stop there.
+        let buffer: string;
+        try {
+          buffer = await amiReader.readUntilSentinel('--END COMMAND--', timeout);
+        } catch {
+          // If sentinel wasn't found, fall back to reading a normal block
+          buffer = await amiReader.readBlock(timeout);
         }
 
         const response = parseAMIBlock(buffer);
         for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
 
+        // Extract output lines. Asterisk 13+ uses "Output: " prefix.
+        // Older versions send raw text between the header and --END COMMAND--.
         const output: string[] = [];
-        for (const line of buffer.split('\r\n')) {
-          if (line.startsWith('Output: ')) output.push(line.substring('Output: '.length));
+        const lines = buffer.split('\r\n');
+        let pastHeader = false;
+        for (const line of lines) {
+          if (line.startsWith('Output: ')) {
+            output.push(line.substring('Output: '.length));
+          } else if (pastHeader && line !== '' && !line.startsWith('--END COMMAND--')) {
+            // Raw output from older Asterisk versions (no "Output: " prefix)
+            if (!line.includes(': ') || line.startsWith(' ')) {
+              output.push(line);
+            }
+          }
+          // The header ends after the blank line following the Response line
+          if (line === '' && response['Response']) pastHeader = true;
         }
         return { response, output, transcript };
       },
@@ -896,13 +957,13 @@ export async function handleAMISendText(request: Request): Promise<Response> {
     const start = Date.now();
     const { response, transcript } = await withAMISession(
       host, port, username, secret, timeout,
-      async (reader, writer, transcript) => {
+      async (amiReader, writer, transcript) => {
         const params: Record<string, string> = { Channel: channel, Message: message, ActionID: 'sendtext-1' };
         transcript.push('C: Action: SendText');
         for (const [k, v] of Object.entries(params)) transcript.push(`C: ${k}: ${v}`);
         await sendAMIAction(writer, 'SendText', params);
 
-        const responseBlock = await readAMIBlock(reader, timeout);
+        const responseBlock = await amiReader.readBlockByActionID('sendtext-1', timeout);
         const response = parseAMIBlock(responseBlock);
         for (const [k, v] of Object.entries(response)) transcript.push(`S: ${k}: ${v}`);
         return { response, transcript };

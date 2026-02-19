@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface Socks5ClientProps {
   onBack: () => void;
@@ -69,8 +71,7 @@ export default function Socks5Client({ onBack }: Socks5ClientProps) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto">
-      {/* Header */}
+    <div className="max-w-6xl mx-auto">      {/* Header */}
       <div className="mb-6 flex items-center gap-4">
         <button onClick={onBack} className="text-white hover:text-blue-400 transition-colors">
           &larr; Back
@@ -78,6 +79,8 @@ export default function Socks5Client({ onBack }: Socks5ClientProps) {
         <h1 className="text-3xl font-bold text-white">SOCKS5 Client</h1>
       </div>
 
+
+      <ApiExamples examples={apiExamples.SOCKS5 || []} />
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Config Panel */}
         <div className="lg:col-span-1">

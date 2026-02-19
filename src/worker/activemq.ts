@@ -65,21 +65,35 @@ function normaliseDestination(raw: string): string {
 
 // ─── OpenWire helpers (used by probe) ─────────────────────────────────────────
 
+/**
+ * Build a valid OpenWire WireFormatInfo command.
+ *
+ * OpenWire frame layout (with default size-prefix enabled):
+ *   [4-byte frame length (big-endian)]
+ *   [1-byte data type]               — 0x01 for WireFormatInfo
+ *   [8-byte magic]                   — literal "ActiveMQ" (no length prefix)
+ *   [4-byte version (big-endian)]    — protocol version we support
+ *   [4-byte marshalledProperties length, or 0xFFFFFFFF for null]
+ *   [marshalledProperties bytes ...]
+ *
+ * Note: WireFormatInfo does NOT include commandId / responseRequired /
+ * correlationId — those are part of the BaseCommand marshalling used by
+ * other command types but WireFormatInfo has its own special marshalling.
+ *
+ * We send an empty options map (length 0) which tells the broker we
+ * accept its defaults.  The broker will respond with its own
+ * WireFormatInfo containing its negotiated settings.
+ */
 function buildWireFormatInfo(): Uint8Array {
   const body = new Uint8Array([
-    WIREFORMAT_INFO_TYPE,
-    0x00, 0x00, 0x00, 0x01,   // commandId = 1
-    0x00,                     // responseRequired = false
-    0x00, 0x00, 0x00, 0x00,   // correlationId = 0
-    0x00, 0x08,               // magic string length = 8
-    0x41, 0x63, 0x74, 0x69,   // "Acti"
-    0x76, 0x65, 0x4D, 0x51,   // "veMQ"
-    0x00, 0x00, 0x00, 0x01,   // version = 1
-    0x00,                     // stackTraceEnabled = false
-    0x00,                     // cacheEnabled = false
-    0x01,                     // tcpNoDelayEnabled = true
-    0x00,                     // tightEncodingEnabled = false
-    0x00,                     // sizePrefixDisabled = false
+    WIREFORMAT_INFO_TYPE,             // data type = 0x01
+    // Magic — 8 raw bytes, no length prefix
+    0x41, 0x63, 0x74, 0x69,          // "Acti"
+    0x76, 0x65, 0x4D, 0x51,          // "veMQ"
+    // Version — int32 big-endian (request version 1, broker will negotiate)
+    0x00, 0x00, 0x00, 0x01,
+    // Marshalled properties length = 0 (empty map, accept defaults)
+    0x00, 0x00, 0x00, 0x00,
   ]);
   const frame = new Uint8Array(4 + body.length);
   new DataView(frame.buffer).setUint32(0, body.length, false);
@@ -102,6 +116,99 @@ function parseVersion(data: Uint8Array, magicOffset: number): number | null {
   if (off + 4 > data.length) return null;
   const v = new DataView(data.buffer, data.byteOffset + off).getInt32(0, false);
   return (v > 0 && v < 100) ? v : null;
+}
+
+/**
+ * Parse the OpenWire marshalled properties map from a WireFormatInfo response.
+ *
+ * Layout after magic(8) + version(4):
+ *   [4-byte map-bytes length, or -1 for null]
+ *   [map bytes ...]
+ *
+ * Map bytes layout:
+ *   [4-byte entry count]
+ *   For each entry:
+ *     [2-byte key length (unsigned)] [key UTF-8 bytes]
+ *     [1-byte value type tag]
+ *     [value bytes — type-dependent]
+ *
+ * Value type tags (from OpenWire MarshallingSupport):
+ *   0x01 = boolean  (1 byte: 0x00/0x01)
+ *   0x05 = int      (4 bytes big-endian)
+ *   0x06 = long     (8 bytes big-endian)
+ *   0x09 = string   (2-byte length + UTF-8)
+ *
+ * Returns a simple string→(boolean|number|string) map.  Unknown types
+ * cause the parser to bail and return what it has so far.
+ */
+function parseWireFormatOptions(
+  data: Uint8Array,
+  magicOffset: number,
+): Record<string, boolean | number | string> {
+  const result: Record<string, boolean | number | string> = {};
+  const dv = new DataView(data.buffer, data.byteOffset);
+  const dec = new TextDecoder();
+
+  // Map bytes start after magic(8) + version(4)
+  let pos = magicOffset + ACTIVEMQ_MAGIC.length + 4;
+  if (pos + 4 > data.length) return result;
+
+  const mapLen = dv.getInt32(pos, false);
+  pos += 4;
+  if (mapLen <= 0) return result;   // null (-1) or empty (0)
+  if (pos + mapLen > data.length) return result;
+
+  const mapEnd = pos + mapLen;
+  if (pos + 4 > mapEnd) return result;
+
+  const entryCount = dv.getInt32(pos, false);
+  pos += 4;
+
+  for (let i = 0; i < entryCount && pos < mapEnd; i++) {
+    // Key: 2-byte length + UTF-8
+    if (pos + 2 > mapEnd) break;
+    const keyLen = dv.getUint16(pos, false);
+    pos += 2;
+    if (pos + keyLen > mapEnd) break;
+    const key = dec.decode(data.slice(pos, pos + keyLen));
+    pos += keyLen;
+
+    // Value type tag
+    if (pos >= mapEnd) break;
+    const tag = data[pos++];
+
+    switch (tag) {
+      case 0x01: // boolean
+        if (pos >= mapEnd) break;
+        result[key] = data[pos++] !== 0;
+        break;
+      case 0x05: // int
+        if (pos + 4 > mapEnd) break;
+        result[key] = dv.getInt32(pos, false);
+        pos += 4;
+        break;
+      case 0x06: // long
+        if (pos + 8 > mapEnd) break;
+        // Read as two 32-bit ints (avoid BigInt for simplicity)
+        result[key] = dv.getInt32(pos, false) * 0x100000000 + dv.getUint32(pos + 4, false);
+        pos += 8;
+        break;
+      case 0x09: { // string
+        if (pos + 2 > mapEnd) break;
+        const sLen = dv.getUint16(pos, false);
+        pos += 2;
+        if (pos + sLen > mapEnd) break;
+        result[key] = dec.decode(data.slice(pos, pos + sLen));
+        pos += sLen;
+        break;
+      }
+      default:
+        // Unknown type — bail out, return what we have
+        return result;
+    }
+  }
+
+  return result;
 }
 
 function parseBrokerName(data: Uint8Array, commandTypeOffset: number): string | undefined {
@@ -142,13 +249,33 @@ async function readBytes(
 
 // ─── STOMP helpers (used by connect / send / subscribe) ───────────────────────
 
+/**
+ * Escape a STOMP 1.1+ header value.
+ * Per the STOMP spec, header values must escape: \\ → \\\\, \n → \\n, \r → \\r, : → \\c
+ * The CONNECT frame is exempt from escaping in STOMP 1.0, but since we negotiate
+ * 1.0-1.2 and the broker may reply with 1.2, we escape conservatively on all frames.
+ */
+function escapeStompHeaderValue(val: string): string {
+  return val
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/:/g, '\\c');
+}
+
 function buildStompFrame(
   command: string,
   headers: Record<string, string>,
   body = '',
 ): string {
   let frame = command + '\n';
-  for (const [k, v] of Object.entries(headers)) frame += `${k}:${v}\n`;
+  // CONNECT and CONNECTED frames are exempt from escaping in STOMP 1.0,
+  // and most brokers tolerate unescaped values in CONNECT frames even in 1.2.
+  // We only escape non-CONNECT frames to be safe.
+  const shouldEscape = command !== 'CONNECT';
+  for (const [k, v] of Object.entries(headers)) {
+    frame += shouldEscape ? `${k}:${escapeStompHeaderValue(v)}\n` : `${k}:${v}\n`;
+  }
   frame += '\n' + body + NULL_BYTE;
   return frame;
 }
@@ -160,7 +287,8 @@ interface StompFrame {
 }
 
 function parseStompFrame(raw: string): StompFrame {
-  const cleaned = raw.replace(/\x00$/, '');
+  // Strip trailing NULL byte, leading heartbeat newlines, and normalise \r\n to \n
+  const cleaned = raw.replace(/\x00$/, '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
   const lines = cleaned.split('\n');
   const command = lines[0] ?? '';
   const headers: Record<string, string> = {};
@@ -190,6 +318,8 @@ async function withStompSession<T>(
     connFrame: StompFrame,
     readNextFrame: () => Promise<StompFrame>,
   ) => Promise<T>,
+  /** Optional client-id header for durable subscriptions (ActiveMQ extension). */
+  clientId?: string,
 ): Promise<T> {
   const socket = connect(`${host}:${port}`);
   const deadline = Date.now() + timeoutMs;
@@ -230,6 +360,7 @@ async function withStompSession<T>(
     };
     if (username) connectHeaders['login'] = username;
     if (password) connectHeaders['passcode'] = password;
+    if (clientId) connectHeaders['client-id'] = clientId;
 
     await writer.write(enc.encode(buildStompFrame('CONNECT', connectHeaders)));
 
@@ -380,12 +511,15 @@ export async function handleActiveMQProbe(request: Request): Promise<Response> {
 
       if (isActiveMQ) {
         openWireVersion = parseVersion(data, magicOffset) ?? undefined;
-        const flagsOff = magicOffset + ACTIVEMQ_MAGIC.length + 4;
-        if (flagsOff + 3 < data.length) {
-          stackTraceEnabled    = data[flagsOff] !== 0;
-          cacheEnabled         = data[flagsOff + 1] !== 0;
-          tightEncodingEnabled = data[flagsOff + 3] !== 0;
-        }
+
+        // Parse the marshalled options map from the WireFormatInfo response.
+        // Options are key/value pairs like StackTraceEnabled, CacheEnabled, etc.
+        const opts = parseWireFormatOptions(data, magicOffset);
+        if ('StackTraceEnabled' in opts) stackTraceEnabled = opts['StackTraceEnabled'] as boolean;
+        if ('CacheEnabled' in opts) cacheEnabled = opts['CacheEnabled'] as boolean;
+        if ('TightEncodingEnabled' in opts) tightEncodingEnabled = opts['TightEncodingEnabled'] as boolean;
+
+        // Check for a BrokerInfo command following the WireFormatInfo frame
         if (data.length >= 4) {
           const firstFrameLen = new DataView(data.buffer, data.byteOffset).getUint32(0, false);
           const secondFrameStart = 4 + firstFrameLen;
@@ -1107,17 +1241,19 @@ export async function handleActiveMQInfo(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: true,
       latencyMs,
-      brokerId:      brokerAttrs['BrokerId'],
-      brokerName:    brokerAttrs['BrokerName'],
-      brokerVersion: brokerAttrs['BrokerVersion'],
-      uptime:        brokerAttrs['Uptime'],
-      memoryUsage:   brokerAttrs['MemoryPercentUsage'],
-      storeUsage:    brokerAttrs['StorePercentUsage'],
-      tempUsage:     brokerAttrs['TempPercentUsage'],
-      queues:        brokerAttrs['TotalEnqueueCount'],
-      topics:        brokerAttrs['TotalConsumerCount'],
-      totalMessages: brokerAttrs['TotalMessageCount'],
-      dataDirectory: brokerAttrs['DataDirectory'],
+      brokerId:           brokerAttrs['BrokerId'],
+      brokerName:         brokerAttrs['BrokerName'],
+      brokerVersion:      brokerAttrs['BrokerVersion'],
+      uptime:             brokerAttrs['Uptime'],
+      memoryUsage:        brokerAttrs['MemoryPercentUsage'],
+      storeUsage:         brokerAttrs['StorePercentUsage'],
+      tempUsage:          brokerAttrs['TempPercentUsage'],
+      totalEnqueueCount:  brokerAttrs['TotalEnqueueCount'],
+      totalDequeueCount:  brokerAttrs['TotalDequeueCount'],
+      totalConsumerCount: brokerAttrs['TotalConsumerCount'],
+      totalProducerCount: brokerAttrs['TotalProducerCount'],
+      totalMessages:      brokerAttrs['TotalMessageCount'],
+      dataDirectory:      brokerAttrs['DataDirectory'],
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({
@@ -1459,6 +1595,9 @@ export async function handleActiveMQDurableUnsubscribe(request: Request): Promis
     const startTime = Date.now();
     const enc = new TextEncoder();
 
+    // Must pass clientId to withStompSession so the CONNECT frame includes
+    // the client-id header — ActiveMQ requires this to identify the durable
+    // subscription owner when removing it.
     const result = await withStompSession(
       host, port, username, password, vhost, timeout,
       async (writer, _reader, connFrame) => {
@@ -1475,6 +1614,7 @@ export async function handleActiveMQDurableUnsubscribe(request: Request): Promis
           server: connFrame.headers['server'] ?? 'Unknown',
         };
       },
+      clientId,
     );
 
     return new Response(JSON.stringify({

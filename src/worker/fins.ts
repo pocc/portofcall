@@ -6,7 +6,7 @@
  *
  * FINS/TCP Framing (all big-endian):
  *   Header: "FINS" (4 bytes magic: 0x46494E53)
- *   Length: (4 bytes) total frame length including header
+ *   Length: (4 bytes) byte count from Command field onward (total frame size - 8)
  *   Command: (4 bytes) FINS/TCP command code
  *   Error Code: (4 bytes) 0 = success
  *   [Data payload]
@@ -41,8 +41,8 @@ const MRC_CONTROLLER_DATA_READ = 0x05;   // Read controller data
 const SRC_CONTROLLER_MODEL = 0x01;       // Sub: read controller model
 const SRC_CONTROLLER_STATUS = 0x02;      // Sub: read controller status
 
-// Memory Area Read/Write commands
-const MRC_MEMORY_AREA_READ = 0x01;       // Main: Memory Area Read
+// Memory Area Read/Write commands (MRC 0x01 is shared; SRC differentiates read vs write)
+const MRC_MEMORY_AREA = 0x01;            // Main: Memory Area operations
 const SRC_MEMORY_AREA_READ = 0x01;       // Sub: Memory Area Read
 const SRC_MEMORY_AREA_WRITE = 0x02;      // Sub: Memory Area Write
 
@@ -98,8 +98,8 @@ function buildFINSTCPFrame(command: number, errorCode: number, data: Uint8Array)
 
   // Magic: "FINS"
   frame.set(FINS_MAGIC, 0);
-  // Length (total frame size)
-  view.setUint32(4, totalLength, false); // big-endian
+  // Length: bytes from Command field onward (totalLength minus the 8-byte prefix of magic + length)
+  view.setUint32(4, totalLength - 8, false); // big-endian
   // Command
   view.setUint32(8, command, false);
   // Error Code
@@ -117,12 +117,10 @@ function buildFINSTCPFrame(command: number, errorCode: number, data: Uint8Array)
  * Client sends its desired node (0 = auto-assign).
  */
 function buildNodeAddressRequest(clientNode: number): Uint8Array {
-  const data = new Uint8Array(8);
+  const data = new Uint8Array(4);
   const view = new DataView(data.buffer);
   // Client node address (4 bytes, 0 = request auto-assignment)
   view.setUint32(0, clientNode, false);
-  // Reserved (4 bytes)
-  view.setUint32(4, 0, false);
 
   return buildFINSTCPFrame(CMD_CLIENT_NODE_ADDR, 0, data);
 }
@@ -184,13 +182,14 @@ function parseFINSTCPFrame(data: Uint8Array): {
   }
 
   const view = new DataView(data.buffer, data.byteOffset, data.length);
-  const length = view.getUint32(4, false);
+  const lengthField = view.getUint32(4, false); // bytes from Command field onward
+  const totalFrameSize = lengthField + 8;        // add magic(4) + length(4)
   const command = view.getUint32(8, false);
   const errorCode = view.getUint32(12, false);
 
-  if (data.length < length) return null;
+  if (data.length < totalFrameSize) return null;
 
-  const payload = data.slice(16, length);
+  const payload = data.slice(16, totalFrameSize);
   return { command, errorCode, payload };
 }
 
@@ -198,14 +197,15 @@ function parseFINSTCPFrame(data: Uint8Array): {
  * Parse node address response
  */
 function parseNodeAddressResponse(payload: Uint8Array): {
-  serverNode: number;
   clientNode: number;
+  serverNode: number;
 } | null {
   if (payload.length < 8) return null;
   const view = new DataView(payload.buffer, payload.byteOffset, payload.length);
+  // Server response payload: client node (4 bytes) + server node (4 bytes)
   return {
-    serverNode: view.getUint32(0, false),
-    clientNode: view.getUint32(4, false),
+    clientNode: view.getUint32(0, false),
+    serverNode: view.getUint32(4, false),
   };
 }
 
@@ -217,11 +217,13 @@ function parseControllerDataResponse(payload: Uint8Array): FINSControllerInfo {
 
   if (payload.length < 14) return info;
 
-  // Skip FINS header (10 bytes) + MRC/SRC (2 bytes) + MRES/SRES (2 bytes) = 14
-  const mres = payload[10]; // Main Response Code echo
-  const sres = payload[11]; // Sub Response Code echo
-  const endCode1 = payload[12]; // End code (main)
-  const endCode2 = payload[13]; // End code (sub)
+  // FINS response layout after 10-byte header:
+  //   Offset 10-11: MRC/SRC echo (command code)
+  //   Offset 12-13: MRES/SRES (end codes, 0x0000 = success)
+  const mrc = payload[10]; // Main Request Code (echoed back)
+  const src = payload[11]; // Sub Request Code (echoed back)
+  const endCode1 = payload[12]; // End code main (MRES)
+  const endCode2 = payload[13]; // End code sub (SRES)
 
   if (endCode1 !== 0x00 || endCode2 !== 0x00) {
     info.status = `Error: end code ${endCode1.toString(16).padStart(2, '0')}${endCode2.toString(16).padStart(2, '0')}`;
@@ -229,7 +231,7 @@ function parseControllerDataResponse(payload: Uint8Array): FINSControllerInfo {
   }
 
   // For 0501 (Controller Model Read), response data starts at offset 14
-  if (mres === MRC_CONTROLLER_DATA_READ && sres === SRC_CONTROLLER_MODEL) {
+  if (mrc === MRC_CONTROLLER_DATA_READ && src === SRC_CONTROLLER_MODEL) {
     const responseData = payload.slice(14);
     // Controller model is ASCII string, null-padded
     const modelEnd = responseData.indexOf(0);
@@ -240,7 +242,7 @@ function parseControllerDataResponse(payload: Uint8Array): FINSControllerInfo {
   }
 
   // For 0502 (Controller Status Read)
-  if (mres === MRC_CONTROLLER_DATA_READ && sres === SRC_CONTROLLER_STATUS) {
+  if (mrc === MRC_CONTROLLER_DATA_READ && src === SRC_CONTROLLER_STATUS) {
     const responseData = payload.slice(14);
     if (responseData.length >= 1) {
       const status = responseData[0];
@@ -286,9 +288,10 @@ async function readFINSFrame(
         return new Uint8Array(buffer);
       }
       const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.length);
-      const frameLength = view.getUint32(4, false);
-      if (buffer.length >= frameLength) {
-        return new Uint8Array(buffer.slice(0, frameLength));
+      const lengthField = view.getUint32(4, false);  // bytes from Command field onward
+      const totalFrameSize = lengthField + 8;          // add magic(4) + length(4)
+      if (buffer.length >= totalFrameSize) {
+        return new Uint8Array(buffer.slice(0, totalFrameSize));
       }
     }
   }
@@ -504,7 +507,7 @@ function buildMemoryAreaReadCommand(
   finsCmd[7] = srcNode & 0xFF; // SA1
   finsCmd[8] = 0x00; // SA2
   finsCmd[9] = 0x02; // SID
-  finsCmd[10] = MRC_MEMORY_AREA_READ; // MRC = 0x01
+  finsCmd[10] = MRC_MEMORY_AREA; // MRC = 0x01
   finsCmd[11] = SRC_MEMORY_AREA_READ; // SRC = 0x01
 
   // Memory area code
@@ -587,7 +590,7 @@ function buildMemoryAreaWriteCommand(
   finsCmd[7] = srcNode & 0xFF; // SA1
   finsCmd[8] = 0x00; // SA2
   finsCmd[9] = 0x03; // SID
-  finsCmd[10] = MRC_MEMORY_AREA_READ;  // MRC = 0x01
+  finsCmd[10] = MRC_MEMORY_AREA;  // MRC = 0x01
   finsCmd[11] = SRC_MEMORY_AREA_WRITE; // SRC = 0x02
 
   finsCmd[12] = memoryAreaCode & 0xFF;

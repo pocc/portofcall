@@ -1,28 +1,35 @@
 /**
- * Napster Protocol Implementation (Historical/Educational)
+ * OpenNap Protocol Implementation (Historical/Educational)
  *
  * Napster was a pioneering peer-to-peer file sharing service that revolutionized
  * music distribution from 1999-2001. The original service was shut down due to
  * copyright lawsuits, but the protocol lives on in OpenNap servers.
  *
  * Protocol Flow:
- * 1. Client connects to Napster server on port 6699 (TCP)
- * 2. Client sends login command with username/password
- * 3. Server responds with login acknowledgment
+ * 1. Client connects to OpenNap server on port 8888 (TCP)
+ * 2. Client sends LOGIN message (type 2) with binary framing
+ * 3. Server responds with LOGIN_ACK (type 3) or LOGIN_ERROR (type 5)
  * 4. Client can search, browse users, query stats
  * 5. File transfers happen directly between clients (P2P)
  *
- * Protocol Format (Text-based):
- * - Commands are newline-terminated strings
- * - Format: COMMAND param1 param2 ... \n
- * - Responses vary by command
+ * Wire Format (Binary):
+ * - Each message: 2-byte length (LE) + 2-byte type (LE) + payload
+ * - Length field = number of payload bytes (excludes the 4-byte header)
+ * - All integers are little-endian unsigned 16-bit
  *
- * Common Commands:
- * - LOGIN <user> <pass> <port> "<client>" <speed>
- * - SEARCH <query>
- * - GET_SERVER_STATS
- * - WHOIS <username>
- * - BROWSE <username>
+ * Message Types Used:
+ * -   2: LOGIN       — "nick password port \"clientinfo\" speed [email]"
+ * -   3: LOGIN_ACK   — server confirms login
+ * -   5: LOGIN_ERROR — server rejects login
+ * -   6: EMAIL       — server sends email (informational, ignored)
+ * -   7: USER_COUNT  — "users files size" (online user/file/GB counts)
+ * - 200: SEARCH      — "FILENAME CONTAINS \"query\" MAX_RESULTS n ..."
+ * - 201: SEARCH_RESULT — one result per message
+ * - 202: SEARCH_END  — signals end of search results
+ * - 211: BROWSE      — "targetUser"
+ * - 212: BROWSE_RESULT — one file per message
+ * - 213: BROWSE_END  — signals end of browse results
+ * - 214: STATS       — request server statistics (empty payload)
  *
  * Historical Context:
  * - Launched June 1999 by Shawn Fanning
@@ -42,6 +49,9 @@
 
 import { connect } from 'cloudflare:sockets';
 
+// Default OpenNap port (Napster's original was 8875/6699, OpenNap standardized on 8888)
+const DEFAULT_OPENNAP_PORT = 8888;
+
 // OpenNap binary protocol message types
 const OPENNAP_MSG = {
   LOGIN: 2,
@@ -49,12 +59,22 @@ const OPENNAP_MSG = {
   LOGIN_ERROR: 5,
   EMAIL: 6,
   USER_COUNT: 7,
+  STATS: 214,
+  STATS_RESPONSE: 214,
   SEARCH: 200,
   SEARCH_RESULT: 201,
   SEARCH_END: 202,
+  BROWSE: 211,
+  BROWSE_RESULT: 212,
+  BROWSE_END: 213,
 } as const;
 
-// OpenNap file type codes
+// OpenNap link speed codes
+// 0=Unknown, 1=14.4, 2=28.8, 3=33.6, 4=57.6, 5=64K ISDN,
+// 6=128K ISDN, 7=Cable, 8=DSL, 9=T1, 10=T3+
+const LINK_SPEED_DSL = 8;
+
+// OpenNap file type codes for search filtering
 const OPENNAP_FILE_TYPES: Record<string, number> = {
   mp3: 0,
   wav: 1,
@@ -87,122 +107,217 @@ interface NapsterResponse {
   rtt?: number;
 }
 
+// ─── OpenNap Binary Wire Format ──────────────────────────────────────────────
+
 /**
- * Encode Napster LOGIN command.
+ * Encode an OpenNap binary protocol message.
+ * Each message: length(2 LE) + type(2 LE) + data bytes
  */
-function encodeLoginCommand(params: {
+function encodeOpenNapMessage(type: number, data: string): Uint8Array {
+  const dataBytes = new TextEncoder().encode(data);
+  const buf = new ArrayBuffer(4 + dataBytes.length);
+  const view = new DataView(buf);
+  view.setUint16(0, dataBytes.length, true); // length LE
+  view.setUint16(2, type, true);              // type LE
+  new Uint8Array(buf).set(dataBytes, 4);
+  return new Uint8Array(buf);
+}
+
+/**
+ * Decode all complete OpenNap messages from a buffer.
+ * Returns array of { type, data } and remaining unconsumed bytes.
+ */
+function decodeOpenNapMessages(buf: Uint8Array): {
+  messages: Array<{ type: number; data: string }>;
+  remaining: Uint8Array;
+} {
+  const messages: Array<{ type: number; data: string }> = [];
+  let offset = 0;
+
+  while (offset + 4 <= buf.length) {
+    // Create a fresh DataView to avoid issues with buffer slices
+    const headerBytes = buf.slice(offset, offset + 4);
+    const view = new DataView(headerBytes.buffer, headerBytes.byteOffset, 4);
+    const len = view.getUint16(0, true);
+    const type = view.getUint16(2, true);
+
+    // Protect against malicious servers sending massive length values
+    if (len > 1024 * 1024) {
+      throw new Error(`OpenNap message length ${len} exceeds 1MB safety limit`);
+    }
+
+    if (offset + 4 + len > buf.length) break; // incomplete message
+
+    const dataBytes = buf.slice(offset + 4, offset + 4 + len);
+    const data = new TextDecoder().decode(dataBytes);
+    messages.push({ type, data });
+    offset += 4 + len;
+  }
+
+  return { messages, remaining: buf.slice(offset) };
+}
+
+/**
+ * Build the OpenNap LOGIN payload string.
+ *
+ * Format: nick password port "clientinfo" speed [email]
+ * - port: client's listening port for incoming transfers (0 = not sharing)
+ * - clientinfo: quoted client software identifier
+ * - speed: link speed code (see LINK_SPEED constants)
+ * - email: optional, some servers require it for new account registration
+ */
+function buildLoginPayload(params: {
   username: string;
   password: string;
   email?: string;
 }): string {
   const { username, password, email } = params;
-
-  // LOGIN format: LOGIN <username> <password> <port> "<client-info>" <link-speed> [<email>]
-  // Port is the client's listening port (0 if not sharing)
-  // Client info is the client software name/version
-  // Link speed: 0=Unknown, 1=14.4, 2=28.8, 3=33.6, 4=57.6, 5=64K ISDN, 6=128K ISDN, 7=Cable, 8=DSL, 9=T1, 10=T3+
-
-  const port = 0; // Not sharing files (read-only client)
+  const clientPort = 0; // Not sharing files (read-only client)
   const clientInfo = 'PortOfCall/1.0';
-  const linkSpeed = 8; // DSL (typical modern connection)
 
-  let command = `LOGIN ${username} ${password} ${port} "${clientInfo}" ${linkSpeed}`;
+  let payload = `${username} ${password} ${clientPort} "${clientInfo}" ${LINK_SPEED_DSL}`;
 
   if (email) {
-    command += ` ${email}`;
+    payload += ` ${email}`;
   }
 
-  return command + '\n';
+  return payload;
 }
 
 /**
- * Encode Napster STATS command.
+ * Shared login-and-wait helper. Sends LOGIN (type 2) and waits for
+ * LOGIN_ACK (type 3) or LOGIN_ERROR (type 5), collecting any USER_COUNT
+ * messages along the way.
+ *
+ * Returns the leftover buffer (may contain messages after login ack)
+ * and the login result.
  */
-function encodeStatsCommand(): string {
-  // Some servers use GET_SERVER_STATS, others use STATS
-  return 'GET_SERVER_STATS\n';
-}
+async function performLogin(
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  params: { username: string; password: string; email?: string },
+  loginTimeoutMs: number,
+): Promise<{
+  ok: boolean;
+  error: string;
+  serverUserCount?: number;
+  loginAckData?: string;
+  buf: Uint8Array;
+}> {
+  const loginPayload = buildLoginPayload(params);
+  await writer.write(encodeOpenNapMessage(OPENNAP_MSG.LOGIN, loginPayload));
 
-/**
- * Parse Napster server response.
- */
-function parseNapsterResponse(data: string): {
-  message?: string;
-  users?: number;
-  files?: number;
-  gigabytes?: number;
-  serverVersion?: string;
-  motd?: string;
-} {
-  const result: {
-    message?: string;
-    users?: number;
-    files?: number;
-    gigabytes?: number;
-    serverVersion?: string;
-    motd?: string;
-  } = {};
+  let buf = new Uint8Array(0);
+  let loginOk = false;
+  let loginError = '';
+  let loginAckData: string | undefined;
+  let serverUserCount: number | undefined;
+  const deadline = Date.now() + loginTimeoutMs;
 
-  // Napster responses vary, but typically include:
-  // - Server version/MOTD
-  // - User count
-  // - File count
-  // - Data size
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
 
-  const lines = data.split('\n');
+    const shortTimeout = new Promise<{ value: undefined; done: true }>((resolve) => {
+      setTimeout(() => resolve({ value: undefined, done: true }), remaining);
+    });
 
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
+    const { value, done } = await Promise.race([reader.read(), shortTimeout]);
+    if (done || !value) break;
 
-    // Look for common response patterns
-    if (trimmed.match(/users?[\s:]/i)) {
-      const match = trimmed.match(/(\d+)\s*users?/i);
-      if (match) {
-        result.users = parseInt(match[1], 10);
+    const newBuf = new Uint8Array(buf.length + value.length);
+    newBuf.set(buf, 0);
+    newBuf.set(value, buf.length);
+    buf = newBuf;
+
+    const decoded = decodeOpenNapMessages(buf);
+    buf = decoded.remaining;
+
+    for (const msg of decoded.messages) {
+      if (msg.type === OPENNAP_MSG.LOGIN_ACK) {
+        loginOk = true;
+        loginAckData = msg.data;
+      } else if (msg.type === OPENNAP_MSG.LOGIN_ERROR) {
+        loginError = msg.data;
+      } else if (msg.type === OPENNAP_MSG.USER_COUNT) {
+        const parts = msg.data.trim().split(/\s+/);
+        serverUserCount = parseInt(parts[0], 10) || undefined;
       }
+      // EMAIL (type 6) is informational, ignored
     }
 
-    if (trimmed.match(/files?[\s:]/i)) {
-      const match = trimmed.match(/(\d+)\s*files?/i);
-      if (match) {
-        result.files = parseInt(match[1], 10);
-      }
-    }
-
-    if (trimmed.match(/GB|gigabytes?/i)) {
-      const match = trimmed.match(/([\d.]+)\s*(GB|gigabytes?)/i);
-      if (match) {
-        result.gigabytes = parseFloat(match[1]);
-      }
-    }
-
-    if (trimmed.match(/version/i)) {
-      result.serverVersion = trimmed;
-    }
-
-    if (trimmed.match(/welcome|motd/i)) {
-      result.motd = trimmed;
-    }
-
-    // Store first non-empty line as message
-    if (!result.message && trimmed.length > 0) {
-      result.message = trimmed;
-    }
+    if (loginOk || loginError) break;
   }
 
-  return result;
+  return { ok: loginOk, error: loginError, serverUserCount, loginAckData, buf };
 }
 
 /**
- * Test Napster server connectivity.
+ * Parse a single SEARCH_RESULT / BROWSE_RESULT (type 201/212) data string.
+ *
+ * OpenNap search result format (space-separated, filename is quoted):
+ *   "filename" md5 size bitrate freq length nick ip speed
+ *
+ * Some servers use a slightly different order. We try the quoted-filename
+ * format first, then fall back to a simple space-split.
+ */
+function parseSearchResult(data: string): { filename: string; size: number; bitrate: number; freq: number; lengthSecs: number } | null {
+  // Try quoted filename format: "filename" md5 size bitrate freq length nick ip speed
+  const quotedMatch = data.match(/^"([^"]*)"(?:\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+))?/);
+  if (quotedMatch) {
+    return {
+      filename: quotedMatch[1] || '',
+      size: parseInt(quotedMatch[3] || '0', 10) || 0,
+      bitrate: parseInt(quotedMatch[4] || '0', 10) || 0,
+      freq: parseInt(quotedMatch[5] || '0', 10) || 0,
+      lengthSecs: parseInt(quotedMatch[6] || '0', 10) || 0,
+    };
+  }
+
+  // Fallback: simple space-separated fields
+  // filename md5 size bitrate freq length nick ip speed
+  const parts = data.trim().split(/\s+/);
+  if (parts.length >= 6) {
+    return {
+      filename: parts[0] || '',
+      size: parseInt(parts[2], 10) || 0,
+      bitrate: parseInt(parts[3], 10) || 0,
+      freq: parseInt(parts[4], 10) || 0,
+      lengthSecs: parseInt(parts[5], 10) || 0,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Parse a USER_COUNT (type 7) or STATS response (type 214) data string.
+ * Format: "users files size" where size is in gigabytes.
+ */
+function parseStatsData(data: string): { users?: number; files?: number; gigabytes?: number } {
+  const parts = data.trim().split(/\s+/);
+  return {
+    users: parts[0] ? (parseInt(parts[0], 10) || undefined) : undefined,
+    files: parts[1] ? (parseInt(parts[1], 10) || undefined) : undefined,
+    gigabytes: parts[2] ? (parseInt(parts[2], 10) || undefined) : undefined,
+  };
+}
+
+
+// ─── HTTP Handlers ───────────────────────────────────────────────────────────
+
+/**
+ * Test Napster/OpenNap server connectivity (TCP probe only, no protocol).
+ *
+ * POST /api/napster/connect
+ * Body: { host, port?, timeout? }
  */
 export async function handleNapsterConnect(request: Request): Promise<Response> {
   try {
     const body = await request.json() as NapsterRequest;
     const {
       host,
-      port = 6699,
+      port = DEFAULT_OPENNAP_PORT,
       timeout = 15000,
     } = body;
 
@@ -233,7 +348,7 @@ export async function handleNapsterConnect(request: Request): Promise<Response> 
 
     const start = Date.now();
 
-    // Connect to Napster server
+    // Connect to server
     const socket = connect(`${host}:${port}`, {
       secureTransport: 'off',
       allowHalfOpen: false,
@@ -262,7 +377,11 @@ export async function handleNapsterConnect(request: Request): Promise<Response> 
       });
 
     } catch (error) {
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors
+      }
       throw error;
     }
 
@@ -270,7 +389,7 @@ export async function handleNapsterConnect(request: Request): Promise<Response> 
     return new Response(JSON.stringify({
       success: false,
       host: '',
-      port: 6699,
+      port: DEFAULT_OPENNAP_PORT,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies NapsterResponse), {
       status: 500,
@@ -280,14 +399,25 @@ export async function handleNapsterConnect(request: Request): Promise<Response> 
 }
 
 /**
- * Send Napster LOGIN command.
+ * Send OpenNap LOGIN (type 2) and return the server's response.
+ *
+ * POST /api/napster/login
+ * Body: { host, port?, username, password, email?, timeout? }
+ *
+ * Protocol:
+ *   Client sends LOGIN (type 2): "nick password port \"clientinfo\" speed [email]"
+ *   Server responds with:
+ *     LOGIN_ACK (type 3): email address on success
+ *     LOGIN_ERROR (type 5): error message on failure
+ *     EMAIL (type 6): informational (ignored)
+ *     USER_COUNT (type 7): "users files gigabytes"
  */
 export async function handleNapsterLogin(request: Request): Promise<Response> {
   try {
     const body = await request.json() as NapsterRequest;
     const {
       host,
-      port = 6699,
+      port = DEFAULT_OPENNAP_PORT,
       username,
       password,
       email,
@@ -333,7 +463,7 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
 
     const start = Date.now();
 
-    // Connect to Napster server
+    // Connect to server
     const socket = connect(`${host}:${port}`, {
       secureTransport: 'off',
       allowHalfOpen: false,
@@ -349,113 +479,37 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send LOGIN command
-      const loginCommand = encodeLoginCommand({ username, password, email });
-      await writer.write(new TextEncoder().encode(loginCommand));
-      writer.releaseLock();
-
-      // Read response
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
-      const maxResponseSize = 8192;
-
-      const readTimeout = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Response timeout')), timeout);
-      });
-
-      try {
-        // Give server time to respond
-        await new Promise((resolve) => setTimeout(resolve, 500));
-
-        while (true) {
-          const { value, done } = await Promise.race([
-            reader.read(),
-            readTimeout,
-          ]);
-
-          if (done) break;
-
-          if (value) {
-            chunks.push(value);
-            totalBytes += value.length;
-
-            if (totalBytes > maxResponseSize) {
-              break;
-            }
-
-            // Wait for more data
-            await new Promise((resolve) => setTimeout(resolve, 200));
-
-            // Check if more data available
-            const peek = await Promise.race([
-              reader.read(),
-              new Promise<{ value?: Uint8Array; done: boolean }>((resolve) =>
-                setTimeout(() => resolve({ done: false }), 100)
-              ),
-            ]);
-
-            if (peek.value) {
-              chunks.push(peek.value);
-              totalBytes += peek.value.length;
-            }
-
-            if (peek.done || !peek.value) {
-              break;
-            }
-          }
-        }
-      } catch (error) {
-        if (chunks.length === 0) {
-          throw error;
-        }
-      }
+      // Perform binary OpenNap login
+      const loginResult = await performLogin(writer, reader, { username, password, email }, Math.min(timeout, 10000));
 
       const rtt = Date.now() - start;
 
-      // Combine chunks
-      const combined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      const responseText = new TextDecoder().decode(combined);
-
+      writer.releaseLock();
       reader.releaseLock();
       socket.close();
 
-      if (!responseText) {
+      if (!loginResult.ok) {
         return new Response(JSON.stringify({
           success: false,
           host,
           port,
-          error: 'Empty response from server (server may not be a Napster server)',
+          users: loginResult.serverUserCount,
+          error: loginResult.error
+            ? `Login failed: ${loginResult.error}`
+            : 'Login timed out or was not acknowledged',
+          rtt,
         } satisfies NapsterResponse), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
 
-      // Parse response
-      const parsed = parseNapsterResponse(responseText);
-
-      // Check for login success indicators
-      const isSuccess = responseText.toLowerCase().includes('welcome') ||
-                        responseText.toLowerCase().includes('logged in') ||
-                        responseText.toLowerCase().includes('success') ||
-                        parsed.users !== undefined;
-
       return new Response(JSON.stringify({
-        success: isSuccess,
+        success: true,
         host,
         port,
-        message: parsed.message || responseText.substring(0, 200),
-        motd: parsed.motd,
-        serverVersion: parsed.serverVersion,
-        users: parsed.users,
-        files: parsed.files,
-        gigabytes: parsed.gigabytes,
+        message: loginResult.loginAckData || 'Login successful',
+        users: loginResult.serverUserCount,
         rtt,
       } satisfies NapsterResponse), {
         status: 200,
@@ -463,7 +517,11 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
       });
 
     } catch (error) {
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors
+      }
       throw error;
     }
 
@@ -471,7 +529,7 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       host: '',
-      port: 6699,
+      port: DEFAULT_OPENNAP_PORT,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies NapsterResponse), {
       status: 500,
@@ -481,14 +539,28 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
 }
 
 /**
- * Query Napster server statistics.
+ * Query OpenNap server statistics.
+ *
+ * POST /api/napster/stats
+ * Body: { host, port?, username?, password?, timeout? }
+ *
+ * Protocol:
+ *   Login (type 2) first if credentials provided, then:
+ *   Client sends STATS request (type 214, empty payload)
+ *   Server responds with STATS (type 214): "users files gigabytes"
+ *
+ *   If no credentials, we attempt a TCP connect and read any initial
+ *   USER_COUNT (type 7) messages the server may send after connection.
+ *   Most OpenNap servers require login before they respond to stats.
  */
 export async function handleNapsterStats(request: Request): Promise<Response> {
   try {
     const body = await request.json() as NapsterRequest;
     const {
       host,
-      port = 6699,
+      port = DEFAULT_OPENNAP_PORT,
+      username,
+      password,
       timeout = 15000,
     } = body;
 
@@ -507,7 +579,7 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
 
     const start = Date.now();
 
-    // Connect to Napster server
+    // Connect to server
     const socket = connect(`${host}:${port}`, {
       secureTransport: 'off',
       allowHalfOpen: false,
@@ -523,97 +595,99 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send STATS command
-      const statsCommand = encodeStatsCommand();
-      await writer.write(new TextEncoder().encode(statsCommand));
-      writer.releaseLock();
+      let users: number | undefined;
+      let files: number | undefined;
+      let gigabytes: number | undefined;
+      let buf = new Uint8Array(0);
 
-      // Read response
-      const chunks: Uint8Array[] = [];
-      let totalBytes = 0;
-      const maxResponseSize = 8192;
+      // If credentials provided, login first (required by most servers)
+      if (username && password) {
+        const loginResult = await performLogin(writer, reader, { username, password }, Math.min(timeout, 8000));
+        buf = loginResult.buf;
 
-      const readTimeout = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Response timeout')), timeout);
-      });
+        if (!loginResult.ok) {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: loginResult.error
+              ? `Login failed: ${loginResult.error}`
+              : 'Login timed out (credentials may be required for stats)',
+            rtt: Date.now() - start,
+          } satisfies NapsterResponse), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
 
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        // We may have gotten USER_COUNT during login
+        if (loginResult.serverUserCount !== undefined) {
+          users = loginResult.serverUserCount;
+        }
 
-        while (true) {
-          const { value, done } = await Promise.race([
-            reader.read(),
-            readTimeout,
-          ]);
+        // Send STATS request (type 214, empty payload)
+        await writer.write(encodeOpenNapMessage(OPENNAP_MSG.STATS, ''));
+      } else {
+        // Without credentials, send STATS anyway and hope the server responds.
+        // Most OpenNap servers will reject this, but some may respond.
+        await writer.write(encodeOpenNapMessage(OPENNAP_MSG.STATS, ''));
+      }
 
-          if (done) break;
+      // Read stats response
+      const statsDeadline = Date.now() + Math.min(timeout - (Date.now() - start), 5000);
 
-          if (value) {
-            chunks.push(value);
-            totalBytes += value.length;
+      while (Date.now() < statsDeadline) {
+        const remaining = statsDeadline - Date.now();
+        if (remaining <= 0) break;
 
-            if (totalBytes > maxResponseSize || totalBytes > 100) {
-              await new Promise((resolve) => setTimeout(resolve, 200));
-              const peek = await Promise.race([
-                reader.read(),
-                new Promise<{ value?: Uint8Array; done: boolean }>((resolve) =>
-                  setTimeout(() => resolve({ done: false }), 100)
-                ),
-              ]);
-              if (peek.value) {
-                chunks.push(peek.value);
-                totalBytes += peek.value.length;
-              }
-              break;
-            }
+        const shortTimeout = new Promise<{ value: undefined; done: true }>((resolve) => {
+          setTimeout(() => resolve({ value: undefined, done: true }), remaining);
+        });
+
+        const { value, done } = await Promise.race([reader.read(), shortTimeout]);
+        if (done || !value) break;
+
+        const newBuf = new Uint8Array(buf.length + value.length);
+        newBuf.set(buf, 0);
+        newBuf.set(value, buf.length);
+        buf = newBuf;
+
+        const decoded = decodeOpenNapMessages(buf);
+        buf = decoded.remaining;
+
+        let gotStats = false;
+        for (const msg of decoded.messages) {
+          if (msg.type === OPENNAP_MSG.STATS_RESPONSE || msg.type === OPENNAP_MSG.USER_COUNT) {
+            const parsed = parseStatsData(msg.data);
+            if (parsed.users !== undefined) users = parsed.users;
+            if (parsed.files !== undefined) files = parsed.files;
+            if (parsed.gigabytes !== undefined) gigabytes = parsed.gigabytes;
+            gotStats = true;
           }
         }
-      } catch (error) {
-        if (chunks.length === 0) {
-          throw error;
-        }
+
+        if (gotStats) break;
       }
 
       const rtt = Date.now() - start;
 
-      // Combine chunks
-      const combined = new Uint8Array(totalBytes);
-      let offset = 0;
-      for (const chunk of chunks) {
-        combined.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      const responseText = new TextDecoder().decode(combined);
-
+      writer.releaseLock();
       reader.releaseLock();
       socket.close();
 
-      if (!responseText) {
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: 'Empty response from server',
-        } satisfies NapsterResponse), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      // Parse response
-      const parsed = parseNapsterResponse(responseText);
+      const hasData = users !== undefined || files !== undefined || gigabytes !== undefined;
 
       return new Response(JSON.stringify({
-        success: true,
+        success: hasData,
         host,
         port,
-        message: parsed.message || responseText.substring(0, 200),
-        users: parsed.users,
-        files: parsed.files,
-        gigabytes: parsed.gigabytes,
-        serverVersion: parsed.serverVersion,
-        motd: parsed.motd,
+        message: hasData ? 'Server statistics retrieved' : 'No stats received (server may require login)',
+        users,
+        files,
+        gigabytes,
         rtt,
       } satisfies NapsterResponse), {
         status: 200,
@@ -621,7 +695,11 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
       });
 
     } catch (error) {
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors
+      }
       throw error;
     }
 
@@ -629,7 +707,7 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       host: '',
-      port: 6699,
+      port: DEFAULT_OPENNAP_PORT,
       error: error instanceof Error ? error.message : 'Unknown error',
     } satisfies NapsterResponse), {
       status: 500,
@@ -638,7 +716,7 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
   }
 }
 
-// ─── OpenNap Browse Protocol ─────────────────────────────────────────────────
+// ─── OpenNap Browse ──────────────────────────────────────────────────────────
 
 interface OpenNapBrowseRequest {
   host: string;
@@ -668,13 +746,6 @@ interface OpenNapBrowseResponse {
   error?: string;
 }
 
-// OpenNap message types for BROWSE
-const OPENNAP_BROWSE_MSG = {
-  BROWSE: 211,
-  BROWSE_RESULT: 212,
-  BROWSE_END: 213,
-} as const;
-
 /**
  * Browse files shared by a specific user on an OpenNap server.
  *
@@ -682,7 +753,7 @@ const OPENNAP_BROWSE_MSG = {
  * Body: { host, port?, timeout?, username, password, targetUser }
  *
  * Protocol:
- *   Login (type 2) → ack (type 3)
+ *   Login (type 2) -> ack (type 3)
  *   Browse (type 211): targetUser
  *   Results (type 212): one per file (same format as search result)
  *   End (type 213): signals end of browse results
@@ -692,7 +763,7 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
     const body = await request.json() as OpenNapBrowseRequest;
     const {
       host,
-      port = 6699,
+      port = DEFAULT_OPENNAP_PORT,
       timeout = 20000,
       username,
       password,
@@ -756,53 +827,18 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Login
-      const loginData = `${username} ${password} PortOfCall/1.0 0 user@example.com 1`;
-      await writer.write(encodeOpenNapMessage(OPENNAP_MSG.LOGIN, loginData));
+      // Login first
+      const loginResult = await performLogin(writer, reader, { username, password }, Math.min(timeout, 8000));
+      let buf = loginResult.buf;
 
-      let buf = new Uint8Array(0);
-      let loginOk = false;
-      let loginError = '';
-      const loginDeadline = Date.now() + 8000;
-
-      while (Date.now() < loginDeadline) {
-        const remaining = loginDeadline - Date.now();
-        if (remaining <= 0) break;
-
-        const shortTimeout = new Promise<{ value: undefined; done: true }>((resolve) => {
-          setTimeout(() => resolve({ value: undefined, done: true }), remaining);
-        });
-
-        const { value, done } = await Promise.race([reader.read(), shortTimeout]);
-        if (done || !value) break;
-
-        const newBuf = new Uint8Array(buf.length + value.length);
-        newBuf.set(buf, 0);
-        newBuf.set(value, buf.length);
-        buf = newBuf;
-
-        const { messages, remaining: rest } = decodeOpenNapMessages(buf);
-        buf = new Uint8Array(rest);
-
-        for (const msg of messages) {
-          if (msg.type === OPENNAP_MSG.LOGIN_ACK) {
-            loginOk = true;
-          } else if (msg.type === OPENNAP_MSG.LOGIN_ERROR) {
-            loginError = msg.data;
-          }
-        }
-
-        if (loginOk || loginError) break;
-      }
-
-      if (!loginOk) {
+      if (!loginResult.ok) {
         writer.releaseLock();
         reader.releaseLock();
         socket.close();
         return new Response(JSON.stringify({
           success: false, host, port, targetUser, count: 0, files: [],
           rtt: Date.now() - start,
-          error: loginError ? `Login failed: ${loginError}` : 'Login timed out or was not acknowledged',
+          error: loginResult.error ? `Login failed: ${loginResult.error}` : 'Login timed out or was not acknowledged',
         } satisfies OpenNapBrowseResponse), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -810,7 +846,7 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
       }
 
       // Send BROWSE command (type 211): data = targetUser
-      await writer.write(encodeOpenNapMessage(OPENNAP_BROWSE_MSG.BROWSE, targetUser.trim()));
+      await writer.write(encodeOpenNapMessage(OPENNAP_MSG.BROWSE, targetUser.trim()));
 
       // Collect results (type 212) until type 213 or timeout
       const files: OpenNapBrowseResult[] = [];
@@ -832,15 +868,15 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
         newBuf.set(value, buf.length);
         buf = newBuf;
 
-        const { messages, remaining: rest } = decodeOpenNapMessages(buf);
-        buf = new Uint8Array(rest);
+        const decoded = decodeOpenNapMessages(buf);
+        buf = decoded.remaining;
 
         let browseDone = false;
-        for (const msg of messages) {
-          if (msg.type === OPENNAP_BROWSE_MSG.BROWSE_RESULT) {
+        for (const msg of decoded.messages) {
+          if (msg.type === OPENNAP_MSG.BROWSE_RESULT) {
             const parsed = parseSearchResult(msg.data);
             if (parsed) files.push(parsed);
-          } else if (msg.type === OPENNAP_BROWSE_MSG.BROWSE_END) {
+          } else if (msg.type === OPENNAP_MSG.BROWSE_END) {
             browseDone = true;
           }
         }
@@ -867,7 +903,11 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
       });
 
     } catch (error) {
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors
+      }
       throw error;
     }
 
@@ -875,7 +915,7 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       host: '',
-      port: 6699,
+      port: DEFAULT_OPENNAP_PORT,
       targetUser: '',
       count: 0,
       files: [],
@@ -887,7 +927,7 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
   }
 }
 
-// ─── OpenNap Binary Protocol ────────────────────────────────────────────────
+// ─── OpenNap Search ──────────────────────────────────────────────────────────
 
 interface OpenNapSearchRequest {
   host: string;
@@ -919,87 +959,13 @@ interface OpenNapSearchResponse {
 }
 
 /**
- * Encode an OpenNap binary protocol message.
- * Each message: length(2 LE) + type(2 LE) + data bytes
- */
-function encodeOpenNapMessage(type: number, data: string): Uint8Array {
-  const dataBytes = new TextEncoder().encode(data);
-  const buf = new ArrayBuffer(4 + dataBytes.length);
-  const view = new DataView(buf);
-  view.setUint16(0, dataBytes.length, true); // length LE
-  view.setUint16(2, type, true);              // type LE
-  new Uint8Array(buf).set(dataBytes, 4);
-  return new Uint8Array(buf);
-}
-
-/**
- * Decode all complete OpenNap messages from a buffer.
- * Returns array of { type, data } and remaining unconsumed bytes.
- */
-function decodeOpenNapMessages(buf: Uint8Array): {
-  messages: Array<{ type: number; data: string }>;
-  remaining: Uint8Array;
-} {
-  const messages: Array<{ type: number; data: string }> = [];
-  let offset = 0;
-
-  while (offset + 4 <= buf.length) {
-    const view = new DataView(buf.buffer, buf.byteOffset + offset, 4);
-    const len = view.getUint16(0, true);
-    const type = view.getUint16(2, true);
-
-    if (offset + 4 + len > buf.length) break; // incomplete message
-
-    const dataBytes = buf.slice(offset + 4, offset + 4 + len);
-    const data = new TextDecoder().decode(dataBytes);
-    messages.push({ type, data });
-    offset += 4 + len;
-  }
-
-  return { messages, remaining: buf.slice(offset) };
-}
-
-/**
- * Parse a single SEARCH_RESULT (type 201) data string.
- * NUL-separated: filename, nick, address, port, filesize, md5, bitrate, freq, duration
- * Falls back to space-separated: "filename md5 size bitrate freq length"
- */
-function parseSearchResult(data: string): OpenNapSearchResult | null {
-  // Try NUL-separated fields first (original OpenNap spec)
-  const nulParts = data.split('\x00').filter(Boolean);
-  if (nulParts.length >= 8) {
-    return {
-      filename: nulParts[0] || '',
-      size: parseInt(nulParts[4], 10) || 0,
-      bitrate: parseInt(nulParts[6], 10) || 0,
-      freq: parseInt(nulParts[7], 10) || 0,
-      lengthSecs: parseInt(nulParts[8] || '0', 10) || 0,
-    };
-  }
-
-  // Fall back to space-separated: "filename md5 size bitrate freq length"
-  const parts = data.trim().split(/\s+/);
-  if (parts.length >= 4) {
-    return {
-      filename: parts[0] || '',
-      size: parseInt(parts[2], 10) || 0,
-      bitrate: parseInt(parts[3], 10) || 0,
-      freq: parseInt(parts[4] || '0', 10) || 0,
-      lengthSecs: parseInt(parts[5] || '0', 10) || 0,
-    };
-  }
-
-  return null;
-}
-
-/**
  * Search an OpenNap server for files using the binary OpenNap protocol.
  *
  * POST /api/napster/search
  * Body: { host, port?, timeout?, username, password, query, fileType? }
  *
  * Protocol:
- *   Login (type 2): "username password clientname 0 email build"
+ *   Login (type 2): "nick password port \"clientinfo\" speed [email]"
  *   Server ack (type 3=OK, 5=error, 6=email, 7=user count)
  *   Search (type 200): FILENAME CONTAINS "query" MAX_RESULTS 20 ...
  *   Results (type 201): one per file
@@ -1010,7 +976,7 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
     const body = await request.json() as OpenNapSearchRequest;
     const {
       host,
-      port = 6699,
+      port = DEFAULT_OPENNAP_PORT,
       timeout = 20000,
       username,
       password,
@@ -1075,53 +1041,12 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      // Send login: type 2
-      const loginData = `${username} ${password} PortOfCall/1.0 0 user@example.com 1`;
-      await writer.write(encodeOpenNapMessage(OPENNAP_MSG.LOGIN, loginData));
+      // Login first
+      const loginResult = await performLogin(writer, reader, { username, password }, Math.min(timeout, 8000));
+      let buf = loginResult.buf;
+      let serverUserCount = loginResult.serverUserCount;
 
-      // Collect login response messages
-      let serverUserCount: number | undefined;
-      let loginOk = false;
-      let loginError = '';
-      let buf = new Uint8Array(0);
-
-      const loginDeadline = Date.now() + 8000;
-
-      while (Date.now() < loginDeadline) {
-        const remaining = loginDeadline - Date.now();
-        if (remaining <= 0) break;
-
-        const shortTimeout = new Promise<{ value: undefined; done: true }>((resolve) => {
-          setTimeout(() => resolve({ value: undefined, done: true }), remaining);
-        });
-
-        const { value, done } = await Promise.race([reader.read(), shortTimeout]);
-        if (done || !value) break;
-
-        const newBuf = new Uint8Array(buf.length + value.length);
-        newBuf.set(buf, 0);
-        newBuf.set(value, buf.length);
-        buf = newBuf;
-
-        const { messages, remaining: rest } = decodeOpenNapMessages(buf);
-        buf = new Uint8Array(rest);
-
-        for (const msg of messages) {
-          if (msg.type === OPENNAP_MSG.LOGIN_ACK) {
-            loginOk = true;
-          } else if (msg.type === OPENNAP_MSG.LOGIN_ERROR) {
-            loginError = msg.data;
-          } else if (msg.type === OPENNAP_MSG.USER_COUNT) {
-            const parts = msg.data.trim().split(/\s+/);
-            serverUserCount = parseInt(parts[0], 10) || undefined;
-          }
-          // EMAIL (type 6) is ignored
-        }
-
-        if (loginOk || loginError) break;
-      }
-
-      if (!loginOk) {
+      if (!loginResult.ok) {
         writer.releaseLock();
         reader.releaseLock();
         socket.close();
@@ -1133,8 +1058,8 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
           results: [],
           serverUserCount,
           rtt: Date.now() - start,
-          error: loginError
-            ? `Login failed: ${loginError}`
+          error: loginResult.error
+            ? `Login failed: ${loginResult.error}`
             : 'Login timed out or was not acknowledged',
         } satisfies OpenNapSearchResponse), {
           status: 200,
@@ -1143,13 +1068,19 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
       }
 
       // Build SEARCH command (type 200)
+      // Format: FILENAME CONTAINS "query" MAX_RESULTS n LINESPEED "EQUAL TO" speed BITRATE "EQUAL TO" rate FREQ "EQUAL TO" freq
+      // Using >= 0 for optional constraints to accept all results
+
+      // Escape quotes in query to prevent OpenNap command injection
+      const escapedQuery = query.replace(/"/g, '\\"');
+
       let searchData =
-        `FILENAME CONTAINS "${query}" MAX_RESULTS 20 LINESPEED >= 0 BITRATE >= 0 FREQ >= 0`;
+        `FILENAME CONTAINS "${escapedQuery}" MAX_RESULTS 20 LINESPEED "EQUAL TO" 0 BITRATE "EQUAL TO" 0 FREQ "EQUAL TO" 0`;
 
       if (fileType) {
         const ftCode = OPENNAP_FILE_TYPES[fileType.toLowerCase()];
         if (ftCode !== undefined) {
-          searchData += ` TYPE ${ftCode}`;
+          searchData += ` TYPE "EQUAL TO" ${ftCode}`;
         }
       }
 
@@ -1175,11 +1106,11 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
         newBuf.set(value, buf.length);
         buf = newBuf;
 
-        const { messages, remaining: rest } = decodeOpenNapMessages(buf);
-        buf = new Uint8Array(rest);
+        const decoded = decodeOpenNapMessages(buf);
+        buf = decoded.remaining;
 
         let searchDone = false;
-        for (const msg of messages) {
+        for (const msg of decoded.messages) {
           if (msg.type === OPENNAP_MSG.SEARCH_RESULT) {
             const parsed = parseSearchResult(msg.data);
             if (parsed) results.push(parsed);
@@ -1214,7 +1145,11 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
       });
 
     } catch (error) {
-      socket.close();
+      try {
+        socket.close();
+      } catch {
+        // Ignore close errors
+      }
       throw error;
     }
 
@@ -1222,7 +1157,7 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: false,
       host: '',
-      port: 6699,
+      port: DEFAULT_OPENNAP_PORT,
       count: 0,
       results: [],
       error: error instanceof Error ? error.message : 'Unknown error',

@@ -6,7 +6,7 @@
  * of the JPDA (Java Platform Debugger Architecture).
  *
  * Protocol: Binary with ASCII handshake
- * Default port: 8000 (also commonly 5005)
+ * Default port: 5005 (the de facto standard for dt_socket transport)
  *
  * Handshake:
  *   Client sends: "JDWP-Handshake" (14 bytes ASCII)
@@ -85,8 +85,8 @@ function parseReplyHeader(data: Uint8Array): {
 } | null {
   if (data.length < HEADER_SIZE) return null;
 
-  const length = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
-  const id = (data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7];
+  const length = ((data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]) >>> 0;
+  const id = ((data[4] << 24) | (data[5] << 16) | (data[6] << 8) | data[7]) >>> 0;
   const flags = data[8];
   const isReply = (flags & 0x80) !== 0;
   const errorCode = isReply ? (data[9] << 8) | data[10] : 0;
@@ -99,9 +99,9 @@ function parseReplyHeader(data: Uint8Array): {
  */
 function readJDWPString(data: Uint8Array, offset: number): { value: string; nextOffset: number } | null {
   if (offset + 4 > data.length) return null;
-  const len = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+  const len = ((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
   offset += 4;
-  if (len < 0 || offset + len > data.length) return null;
+  if (offset + len > data.length) return null;
   const value = new TextDecoder().decode(data.slice(offset, offset + len));
   return { value, nextOffset: offset + len };
 }
@@ -124,9 +124,9 @@ function parseVersionReply(data: Uint8Array): {
   offset = desc.nextOffset;
 
   if (offset + 8 > data.length) return null;
-  const jdwpMajor = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+  const jdwpMajor = ((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
   offset += 4;
-  const jdwpMinor = (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3];
+  const jdwpMinor = ((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
   offset += 4;
 
   const vmVer = readJDWPString(data, offset);
@@ -160,11 +160,11 @@ function parseIDSizesReply(data: Uint8Array): {
   if (offset + 20 > data.length) return null;
 
   return {
-    fieldIDSize: (data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3],
-    methodIDSize: (data[offset + 4] << 24) | (data[offset + 5] << 16) | (data[offset + 6] << 8) | data[offset + 7],
-    objectIDSize: (data[offset + 8] << 24) | (data[offset + 9] << 16) | (data[offset + 10] << 8) | data[offset + 11],
-    referenceTypeIDSize: (data[offset + 12] << 24) | (data[offset + 13] << 16) | (data[offset + 14] << 8) | data[offset + 15],
-    frameIDSize: (data[offset + 16] << 24) | (data[offset + 17] << 16) | (data[offset + 18] << 8) | data[offset + 19],
+    fieldIDSize: ((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]) >>> 0,
+    methodIDSize: ((data[offset + 4] << 24) | (data[offset + 5] << 16) | (data[offset + 6] << 8) | data[offset + 7]) >>> 0,
+    objectIDSize: ((data[offset + 8] << 24) | (data[offset + 9] << 16) | (data[offset + 10] << 8) | data[offset + 11]) >>> 0,
+    referenceTypeIDSize: ((data[offset + 12] << 24) | (data[offset + 13] << 16) | (data[offset + 14] << 8) | data[offset + 15]) >>> 0,
+    frameIDSize: ((data[offset + 16] << 24) | (data[offset + 17] << 16) | (data[offset + 18] << 8) | data[offset + 19]) >>> 0,
   };
 }
 
@@ -307,7 +307,7 @@ export async function handleJDWPProbe(request: Request): Promise<Response> {
     }
 
     const host = body.host;
-    const port = body.port || 8000;
+    const port = body.port || 5005;
     const timeout = body.timeout || 10000;
 
     if (port < 1 || port > 65535) {
@@ -426,7 +426,7 @@ export async function handleJDWPThreads(request: Request): Promise<Response> {
     }
 
     const host = body.host;
-    const port = body.port || 8000;
+    const port = body.port || 5005;
     const timeout = body.timeout || 15000;
     const limit = Math.min(body.limit ?? 20, 50);
 
@@ -474,7 +474,7 @@ export async function handleJDWPThreads(request: Request): Promise<Response> {
       const data = allThreadsReply;
       const countOffset = HEADER_SIZE;
       if (countOffset + 4 > data.length) throw new Error('AllThreads reply too short');
-      const threadCount = (data[countOffset] << 24) | (data[countOffset + 1] << 16) | (data[countOffset + 2] << 8) | data[countOffset + 3];
+      const threadCount = ((data[countOffset] << 24) | (data[countOffset + 1] << 16) | (data[countOffset + 2] << 8) | data[countOffset + 3]) >>> 0;
 
       const threadIds: Uint8Array[] = [];
       let off = countOffset + 4;
@@ -553,7 +553,7 @@ export async function handleJDWPVersion(request: Request): Promise<Response> {
     }
 
     const host = body.host;
-    const port = body.port || 8000;
+    const port = body.port || 5005;
     const timeout = body.timeout || 10000;
 
     if (port < 1 || port > 65535) {

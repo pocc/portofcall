@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface HL7ClientProps {
   onBack: () => void;
@@ -177,6 +179,7 @@ export default function HL7Client({ onBack }: HL7ClientProps) {
 
   return (
     <ProtocolClientLayout title="HL7 v2.x Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.HL7 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 

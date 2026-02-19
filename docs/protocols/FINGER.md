@@ -1,275 +1,194 @@
-# Finger Protocol Implementation Plan
+# Finger Protocol — Power-User Reference
 
-## Overview
+**Port:** 79 (default)
+**Transport:** TCP
+**RFC:** [RFC 1288](https://tools.ietf.org/html/rfc1288) (1991), supersedes [RFC 742](https://tools.ietf.org/html/rfc742) (1977)
+**Implementation:** `src/worker/finger.ts`
+**Route:** `src/worker/index.ts` line 377
 
-**Protocol:** Finger
-**Port:** 79
-**RFC:** [RFC 1288](https://tools.ietf.org/html/rfc1288)
-**Complexity:** Low
-**Purpose:** User information lookup
+## Endpoint
 
-Finger is a **simple legacy protocol** for getting user information. While rarely used today, it's perfect for educational purposes and demonstrates the simplest possible TCP protocol.
+### `POST /api/finger/query`
 
-### Use Cases
-- Educational - learn simple protocols
-- Retro computing
-- User information lookup (legacy systems)
-- Network service enumeration
-- Historical internet exploration
+Single endpoint. Connects to a Finger server, sends a query line, reads the full text response, closes.
 
-## Protocol Specification
+**Request:**
 
-### Simplest Protocol
-
-```
-Client connects → sends query → server responds → closes
-```
-
-### Query Format
-
-```
-[username][@hostname]\r\n
-```
-
-Examples:
-- `alice\r\n` - Get info for user "alice"
-- `@hostname\r\n` - List all users on hostname
-- `\r\n` - List all logged-in users (local)
-
-### Response Format
-
-Plain text, no structure:
-```
-Login: alice        Name: Alice Smith
-Directory: /home/alice      Shell: /bin/bash
-Last login Fri Jan 15 10:23 from client.example.com
-No mail.
-No Plan.
-```
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/finger/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface FingerQuery {
-  username?: string;
-  host?: string;
-}
-
-export interface FingerResult {
-  query: string;
-  response: string;
-  error?: string;
-}
-
-export async function fingerQuery(
-  host: string,
-  port: number = 79,
-  query: FingerQuery
-): Promise<FingerResult> {
-  try {
-    const socket = connect(`${host}:${port}`);
-    await socket.opened;
-
-    // Build query
-    let queryString = '';
-    if (query.username) {
-      queryString += query.username;
-    }
-    if (query.host) {
-      queryString += `@${query.host}`;
-    }
-    queryString += '\r\n';
-
-    // Send query
-    const writer = socket.writable.getWriter();
-    const encoder = new TextEncoder();
-    await writer.write(encoder.encode(queryString));
-    writer.releaseLock();
-
-    // Read response
-    const reader = socket.readable.getReader();
-    const decoder = new TextDecoder();
-    let response = '';
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      response += decoder.decode(value, { stream: true });
-    }
-
-    await socket.close();
-
-    return {
-      query: queryString.trim(),
-      response: response.trim(),
-    };
-  } catch (error) {
-    return {
-      query: '',
-      response: '',
-      error: error instanceof Error ? error.message : 'Query failed',
-    };
-  }
+```json
+{
+  "host": "finger.example.com",
+  "port": 79,
+  "username": "alice",
+  "remoteHost": "otherhost.example.com",
+  "timeout": 10000
 }
 ```
 
-## Web UI Design
+| Field | Type | Default | Required | Validation |
+|---|---|---|---|---|
+| `host` | string | — | yes | **None** — no regex, no Cloudflare detection |
+| `port` | number | `79` | no | 1–65535 (HTTP 400 if out of range) |
+| `username` | string | `""` | no | `/^[a-zA-Z0-9_.-]+$/` — no spaces, no `/W` |
+| `remoteHost` | string | `""` | no | `/^[a-zA-Z0-9.-]+$/` |
+| `timeout` | number | `10000` | no | Not validated (any number accepted) |
 
-```typescript
-// src/components/FingerClient.tsx
+**Wire query format:** `[username][@remoteHost]\r\n`
 
-export function FingerClient() {
-  const [host, setHost] = useState('');
-  const [username, setUsername] = useState('');
-  const [result, setResult] = useState<FingerResult | null>(null);
-  const [loading, setLoading] = useState(false);
+| username | remoteHost | Wire query | Meaning |
+|---|---|---|---|
+| `"alice"` | — | `alice\r\n` | Look up user "alice" on `host` |
+| — | — | `\r\n` | List logged-in users on `host` |
+| — | `"other.com"` | `@other.com\r\n` | Forward: ask `host` to query `other.com` for all users |
+| `"alice"` | `"other.com"` | `alice@other.com\r\n` | Forward: ask `host` to look up "alice" on `other.com` |
 
-  const query = async () => {
-    setLoading(true);
+**Response (success):**
 
-    const response = await fetch('/api/finger', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host, username }),
-    });
-
-    const data = await response.json();
-    setResult(data);
-    setLoading(false);
-  };
-
-  return (
-    <div className="finger-client">
-      <h2>Finger Protocol</h2>
-
-      <div className="retro-container">
-        <div className="query-form">
-          <input
-            type="text"
-            placeholder="Username (optional)"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <span>@</span>
-          <input
-            type="text"
-            placeholder="Hostname"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <button onClick={query} disabled={loading || !host}>
-            Finger
-          </button>
-        </div>
-
-        {result && (
-          <div className="result">
-            {result.error ? (
-              <div className="error">Error: {result.error}</div>
-            ) : (
-              <pre>{result.response || 'No information available'}</pre>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="info">
-        <h3>About Finger</h3>
-        <p>
-          Finger is a legacy Internet protocol from 1977 for getting user
-          information. Most servers have disabled it for security reasons.
-        </p>
-        <p>Examples:</p>
-        <ul>
-          <li><code>finger alice@example.com</code> - Get info for user "alice"</li>
-          <li><code>finger @example.com</code> - List all users</li>
-        </ul>
-      </div>
-    </div>
-  );
+```json
+{
+  "success": true,
+  "query": "alice",
+  "response": "Login: alice        Name: Alice Smith\nDirectory: /home/alice      Shell: /bin/bash\nLast login Fri Jan 15 10:23 from client.example.com\nNo mail.\nNo Plan."
 }
 ```
 
-## Security
+**Response (empty):**
 
-### Major Security Issue
-
-```typescript
-// WARNING: Finger exposes user information
-// Most servers have it disabled
-// Only use on trusted networks
-```
-
-### Input Validation
-
-```typescript
-function validateFingerQuery(host: string, username?: string): boolean {
-  // No special characters in username
-  if (username && !/^[a-zA-Z0-9_-]+$/.test(username)) {
-    return false;
-  }
-
-  // Valid hostname
-  if (!/^[a-zA-Z0-9.-]+$/.test(host)) {
-    return false;
-  }
-
-  return true;
+```json
+{
+  "success": true,
+  "query": "",
+  "response": "(No response from server)"
 }
 ```
 
-## Testing
+**Response (error):**
 
-### Test Servers
+```json
+{
+  "success": false,
+  "error": "Connection timeout"
+}
+```
 
-Very few public finger servers exist today:
+| Condition | HTTP status | `success` | `error` |
+|---|---|---|---|
+| Missing `host` | 400 | `false` | `"Host is required"` |
+| Invalid port | 400 | `false` | `"Port must be between 1 and 65535"` |
+| Bad `username` chars | 400 | `false` | `"Username contains invalid characters"` |
+| Bad `remoteHost` chars | 400 | `false` | `"Remote host contains invalid characters"` |
+| Timeout | 500 | `false` | `"Connection timeout"` |
+| Response > 100KB | 500 | `false` | `"Response too large (max 100KB)"` |
+| Connection refused | 500 | `false` | Varies (socket error message) |
+| Server RST after connect, no data | 200 | `true` | — (`response: "(No response from server)"`) |
+
+## Curl examples
 
 ```bash
-# Test locally with netcat
-nc -l 79
-# When client connects, type some text and close
+# Look up user on a Finger server
+curl -X POST https://portofcall.example/api/finger/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"finger.example.com","username":"alice"}'
+
+# List all logged-in users (empty query)
+curl -X POST https://portofcall.example/api/finger/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"finger.example.com"}'
+
+# Forward query through host to remoteHost
+curl -X POST https://portofcall.example/api/finger/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"proxy.example.com","username":"bob","remoteHost":"target.example.com"}'
 ```
 
-### Create Test Server
+## Known quirks and limitations
 
-```python
-# Simple finger server (Python)
-import socket
+### 1. No Cloudflare detection
 
-s = socket.socket()
-s.bind(('', 79))
-s.listen(1)
+Unlike most other protocol handlers, `handleFingerQuery` does not call `checkIfCloudflare()`. If the target `host` resolves to a Cloudflare IP, the connection will be attempted directly and will likely fail with a socket error rather than returning `isCloudflare: true`.
 
-while True:
-    conn, addr = s.accept()
-    query = conn.recv(1024).decode()
-    response = f"User info for: {query}\n"
-    conn.send(response.encode())
-    conn.close()
+### 2. `host` parameter has no validation
+
+The `host` field (target Finger server) has **no regex or format validation** — any non-empty string is accepted. By contrast, `remoteHost` (forwarding destination in the Finger query) is validated against `/^[a-zA-Z0-9.-]+$/`. This asymmetry means `host` could contain spaces, colons, or other characters that would cause `connect()` to fail at the socket level.
+
+### 3. Shared timeout covers both connection and response
+
+A single `setTimeout` fires at the start and is reused for both `socket.opened` and every `reader.read()`. If the TCP handshake takes 8 seconds of a 10-second timeout, only 2 seconds remain for the entire response. The timeout is not reset between phases.
+
+### 4. RFC 1288 `/W` verbose flag not supported
+
+RFC 1288 §2.5.5 defines the `/W` prefix (e.g. `/W alice\r\n`) to request verbose/long-format output. This implementation does not support it. The `username` validation regex blocks the `/` character, so passing `/W alice` in the username field returns HTTP 400 (`"Username contains invalid characters"`).
+
+### 5. No forwarding depth limit
+
+RFC 1288 §3.2.3 describes forwarding (`user@host1@host2`). The implementation sends whatever `remoteHost` is given, but does not restrict chaining depth. A malicious query could attempt `alice@host1@host2@host3` by putting the full chain in `remoteHost` — though the regex would reject the `@` character in `remoteHost`.
+
+Actually, the regex `/^[a-zA-Z0-9.-]+$/` blocks `@` in `remoteHost`, so multi-hop forwarding is effectively prevented by input validation. Only single-hop forwarding (`username@remoteHost`) is possible.
+
+### 6. Error swallowing in read loop
+
+If the server sends a TCP RST during the read loop and no chunks have been collected, the error is silently discarded (lines 153–160). The response will be `success: true` with `response: "(No response from server)"`. Only timeout errors are re-thrown. This means a connection that is actively refused after the handshake looks identical to a server that accepts and immediately closes.
+
+### 7. No method restriction
+
+The handler is registered for `url.pathname === '/api/finger/query'` with no HTTP method check. In practice, only POST works because `request.json()` requires a body, but a PUT or PATCH with a JSON body would also succeed.
+
+### 8. `reader.releaseLock()` not called on error path
+
+In the success path, `reader.releaseLock()` is called before `socket.close()`. In the error path (throw from the read loop catch), the reader lock is NOT released. The socket is still closed, so this doesn't cause a resource leak in practice, but it differs from the documented Cloudflare sockets best practice.
+
+### 9. Response is `.trim()`ed
+
+The raw response text is trimmed of leading and trailing whitespace before being returned. If the server's response has significant leading/trailing newlines (e.g. a banner), those are silently stripped.
+
+### 10. UTF-8 decoding is strict by default
+
+The `TextDecoder()` constructor is called with no options, so `fatal` defaults to `false` — invalid UTF-8 bytes produce U+FFFD replacement characters. This is correct behavior for Finger servers that may send Latin-1 or other encodings, but the response will contain `\ufffd` for those bytes.
+
+## Wire exchange
+
+```
+Client                          Server (port 79)
+  |                                |
+  |------- TCP SYN --------------->|
+  |<------ TCP SYN-ACK -----------|
+  |------- TCP ACK --------------->|
+  |                                |
+  |--- "alice\r\n" -------------->|    (Finger query)
+  |                                |
+  |<-- "Login: alice  ..." -------|    (Plain text response,
+  |<-- "Directory: /home..." -----|     may arrive in chunks)
+  |<-- "No Plan.\n" -------------|
+  |                                |
+  |<------ TCP FIN/RST -----------|    (Server closes)
+  |------- TCP FIN --------------->|    (Client closes)
 ```
 
-## Resources
+## Response size limit
 
-- **RFC 1288**: [Finger Protocol](https://tools.ietf.org/html/rfc1288)
-- **RFC 742**: [Original Finger Spec](https://tools.ietf.org/html/rfc742) (1977)
+100,000 bytes (100 KB). Exceeding this triggers an error response. The cap is enforced as cumulative bytes across all read chunks, not per-chunk.
 
-## Next Steps
+## No RTT measurement
 
-1. Implement simple finger client
-2. Build retro-style UI
-3. Add response parsing (if structured)
-4. Create "Finger Facts" educational section
-5. Show protocol evolution timeline
+Unlike many other protocol handlers (AJP, SSH, etc.), the Finger handler does not track or return an RTT (round-trip time) value. The `success` response has only `query` and `response` fields.
 
-## Notes
+## Local testing
 
-- **Simplest TCP protocol** after Echo
-- Perfect for **educational purposes**
-- **Security risk** - exposes user info
-- Most modern systems have it **disabled**
-- Good example of **legacy internet** protocols
-- Part of **Internet archaeology**
+Few public Finger servers remain. For local testing:
+
+```bash
+# Simple Finger server with netcat (one-shot)
+echo -e "Login: test\tName: Test User\nNo Plan." | nc -l 79
+
+# Then query it:
+curl -X POST http://localhost:8787/api/finger/query \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"127.0.0.1"}'
+```
+
+Or with a proper Finger daemon:
+
+```bash
+# Debian/Ubuntu
+sudo apt install fingerd
+# macOS (xinetd/launchd config needed)
+```

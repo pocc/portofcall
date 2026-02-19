@@ -312,7 +312,7 @@ Server: OKAY[4-byte hex length][payload]
             <div className="bg-slate-700 rounded p-3">
               <p className="font-semibold text-slate-300 mb-1">Example</p>
               <pre className="font-mono text-[11px] leading-relaxed">
-{`Send: "000Chost:version" (12 = 0x000C)
+{`Send: "000chost:version" (12 = 0x000c)
 Recv: "OKAY00040020"     (version 0x0020 = 32)`}
               </pre>
             </div>

@@ -3,19 +3,24 @@
  * Read-only repository access via Git's native protocol
  * Port: 9418 (default)
  *
- * Protocol Flow:
+ * Protocol Flow (git-upload-pack / reference discovery):
  * 1. Client connects to git daemon on port 9418
- * 2. Client sends: git-upload-pack /path/to/repo\0host=hostname\0
- * 3. Server responds with ref advertisement (branches, tags, HEAD)
- * 4. Communication uses "pkt-line" format: 4-byte hex length + data
+ * 2. Client sends pkt-line: git-upload-pack /path/to/repo\0host=hostname\0
+ * 3. Server may respond with "version 1\n" pkt-line (optional)
+ * 4. Server sends ref advertisement: first line has capabilities after NUL
+ * 5. Server sends flush packet (0000) to end ref advertisement
+ * 6. Client sends flush packet (0000) to abort, or want/have/done to fetch
  *
- * The pkt-line format:
- * - "0000" = flush packet (end of list)
- * - "XXXX" + data = data packet where XXXX is hex length including the 4 bytes
+ * The pkt-line format (RFC-like):
+ * - "0000" = flush packet (end of section / graceful abort)
+ * - "XXXX" + data = data packet where XXXX is 4-byte hex length INCLUDING the 4 bytes
+ * - Maximum pkt-line length: 65520 bytes (65516 payload + 4 length bytes)
+ * - Non-binary lines SHOULD include trailing LF (included in length)
  *
  * Use Cases:
- * - Browse remote repository branches and tags
+ * - Browse remote repository branches and tags (ls-remote equivalent)
  * - Discover server capabilities
+ * - Fetch pack data for a specific ref
  * - Test git daemon connectivity
  * - Educational: learn Git internals
  */
@@ -180,7 +185,12 @@ function buildFlushPkt(): Uint8Array {
 
 /**
  * Parse Git pack object type+size from a variable-length header.
- * Each byte: bits [6:4] = type (first byte only), bit 7 = more, bits [3:0] = size bits.
+ *
+ * Pack object header encoding (see gitformat-pack):
+ *   First byte:  bit 7 = MSB (more bytes follow), bits [6:4] = type, bits [3:0] = size[3:0]
+ *   Next bytes:  bit 7 = MSB (more bytes follow), bits [6:0] = size[N:N-6]
+ *
+ * Size is built up with 4 bits from the first byte, then 7 bits per continuation byte.
  * Returns { type, size, bytesConsumed }.
  */
 function parsePackObjectHeader(data: Uint8Array, offset: number): {
@@ -195,15 +205,14 @@ function parsePackObjectHeader(data: Uint8Array, offset: number): {
   let size = firstByte & 0x0F;
   let shift = 4;
   let consumed = 1;
-  offset++;
+  let currentByte = firstByte;
 
-  while (offset < data.length && (data[offset - 1] & 0x80)) {
-    const byte = data[offset];
-    size |= (byte & 0x7F) << shift;
+  while (currentByte & 0x80) {
+    if (offset + consumed >= data.length) break;
+    currentByte = data[offset + consumed];
+    size |= (currentByte & 0x7F) << shift;
     shift += 7;
     consumed++;
-    offset++;
-    if (!(data[offset - 1] & 0x80)) break;
   }
 
   return { type, size, bytesConsumed: consumed };
@@ -217,6 +226,65 @@ const GIT_OBJ_TYPE_NAMES: Record<number, string> = {
   6: 'ofs_delta',
   7: 'ref_delta',
 };
+
+/**
+ * Parse the ref advertisement lines returned by readPktLines().
+ *
+ * Handles the following protocol details:
+ * - Skips "version 1" pkt-line if present (some servers send this first)
+ * - Parses capabilities from the NUL-separated portion of the first ref line
+ * - Parses subsequent ref lines as "sha refname"
+ * - Validates SHA format (40 hex chars) to avoid misparse
+ */
+function parseRefAdvertisement(rawLines: string[]): {
+  refs: Array<{ sha: string; name: string }>;
+  capabilities: string[];
+  headSha?: string;
+} {
+  const refs: Array<{ sha: string; name: string }> = [];
+  let capabilities: string[] = [];
+  let headSha: string | undefined;
+  let firstRefSeen = false;
+
+  for (const line of rawLines) {
+    // Skip "version N" lines that some servers send before ref advertisement
+    if (!firstRefSeen && /^version \d+$/.test(line)) {
+      continue;
+    }
+
+    if (!firstRefSeen) {
+      // First ref line: "sha refname\0capability-list"
+      firstRefSeen = true;
+      const [refPart, capsPart] = line.split('\0');
+      if (capsPart) {
+        capabilities = capsPart.split(' ').filter(Boolean);
+      }
+      const spaceIdx = refPart.indexOf(' ');
+      if (spaceIdx > 0) {
+        const sha = refPart.substring(0, spaceIdx);
+        const name = refPart.substring(spaceIdx + 1);
+        // Validate SHA is 40 hex chars (SHA-1) or 64 hex chars (SHA-256)
+        if (/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+          refs.push({ sha, name });
+          if (name === 'HEAD') headSha = sha;
+        }
+      }
+    } else {
+      // Subsequent lines: "sha refname"
+      const spaceIdx = line.indexOf(' ');
+      if (spaceIdx > 0) {
+        const sha = line.substring(0, spaceIdx);
+        const name = line.substring(spaceIdx + 1);
+        if (/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+          refs.push({ sha, name });
+          if (name === 'HEAD' && !headSha) headSha = sha;
+        }
+      }
+    }
+  }
+
+  return { refs, capabilities, headSha };
+}
 
 /**
  * Handle Git fetch request — connects to a git daemon, advertises a want ref,
@@ -300,21 +368,7 @@ export async function handleGitFetch(request: Request): Promise<Response> {
       ]);
 
       // Parse refs to find the desired ref's SHA
-      const refs: Array<{ sha: string; name: string }> = [];
-      let capabilities: string[] = [];
-
-      for (let i = 0; i < rawLines.length; i++) {
-        const line = rawLines[i];
-        if (i === 0) {
-          const [refPart, capsPart] = line.split('\0');
-          if (capsPart) capabilities = capsPart.split(' ').filter(Boolean);
-          const spaceIdx = refPart.indexOf(' ');
-          if (spaceIdx > 0) refs.push({ sha: refPart.substring(0, spaceIdx), name: refPart.substring(spaceIdx + 1) });
-        } else {
-          const spaceIdx = line.indexOf(' ');
-          if (spaceIdx > 0) refs.push({ sha: line.substring(0, spaceIdx), name: line.substring(spaceIdx + 1) });
-        }
-      }
+      const { refs, capabilities } = parseRefAdvertisement(rawLines);
 
       // Resolve the wanted ref (HEAD symref, branch name, or full ref)
       let wantedSha: string | undefined;
@@ -329,9 +383,14 @@ export async function handleGitFetch(request: Request): Promise<Response> {
         if (!wantedSha) {
           const symref = capabilities.find(c => c.startsWith('symref=HEAD:'));
           if (symref) {
-            const target = symref.split(':')[1];
-            const resolved = refs.find(r => r.name === target);
-            if (resolved) { wantedSha = resolved.sha; resolvedRef = target; }
+            // Format is "symref=HEAD:refs/heads/main" — use indexOf to handle
+            // ref names that could theoretically contain colons
+            const colonIdx = symref.indexOf(':');
+            if (colonIdx > 0) {
+              const target = symref.substring(colonIdx + 1);
+              const resolved = refs.find(r => r.name === target);
+              if (resolved) { wantedSha = resolved.sha; resolvedRef = target; }
+            }
           }
         }
       } else {
@@ -341,6 +400,8 @@ export async function handleGitFetch(request: Request): Promise<Response> {
       }
 
       if (!wantedSha) {
+        // Send flush to gracefully abort before closing
+        await writer.write(buildFlushPkt());
         await socket.close();
         return {
           success: false,
@@ -350,7 +411,17 @@ export async function handleGitFetch(request: Request): Promise<Response> {
       }
 
       // Step 3: Send want line + flush + done
-      const wantLine = buildPktLine(`want ${wantedSha}\n`);
+      // Per the spec, the FIRST want line MUST include the client's desired capabilities.
+      // We request ofs-delta (efficient delta encoding) and side-band-64k (multiplexed output)
+      // only if the server advertised them.
+      const clientCaps: string[] = [];
+      if (capabilities.includes('ofs-delta')) clientCaps.push('ofs-delta');
+      if (capabilities.includes('side-band-64k')) clientCaps.push('side-band-64k');
+      else if (capabilities.includes('side-band')) clientCaps.push('side-band');
+      if (capabilities.includes('no-progress')) clientCaps.push('no-progress');
+
+      const capStr = clientCaps.length > 0 ? ` ${clientCaps.join(' ')}` : '';
+      const wantLine = buildPktLine(`want ${wantedSha}${capStr}\n`);
       const flushPkt = buildFlushPkt();
       const doneLine = buildPktLine('done\n');
 
@@ -571,52 +642,21 @@ export async function handleGitRefs(request: Request): Promise<Response> {
         // Read ref advertisement
         const rawLines = await readPktLines(reader);
 
-        // Parse refs and capabilities
-        const refs: GitRef[] = [];
-        let capabilities: string[] = [];
-        let headSha: string | undefined;
-
-        for (let i = 0; i < rawLines.length; i++) {
-          const line = rawLines[i];
-
-          if (i === 0) {
-            // First line contains capabilities after NUL byte
-            const [refPart, capsPart] = line.split('\0');
-            if (capsPart) {
-              capabilities = capsPart.split(' ').filter(Boolean);
-            }
-
-            // Parse the ref
-            const spaceIdx = refPart.indexOf(' ');
-            if (spaceIdx > 0) {
-              const sha = refPart.substring(0, spaceIdx);
-              const name = refPart.substring(spaceIdx + 1);
-              refs.push({ sha, name });
-
-              if (name === 'HEAD') {
-                headSha = sha;
-              }
-            }
-          } else {
-            // Subsequent lines are just "sha ref"
-            const spaceIdx = line.indexOf(' ');
-            if (spaceIdx > 0) {
-              const sha = line.substring(0, spaceIdx);
-              const name = line.substring(spaceIdx + 1);
-              refs.push({ sha, name });
-
-              if (name === 'HEAD' && !headSha) {
-                headSha = sha;
-              }
-            }
-          }
-        }
+        // Parse refs and capabilities using shared parser
+        // (handles "version 1" lines and validates SHA format)
+        const { refs, capabilities, headSha } = parseRefAdvertisement(rawLines);
 
         const totalTime = Date.now() - startTime;
 
         // Count branches and tags
         const branchCount = refs.filter(r => r.name.startsWith('refs/heads/')).length;
         const tagCount = refs.filter(r => r.name.startsWith('refs/tags/')).length;
+
+        // Send flush packet to gracefully signal we're done (ls-remote abort).
+        // Per the Git pack protocol spec: "the client can decide to terminate
+        // the connection by sending a flush-pkt, telling the server it can
+        // now gracefully terminate."
+        await writer.write(buildFlushPkt());
 
         // Cleanup
         writer.releaseLock();

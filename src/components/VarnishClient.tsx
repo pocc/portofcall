@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface VarnishClientProps {
   onBack: () => void;
@@ -151,6 +153,7 @@ export default function VarnishClient({ onBack }: VarnishClientProps) {
 
   return (
     <ProtocolClientLayout title="Varnish CLI Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Varnish || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 

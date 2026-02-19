@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface ChargenClientProps {
   onBack: () => void;
@@ -96,14 +98,15 @@ export default function ChargenClient({ onBack }: ChargenClientProps) {
     setMaxBytes(bytes);
   };
 
-  const examplePattern = `!"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefgh
+  const examplePattern = ` !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefg
+!"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefgh
 "#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghi
 #$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghij
-$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk
-%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijkl`;
+$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk`;
 
   return (
     <ProtocolClientLayout title="CHARGEN Protocol Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Chargen || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="CHARGEN Server Configuration" />
 
@@ -228,8 +231,8 @@ $%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk
             <pre className="text-slate-200 whitespace-pre">{examplePattern}</pre>
           </div>
           <p className="text-xs text-slate-400 mt-2">
-            Each line contains 72 printable ASCII characters (ASCII 33-126) plus \r\n.
-            The pattern rotates by 1 character per line, cycling through all 94 printable characters.
+            Each line contains 72 printable ASCII characters (ASCII 32-126) plus \r\n.
+            The pattern rotates by 1 character per line, cycling through all 95 printable characters.
           </p>
         </div>
 
@@ -240,7 +243,7 @@ $%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk
               <tbody className="text-slate-400">
                 <tr className="border-b border-slate-700">
                   <td className="py-2 px-2 font-semibold text-slate-300">Character Set:</td>
-                  <td className="py-2 px-2">ASCII 33 (!) to 126 (~) = 94 printable characters</td>
+                  <td className="py-2 px-2">ASCII 32 (space) to 126 (~) = 95 printable characters</td>
                 </tr>
                 <tr className="border-b border-slate-700">
                   <td className="py-2 px-2 font-semibold text-slate-300">Line Format:</td>
@@ -248,7 +251,7 @@ $%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk
                 </tr>
                 <tr className="border-b border-slate-700">
                   <td className="py-2 px-2 font-semibold text-slate-300">Pattern:</td>
-                  <td className="py-2 px-2">Rotates by 1 character each line, repeats after 94 lines</td>
+                  <td className="py-2 px-2">Rotates by 1 character each line, repeats after 95 lines</td>
                 </tr>
                 <tr className="border-b border-slate-700">
                   <td className="py-2 px-2 font-semibold text-slate-300">Stream Type:</td>

@@ -25,6 +25,7 @@ interface SOAPRequest {
   soapAction?: string;
   body?: string;
   timeout?: number;
+  soapVersion?: '1.1' | '1.2'; // Auto-detect if not specified
 }
 
 interface SOAPResponse {
@@ -44,6 +45,18 @@ interface SOAPResponse {
 }
 
 /**
+ * Detect SOAP version from envelope namespace.
+ */
+function detectSoapVersion(envelope: string): '1.1' | '1.2' | undefined {
+  if (envelope.includes('http://www.w3.org/2003/05/soap-envelope')) {
+    return '1.2';
+  } else if (envelope.includes('http://schemas.xmlsoap.org/soap/envelope/')) {
+    return '1.1';
+  }
+  return undefined;
+}
+
+/**
  * Send raw HTTP/1.1 POST with SOAP payload over a TCP socket.
  */
 async function sendSoapRequest(
@@ -53,6 +66,7 @@ async function sendSoapRequest(
   soapBody: string,
   soapAction?: string,
   timeout = 15000,
+  soapVersion?: '1.1' | '1.2',
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
 
@@ -67,12 +81,30 @@ async function sendSoapRequest(
 
   const bodyBytes = encoder.encode(soapBody);
 
+  // Auto-detect SOAP version if not specified
+  const detectedVersion = soapVersion || detectSoapVersion(soapBody);
+
   let request = `POST ${path} HTTP/1.1\r\n`;
   request += `Host: ${host}:${port}\r\n`;
-  request += `Content-Type: text/xml; charset=utf-8\r\n`;
-  if (soapAction) {
-    request += `SOAPAction: "${soapAction}"\r\n`;
+
+  // SOAP 1.1 vs 1.2 Content-Type difference per W3C specs
+  if (detectedVersion === '1.2') {
+    // RFC 3902: SOAP 1.2 uses application/soap+xml
+    // Action parameter replaces SOAPAction header
+    let contentType = 'application/soap+xml; charset=utf-8';
+    if (soapAction) {
+      contentType += `; action="${soapAction}"`;
+    }
+    request += `Content-Type: ${contentType}\r\n`;
+  } else {
+    // SOAP 1.1 uses text/xml and separate SOAPAction header
+    request += `Content-Type: text/xml; charset=utf-8\r\n`;
+    if (soapAction !== undefined) {
+      // SOAPAction header is required in SOAP 1.1, even if empty
+      request += `SOAPAction: "${soapAction}"\r\n`;
+    }
   }
+
   request += `Content-Length: ${bodyBytes.length}\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -111,7 +143,10 @@ async function sendSoapRequest(
   // Parse status line
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  if (!statusMatch) {
+    throw new Error('Invalid HTTP response: no status code found');
+  }
+  const statusCode = parseInt(statusMatch[1]);
 
   // Parse headers
   const headers: Record<string, string> = {};
@@ -135,6 +170,7 @@ async function sendSoapRequest(
 
 /**
  * Decode chunked transfer encoding.
+ * Handles chunk extensions per RFC 9112 §7.1.1
  */
 function decodeChunked(data: string): string {
   let result = '';
@@ -144,8 +180,15 @@ function decodeChunked(data: string): string {
     const lineEnd = remaining.indexOf('\r\n');
     if (lineEnd === -1) break;
 
-    const sizeStr = remaining.substring(0, lineEnd).trim();
-    const chunkSize = parseInt(sizeStr, 16);
+    let sizeLine = remaining.substring(0, lineEnd).trim();
+
+    // Strip chunk extensions (e.g., "1a;name=value")
+    const semiIdx = sizeLine.indexOf(';');
+    if (semiIdx !== -1) {
+      sizeLine = sizeLine.substring(0, semiIdx).trim();
+    }
+
+    const chunkSize = parseInt(sizeLine, 16);
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
     const chunkStart = lineEnd + 2;
@@ -222,7 +265,10 @@ async function sendWsdlRequest(
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  if (!statusMatch) {
+    throw new Error('Invalid HTTP response: no status code found');
+  }
+  const statusCode = parseInt(statusMatch[1]);
 
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);
@@ -327,6 +373,7 @@ export async function handleSoapCall(request: Request): Promise<Response> {
       soapBody,
       soapAction,
       timeout,
+      body.soapVersion,
     );
 
     const latencyMs = Date.now() - start;

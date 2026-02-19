@@ -185,6 +185,10 @@ class PGReader {
     const view = new DataView(this.buffer.buffer, this.buffer.byteOffset);
     const type = String.fromCharCode(this.buffer[0]);
     const length = view.getUint32(1, false /* big-endian */);
+    // Validate message length to prevent OOM attacks
+    if (length < 4 || length > 1073741824 /* 1GB */) {
+      throw new Error(`Invalid PostgreSQL message length: ${length}`);
+    }
     // length includes the 4-byte length field itself but not the type byte
     const total = 1 + length;
     await this.ensure(total);
@@ -465,8 +469,29 @@ async function performSCRAMSHA256(
   const finalView = new DataView(finalMsg.payload.buffer, finalMsg.payload.byteOffset);
   const finalAuthType = finalView.getInt32(0, false);
   if (finalAuthType === 12) {
-    // AuthenticationSASLFinal — optionally verify server signature
-    // Server sends: verifier data we can verify for integrity, but we skip it for brevity
+    // AuthenticationSASLFinal — verify the server signature (RFC 5802 §3)
+    // The server proves it knows the password by sending v=<ServerSignature>
+    const serverFinalMessage = dec.decode(finalMsg.payload.slice(4));
+    const sfmParts: Record<string, string> = {};
+    for (const part of serverFinalMessage.split(',')) {
+      const eq = part.indexOf('=');
+      if (eq !== -1) sfmParts[part.slice(0, eq)] = part.slice(eq + 1);
+    }
+    const receivedServerSigB64 = sfmParts['v'];
+    if (!receivedServerSigB64) {
+      throw new Error('SCRAM auth failed: server final message missing v= signature');
+    }
+
+    // Compute expected ServerSignature = HMAC(ServerKey, AuthMessage)
+    const expectedServerSignature = await hmacSHA256(serverKey, authMessageBytes);
+    const expectedServerSigB64 = btoa(String.fromCharCode(...expectedServerSignature));
+
+    if (receivedServerSigB64 !== expectedServerSigB64) {
+      throw new Error(
+        'SCRAM auth failed: server signature mismatch — the server could not prove knowledge of the password'
+      );
+    }
+
     const okMsg = await reader.readMessage();
     if (okMsg.type !== 'R') {
       if (okMsg.type === 'E') {
@@ -484,12 +509,6 @@ async function performSCRAMSHA256(
   } else {
     throw new Error(`Unexpected auth type after SCRAM exchange: ${finalAuthType}`);
   }
-
-  // Verify server signature for security (optional but good practice)
-  const serverSignature = await hmacSHA256(serverKey, authMessageBytes);
-  const serverSigB64    = btoa(String.fromCharCode(...serverSignature));
-  // Server sends v=<base64> in the SASLFinal data — we already consumed it, so skip verification here
-  void serverSigB64; // suppress unused warning
 }
 
 // ---------------------------------------------------------------------------
@@ -567,9 +586,20 @@ async function connectAndAuthenticate(
       }
     } else if (authType === 10) {
       // AuthenticationSASL — server lists mechanisms
-      // We only support SCRAM-SHA-256
-      // The payload after auth type contains NUL-terminated mechanism strings
-      // We trust the server supports SCRAM-SHA-256 and proceed
+      // Verify SCRAM-SHA-256 is supported before proceeding
+      const dec = new TextDecoder();
+      const mechanisms: string[] = [];
+      let offset = 4; // skip auth type
+      while (offset < authMsg.payload.length) {
+        let end = offset;
+        while (end < authMsg.payload.length && authMsg.payload[end] !== 0) end++;
+        if (end === offset) break; // double NUL terminates list
+        mechanisms.push(dec.decode(authMsg.payload.slice(offset, end)));
+        offset = end + 1;
+      }
+      if (!mechanisms.includes('SCRAM-SHA-256')) {
+        throw new Error(`SCRAM-SHA-256 not supported. Server offers: ${mechanisms.join(', ')}`);
+      }
       await performSCRAMSHA256(writer, reader, username, password);
     } else {
       throw new Error(`Unsupported authentication type: ${authType}`);
@@ -585,10 +615,12 @@ async function connectAndAuthenticate(
         // ParameterStatus: key\0value\0
         let i = 0;
         while (i < msg.payload.length && msg.payload[i] !== 0) i++;
+        if (i >= msg.payload.length) continue; // malformed, skip
         const key = dec.decode(msg.payload.slice(0, i));
         i++; // skip NUL
         let j = i;
         while (j < msg.payload.length && msg.payload[j] !== 0) j++;
+        if (j > msg.payload.length) continue; // malformed, skip
         const value = dec.decode(msg.payload.slice(i, j));
         if (key === 'server_version') serverVersion = value;
       } else if (msg.type === 'K') {
@@ -753,9 +785,10 @@ export async function handlePostgreSQLConnect(request: Request): Promise<Respons
       };
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
@@ -770,6 +803,8 @@ export async function handlePostgreSQLConnect(request: Request): Promise<Respons
         }),
         { status: 500, headers: { 'Content-Type': 'application/json' } },
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(
@@ -864,9 +899,10 @@ export async function handlePostgreSQLQuery(request: Request): Promise<Response>
       };
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       const result = await Promise.race([queryPromise, timeoutPromise]);
@@ -881,6 +917,8 @@ export async function handlePostgreSQLQuery(request: Request): Promise<Response>
         }),
         { status: 500, headers: { 'Content-Type': 'application/json' } },
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(
@@ -1073,9 +1111,10 @@ export async function handlePostgresDescribe(request: Request): Promise<Response
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       return await Promise.race([describePromise, timeoutPromise]);
@@ -1087,6 +1126,8 @@ export async function handlePostgresDescribe(request: Request): Promise<Response
         }),
         { status: 500, headers: { 'Content-Type': 'application/json' } },
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(
@@ -1138,9 +1179,10 @@ export async function handlePostgresListen(request: Request): Promise<Response> 
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const overallTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const overallTimeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     const listenPromise = (async () => {
       const startTime = Date.now();
@@ -1208,7 +1250,11 @@ export async function handlePostgresListen(request: Request): Promise<Response> 
       }
     })();
 
-    return await Promise.race([listenPromise, overallTimeout]);
+    try {
+      return await Promise.race([listenPromise, overallTimeout]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1252,20 +1298,19 @@ export async function handlePostgresNotify(request: Request): Promise<Response> 
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const overallTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const overallTimeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     const notifyPromise = (async () => {
       const startTime = Date.now();
       const { socket, reader, writer } = await connectAndAuthenticate(host, port, username, password, database);
 
       try {
-        // pg_notify() lets us pass channel + payload as string literals safely.
-        // Escape single quotes by doubling (standard SQL).
-        const safeChannel = channel.replace(/'/g, "''");
-        const safePayload = payload.replace(/'/g, "''");
-        const result = await executeQuery(reader, writer, `SELECT pg_notify('${safeChannel}', '${safePayload}')`);
+        // Use dollar-quoted strings to avoid SQL injection (PostgreSQL 8.0+)
+        // Dollar quotes cannot be nested or escaped, so this is injection-proof
+        const result = await executeQuery(reader, writer, `SELECT pg_notify($$${channel}$$, $$${payload}$$)`);
 
         return new Response(JSON.stringify({
           success: true, host, port, channel, payload,
@@ -1280,7 +1325,11 @@ export async function handlePostgresNotify(request: Request): Promise<Response> 
       }
     })();
 
-    return await Promise.race([notifyPromise, overallTimeout]);
+    try {
+      return await Promise.race([notifyPromise, overallTimeout]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,

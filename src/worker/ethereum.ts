@@ -20,7 +20,8 @@
  * Ethereum JSON-RPC methods:
  *   eth_blockNumber     -- current block number (hex string)
  *   eth_syncing         -- sync status object or false
- *   net_version         -- network ID (1=mainnet, 5=goerli, 11155111=sepolia)
+ *   net_version         -- network ID string ("1"=mainnet, "11155111"=sepolia)
+ *   eth_chainId         -- chain ID as hex quantity (EIP-695, preferred over net_version)
  *   web3_clientVersion  -- e.g. "Geth/v1.12.0-stable/linux-amd64/go1.20.6"
  *   eth_gasPrice        -- current gas price in wei (hex string)
  *   eth_getBlockByNumber -- full block details
@@ -122,13 +123,21 @@ function fingerprintRLPx(data: Uint8Array): {
 
 interface JsonRpcResponse {
   jsonrpc: string;
-  id: number;
+  id: number | string | null;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 }
 
+/** Auto-incrementing request ID for JSON-RPC call correlation */
+let nextRpcId = 1;
+
 /**
  * Execute a single Ethereum JSON-RPC call via HTTP POST.
+ *
+ * Validates the response against JSON-RPC 2.0 requirements:
+ *   - Response MUST contain "jsonrpc": "2.0"
+ *   - Response "id" MUST match the request "id"
+ *   - Error object MUST contain "code" (integer) and "message" (string)
  */
 async function callRPC(
   host: string,
@@ -136,9 +145,10 @@ async function callRPC(
   method: string,
   params: unknown[],
   timeoutMs: number,
-): Promise<{ result?: unknown; error?: string; latencyMs: number }> {
+): Promise<{ result?: unknown; error?: string; errorData?: unknown; latencyMs: number }> {
+  const requestId = nextRpcId++;
   const url = `http://${host}:${port}/`;
-  const body = JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 });
+  const body = JSON.stringify({ jsonrpc: '2.0', method, params, id: requestId });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -159,8 +169,28 @@ async function callRPC(
     }
 
     const json = await response.json() as JsonRpcResponse;
+
+    // Validate JSON-RPC 2.0 envelope
+    if (json.jsonrpc !== '2.0') {
+      return {
+        error: `Invalid JSON-RPC response: expected jsonrpc "2.0", got "${json.jsonrpc}"`,
+        latencyMs,
+      };
+    }
+
+    if (json.id !== requestId) {
+      return {
+        error: `JSON-RPC id mismatch: sent ${requestId}, received ${json.id}`,
+        latencyMs,
+      };
+    }
+
     if (json.error) {
-      return { error: `RPC error ${json.error.code}: ${json.error.message}`, latencyMs };
+      return {
+        error: `RPC error ${json.error.code}: ${json.error.message}`,
+        ...(json.error.data !== undefined && { errorData: json.error.data }),
+        latencyMs,
+      };
     }
     return { result: json.result, latencyMs };
   } catch (e) {
@@ -354,13 +384,14 @@ export async function handleEthereumRPC(request: Request): Promise<Response> {
       );
     }
 
-    const { result, error, latencyMs } = await callRPC(host, port, method, params, timeout);
+    const { result, error, errorData, latencyMs } = await callRPC(host, port, method, params, timeout);
 
     return new Response(
       JSON.stringify({
-        success: error === undefined,
+        success: !error,
         ...(result !== undefined && { result }),
         ...(error !== undefined && { error }),
+        ...(errorData !== undefined && { errorData }),
         latencyMs,
       }),
       { headers: { 'Content-Type': 'application/json' } },
@@ -381,7 +412,8 @@ export async function handleEthereumRPC(request: Request): Promise<Response> {
  *
  * Calls in parallel:
  *   web3_clientVersion  -- node software version string
- *   net_version         -- network chain ID
+ *   net_version         -- network ID string (e.g. "1" for mainnet)
+ *   eth_chainId         -- chain ID as hex (EIP-695, e.g. "0x1" for mainnet)
  *   eth_blockNumber     -- current head block (hex)
  *   eth_syncing         -- sync progress object or false
  *
@@ -392,6 +424,8 @@ export async function handleEthereumRPC(request: Request): Promise<Response> {
  *   success,
  *   clientVersion,        -- e.g. "Geth/v1.12.0-stable/linux-amd64/go1.20.6"
  *   networkId,            -- e.g. "1" (mainnet), "11155111" (sepolia)
+ *   chainId,              -- hex chain ID, e.g. "0x1" (mainnet)
+ *   chainIdDecimal,       -- decimal equivalent
  *   blockNumber,          -- hex string, e.g. "0x12ab34"
  *   blockNumberDecimal,   -- decimal equivalent
  *   syncing,              -- sync status object or false
@@ -432,21 +466,27 @@ export async function handleEthereumInfo(request: Request): Promise<Response> {
 
     const startTime = Date.now();
 
-    // Query all four methods in parallel
-    const [clientVersionRes, networkIdRes, blockNumberRes, syncingRes] = await Promise.all([
+    // Query all five methods in parallel
+    const [clientVersionRes, networkIdRes, chainIdRes, blockNumberRes, syncingRes] = await Promise.all([
       callRPC(host, port, 'web3_clientVersion', [], timeout),
       callRPC(host, port, 'net_version', [], timeout),
+      callRPC(host, port, 'eth_chainId', [], timeout),
       callRPC(host, port, 'eth_blockNumber', [], timeout),
       callRPC(host, port, 'eth_syncing', [], timeout),
     ]);
 
     const totalLatencyMs = Date.now() - startTime;
 
-    const anySuccess = !clientVersionRes.error || !blockNumberRes.error || !networkIdRes.error;
+    const anySuccess = !clientVersionRes.error || !blockNumberRes.error || !networkIdRes.error || !chainIdRes.error;
 
     let blockNumberDecimal: number | null = null;
     if (typeof blockNumberRes.result === 'string' && blockNumberRes.result.startsWith('0x')) {
       blockNumberDecimal = parseInt(blockNumberRes.result, 16);
+    }
+
+    let chainIdDecimal: number | null = null;
+    if (typeof chainIdRes.result === 'string' && chainIdRes.result.startsWith('0x')) {
+      chainIdDecimal = parseInt(chainIdRes.result, 16);
     }
 
     return new Response(
@@ -458,6 +498,9 @@ export async function handleEthereumInfo(request: Request): Promise<Response> {
         clientVersionError: clientVersionRes.error ?? null,
         networkId: networkIdRes.result ?? null,
         networkIdError: networkIdRes.error ?? null,
+        chainId: chainIdRes.result ?? null,
+        chainIdDecimal,
+        chainIdError: chainIdRes.error ?? null,
         blockNumber: blockNumberRes.result ?? null,
         blockNumberDecimal,
         blockNumberError: blockNumberRes.error ?? null,

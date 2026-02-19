@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface HTTPProxyClientProps {
   onBack: () => void;
@@ -171,6 +173,7 @@ export default function HTTPProxyClient({ onBack }: HTTPProxyClientProps) {
 
   return (
     <ProtocolClientLayout title="HTTP Proxy Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.HTTPProxy || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Proxy Server" />
 

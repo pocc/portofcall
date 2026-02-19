@@ -21,6 +21,19 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
+/**
+ * Escape special XML characters to prevent XML injection.
+ * Must be applied to all user-supplied values before interpolation into XML/SOAP envelopes.
+ */
+function escapeXml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 interface WinRMRequest {
   host: string;
   port?: number;
@@ -90,29 +103,52 @@ async function sendHttpRequest(
 
   writer.releaseLock();
 
+  // Read raw bytes from socket to handle chunked encoding correctly
+  // (chunk sizes are byte counts, not character counts)
   const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
+  const chunks: Uint8Array[] = [];
+  let totalSize = 0;
   const maxSize = 512000;
 
-  while (response.length < maxSize) {
+  while (totalSize < maxSize) {
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      chunks.push(value);
+      totalSize += value.length;
     }
   }
 
   reader.releaseLock();
   socket.close();
 
-  const headerEnd = response.indexOf('\r\n\r\n');
+  // Concatenate all chunks into a single byte array
+  const rawResponse = new Uint8Array(totalSize);
+  let offset = 0;
+  for (const chunk of chunks) {
+    rawResponse.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  // Find header/body boundary (\r\n\r\n) in raw bytes
+  const separator = [13, 10, 13, 10]; // \r\n\r\n
+  let headerEnd = -1;
+  for (let i = 0; i <= rawResponse.length - 4; i++) {
+    if (rawResponse[i] === separator[0] && rawResponse[i + 1] === separator[1] &&
+        rawResponse[i + 2] === separator[2] && rawResponse[i + 3] === separator[3]) {
+      headerEnd = i;
+      break;
+    }
+  }
+
   if (headerEnd === -1) {
     throw new Error('Invalid HTTP response: no header terminator found');
   }
 
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
+  // Headers are ASCII-safe, decode them as text
+  const decoder = new TextDecoder();
+  const headerSection = decoder.decode(rawResponse.slice(0, headerEnd));
+  const rawBody = rawResponse.slice(headerEnd + 4);
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
@@ -129,33 +165,68 @@ async function sendHttpRequest(
     }
   }
 
+  // Decode body: handle chunked transfer encoding at byte level
+  let bodyBytes: Uint8Array;
   if (respHeaders['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
+    bodyBytes = decodeChunkedBytes(rawBody);
+  } else {
+    bodyBytes = rawBody;
   }
 
+  const bodySection = decoder.decode(bodyBytes);
   return { statusCode, headers: respHeaders, body: bodySection };
 }
 
 /**
- * Decode chunked transfer encoding
+ * Decode chunked transfer encoding from raw bytes.
+ * Chunk sizes in HTTP chunked encoding are byte counts, so this must
+ * operate on Uint8Array rather than strings to handle multi-byte UTF-8.
  */
-function decodeChunked(data: string): string {
-  let result = '';
-  let remaining = data;
+function decodeChunkedBytes(data: Uint8Array): Uint8Array {
+  const pieces: Uint8Array[] = [];
+  let pos = 0;
 
-  while (remaining.length > 0) {
-    const lineEnd = remaining.indexOf('\r\n');
+  while (pos < data.length) {
+    // Find end of chunk-size line (\r\n)
+    let lineEnd = -1;
+    for (let i = pos; i < data.length - 1; i++) {
+      if (data[i] === 13 && data[i + 1] === 10) { // \r\n
+        lineEnd = i;
+        break;
+      }
+    }
     if (lineEnd === -1) break;
 
-    const sizeStr = remaining.substring(0, lineEnd).trim();
+    // Parse hex chunk size (ignore chunk extensions after semicolon)
+    const sizeBytes = data.slice(pos, lineEnd);
+    let sizeStr = '';
+    for (let i = 0; i < sizeBytes.length; i++) sizeStr += String.fromCharCode(sizeBytes[i]);
+    sizeStr = sizeStr.trim();
     const chunkSize = parseInt(sizeStr, 16);
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
+    // Read chunk data
     const chunkStart = lineEnd + 2;
-    result += remaining.substring(chunkStart, chunkStart + chunkSize);
-    remaining = remaining.substring(chunkStart + chunkSize + 2);
+    if (chunkStart + chunkSize > data.length) {
+      // Incomplete chunk — take what we have
+      pieces.push(data.slice(chunkStart));
+      break;
+    }
+    pieces.push(data.slice(chunkStart, chunkStart + chunkSize));
+
+    // Skip past chunk data + trailing \r\n
+    pos = chunkStart + chunkSize + 2;
   }
 
+  // Concatenate all pieces
+  let totalLen = 0;
+  for (const p of pieces) totalLen += p.length;
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const p of pieces) {
+    result.set(p, offset);
+    offset += p.length;
+  }
   return result;
 }
 
@@ -420,14 +491,16 @@ function generateUuid(): string {
  * Build a WSMan Create Shell SOAP envelope
  */
 function buildCreateShellEnvelope(host: string, port: number, uuid: string): string {
+  const safeHost = escapeXml(host);
+  const safeUuid = escapeXml(uuid);
   return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsmid="http://schemas.dmtf.org/wbem/wsman/identity/1/wsmanidentity.xsd" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell" xmlns:cfg="http://schemas.microsoft.com/wbem/wsman/1/config">
   <s:Header>
-    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsa:To>http://${safeHost}:${port}/wsman</wsa:To>
     <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
     <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
     <wsa:Action>http://schemas.xmlsoap.org/ws/2004/09/transfer/Create</wsa:Action>
     <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
-    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsa:MessageID>uuid:${safeUuid}</wsa:MessageID>
     <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
     <wsman:OptionSet><wsman:Option Name="WINRS_NOPROFILE">TRUE</wsman:Option><wsman:Option Name="WINRS_CODEPAGE">437</wsman:Option></wsman:OptionSet>
   </s:Header>
@@ -439,20 +512,24 @@ function buildCreateShellEnvelope(host: string, port: number, uuid: string): str
  * Build a WSMan Execute Command SOAP envelope
  */
 function buildCommandEnvelope(host: string, port: number, shellId: string, command: string, args: string[], uuid: string): string {
-  const argsXml = args.map(a => `<rsp:Arguments>${a}</rsp:Arguments>`).join('');
+  const safeHost = escapeXml(host);
+  const safeShellId = escapeXml(shellId);
+  const safeCommand = escapeXml(command);
+  const safeUuid = escapeXml(uuid);
+  const argsXml = args.map(a => `<rsp:Arguments>${escapeXml(a)}</rsp:Arguments>`).join('');
   return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
   <s:Header>
-    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsa:To>http://${safeHost}:${port}/wsman</wsa:To>
     <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
     <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
     <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Command</wsa:Action>
     <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
-    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsa:MessageID>uuid:${safeUuid}</wsa:MessageID>
     <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
-    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${safeShellId}</wsman:Selector></wsman:SelectorSet>
     <wsman:OptionSet><wsman:Option Name="WINRS_CONSOLEMODE_STDIN">TRUE</wsman:Option><wsman:Option Name="WINRS_SKIP_CMD_SHELL">FALSE</wsman:Option></wsman:OptionSet>
   </s:Header>
-  <s:Body><rsp:CommandLine><rsp:Command>${command}</rsp:Command>${argsXml}</rsp:CommandLine></s:Body>
+  <s:Body><rsp:CommandLine><rsp:Command>${safeCommand}</rsp:Command>${argsXml}</rsp:CommandLine></s:Body>
 </s:Envelope>`;
 }
 
@@ -460,18 +537,22 @@ function buildCommandEnvelope(host: string, port: number, shellId: string, comma
  * Build a WSMan Receive (read output) SOAP envelope
  */
 function buildReceiveEnvelope(host: string, port: number, shellId: string, commandId: string, uuid: string): string {
+  const safeHost = escapeXml(host);
+  const safeShellId = escapeXml(shellId);
+  const safeCommandId = escapeXml(commandId);
+  const safeUuid = escapeXml(uuid);
   return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
   <s:Header>
-    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsa:To>http://${safeHost}:${port}/wsman</wsa:To>
     <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
     <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
     <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Receive</wsa:Action>
     <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
-    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsa:MessageID>uuid:${safeUuid}</wsa:MessageID>
     <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
-    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${safeShellId}</wsman:Selector></wsman:SelectorSet>
   </s:Header>
-  <s:Body><rsp:Receive><rsp:DesiredStream CommandId="${commandId}">stdout stderr</rsp:DesiredStream></rsp:Receive></s:Body>
+  <s:Body><rsp:Receive><rsp:DesiredStream CommandId="${safeCommandId}">stdout stderr</rsp:DesiredStream></rsp:Receive></s:Body>
 </s:Envelope>`;
 }
 
@@ -479,18 +560,22 @@ function buildReceiveEnvelope(host: string, port: number, shellId: string, comma
  * Build a WSMan Signal (terminate command) SOAP envelope
  */
 function buildSignalEnvelope(host: string, port: number, shellId: string, commandId: string, uuid: string): string {
+  const safeHost = escapeXml(host);
+  const safeShellId = escapeXml(shellId);
+  const safeCommandId = escapeXml(commandId);
+  const safeUuid = escapeXml(uuid);
   return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing" xmlns:rsp="http://schemas.microsoft.com/wbem/wsman/1/windows/shell">
   <s:Header>
-    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsa:To>http://${safeHost}:${port}/wsman</wsa:To>
     <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
     <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
     <wsa:Action>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/Signal</wsa:Action>
     <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
-    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsa:MessageID>uuid:${safeUuid}</wsa:MessageID>
     <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
-    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${safeShellId}</wsman:Selector></wsman:SelectorSet>
   </s:Header>
-  <s:Body><rsp:Signal CommandId="${commandId}"><rsp:Code>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/ctrl_c</rsp:Code></rsp:Signal></s:Body>
+  <s:Body><rsp:Signal CommandId="${safeCommandId}"><rsp:Code>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/ctrl_c</rsp:Code></rsp:Signal></s:Body>
 </s:Envelope>`;
 }
 
@@ -498,16 +583,19 @@ function buildSignalEnvelope(host: string, port: number, shellId: string, comman
  * Build a WSMan Delete Shell SOAP envelope
  */
 function buildDeleteShellEnvelope(host: string, port: number, shellId: string, uuid: string): string {
+  const safeHost = escapeXml(host);
+  const safeShellId = escapeXml(shellId);
+  const safeUuid = escapeXml(uuid);
   return `<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope" xmlns:wsman="http://schemas.dmtf.org/wbem/wsman/1/wsman.xsd" xmlns:wsa="http://schemas.xmlsoap.org/ws/2004/08/addressing">
   <s:Header>
-    <wsa:To>http://${host}:${port}/wsman</wsa:To>
+    <wsa:To>http://${safeHost}:${port}/wsman</wsa:To>
     <wsman:ResourceURI>http://schemas.microsoft.com/wbem/wsman/1/windows/shell/cmd</wsman:ResourceURI>
     <wsa:ReplyTo><wsa:Address>http://schemas.xmlsoap.org/ws/2004/08/addressing/role/anonymous</wsa:Address></wsa:ReplyTo>
     <wsa:Action>http://schemas.xmlsoap.org/ws/2004/09/transfer/Delete</wsa:Action>
     <wsman:MaxEnvelopeSize>153600</wsman:MaxEnvelopeSize>
-    <wsa:MessageID>uuid:${uuid}</wsa:MessageID>
+    <wsa:MessageID>uuid:${safeUuid}</wsa:MessageID>
     <wsman:OperationTimeout>PT60S</wsman:OperationTimeout>
-    <wsman:SelectorSet><wsman:Selector Name="ShellId">${shellId}</wsman:Selector></wsman:SelectorSet>
+    <wsman:SelectorSet><wsman:Selector Name="ShellId">${safeShellId}</wsman:Selector></wsman:SelectorSet>
   </s:Header>
   <s:Body/>
 </s:Envelope>`;

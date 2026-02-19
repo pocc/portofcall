@@ -12,7 +12,7 @@
  * - Queries are LQL (Livestatus Query Language) — resembles HTTP headers
  * - Request: GET <table>\n[Header: value\n]*\n  (blank line terminates)
  * - With ResponseHeader: fixed16, response starts with 16-byte status line:
- *   "<3-digit status> <12-char padded length>\n" then body
+ *   "<3-digit status> <11-char padded length>\n" then body (16 bytes total)
  *
  * Key Tables:
  * - status:    Global monitoring engine status (version, uptime, etc.)
@@ -80,34 +80,49 @@ function buildQuery(table: string, columns?: string[], filters?: string[], limit
 }
 
 /**
- * Read all available data from a reader until connection closes or timeout.
+ * Buffered reader that wraps a ReadableStreamDefaultReader.
+ * Allows reading exact byte counts without losing data from oversized chunks.
  */
-async function readAll(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  timeoutPromise: Promise<never>,
-  maxBytes: number = 1048576, // 1MB safety limit
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+class BufferedReader {
+  private reader: ReadableStreamDefaultReader<Uint8Array>;
+  private timeoutPromise: Promise<never>;
+  private buffer: Uint8Array = new Uint8Array(0);
+  private done = false;
 
-  try {
-    while (total < maxBytes) {
-      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-      if (done || !value) break;
-      chunks.push(value);
-      total += value.length;
+  constructor(reader: ReadableStreamDefaultReader<Uint8Array>, timeoutPromise: Promise<never>) {
+    this.reader = reader;
+    this.timeoutPromise = timeoutPromise;
+  }
+
+  /**
+   * Read exactly `numBytes` bytes, or fewer if the stream ends first.
+   */
+  async readExact(numBytes: number): Promise<Uint8Array> {
+    // Fill buffer until we have enough bytes or stream ends
+    while (this.buffer.length < numBytes && !this.done) {
+      try {
+        const { value, done } = await Promise.race([this.reader.read(), this.timeoutPromise]);
+        if (done || !value) {
+          this.done = true;
+          break;
+        }
+        // Append new data to buffer
+        const newBuf = new Uint8Array(this.buffer.length + value.length);
+        newBuf.set(this.buffer, 0);
+        newBuf.set(value, this.buffer.length);
+        this.buffer = newBuf;
+      } catch (e) {
+        this.done = true;
+        throw e;
+      }
     }
-  } catch {
-    // Timeout or connection closed — return what we have
-  }
 
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    result.set(chunk, offset);
-    offset += chunk.length;
+    // Extract exactly numBytes (or all available if fewer)
+    const available = Math.min(numBytes, this.buffer.length);
+    const result = this.buffer.slice(0, available);
+    this.buffer = this.buffer.slice(available);
+    return result;
   }
-  return result;
 }
 
 /**
@@ -158,33 +173,52 @@ async function sendQuery(
     await Promise.race([socket.opened, timeoutPromise]);
 
     const writer = socket.writable.getWriter();
-    const reader = socket.readable.getReader();
+    const rawReader = socket.readable.getReader();
+    const reader = new BufferedReader(rawReader, timeoutPromise);
 
     // Send query
     const encoder = new TextEncoder();
     await writer.write(encoder.encode(query));
 
-    // Read response
-    const responseBytes = await readAll(reader, timeoutPromise);
+    // Read the 16-byte fixed16 response header first.
+    // This tells us the status code and the exact content length,
+    // so we can read precisely the right number of bytes without
+    // waiting for the connection to close (which would stall if
+    // the server keeps the socket open).
+    const headerBytes = await reader.readExact(16);
     const rtt = Date.now() - startTime;
 
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
-
-    if (responseBytes.length === 0) {
+    if (headerBytes.length === 0) {
+      await writer.close();
+      writer.releaseLock();
+      rawReader.releaseLock();
+      socket.close();
       throw new Error('Empty response — Livestatus may not be listening on this port');
     }
 
-    // Parse fixed16 header
-    const header = parseFixed16Header(responseBytes);
+    const header = parseFixed16Header(headerBytes);
     if (!header.headerValid) {
-      // Maybe no fixed16 header — could be raw response or error
-      const rawText = new TextDecoder().decode(responseBytes);
+      // Not a valid fixed16 header — return whatever we got as raw text
+      await writer.close();
+      writer.releaseLock();
+      rawReader.releaseLock();
+      socket.close();
+      const rawText = new TextDecoder().decode(headerBytes);
       return { status: 0, body: rawText, rtt };
     }
 
-    const body = new TextDecoder().decode(responseBytes.slice(16));
+    // Now read exactly contentLength bytes for the body
+    let body = '';
+    if (header.contentLength > 0) {
+      const bodyBytes = await reader.readExact(header.contentLength);
+      body = new TextDecoder().decode(bodyBytes);
+    }
+
+    await writer.close();
+    writer.releaseLock();
+    rawReader.releaseLock();
+    socket.close();
+
     return { status: header.status, body, rtt };
   } catch (error) {
     socket.close();
@@ -377,11 +411,20 @@ export async function handleLivestatusQuery(request: Request): Promise<Response>
     if (!fullQuery.includes('ResponseHeader:')) {
       fullQuery += '\nResponseHeader: fixed16';
     }
-    fullQuery += '\n\n';
+    // Protocol requires exactly one blank line (\n\n) as terminator.
+    // Ensure query ends with exactly \n\n (not more, not less).
+    if (!fullQuery.endsWith('\n')) {
+      fullQuery += '\n\n';
+    } else if (fullQuery.endsWith('\n') && !fullQuery.endsWith('\n\n')) {
+      fullQuery += '\n';
+    }
+    // If already ends with \n\n, don't add more
 
     const result = await sendQuery(host, port, timeout, fullQuery);
 
-    if (result.status === 200 || result.status === 0) {
+    // status 200 = successful fixed16 response
+    // status 0 = no valid fixed16 header (server didn't send expected response format)
+    if (result.status === 200) {
       let parsed: unknown = null;
       try {
         parsed = JSON.parse(result.body);
@@ -395,6 +438,17 @@ export async function handleLivestatusQuery(request: Request): Promise<Response>
         port,
         statusCode: result.status,
         data: parsed || result.body,
+        rtt: result.rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    } else if (result.status === 0) {
+      // No fixed16 header — might be wrong protocol or old Livestatus version
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        statusCode: result.status,
+        error: 'Server did not return a valid fixed16 response header — check if ResponseHeader: fixed16 is supported',
+        rawResponse: result.body,
         rtt: result.rtt,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     } else {
@@ -449,11 +503,20 @@ export async function handleLivestatusServices(request: Request): Promise<Respon
     );
     const result = await sendQuery(host, port, timeout, query);
 
-    if (result.status === 200 || result.status === 0) {
+    if (result.status === 200) {
       let data: unknown = result.body;
       try { data = JSON.parse(result.body); } catch { /* leave as string */ }
       return new Response(JSON.stringify({
         success: true, host, port, services: data, rtt: result.rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (result.status === 0) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Server did not return a valid fixed16 response header',
+        rawResponse: result.body,
+        rtt: result.rtt,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -529,10 +592,11 @@ export async function handleLivestatusCommand(request: Request): Promise<Respons
       const reader = socket.readable.getReader();
 
       await writer.write(new TextEncoder().encode(cmdText));
-      // COMMAND writes don't return a response; wait briefly for connection close
+      // COMMAND writes don't return a response; close writer to flush
       const rtt = Date.now() - startTime;
-      reader.releaseLock();
+      await writer.close();
       writer.releaseLock();
+      reader.releaseLock();
       socket.close();
 
       return new Response(JSON.stringify({

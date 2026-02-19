@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface AMQPSClientProps {
   onBack: () => void;
@@ -117,6 +119,7 @@ export default function AMQPSClient({ onBack }: AMQPSClientProps) {
 
   return (
     <ProtocolClientLayout title="AMQPS Client (Secure AMQP)" onBack={onBack}>
+      <ApiExamples examples={apiExamples.AMQPS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Secure Broker Connection" />
 

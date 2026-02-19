@@ -28,6 +28,36 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
+ * Base64 encode a string (Cloudflare Workers compatible).
+ * btoa() is not available in Workers runtime.
+ */
+function base64Encode(str: string): string {
+  const bytes = encoder.encode(str);
+  const base64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let result = '';
+  let i = 0;
+
+  for (; i < bytes.length - 2; i += 3) {
+    const chunk = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    result += base64chars[(chunk >> 18) & 63];
+    result += base64chars[(chunk >> 12) & 63];
+    result += base64chars[(chunk >> 6) & 63];
+    result += base64chars[chunk & 63];
+  }
+
+  if (i < bytes.length) {
+    const remaining = bytes.length - i;
+    const chunk = (bytes[i] << 16) | (remaining > 1 ? bytes[i + 1] << 8 : 0);
+    result += base64chars[(chunk >> 18) & 63];
+    result += base64chars[(chunk >> 12) & 63];
+    result += remaining > 1 ? base64chars[(chunk >> 6) & 63] : '=';
+    result += '=';
+  }
+
+  return result;
+}
+
+/**
  * Send a raw HTTP/1.1 GET request over a TCP socket and parse the response.
  */
 async function sendHttpGet(
@@ -92,7 +122,7 @@ async function sendHttpGet(
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
   const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
 
-  // Parse headers
+  // Parse headers (multi-valued headers concatenated with comma per RFC 9110 §5.3)
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);
   for (const line of headerLines) {
@@ -100,7 +130,11 @@ async function sendHttpGet(
     if (colonIdx > 0) {
       const key = line.substring(0, colonIdx).trim().toLowerCase();
       const value = line.substring(colonIdx + 1).trim();
-      headers[key] = value;
+      if (headers[key]) {
+        headers[key] += ', ' + value;
+      } else {
+        headers[key] = value;
+      }
     }
   }
 
@@ -187,7 +221,11 @@ async function sendHttpPost(
     if (colonIdx > 0) {
       const key = line.substring(0, colonIdx).trim().toLowerCase();
       const value = line.substring(colonIdx + 1).trim();
-      headers[key] = value;
+      if (headers[key]) {
+        headers[key] += ', ' + value;
+      } else {
+        headers[key] = value;
+      }
     }
   }
 
@@ -199,7 +237,9 @@ async function sendHttpPost(
 }
 
 /**
- * Decode chunked transfer encoding.
+ * Decode chunked transfer encoding per RFC 9112 §7.1.
+ * Format: chunk-size [ chunk-ext ] CRLF chunk-data CRLF
+ * Handles chunk extensions and stops at zero-sized chunk.
  */
 function decodeChunked(data: string): string {
   let result = '';
@@ -209,7 +249,14 @@ function decodeChunked(data: string): string {
     const lineEnd = remaining.indexOf('\r\n');
     if (lineEnd === -1) break;
 
-    const sizeStr = remaining.substring(0, lineEnd).trim();
+    // Parse chunk size line, stripping optional chunk extensions
+    // Format: 1a;name=value or just 1a
+    let sizeStr = remaining.substring(0, lineEnd).trim();
+    const semicolonIdx = sizeStr.indexOf(';');
+    if (semicolonIdx > 0) {
+      sizeStr = sizeStr.substring(0, semicolonIdx).trim();
+    }
+
     const chunkSize = parseInt(sizeStr, 16);
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
@@ -380,6 +427,13 @@ export async function handleNomadJobs(request: Request): Promise<Response> {
     const token = body.token;
     const timeout = body.timeout || 15000;
 
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(
@@ -472,6 +526,13 @@ export async function handleNomadNodes(request: Request): Promise<Response> {
     const port = body.port || 4646;
     const token = body.token;
     const timeout = body.timeout || 15000;
+
+    if (port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -800,7 +861,7 @@ export async function handleNomadJobDispatch(request: Request): Promise<Response
 
     const dispatchBody: Record<string, unknown> = {};
     if (body.payload) {
-      dispatchBody.Payload = btoa(body.payload);
+      dispatchBody.Payload = base64Encode(body.payload);
     }
     if (body.meta) {
       dispatchBody.Meta = body.meta;

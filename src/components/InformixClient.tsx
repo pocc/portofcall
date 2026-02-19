@@ -14,7 +14,7 @@ interface InformixClientProps {
 
 export default function InformixClient({ onBack }: InformixClientProps) {
   const [host, setHost] = useState('');
-  const [port, setPort] = useState('1526');
+  const [port, setPort] = useState('9088');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -116,7 +116,7 @@ export default function InformixClient({ onBack }: InformixClientProps) {
 
         <HelpSection
           title="About IBM Informix"
-          description="IBM Informix Dynamic Server is a relational database system. This tests connectivity by sending a probe to detect the Informix binary protocol handshake and extract server version information. Default port is 1526."
+          description="IBM Informix Dynamic Server is a relational database system. This tests connectivity by sending an SQLI protocol probe to detect the Informix binary protocol handshake and extract server version information. Default port is 9088 (onsoctcp). Legacy port 1526 (sqlexec) is also supported."
         />
       </div>
     </ProtocolClientLayout>

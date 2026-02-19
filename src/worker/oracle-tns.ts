@@ -193,7 +193,16 @@ function extractErrorCode(text: string): string | null {
   return null;
 }
 
-/** Read at least N bytes from a socket reader, buffering across multiple reads */
+/** Read exactly n bytes from a socket reader, buffering across multiple TCP chunks.
+ *
+ * Bug fix: the previous implementation returned "at least n" bytes because the loop
+ * condition was (totalRead < n) but the combined buffer was never sliced before return.
+ * This broke the two-step read pattern used in doTNSConnect, handleOracleQuery, and
+ * handleOracleSQLQuery: when the OS delivers the full TNS packet in one TCP chunk,
+ * readBytes(reader, 8) consumed e.g. all 50 bytes of an ACCEPT packet, and the
+ * subsequent readBytes(reader, 42) stalled indefinitely waiting for bytes that had
+ * already been consumed. Fixed by returning combined.subarray(0, n).
+ */
 async function readBytes(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   n: number,
@@ -206,11 +215,16 @@ async function readBytes(
     chunks.push(value);
     totalRead += value.length;
   }
-  if (chunks.length === 1) return chunks[0];
-  const result = new Uint8Array(totalRead);
-  let offset = 0;
-  for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length; }
-  return result;
+  let combined: Uint8Array;
+  if (chunks.length === 1) {
+    combined = chunks[0];
+  } else {
+    combined = new Uint8Array(totalRead);
+    let off = 0;
+    for (const chunk of chunks) { combined.set(chunk, off); off += chunk.length; }
+  }
+  // Slice to exactly n bytes — discard surplus bytes from an oversized last chunk.
+  return combined.length === n ? combined : combined.subarray(0, n);
 }
 
 /**
@@ -585,7 +599,7 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
         // service negotiation. We send a minimal request; the server responds
         // with its supported service list and versions.
         const anoPayload = new Uint8Array([
-          0x00, 0xDE,        // ANO total length
+          0x00, 0x28,        // ANO total length: 40 bytes (8-byte ANO header + 4x8-byte service entries); was 0xDE=222 (protocol violation)
           0x00, 0x02,        // version
           0x00, 0x00,        // flags
           0x04,              // service count
@@ -805,7 +819,7 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
 
         // ── Phase 2: ANO Negotiation ───────────────────────────────────────────
         const anoPayload = new Uint8Array([
-          0x00, 0xDE, 0x00, 0x02, 0x00, 0x00, 0x04, 0x00,
+          0x00, 0x28, 0x00, 0x02, 0x00, 0x00, 0x04, 0x00, // ANO length: 40 bytes (was 0xDE=222, protocol violation)
           0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
           0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
           0x00, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

@@ -1,686 +1,432 @@
-# RTMP Protocol Implementation Plan
+# RTMP (Real-Time Messaging Protocol) — Port 1935
 
-## Overview
+Implementation: `src/worker/rtmp.ts` (922 lines)
+Routes: `src/worker/index.ts` lines 1154–1165
+Tests: `tests/rtmp.test.ts` (validation only — no live-server integration tests)
 
-**Protocol:** RTMP (Real-Time Messaging Protocol)
-**Port:** 1935 (TCP), 443 (RTMPS)
-**Specification:** [Adobe RTMP Specification](https://www.adobe.com/devnet/rtmp.html)
-**Complexity:** Very High
-**Purpose:** Low-latency audio/video streaming
+Three endpoints. All POST, all JSON body. Full RTMP handshake (C0/C1/S0/S1/S2/C2) + AMF0 command layer over `cloudflare:sockets` TCP.
 
-RTMP enables **live streaming** - publish and play live video streams, commonly used for broadcasting to streaming platforms like Twitch, YouTube Live, and Facebook Live from the browser.
+**No method guard:** Routes in index.ts match pathname only. GET or empty-body POST will 500 from `request.json()`, not 405.
 
-### Use Cases
-- Live streaming to platforms
-- Broadcasting applications
-- Video conferencing
-- Gaming stream capture
-- Real-time video delivery
-- Interactive live events
+---
 
-## Protocol Specification
+## Endpoints
 
-### Protocol Stack
+### POST /api/rtmp/connect
 
-```
-┌─────────────────────┐
-│   Application       │ (Commands, Data)
-├─────────────────────┤
-│   RTMP Messages     │ (Audio, Video, Data)
-├─────────────────────┤
-│   RTMP Chunks       │ (Chunking Layer)
-├─────────────────────┤
-│   TCP               │
-└─────────────────────┘
-```
+Handshake + `connect` command. Tests whether an RTMP server is reachable and accepts connections to a given application.
 
-### Handshake (C0, C1, C2 / S0, S1, S2)
-
-**C0/S0** (1 byte): Version (0x03)
-
-**C1/S1** (1536 bytes):
-```
-time: 4 bytes
-zero: 4 bytes
-random: 1528 bytes
-```
-
-**C2/S2** (1536 bytes):
-```
-time: 4 bytes (echo from C1/S1)
-time2: 4 bytes (timestamp)
-random_echo: 1528 bytes (echo from C1/S1)
-```
-
-### Chunk Format
-
-```
-┌──────────────────────────────────┐
-│ Basic Header (1-3 bytes)         │
-│   fmt (2 bits) + csid (6-14 bits)│
-├──────────────────────────────────┤
-│ Message Header (0-11 bytes)      │
-│   timestamp, length, type, stream│
-├──────────────────────────────────┤
-│ Extended Timestamp (0-4 bytes)   │
-├──────────────────────────────────┤
-│ Chunk Data                       │
-└──────────────────────────────────┘
-```
-
-### Chunk Types (fmt)
-
-| fmt | Name | Header Size |
-|-----|------|-------------|
-| 0 | Full header | 11 bytes |
-| 1 | No stream ID | 7 bytes |
-| 2 | Timestamp only | 3 bytes |
-| 3 | No header | 0 bytes |
-
-### Message Types
-
-| Type | Name |
-|------|------|
-| 1 | Set Chunk Size |
-| 2 | Abort Message |
-| 3 | Acknowledgement |
-| 4 | User Control |
-| 5 | Window Acknowledgement Size |
-| 6 | Set Peer Bandwidth |
-| 8 | Audio Data |
-| 9 | Video Data |
-| 15 | AMF3 Data |
-| 17 | AMF3 Command |
-| 18 | AMF0 Data |
-| 20 | AMF0 Command |
-
-### RTMP Commands (AMF0)
-
-**connect**:
-```javascript
+**Request:**
+```json
 {
-  app: "live",
-  flashVer: "LNX 10,0,32,18",
-  tcUrl: "rtmp://server/live",
-  fpad: false,
-  capabilities: 15,
-  audioCodecs: 4071,
-  videoCodecs: 252,
-  videoFunction: 1
+  "host": "live.example.com",
+  "port": 1935,
+  "app": "live",
+  "timeout": 10000
 }
 ```
 
-**createStream**: Returns stream ID
-
-**publish**: Start publishing stream
-
-**play**: Start playing stream
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/rtmp/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface RTMPConfig {
-  host: string;
-  port?: number;
-  app: string;
-  streamKey?: string;
-}
-
-export interface RTMPChunk {
-  csid: number;
-  timestamp: number;
-  messageLength: number;
-  messageTypeId: number;
-  messageStreamId: number;
-  data: Uint8Array;
-}
-
-export class RTMPClient {
-  private socket: any;
-  private chunkSize = 128;
-  private streamId = 0;
-
-  constructor(private config: RTMPConfig) {}
-
-  async connect(): Promise<void> {
-    const port = this.config.port || 1935;
-    this.socket = connect(`${this.config.host}:${port}`);
-    await this.socket.opened;
-
-    // RTMP Handshake
-    await this.handshake();
-
-    // Send connect command
-    await this.sendConnect();
-
-    // Create stream
-    this.streamId = await this.createStream();
-  }
-
-  private async handshake(): Promise<void> {
-    // C0: Version
-    await this.send(new Uint8Array([0x03]));
-
-    // C1: Timestamp + Zero + Random
-    const c1 = new Uint8Array(1536);
-    const now = Date.now();
-    new DataView(c1.buffer).setUint32(0, now);
-    // Fill rest with random data
-    for (let i = 8; i < 1536; i++) {
-      c1[i] = Math.floor(Math.random() * 256);
-    }
-    await this.send(c1);
-
-    // Read S0
-    const s0 = await this.readBytes(1);
-    if (s0[0] !== 0x03) {
-      throw new Error('Invalid RTMP version');
-    }
-
-    // Read S1
-    const s1 = await this.readBytes(1536);
-
-    // Send C2 (echo of S1)
-    const c2 = new Uint8Array(1536);
-    c2.set(s1.slice(0, 8));
-    new DataView(c2.buffer).setUint32(4, now);
-    c2.set(s1.slice(8), 8);
-    await this.send(c2);
-
-    // Read S2 (echo of C1)
-    await this.readBytes(1536);
-
-    console.log('RTMP handshake complete');
-  }
-
-  private async sendConnect(): Promise<void> {
-    const connectObj = {
-      app: this.config.app,
-      flashVer: 'LNX 10,0,32,18',
-      tcUrl: `rtmp://${this.config.host}/${this.config.app}`,
-      fpad: false,
-      capabilities: 15,
-      audioCodecs: 4071,
-      videoCodecs: 252,
-      videoFunction: 1,
-      objectEncoding: 0,
-    };
-
-    await this.sendCommand('connect', 1, connectObj);
-
-    // Wait for _result
-    await this.readChunk();
-  }
-
-  private async createStream(): Promise<number> {
-    await this.sendCommand('createStream', 2, null);
-
-    // Wait for _result with stream ID
-    const chunk = await this.readChunk();
-
-    // Parse AMF0 response to get stream ID
-    // Simplified - would parse actual AMF0
-    return 1;
-  }
-
-  async publish(streamName: string): Promise<void> {
-    await this.sendCommand('publish', 3, null, streamName, 'live');
-
-    // Start sending audio/video data
-  }
-
-  async play(streamName: string): Promise<void> {
-    await this.sendCommand('play', 3, null, streamName);
-
-    // Start receiving audio/video data
-    this.receiveStream();
-  }
-
-  async sendAudioData(data: Uint8Array, timestamp: number): Promise<void> {
-    await this.sendChunk({
-      csid: 4,
-      timestamp,
-      messageLength: data.length,
-      messageTypeId: 8, // Audio
-      messageStreamId: this.streamId,
-      data,
-    });
-  }
-
-  async sendVideoData(data: Uint8Array, timestamp: number): Promise<void> {
-    await this.sendChunk({
-      csid: 6,
-      timestamp,
-      messageLength: data.length,
-      messageTypeId: 9, // Video
-      messageStreamId: this.streamId,
-      data,
-    });
-  }
-
-  private async sendCommand(name: string, transactionId: number, ...args: any[]): Promise<void> {
-    // Encode as AMF0
-    const amf0 = this.encodeAMF0(name, transactionId, ...args);
-
-    await this.sendChunk({
-      csid: 3,
-      timestamp: 0,
-      messageLength: amf0.length,
-      messageTypeId: 20, // AMF0 Command
-      messageStreamId: 0,
-      data: amf0,
-    });
-  }
-
-  private async sendChunk(chunk: RTMPChunk): Promise<void> {
-    // Build chunk with header
-    const chunks: Uint8Array[] = [];
-
-    let remaining = chunk.data.length;
-    let offset = 0;
-    let isFirst = true;
-
-    while (remaining > 0) {
-      const chunkDataSize = Math.min(remaining, this.chunkSize);
-
-      if (isFirst) {
-        // Type 0: Full header
-        const header = this.buildChunkHeader(0, chunk);
-        chunks.push(header);
-        isFirst = false;
-      } else {
-        // Type 3: No header (continuation)
-        const header = this.buildChunkHeader(3, chunk);
-        chunks.push(header);
-      }
-
-      // Chunk data
-      chunks.push(chunk.data.slice(offset, offset + chunkDataSize));
-
-      offset += chunkDataSize;
-      remaining -= chunkDataSize;
-    }
-
-    // Send all chunks
-    for (const chunkData of chunks) {
-      await this.send(chunkData);
-    }
-  }
-
-  private buildChunkHeader(fmt: number, chunk: RTMPChunk): Uint8Array {
-    // Basic header
-    const basicHeader = new Uint8Array(1);
-    basicHeader[0] = (fmt << 6) | (chunk.csid & 0x3F);
-
-    if (fmt === 0) {
-      // Type 0: Full header (11 bytes)
-      const header = new Uint8Array(12);
-      const view = new DataView(header.buffer);
-
-      header[0] = basicHeader[0];
-
-      // Timestamp (3 bytes, big-endian)
-      view.setUint8(1, (chunk.timestamp >> 16) & 0xFF);
-      view.setUint8(2, (chunk.timestamp >> 8) & 0xFF);
-      view.setUint8(3, chunk.timestamp & 0xFF);
-
-      // Message length (3 bytes, big-endian)
-      view.setUint8(4, (chunk.messageLength >> 16) & 0xFF);
-      view.setUint8(5, (chunk.messageLength >> 8) & 0xFF);
-      view.setUint8(6, chunk.messageLength & 0xFF);
-
-      // Message type ID
-      view.setUint8(7, chunk.messageTypeId);
-
-      // Message stream ID (4 bytes, little-endian)
-      view.setUint32(8, chunk.messageStreamId, true);
-
-      return header;
-    } else if (fmt === 3) {
-      // Type 3: No header
-      return basicHeader;
-    }
-
-    return basicHeader;
-  }
-
-  private async readChunk(): Promise<RTMPChunk> {
-    // Read basic header
-    const basicHeader = await this.readBytes(1);
-    const fmt = (basicHeader[0] >> 6) & 0x03;
-    const csid = basicHeader[0] & 0x3F;
-
-    // Read message header based on fmt
-    let timestamp = 0;
-    let messageLength = 0;
-    let messageTypeId = 0;
-    let messageStreamId = 0;
-
-    if (fmt === 0) {
-      const header = await this.readBytes(11);
-      const view = new DataView(header.buffer);
-
-      timestamp = (view.getUint8(0) << 16) | (view.getUint8(1) << 8) | view.getUint8(2);
-      messageLength = (view.getUint8(3) << 16) | (view.getUint8(4) << 8) | view.getUint8(5);
-      messageTypeId = view.getUint8(6);
-      messageStreamId = view.getUint32(7, true);
-    }
-
-    // Read chunk data
-    const data = await this.readBytes(Math.min(messageLength, this.chunkSize));
-
-    return {
-      csid,
-      timestamp,
-      messageLength,
-      messageTypeId,
-      messageStreamId,
-      data,
-    };
-  }
-
-  private async receiveStream(): Promise<void> {
-    // Continuously read and process chunks
-    while (true) {
-      const chunk = await this.readChunk();
-
-      if (chunk.messageTypeId === 8) {
-        // Audio data
-        this.handleAudioData(chunk.data);
-      } else if (chunk.messageTypeId === 9) {
-        // Video data
-        this.handleVideoData(chunk.data);
-      }
-    }
-  }
-
-  private handleAudioData(data: Uint8Array): void {
-    console.log('Audio data:', data.length);
-    // Would process audio (AAC, MP3, etc.)
-  }
-
-  private handleVideoData(data: Uint8Array): void {
-    console.log('Video data:', data.length);
-    // Would process video (H.264, etc.)
-  }
-
-  private encodeAMF0(...values: any[]): Uint8Array {
-    // Simplified AMF0 encoder
-    const chunks: Uint8Array[] = [];
-
-    for (const value of values) {
-      if (typeof value === 'string') {
-        // String marker
-        chunks.push(new Uint8Array([0x02]));
-
-        // String length and data
-        const encoder = new TextEncoder();
-        const strData = encoder.encode(value);
-        const len = new Uint8Array(2);
-        new DataView(len.buffer).setUint16(0, strData.length);
-        chunks.push(len);
-        chunks.push(strData);
-      } else if (typeof value === 'number') {
-        // Number marker
-        chunks.push(new Uint8Array([0x00]));
-
-        // Double value
-        const num = new Uint8Array(8);
-        new DataView(num.buffer).setFloat64(0, value);
-        chunks.push(num);
-      } else if (value === null) {
-        // Null marker
-        chunks.push(new Uint8Array([0x05]));
-      } else if (typeof value === 'object') {
-        // Object marker
-        chunks.push(new Uint8Array([0x03]));
-
-        // Encode properties
-        for (const [key, val] of Object.entries(value)) {
-          // Property name
-          const encoder = new TextEncoder();
-          const keyData = encoder.encode(key);
-          const keyLen = new Uint8Array(2);
-          new DataView(keyLen.buffer).setUint16(0, keyData.length);
-          chunks.push(keyLen);
-          chunks.push(keyData);
-
-          // Property value (recursive)
-          chunks.push(this.encodeAMF0(val));
-        }
-
-        // Object end marker
-        chunks.push(new Uint8Array([0x00, 0x00, 0x09]));
-      }
-    }
-
-    // Concatenate all chunks
-    const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-    const result = new Uint8Array(totalLength);
-    let offset = 0;
-
-    for (const chunk of chunks) {
-      result.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    return result;
-  }
-
-  private async send(data: Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  private async readBytes(length: number): Promise<Uint8Array> {
-    const reader = this.socket.readable.getReader();
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const toCopy = Math.min(length - offset, value.length);
-      buffer.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    reader.releaseLock();
-    return buffer;
-  }
-
-  async close(): Promise<void> {
-    if (this.socket) {
-      await this.socket.close();
-    }
-  }
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | *(required)* | |
+| `port` | `1935` | Validated 1–65535 |
+| `app` | `"live"` | RTMP application name |
+| `timeout` | `10000` | ms; wraps entire operation |
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "live.example.com",
+  "port": 1935,
+  "app": "live",
+  "connectTime": 42,
+  "rtt": 187,
+  "handshakeComplete": true,
+  "connectResult": [
+    { "fmsVer": "FMS/5,0,17,0", "capabilities": 31, "mode": 1 },
+    { "level": "status", "code": "NetConnection.Connect.Success", "description": "Connection succeeded." }
+  ]
 }
 ```
 
-## Web UI Design
+- `connectTime` — TCP socket open latency (ms)
+- `rtt` — total elapsed from socket open through connect `_result` (ms)
+- `connectResult` — raw AMF0 `_result` args array (typically two objects: server properties + info object)
 
-```typescript
-// src/components/RTMPClient.tsx
+**Wire sequence:**
+```
+C → S: C0 (0x03) + C1 (1536 bytes: timestamp + zero + random)
+S → C: S0 + S1 + S2
+C → S: C2 (echo of S1)
+C → S: Window Acknowledgement Size (2500000)
+C → S: connect("live", txId=1, {app, type, flashVer, tcUrl})
+S → C: (various protocol control messages, then _result txId=1)
+```
 
-export function RTMPClient() {
-  const [streaming, setStreaming] = useState(false);
-  const [streamUrl, setStreamUrl] = useState('rtmp://live.twitch.tv/app/');
-  const [streamKey, setStreamKey] = useState('');
-  const videoRef = useRef<HTMLVideoElement>(null);
+**curl:**
+```bash
+curl -s -X POST https://portofcall.dev/api/rtmp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"live.example.com","app":"live"}' | jq
+```
 
-  const startStream = async () => {
-    // Get media stream from camera/screen
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true,
-    });
+---
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
-    }
+### POST /api/rtmp/publish
 
-    // Start RTMP connection
-    await fetch('/api/rtmp/publish', {
-      method: 'POST',
-      body: JSON.stringify({ url: streamUrl, key: streamKey }),
-    });
+Handshake + connect + `createStream` + `publish` command. Negotiates a publish session and optionally sends `@setDataFrame` metadata.
 
-    setStreaming(true);
-
-    // Start encoding and sending
-    startEncoding(stream);
-  };
-
-  const stopStream = async () => {
-    await fetch('/api/rtmp/stop', { method: 'POST' });
-    setStreaming(false);
-
-    if (videoRef.current && videoRef.current.srcObject) {
-      const stream = videoRef.current.srcObject as MediaStream;
-      stream.getTracks().forEach(track => track.stop());
-    }
-  };
-
-  const startEncoding = (stream: MediaStream) => {
-    // Would encode video/audio and send to RTMP server
-    // Requires MediaRecorder or WebCodecs API
-  };
-
-  return (
-    <div className="rtmp-client">
-      <h2>RTMP Live Streaming</h2>
-
-      <div className="preview">
-        <video ref={videoRef} autoPlay muted />
-      </div>
-
-      {!streaming ? (
-        <div className="config">
-          <input
-            type="text"
-            placeholder="RTMP Server URL"
-            value={streamUrl}
-            onChange={(e) => setStreamUrl(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Stream Key"
-            value={streamKey}
-            onChange={(e) => setStreamKey(e.target.value)}
-          />
-          <button onClick={startStream}>Start Stream</button>
-        </div>
-      ) : (
-        <div className="controls">
-          <span className="live-indicator">🔴 LIVE</span>
-          <button onClick={stopStream}>Stop Stream</button>
-        </div>
-      )}
-
-      <div className="info">
-        <h3>Platform URLs</h3>
-        <ul>
-          <li><strong>Twitch:</strong> rtmp://live.twitch.tv/app/</li>
-          <li><strong>YouTube:</strong> rtmp://a.rtmp.youtube.com/live2/</li>
-          <li><strong>Facebook:</strong> rtmps://live-api-s.facebook.com:443/rtmp/</li>
-        </ul>
-      </div>
-    </div>
-  );
+**Request:**
+```json
+{
+  "host": "live.example.com",
+  "port": 1935,
+  "app": "live",
+  "streamKey": "my-stream-key",
+  "metaData": {
+    "width": 1920,
+    "height": 1080,
+    "framerate": 30,
+    "videocodecid": 7,
+    "audiocodecid": 10
+  },
+  "timeout": 15000
 }
 ```
 
-## Security
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | *(required)* | |
+| `streamKey` | *(required)* | Sent as the stream name in the `publish` command |
+| `port` | `1935` | Not validated (unlike `/connect`) |
+| `app` | `"live"` | |
+| `metaData` | *(omit)* | If non-empty, sent as `@setDataFrame` / `onMetaData` AMF0 data message after publish starts |
+| `timeout` | `15000` | ms |
 
-### RTMPS (RTMP over TLS)
-
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "live.example.com",
+  "port": 1935,
+  "app": "live",
+  "streamKey": "my-stream-key",
+  "streamId": 1,
+  "publishStarted": true,
+  "connectResult": [ ... ],
+  "serverResponses": [
+    { "name": "onStatus", "info": { "level": "status", "code": "NetStream.Publish.Start", "description": "Publishing my-stream-key" } }
+  ]
+}
 ```
-Port: 443
-URL: rtmps://server/app
+
+- `streamId` — the server-assigned stream ID from `createStream`
+- `publishStarted` — true if server sent `NetStream.Publish.Start`
+- `serverResponses` — all AMF0 command responses received after `publish` was sent (array of `{name, info}`)
+
+**Wire sequence:**
+```
+[handshake + connect as above]
+C → S: createStream(txId=2)
+S → C: _result(txId=2, streamId)
+C → S: publish(txId=0, null, streamKey, "live")  [on stream streamId]
+S → C: onStatus("NetStream.Publish.Start")
+C → S: @setDataFrame("onMetaData", {...})  [if metaData provided, AMF0 data msg type 18]
 ```
 
-### Stream Key
+**Port validation gap:** Unlike `/connect`, this endpoint does not validate port range. Out-of-range values will fail at the TCP level.
 
+---
+
+### POST /api/rtmp/play
+
+Handshake + connect + `createStream` + `play` command. Attempts to subscribe to a published stream and captures metadata.
+
+**Request:**
+```json
+{
+  "host": "live.example.com",
+  "port": 1935,
+  "app": "live",
+  "streamName": "my-stream",
+  "timeout": 15000
+}
 ```
-Use secret stream key for authentication
-Never expose publicly
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `host` | *(required)* | |
+| `streamName` | *(required)* | |
+| `port` | `1935` | Not validated |
+| `app` | `"live"` | |
+| `timeout` | `15000` | ms |
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "host": "live.example.com",
+  "port": 1935,
+  "app": "live",
+  "streamName": "my-stream",
+  "streamId": 1,
+  "playStarted": true,
+  "connectResult": [ ... ],
+  "streamMetaData": { "width": 1920, "height": 1080, "framerate": 30 },
+  "serverResponses": [
+    { "name": "onStatus", "txId": 0, "info": { "level": "status", "code": "NetStream.Play.Start" } }
+  ]
+}
 ```
 
-## Testing
+- `streamMetaData` — captured from `onMetaData` AMF0 data message (null if server doesn't send one)
+- `playStarted` — true if `NetStream.Play.Start`, `NetStream.Play.Reset`, or an audio/video frame was received
+- `serverResponses` — includes `txId` field (unlike `/publish` responses)
 
-### NGINX RTMP Module
+**Wire sequence:**
+```
+[handshake + connect as above]
+C → S: User Control SetBufferLength(streamId=1, 3000ms)
+C → S: createStream(txId=2)
+S → C: _result(txId=2, streamId)
+C → S: play(txId=0, null, streamName, start=-1)  [on stream streamId]
+S → C: onStatus, |RtmpSampleAccess, onMetaData, audio/video frames
+```
+
+---
+
+## Handshake Details
+
+All three endpoints share the same handshake code (`rtmpHandshakeAndConnect`).
+
+| Step | Bytes | Content |
+|------|-------|---------|
+| C0 | 1 | `0x03` (RTMP version 3) |
+| C1 | 1536 | 4-byte timestamp (`Date.now() & 0xFFFFFFFF`) + 4 zero bytes + 1528 random bytes (`Math.random()`) |
+| S0 | 1 | Expected `0x03`; throws if different |
+| S1 | 1536 | Read in full |
+| S2 | 1536 | Read and discarded (`void s2`) — **no echo verification** |
+| C2 | 1536 | Echo of S1 timestamps + S1 random data |
+
+After handshake, the client sends:
+- Window Acknowledgement Size = 2,500,000 bytes (protocol control on csid 2)
+- `connect` command (AMF0 on csid 3) with `{app, type: "nonprivate", flashVer: "FMLE/3.0 (compatible; portofcall)", tcUrl: "rtmp://host:port/app"}`
+
+The response loop reads up to 20 messages looking for `_result` with txId=1. Protocol control messages (Set Chunk Size, Window Ack Size, Set Peer Bandwidth, User Control, Acknowledgement) are consumed silently. If `Set Chunk Size` arrives, the module-level `remoteChunkSize` is updated.
+
+---
+
+## AMF0 Codec
+
+Full encode/decode for 6 types:
+
+| Type byte | Name | Encoding |
+|-----------|------|----------|
+| `0x00` | Number | 8-byte IEEE 754 double, big-endian |
+| `0x01` | Boolean | 1 byte (0x00 or 0x01) |
+| `0x02` | String | 2-byte length prefix (big-endian) + UTF-8 |
+| `0x03` | Object | Key-value pairs (2-byte-length key + typed value), terminated by `0x00 0x00 0x09` |
+| `0x05` | Null | No data |
+| `0x08` | ECMA Array | 4-byte count (ignored in decoder) + key-value pairs + end marker |
+
+Not supported: Long String (0x0C), Typed Object (0x10), Undefined (0x06), Reference (0x07), Date (0x0B), XML (0x0F). Unknown type bytes decode as null and consume 1 byte.
+
+`amf0DecodeAll` repeatedly calls `amf0Decode` until the buffer is exhausted (or `bytesRead === 0` as a safety valve).
+
+---
+
+## Chunk Framing
+
+### Encoding (`encodeChunks`)
+
+Outgoing messages use fmt=0 (full 12-byte header: 1 basic + 11 message) for the first chunk, fmt=3 (1-byte header) for continuation chunks. Default outgoing chunk size is 128 bytes (hardcoded; the client never sends Set Chunk Size to increase it).
+
+Basic header for csid <= 63: `(fmt << 6) | (csid & 0x3F)` — always 1 byte.
+
+Timestamps are capped at `0xFFFFFF` (3-byte max). Extended timestamps are never sent.
+
+### Decoding (`readRTMPMessage`)
+
+Reads a single RTMP message (possibly spanning multiple chunks). Handles:
+- 1-byte basic header (csid 2–63)
+- 2-byte basic header (csid=0 in first byte → read 1 more byte, csid = byte + 64)
+- 3-byte basic header (csid=1 in first byte → read 2 more bytes, csid = `b1*256 + b0 + 64`)
+
+For fmt=0: reads full 11-byte message header + optional 4-byte extended timestamp (if timestamp == 0xFFFFFF, but the value is read and discarded — not applied to the message timestamp).
+
+For fmt=1: reads 7 bytes (timestamp delta, length, type ID). No stream ID.
+
+For fmt=2: reads 3 bytes (timestamp delta only).
+
+For fmt=3: no header bytes.
+
+**Continuation chunk handling:** After reading `remoteChunkSize` bytes, if more payload remains, reads a 1-byte continuation header. If the continuation fmt is not 3, it's silently treated as fmt=3 anyway (comment: "Re-parse would be complex; treat as fmt=3 for simplicity").
+
+---
+
+## Known Limitations and Quirks
+
+### Module-level `remoteChunkSize` (concurrency bug)
+
+`remoteChunkSize` is declared at module scope (`let remoteChunkSize = 128`). Each handler resets it to 128 at the start, but if two requests execute concurrently in the same Worker isolate, they'll clobber each other's chunk size. This could cause mid-stream framing corruption.
+
+### No RTMPS (TLS)
+
+No TLS support. Cannot connect to `rtmps://` endpoints (e.g., Facebook Live requires RTMPS on port 443). Would need `connect({secureTransport: "on"})`.
+
+### No authentication
+
+No RTMP-level authentication (e.g., Adobe Access, SWF verification, or token-based auth). The only auth mechanism is the `streamKey` in the publish command, which is standard RTMP behavior (the key is the stream name, not a separate auth exchange).
+
+### S2 not verified
+
+The handshake reads S2 but explicitly discards it (`void s2`). Per the RTMP spec, S2 should echo C1's random bytes. Skipping verification means the client won't detect a misbehaving intermediary that doesn't properly echo the handshake.
+
+### Extended timestamp discarded
+
+When fmt=0 and the 3-byte timestamp field is 0xFFFFFF, the code reads the 4-byte extended timestamp but doesn't store the value — the message keeps timestamp=0xFFFFFF. Streams longer than ~4.6 hours (2^24 ms) would have incorrect timestamps.
+
+### fmt=1/2/3 state not tracked across messages
+
+`readRTMPMessage` doesn't maintain per-csid state between calls. If a server sends fmt=1/2/3 headers (which rely on values from a previous message on the same csid), the decoded timestamp/length/typeId/streamId will be 0 because the previous context isn't preserved. This works in practice because most servers send fmt=0 for the first message on each csid in a new session, but could break with aggressive header compression.
+
+### C1 random bytes: `Math.random()`
+
+C1's 1528 random bytes are generated with `Math.random()`, not a CSPRNG. This is fine for basic handshakes but wouldn't pass RTMP version 2 (RTMPE) cryptographic handshake requirements.
+
+### SetBufferLength hardcoded stream ID
+
+In `/play`, the SetBufferLength user control message is sent with hardcoded stream ID 1, *before* `createStream` returns the actual stream ID. If the server assigns a stream ID other than 1, the buffer length hint applies to the wrong stream.
+
+### `/play` response shape differs from `/publish`
+
+`/play` `serverResponses` entries have `{name, txId, info}` while `/publish` entries have `{name, info}` (no txId). Consumers parsing responses from both endpoints need to account for this.
+
+### play start=-1 semantics
+
+The `play` command passes `start=-1` as the fourth argument, which in RTMP means "play live stream from the current position." This cannot be changed via the API — there's no way to request a recorded stream or seek to a specific position.
+
+### Response loop limits
+
+- `/connect`: reads up to 20 messages for `_result`
+- `/publish`: reads up to 20 messages for `onStatus`
+- `/play`: reads up to 30 messages for play start
+
+If the server sends more than this many protocol control messages before the expected response, the handler throws "Did not receive _result" or similar.
+
+### No FCPublish / releaseStream
+
+The publish flow sends `createStream` → `publish` directly. Some ingest servers (YouTube Live, Facebook Live, certain Wowza configs) require `releaseStream` and/or `FCPublish` before the `publish` command. Publish will fail on those servers with no clear error — typically a timeout waiting for `NetStream.Publish.Start`.
+
+### Publish type hardcoded to `"live"`
+
+The `publish` command's type argument is always `"live"`. No support for `"record"` (save to server-side file) or `"append"` (append to existing recording). Not configurable via the API.
+
+### `publishStarted: false` with `success: true`
+
+If the `/publish` loop reads 20 messages without seeing `NetStream.Publish.Start`, it exits the loop without throwing. The response will have `success: true` but `publishStarted: false` — callers must check `publishStarted`, not just `success`. Same pattern in `/play` with `playStarted`.
+
+### tcUrl always includes port
+
+The connect command builds tcUrl as `rtmp://${host}:${port}/${app}`, always including the port even when using the default 1935. Some strict servers may reject this form vs the portless `rtmp://host/app`.
+
+### Minimal connect properties
+
+The `connect` command sends only `{app, type, flashVer, tcUrl}`. It omits `objectEncoding`, `swfUrl`, `pageUrl`, `audioCodecs`, `videoCodecs`, and `videoFunction`. Most servers tolerate this, but servers that use SWF verification or codec negotiation may behave differently.
+
+### No Acknowledgement messages sent
+
+The client sends Window Acknowledgement Size (2,500,000) but never sends actual Acknowledgement (type 3) messages in response to received data. For the short-lived probe connections this is fine, but a long-running session would eventually stall on servers that enforce flow control.
+
+### AMF0 unknown type parsing corruption
+
+Unknown AMF0 type bytes (anything not 0x00/0x01/0x02/0x03/0x05/0x08) decode as `null` consuming only 1 byte. If the actual encoded value is longer (e.g., Date is 11 bytes, Strict Array is variable), all subsequent values in the stream will be mis-parsed. Safe for typical connect/publish/play flows but breaks if server sends Date, Strict Array, or Typed Object in responses.
+
+### Cloudflare detection
+
+All three endpoints call `checkIfCloudflare(host)` before connecting. Returns HTTP 403 with `{success: false, isCloudflare: true}` if the target resolves to a Cloudflare IP.
+
+---
+
+## Quick Reference
+
+| Endpoint | Method | Timeout | Port Validated | Unique Features |
+|----------|--------|---------|----------------|-----------------|
+| `/api/rtmp/connect` | POST | 10s | Yes (1–65535) | `connectTime` + `rtt` |
+| `/api/rtmp/publish` | POST | 15s | No | `metaData` → `@setDataFrame`, `serverResponses` (no txId) |
+| `/api/rtmp/play` | POST | 15s | No | SetBufferLength, `streamMetaData` capture, `serverResponses` (with txId) |
+
+## RTMP Message Types Reference
+
+| Type ID | Constant | Purpose |
+|---------|----------|---------|
+| 1 | `MSG_SET_CHUNK_SIZE` | New max chunk payload size |
+| 3 | `MSG_ACK` | Bytes received acknowledgement |
+| 4 | `MSG_USER_CONTROL` | Stream events (SetBufferLength, StreamBegin, etc.) |
+| 5 | `MSG_WINDOW_ACK_SIZE` | Flow control window |
+| 6 | `MSG_SET_PEER_BW` | Peer bandwidth limit |
+| 8 | `MSG_AUDIO` | Audio data |
+| 9 | `MSG_VIDEO` | Video data |
+| 17 | `MSG_AMF3_CMD` | AMF3 command (decoded as AMF0 in this impl) |
+| 18 | `MSG_AMF0_DATA` | AMF0 data (metadata, @setDataFrame) |
+| 20 | `MSG_AMF0_CMD` | AMF0 command (connect, createStream, publish, play, onStatus, _result, _error) |
+
+**AMF3 command bug (type 17):** `MSG_AMF3_CMD` is handled identically to `MSG_AMF0_CMD` — `parseAMF0Response` is called directly on the payload. Per the RTMP spec, AMF3 command messages prepend a `0x00` byte before the AMF0-encoded command name. Without stripping this byte, `amf0Decode` interprets `0x00` as an AMF0 Number marker and consumes the next 8 bytes as an IEEE 754 double, corrupting the entire parse chain. In practice this rarely triggers because most servers only use AMF0 commands.
+
+---
+
+## Missing Protocol Features
+
+### No FCPublish / releaseStream
+
+Some RTMP servers (nginx-rtmp, Wowza, YouTube Live) expect `FCPublish(streamKey)` and/or `releaseStream(streamKey)` commands before `publish`. This implementation skips them. Most servers still accept the publish without these commands, but YouTube Live in particular requires `FCPublish` and will reject the publish without it.
+
+### No acknowledgement messages
+
+The RTMP spec requires the client to send Acknowledgement (type 3) messages after receiving Window-Ack-Size bytes of data. This implementation reads the server's window ack size but never tracks incoming bytes or sends acknowledgements. Servers with strict flow control may stall waiting for an ack that never comes, particularly during `/play` where the server streams audio/video data.
+
+### No Set Chunk Size from client
+
+The client always uses the default 128-byte chunk size for outgoing messages and never sends a Set Chunk Size protocol control message. This is spec-compliant but suboptimal for larger payloads — a typical `connect` command object exceeds 128 bytes and requires multi-chunk framing.
+
+### Publish type fixed to "live"
+
+The `publish` command always sends `"live"` as the publish type. RTMP supports `"record"` (save to server-side file) and `"append"` (append to existing recording), but neither is exposed via the API.
+
+### Play start fixed to -1
+
+The `play` command always sends `start=-1` (live stream, current position). RTMP supports `start=-2` (live first, then recorded if live unavailable) and `start=N` (seek to N seconds into a recording), but the API doesn't expose these.
+
+### connect command omits codec capabilities
+
+The `connect` command object sends only `{app, type, flashVer, tcUrl}`. It does not include `audioCodecs`, `videoCodecs`, `capabilities`, or `videoFunction` fields that a real Flash client would send. Some servers may return reduced capability sets or reject connections without these.
+
+### No ECMA Array encoding
+
+The AMF0 decoder handles ECMA Array (0x08), but the encoder has no `amf0EncodeECMAArray` function. Metadata objects sent via `@setDataFrame` are always encoded as AMF0 Object (0x03). Most servers accept either, but some strictly expect ECMA Array for `onMetaData`.
+
+---
+
+## Local Testing
 
 ```bash
-# Install nginx-rtmp-module
-apt-get install libnginx-mod-rtmp
+# Start nginx-rtmp in Docker
+docker run -d -p 1935:1935 --name rtmp tiangolo/nginx-rtmp
 
-# /etc/nginx/nginx.conf
-rtmp {
-  server {
-    listen 1935;
-    application live {
-      live on;
-      record off;
-    }
-  }
-}
+# Test connectivity against local server (via wrangler dev on port 8787)
+curl -s localhost:8787/api/rtmp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"host.docker.internal","port":1935,"app":"live"}' | jq
 
-# Restart nginx
-systemctl restart nginx
+# Push a test stream with ffmpeg first, then test play
+ffmpeg -re -f lavfi -i testsrc=size=320x240:rate=15 -c:v libx264 -f flv rtmp://localhost/live/test &
+curl -s localhost:8787/api/rtmp/play \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"host.docker.internal","streamName":"test","app":"live"}' | jq
 
-# Stream with ffmpeg
-ffmpeg -re -i video.mp4 \
-  -c:v libx264 -c:a aac \
-  -f flv rtmp://localhost/live/stream
-
-# Play with ffplay
-ffplay rtmp://localhost/live/stream
+# Test publish (will get NetStream.Publish.Start from nginx-rtmp)
+curl -s localhost:8787/api/rtmp/publish \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"host.docker.internal","streamKey":"mykey","app":"live"}' | jq
 ```
-
-### OBS Studio
-
-```
-Stream to custom RTMP server:
-Server: rtmp://localhost/live
-Stream Key: mystream
-```
-
-## Resources
-
-- **RTMP Spec**: [Adobe RTMP Specification](https://www.adobe.com/devnet/rtmp.html)
-- **NGINX RTMP**: [nginx-rtmp-module](https://github.com/arut/nginx-rtmp-module)
-- **OBS Studio**: [Open Broadcaster Software](https://obsproject.com/)
-
-## Video Codecs
-
-| Codec | ID | Description |
-|-------|-----|------------|
-| H.264 | 7 | Most common, good quality |
-| VP8 | - | Open codec, WebM |
-| VP9 | - | Better compression |
-
-## Audio Codecs
-
-| Codec | ID | Description |
-|-------|-----|------------|
-| AAC | 10 | High quality |
-| MP3 | 2 | Legacy |
-| Speex | 11 | Voice |
-
-## Notes
-
-- **Low latency** - 2-5 seconds typical
-- **Flash-based** originally, now widely adopted
-- **Chunked protocol** - configurable chunk size
-- **AMF encoding** - ActionScript Message Format
-- **Handshake** - C0/C1/C2, S0/S1/S2
-- **Complex** - one of the most sophisticated streaming protocols
-- **Stateful** - maintains connection
-- **Replaced by HLS/DASH** for playback, still used for ingest
-- **WebRTC** is replacing for browser-to-browser

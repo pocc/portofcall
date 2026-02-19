@@ -13,7 +13,7 @@
  * 3. Client sends LHLO
  * 4. Server responds with capabilities (250)
  * 5. MAIL FROM / RCPT TO / DATA as per SMTP
- * 6. After DATA terminator (.\r\n), server sends one status per RCPT TO
+ * 6. After DATA terminator (<CRLF>.<CRLF>), server sends one status per RCPT TO
  *
  * Used by: Dovecot, Cyrus IMAP, Postfix (for local delivery)
  */
@@ -38,20 +38,29 @@ interface LMTPSendRequest {
 }
 
 /**
- * Parse an LMTP/SMTP-style response
+ * Parse an LMTP/SMTP-style response.
+ *
+ * Multi-line responses use "code-text" on continuation lines and "code text"
+ * on the final line (RFC 5321 Section 4.2). We find the final line to extract
+ * the status code.
  */
 function parseLMTPResponse(data: string): { code: number; message: string } {
-  const lines = data.trim().split('\n');
+  const trimmed = data.replace(/\r\n$/, '');
+  const lines = trimmed.split('\r\n');
   const lastLine = lines[lines.length - 1];
   const match = lastLine.match(/^(\d{3})\s/);
   return {
     code: match ? parseInt(match[1]) : 0,
-    message: data.trim(),
+    message: trimmed,
   };
 }
 
 /**
- * Read LMTP response with timeout
+ * Read LMTP response with timeout.
+ *
+ * A complete response ends when the last line matches "code SP text CRLF"
+ * (i.e., the final line uses a space after the code, not a hyphen).
+ * Multi-line responses have "code-text" continuation lines.
  */
 async function readLMTPResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -64,8 +73,8 @@ async function readLMTPResponse(
       if (done) break;
       const chunk = new TextDecoder().decode(value);
       response += chunk;
-      // Complete response ends with code + space + text + \r\n
-      if (response.match(/\d{3}\s.*\r\n$/)) {
+      // Complete response: final line has "code SP text CRLF" (anchored to line start)
+      if (/(?:^|\r\n)\d{3}\s[^\r]*\r\n$/.test(response)) {
         break;
       }
     }
@@ -80,7 +89,11 @@ async function readLMTPResponse(
 }
 
 /**
- * Read multiple LMTP responses (one per recipient after DATA)
+ * Read multiple LMTP responses (one per recipient after DATA).
+ *
+ * Each per-recipient response may itself be multi-line (continuation lines
+ * use "code-text", final line uses "code SP text"). We accumulate lines for
+ * each response and only count it complete when we see the final line.
  */
 async function readLMTPMultiResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
@@ -91,21 +104,33 @@ async function readLMTPMultiResponse(
 
   const readPromise = (async () => {
     let buffer = '';
+    let currentResponseLines: string[] = [];
     while (results.length < count) {
       const { done, value } = await reader.read();
       if (done) break;
       buffer += new TextDecoder().decode(value);
 
       // Parse complete lines from buffer
-      while (true) {
+      while (results.length < count) {
         const lineEnd = buffer.indexOf('\r\n');
         if (lineEnd === -1) break;
         const line = buffer.substring(0, lineEnd);
         buffer = buffer.substring(lineEnd + 2);
 
-        const match = line.match(/^(\d{3})\s(.*)/);
-        if (match) {
-          results.push({ code: parseInt(match[1]), message: line });
+        // Final line of a response: "code SP text"
+        const finalMatch = line.match(/^(\d{3})\s(.*)/);
+        // Continuation line: "code-text"
+        const contMatch = line.match(/^(\d{3})-(.*)/);
+
+        if (finalMatch) {
+          currentResponseLines.push(line);
+          results.push({
+            code: parseInt(finalMatch[1]),
+            message: currentResponseLines.join('\r\n'),
+          });
+          currentResponseLines = [];
+        } else if (contMatch) {
+          currentResponseLines.push(line);
         }
       }
     }
@@ -204,7 +229,7 @@ export async function handleLMTPConnect(request: Request): Promise<Response> {
 
         // Parse capabilities from LHLO response
         const capabilities = lhloResp.message
-          .split('\n')
+          .split('\r\n')
           .map(line => line.replace(/^250[-\s]/, '').trim())
           .filter(line => line.length > 0);
 
@@ -352,7 +377,8 @@ export async function handleLMTPSend(request: Request): Promise<Response> {
             code: rcptResp.code,
             message: rcptResp.message,
           });
-          if (rcptResp.code === 250) acceptedCount++;
+          // 250 = OK, 251 = user not local but will forward (both are success)
+          if (rcptResp.code === 250 || rcptResp.code === 251) acceptedCount++;
         }
 
         if (acceptedCount === 0) {
@@ -365,23 +391,31 @@ export async function handleLMTPSend(request: Request): Promise<Response> {
           throw new Error(`DATA command failed: ${dataResp.message}`);
         }
 
-        // Send message content + terminator
+        // Build message content with proper MIME headers
         const emailContent = [
           `From: ${options.from}`,
           `To: ${recipients.join(', ')}`,
           `Subject: ${options.subject}`,
           `Date: ${new Date().toUTCString()}`,
+          `MIME-Version: 1.0`,
+          `Content-Type: text/plain; charset=UTF-8`,
           '',
           options.body,
         ].join('\r\n');
 
-        await writer.write(new TextEncoder().encode(emailContent + '\r\n.\r\n'));
+        // Dot-stuffing (RFC 5321 Section 4.5.2): any line in the message that
+        // begins with a period must be prefixed with an additional period so the
+        // server does not interpret it as the end-of-data marker.
+        // Match start of string OR \r\n followed by a period
+        const dotStuffed = emailContent.replace(/(^|\r\n)\./g, '$1..');
+
+        await writer.write(new TextEncoder().encode(dotStuffed + '\r\n.\r\n'));
 
         // LMTP key difference: read one status per accepted RCPT TO
         const deliveryResults = await readLMTPMultiResponse(reader, acceptedCount, 10000);
 
         const deliveryStatus = deliveryResults.map((result, index) => ({
-          recipient: rcptResults.filter(r => r.code === 250)[index]?.recipient || 'unknown',
+          recipient: rcptResults.filter(r => r.code === 250 || r.code === 251)[index]?.recipient || 'unknown',
           code: result.code,
           message: result.message,
           delivered: result.code >= 200 && result.code < 300,

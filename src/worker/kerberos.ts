@@ -42,19 +42,21 @@ const ETYPE_NAMES: Record<number, string> = {
   24: 'rc4-hmac-exp',
 };
 
-// Kerberos error code names
+// Kerberos error code names (RFC 4120 §7.5.9)
 const ERROR_NAMES: Record<number, string> = {
+  0: 'KDC_ERR_NONE',
   6: 'KDC_ERR_C_PRINCIPAL_UNKNOWN',
   7: 'KDC_ERR_S_PRINCIPAL_UNKNOWN',
   12: 'KDC_ERR_POLICY',
   14: 'KDC_ERR_ETYPE_NOSUPP',
-  18: 'KDC_ERR_CLIENT_REVOKED',
-  24: 'KDC_ERR_PREAUTH_FAILED',
-  25: 'KDC_ERR_PREAUTH_REQUIRED',
+  16: 'KDC_ERR_PADATA_TYPE_NOSUPP',
+  18: 'KDC_ERR_PREAUTH_FAILED',
+  24: 'KDC_ERR_PREAUTH_REQUIRED',
+  25: 'KDC_ERR_SERVER_NOMATCH',
   31: 'KDC_ERR_KEY_EXPIRED',
   41: 'KDC_ERR_PREAUTH_EXPIRED',
   60: 'KRB_AP_ERR_INAPP_CKSUM',
-  68: 'KDC_ERR_WRONG_REALM',
+  68: 'KDC_ERR_CLIENT_REVOKED',
 };
 
 // ASN.1 DER encoding helpers
@@ -538,9 +540,10 @@ async function sendKerberosRequest(
  *
  * Classification:
  *   AS-REP (11)                   → exists, DONT_REQ_PREAUTH set (ASREProastable)
- *   PREAUTH_REQUIRED (25)         → exists, pre-auth required (normal)
- *   PREAUTH_FAILED (24)           → exists, pre-auth failed
- *   CLIENT_REVOKED (18)           → exists, account disabled/revoked
+ *   PREAUTH_REQUIRED (24)         → exists, pre-auth required (normal)
+ *   SERVER_NOMATCH (25)           → exists, pre-auth required (server mismatch)
+ *   PREAUTH_FAILED (18)           → exists, pre-auth failed
+ *   CLIENT_REVOKED (68)           → exists, account disabled/revoked
  *   C_PRINCIPAL_UNKNOWN (6)       → user does NOT exist
  *   KEY_EXPIRED (31)              → exists, password expired
  *
@@ -625,24 +628,24 @@ export async function handleKerberosUserEnum(request: Request): Promise<Response
           let preauthRequired: boolean | null = null;
           let note = name;
 
-          if (code === 25) { // PREAUTH_REQUIRED
+          if (code === 24) { // KDC_ERR_PREAUTH_REQUIRED
             exists = true; preauthRequired = true;
             note = 'User exists, pre-authentication required';
-          } else if (code === 6) { // C_PRINCIPAL_UNKNOWN
+          } else if (code === 6) { // KDC_ERR_C_PRINCIPAL_UNKNOWN
             exists = false; preauthRequired = null;
             note = 'User not found in directory';
-          } else if (code === 24) { // PREAUTH_FAILED
+          } else if (code === 18) { // KDC_ERR_PREAUTH_FAILED
             exists = true; preauthRequired = true;
             note = 'User exists (pre-auth failed without credentials)';
-          } else if (code === 18) { // CLIENT_REVOKED
+          } else if (code === 68) { // KDC_ERR_CLIENT_REVOKED
             exists = true; preauthRequired = null;
             note = 'Account disabled or revoked';
-          } else if (code === 31) { // KEY_EXPIRED
+          } else if (code === 31) { // KDC_ERR_KEY_EXPIRED
             exists = true; preauthRequired = true;
             note = 'User exists, password expired';
-          } else if (code === 68) { // WRONG_REALM
+          } else if (code === 25) { // KDC_ERR_SERVER_NOMATCH
             exists = null; preauthRequired = null;
-            note = 'Wrong realm — user may exist in a different realm';
+            note = 'Server name mismatch — user may exist in a different realm';
           } else {
             exists = true; preauthRequired = null;
             note = `User likely exists (error: ${name})`;

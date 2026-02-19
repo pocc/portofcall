@@ -72,16 +72,32 @@ const TYPE_NAMES: Record<number, string> = {
   [OFPT_GET_CONFIG_REPLY]: 'GET_CONFIG_REPLY',
 };
 
-// OF 1.0 capabilities bitmask
+// Capabilities bitmask — shared bits across OF 1.0 and OF 1.3+
 const OFPC_FLOW_STATS = 1 << 0;
 const OFPC_TABLE_STATS = 1 << 1;
 const OFPC_PORT_STATS = 1 << 2;
-const OFPC_GROUP_STATS = 1 << 3;
+// Bit 3: OFPC_STP in OF 1.0, OFPC_GROUP_STATS in OF 1.3+
+const OFPC_STP = 1 << 3;           // OF 1.0 only: 802.1d spanning tree
+const OFPC_GROUP_STATS = 1 << 3;   // OF 1.3+ only
 const OFPC_IP_REASM = 1 << 5;
 const OFPC_QUEUE_STATS = 1 << 6;
-const OFPC_PORT_BLOCKED = 1 << 8;
+// Bit 7: OFPC_ARP_MATCH_IP in OF 1.0 (not present in 1.3+)
+const OFPC_ARP_MATCH_IP = 1 << 7;  // OF 1.0 only
+const OFPC_PORT_BLOCKED = 1 << 8;  // OF 1.3+ only
 
-const CAPABILITY_FLAGS: Array<{ mask: number; name: string }> = [
+// OF 1.0 capability flags (bit 3 = STP, bit 7 = ARP_MATCH_IP)
+const CAPABILITY_FLAGS_10: Array<{ mask: number; name: string }> = [
+  { mask: OFPC_FLOW_STATS, name: 'FLOW_STATS' },
+  { mask: OFPC_TABLE_STATS, name: 'TABLE_STATS' },
+  { mask: OFPC_PORT_STATS, name: 'PORT_STATS' },
+  { mask: OFPC_STP, name: 'STP' },
+  { mask: OFPC_IP_REASM, name: 'IP_REASM' },
+  { mask: OFPC_QUEUE_STATS, name: 'QUEUE_STATS' },
+  { mask: OFPC_ARP_MATCH_IP, name: 'ARP_MATCH_IP' },
+];
+
+// OF 1.3+ capability flags (bit 3 = GROUP_STATS, bit 8 = PORT_BLOCKED)
+const CAPABILITY_FLAGS_13: Array<{ mask: number; name: string }> = [
   { mask: OFPC_FLOW_STATS, name: 'FLOW_STATS' },
   { mask: OFPC_TABLE_STATS, name: 'TABLE_STATS' },
   { mask: OFPC_PORT_STATS, name: 'PORT_STATS' },
@@ -122,8 +138,8 @@ function buildMessage(version: number, type: number, xid: number, payload?: Uint
 
   msg[0] = version;
   msg[1] = type;
-  view.setUint16(2, totalLen);
-  view.setUint32(4, xid);
+  view.setUint16(2, totalLen, false); // big-endian
+  view.setUint32(4, xid, false); // big-endian
 
   if (payload) {
     msg.set(payload, headerLen);
@@ -163,8 +179,8 @@ function parseMessage(data: Uint8Array): {
   const view = new DataView(data.buffer, data.byteOffset, data.length);
   const version = data[0];
   const type = data[1];
-  const length = view.getUint16(2);
-  const xid = view.getUint32(4);
+  const length = view.getUint16(2, false); // big-endian
+  const xid = view.getUint32(4, false); // big-endian
 
   if (data.length < length) return null;
 
@@ -185,11 +201,11 @@ function parseMessage(data: Uint8Array): {
     const pView = new DataView(payload.buffer, payload.byteOffset, payload.length);
 
     // Datapath ID is 8 bytes (big-endian)
-    const dpHigh = pView.getUint32(0);
-    const dpLow = pView.getUint32(4);
+    const dpHigh = pView.getUint32(0, false);
+    const dpLow = pView.getUint32(4, false);
     result.datapathId = dpHigh.toString(16).padStart(8, '0') + ':' + dpLow.toString(16).padStart(8, '0');
 
-    result.nBuffers = pView.getUint32(8);
+    result.nBuffers = pView.getUint32(8, false);
     result.nTables = payload[12];
 
     if (version >= OFP_VERSION_1_3) {
@@ -197,9 +213,11 @@ function parseMessage(data: Uint8Array): {
     }
 
     // Capabilities at offset 16 (4 bytes)
-    result.capabilities = pView.getUint32(16);
+    result.capabilities = pView.getUint32(16, false);
     result.capabilityNames = [];
-    for (const { mask, name } of CAPABILITY_FLAGS) {
+    // Use version-specific capability flags
+    const capabilityFlags = version >= OFP_VERSION_1_3 ? CAPABILITY_FLAGS_13 : CAPABILITY_FLAGS_10;
+    for (const { mask, name } of capabilityFlags) {
       if ((result.capabilities & mask) !== 0) {
         result.capabilityNames.push(name);
       }
@@ -209,16 +227,16 @@ function parseMessage(data: Uint8Array): {
   // Parse GET_CONFIG_REPLY
   if (type === OFPT_GET_CONFIG_REPLY && payload.length >= 4) {
     const pView = new DataView(payload.buffer, payload.byteOffset, payload.length);
-    result.flags = pView.getUint16(0);
-    result.missSendLen = pView.getUint16(2);
+    result.flags = pView.getUint16(0, false);
+    result.missSendLen = pView.getUint16(2, false);
   }
 
   // Parse ERROR
   if (type === OFPT_ERROR && payload.length >= 4) {
     const pView = new DataView(payload.buffer, payload.byteOffset, payload.length);
-    result.errorType = pView.getUint16(0);
+    result.errorType = pView.getUint16(0, false);
     result.errorTypeName = ERROR_TYPE_NAMES[result.errorType] || `UNKNOWN(${result.errorType})`;
-    result.errorCode = pView.getUint16(2);
+    result.errorCode = pView.getUint16(2, false);
   }
 
   return result;
@@ -250,7 +268,8 @@ async function readMessage(
 
     // Check if we have a complete message (need at least 8 bytes for header)
     if (buffer.length >= 8) {
-      const msgLen = (buffer[2] << 8) | buffer[3];
+      const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.length);
+      const msgLen = view.getUint16(2, false); // big-endian
       if (buffer.length >= msgLen) {
         return buffer.slice(0, msgLen);
       }
@@ -316,7 +335,12 @@ export async function handleOpenFlowProbe(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
@@ -520,7 +544,12 @@ export async function handleOpenFlowEcho(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -690,7 +719,12 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } catch (err) {
+      socket.close();
+      throw err;
+    }
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -754,24 +788,24 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
         // OF 1.0: 2 (type) + 2 (flags) + 40 (match) + 1 (table) + 1 (pad) + 2 (out_port)
         statsReqPayload = new Uint8Array(48);
         const sv = new DataView(statsReqPayload.buffer);
-        sv.setUint16(0, statsBodyType);
-        sv.setUint16(2, 0); // flags
+        sv.setUint16(0, statsBodyType, false); // big-endian
+        sv.setUint16(2, 0, false); // flags
         // Match: wildcards = 0x003fffff (all wildcards) at offset 4
-        sv.setUint32(4, 0x003fffff); // all wildcards
+        sv.setUint32(4, 0x003fffff, false); // all wildcards, big-endian
         statsReqPayload[44] = 0xff; // table_id = 0xff (all tables)
-        sv.setUint16(46, 0xffff);   // out_port = OFPP_NONE
+        sv.setUint16(46, 0xffff, false);   // out_port = OFPP_NONE, big-endian
       } else {
         // OF 1.3: 2 (type) + 2 (flags) + 4 (reserved) + OXM match (minimal: 4 bytes type+len)
         statsReqPayload = new Uint8Array(16);
         const sv = new DataView(statsReqPayload.buffer);
-        sv.setUint16(0, statsBodyType);
-        sv.setUint16(2, 0); // flags
+        sv.setUint16(0, statsBodyType, false); // big-endian
+        sv.setUint16(2, 0, false); // flags
         // table_id = 0xff (all tables) at offset 4
         statsReqPayload[4] = 0xff;
         // out_port = OFPP_ANY = 0xffffffff at offset 8
-        sv.setUint32(8, 0xffffffff);
+        sv.setUint32(8, 0xffffffff, false); // big-endian
         // out_group = OFPG_ANY = 0xffffffff at offset 12 (pad)
-        sv.setUint32(12, 0xffffffff);
+        sv.setUint32(12, 0xffffffff, false); // big-endian
         // Minimal OXM match would follow — omit for now (empty match = match all)
       }
     } else if (statsType === 'port') {
@@ -779,22 +813,22 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
       if (negotiatedVersion <= OFP_VERSION_1_0) {
         statsReqPayload = new Uint8Array(8);
         const sv = new DataView(statsReqPayload.buffer);
-        sv.setUint16(0, statsBodyType);
-        sv.setUint16(2, 0); // flags
-        sv.setUint16(4, 0xffff); // OFPP_NONE = all ports (OF 1.0)
+        sv.setUint16(0, statsBodyType, false); // big-endian
+        sv.setUint16(2, 0, false); // flags
+        sv.setUint16(4, 0xffff, false); // OFPP_NONE = all ports (OF 1.0), big-endian
       } else {
         statsReqPayload = new Uint8Array(8);
         const sv = new DataView(statsReqPayload.buffer);
-        sv.setUint16(0, statsBodyType);
-        sv.setUint16(2, 0); // flags
-        sv.setUint32(4, 0xffffffff); // OFPP_ANY = all ports (OF 1.3)
+        sv.setUint16(0, statsBodyType, false); // big-endian
+        sv.setUint16(2, 0, false); // flags
+        sv.setUint32(4, 0xffffffff, false); // OFPP_ANY = all ports (OF 1.3), big-endian
       }
     } else {
       // DESC and TABLE require only the 2-byte type + 2-byte flags header (no body)
       statsReqPayload = new Uint8Array(4);
       const sv = new DataView(statsReqPayload.buffer);
-      sv.setUint16(0, statsBodyType);
-      sv.setUint16(2, 0); // flags
+      sv.setUint16(0, statsBodyType, false); // big-endian
+      sv.setUint16(2, 0, false); // flags
     }
 
     // Choose message type based on negotiated version
@@ -901,29 +935,29 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
           // OF 1.0 port stats: port_no(2) + pad(6) + rx_packets(8) + tx_packets(8) + ...
           const ps = new DataView(statsBody.buffer, statsBody.byteOffset + offset, portSize);
           ports.push({
-            portNo: ps.getUint16(0),
-            rxPackets: Number(ps.getBigUint64(8)),
-            txPackets: Number(ps.getBigUint64(16)),
-            rxBytes: Number(ps.getBigUint64(24)),
-            txBytes: Number(ps.getBigUint64(32)),
-            rxDropped: Number(ps.getBigUint64(40)),
-            txDropped: Number(ps.getBigUint64(48)),
-            rxErrors: Number(ps.getBigUint64(56)),
-            txErrors: Number(ps.getBigUint64(64)),
+            portNo: ps.getUint16(0, false), // big-endian
+            rxPackets: Number(ps.getBigUint64(8, false)), // big-endian
+            txPackets: Number(ps.getBigUint64(16, false)),
+            rxBytes: Number(ps.getBigUint64(24, false)),
+            txBytes: Number(ps.getBigUint64(32, false)),
+            rxDropped: Number(ps.getBigUint64(40, false)),
+            txDropped: Number(ps.getBigUint64(48, false)),
+            rxErrors: Number(ps.getBigUint64(56, false)),
+            txErrors: Number(ps.getBigUint64(64, false)),
           });
         } else {
           // OF 1.3 port stats: port_no(4) + pad(4) + rx_packets(8) + tx_packets(8) + ...
           const ps = new DataView(statsBody.buffer, statsBody.byteOffset + offset, portSize);
           ports.push({
-            portNo: ps.getUint32(0),
-            rxPackets: Number(ps.getBigUint64(8)),
-            txPackets: Number(ps.getBigUint64(16)),
-            rxBytes: Number(ps.getBigUint64(24)),
-            txBytes: Number(ps.getBigUint64(32)),
-            rxDropped: Number(ps.getBigUint64(40)),
-            txDropped: Number(ps.getBigUint64(48)),
-            rxErrors: Number(ps.getBigUint64(56)),
-            txErrors: Number(ps.getBigUint64(64)),
+            portNo: ps.getUint32(0, false), // big-endian
+            rxPackets: Number(ps.getBigUint64(8, false)), // big-endian
+            txPackets: Number(ps.getBigUint64(16, false)),
+            rxBytes: Number(ps.getBigUint64(24, false)),
+            txBytes: Number(ps.getBigUint64(32, false)),
+            rxDropped: Number(ps.getBigUint64(40, false)),
+            txDropped: Number(ps.getBigUint64(48, false)),
+            rxErrors: Number(ps.getBigUint64(56, false)),
+            txErrors: Number(ps.getBigUint64(64, false)),
           });
         }
         offset += portSize;
@@ -948,19 +982,19 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
           tables.push({
             tableId: ts.getUint8(0),
             name: tableName,
-            maxEntries: ts.getUint32(40),
-            activeCount: ts.getUint32(44),
-            lookups: Number(ts.getBigUint64(48)),
-            matched: Number(ts.getBigUint64(56)),
+            maxEntries: ts.getUint32(40, false), // big-endian
+            activeCount: ts.getUint32(44, false),
+            lookups: Number(ts.getBigUint64(48, false)),
+            matched: Number(ts.getBigUint64(56, false)),
           });
         } else {
           // OF 1.3: table_id(1) + pad(3) + active_count(4) + lookup_count(8) + matched_count(8)
           const ts = new DataView(statsBody.buffer, statsBody.byteOffset + offset, tableSize);
           tables.push({
             tableId: ts.getUint8(0),
-            activeCount: ts.getUint32(4),
-            lookups: Number(ts.getBigUint64(8)),
-            matched: Number(ts.getBigUint64(16)),
+            activeCount: ts.getUint32(4, false), // big-endian
+            lookups: Number(ts.getBigUint64(8, false)),
+            matched: Number(ts.getBigUint64(16, false)),
           });
         }
         offset += tableSize;
@@ -978,16 +1012,16 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
         let offset = 0;
         while (offset + 4 <= statsBody.length) {
           const fs = new DataView(statsBody.buffer, statsBody.byteOffset + offset, Math.min(88, statsBody.length - offset));
-          const flowLen = fs.getUint16(0);
+          const flowLen = fs.getUint16(0, false); // big-endian
           if (flowLen < 88 || offset + flowLen > statsBody.length) break;
           flows.push({
             tableId: statsBody[offset + 2],
-            priority: fs.getUint16(58),
-            idleTimeout: fs.getUint16(60),
-            hardTimeout: fs.getUint16(62),
-            cookie: `0x${fs.getUint32(68).toString(16).padStart(8, '0')}${fs.getUint32(72).toString(16).padStart(8, '0')}`,
-            packetCount: Number(fs.getBigUint64(76)),
-            byteCount: Number(fs.getBigUint64(84)),
+            priority: fs.getUint16(58, false),
+            idleTimeout: fs.getUint16(60, false),
+            hardTimeout: fs.getUint16(62, false),
+            cookie: `0x${fs.getUint32(68, false).toString(16).padStart(8, '0')}${fs.getUint32(72, false).toString(16).padStart(8, '0')}`,
+            packetCount: Number(fs.getBigUint64(76, false)),
+            byteCount: Number(fs.getBigUint64(84, false)),
           });
           offset += flowLen;
         }
@@ -998,17 +1032,17 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
         let offset = 0;
         while (offset + 56 <= statsBody.length) {
           const fs = new DataView(statsBody.buffer, statsBody.byteOffset + offset, Math.min(56, statsBody.length - offset));
-          const flowLen = fs.getUint16(0);
+          const flowLen = fs.getUint16(0, false); // big-endian
           if (flowLen < 56 || offset + flowLen > statsBody.length) break;
           flows.push({
             tableId: statsBody[offset + 2],
-            priority: fs.getUint16(14),
-            idleTimeout: fs.getUint16(16),
-            hardTimeout: fs.getUint16(18),
-            flags: fs.getUint16(20),
-            cookie: `0x${fs.getUint32(24).toString(16).padStart(8, '0')}${fs.getUint32(28).toString(16).padStart(8, '0')}`,
-            packetCount: Number(fs.getBigUint64(32)),
-            byteCount: Number(fs.getBigUint64(40)),
+            priority: fs.getUint16(14, false),
+            idleTimeout: fs.getUint16(16, false),
+            hardTimeout: fs.getUint16(18, false),
+            flags: fs.getUint16(20, false),
+            cookie: `0x${fs.getUint32(24, false).toString(16).padStart(8, '0')}${fs.getUint32(28, false).toString(16).padStart(8, '0')}`,
+            packetCount: Number(fs.getBigUint64(32, false)),
+            byteCount: Number(fs.getBigUint64(40, false)),
           });
           offset += flowLen;
         }

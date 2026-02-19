@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface SSHClientProps {
   onBack: () => void;
@@ -159,8 +161,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
       : 'bg-slate-500';
 
   return (
-    <div className="max-w-6xl mx-auto">
-      {/* Header */}
+    <div className="max-w-6xl mx-auto">      {/* Header */}
       <div className="mb-6 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <button onClick={onBack} className="text-white hover:text-blue-400 transition-colors">
@@ -168,6 +169,8 @@ export default function SSHClient({ onBack }: SSHClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">SSH Client</h1>
         </div>
+
+      <ApiExamples examples={apiExamples.SSH || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} />

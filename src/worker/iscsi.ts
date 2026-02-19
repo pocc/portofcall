@@ -38,7 +38,7 @@ interface ISCSIRequest {
 /**
  * Build an iSCSI Login Request PDU for SendTargets discovery
  */
-function buildLoginRequest(initiatorName: string, cmdSN: number): Uint8Array {
+function buildLoginRequest(initiatorName: string, cmdSN: number, expStatSN: number = 0): Uint8Array {
   // Key-value pairs for discovery session
   const kvPairs = [
     `InitiatorName=${initiatorName}`,
@@ -112,11 +112,13 @@ function buildLoginRequest(initiatorName: string, cmdSN: number): Uint8Array {
   bhs[26] = (cmdSN >> 8) & 0xff;
   bhs[27] = cmdSN & 0xff;
 
-  // Bytes 28-31: ExpStatSN = 0
-  bhs[28] = 0x00;
-  bhs[29] = 0x00;
-  bhs[30] = 0x00;
-  bhs[31] = 0x00;
+  // Bytes 28-31: ExpStatSN
+  // Login phase (RFC 7143 §11.12.3): echo StatSN from last Login Response (0 for first request)
+  // FullFeature phase: StatSN + 1 from last response
+  bhs[28] = (expStatSN >> 24) & 0xff;
+  bhs[29] = (expStatSN >> 16) & 0xff;
+  bhs[30] = (expStatSN >> 8) & 0xff;
+  bhs[31] = expStatSN & 0xff;
 
   // Combine BHS + padded data
   const pdu = new Uint8Array(48 + paddedLen);
@@ -332,6 +334,7 @@ interface ISCSILoginRequest {
 function buildLoginRequestAuth(
   initiatorName: string,
   cmdSN: number,
+  expStatSN: number,
   options: {
     chapResponse?: { chapN: string; chapR: string };
     offerChap?: boolean;
@@ -411,8 +414,12 @@ function buildLoginRequestAuth(
   bhs[26] = (cmdSN >> 8) & 0xff;
   bhs[27] = cmdSN & 0xff;
 
-  // ExpStatSN = 0
-  bhs[28] = 0x00; bhs[29] = 0x00; bhs[30] = 0x00; bhs[31] = 0x00;
+  // ExpStatSN
+  // Login phase (RFC 7143 §11.12.3): echo StatSN from last Login Response (0 for first request)
+  bhs[28] = (expStatSN >> 24) & 0xff;
+  bhs[29] = (expStatSN >> 16) & 0xff;
+  bhs[30] = (expStatSN >> 8) & 0xff;
+  bhs[31] = expStatSN & 0xff;
 
   const pdu = new Uint8Array(48 + paddedLen);
   pdu.set(bhs);
@@ -560,13 +567,19 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
       try {
         const useChap = !!(username && password);
 
+        // Track the server's StatSN so we can set ExpStatSN correctly.
+        // RFC 7143 §11.12.3: Login Requests use ExpStatSN = StatSN from last Login Response.
+        // First Login Request uses 0 (no prior response).
+        // FullFeature phase (Text Requests etc.) uses ExpStatSN = StatSN + 1.
+        let lastStatSN = 0; // 0 for the first Login Request (no prior response)
+
         // ------------------------------------------------------------------
         // Step 1: Send initial Login Request
         // ------------------------------------------------------------------
         if (useChap) {
           // Security negotiation stage: offer CHAP,None
           // CSG=0 (SecurityNeg), NSG=1 (LoginOp), T=0 (not transitioning yet)
-          const loginReq = buildLoginRequestAuth(initiatorName, 1, {
+          const loginReq = buildLoginRequestAuth(initiatorName, 1, 0, {
             offerChap: true,
             csg: 0,
             nsg: 1,
@@ -576,7 +589,7 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
         } else {
           // No-auth: go straight to LoginOperational
           // CSG=1 (LoginOp), NSG=3 (FullFeature), T=1
-          const loginReq = buildLoginRequestAuth(initiatorName, 1, {
+          const loginReq = buildLoginRequestAuth(initiatorName, 1, 0, {
             csg: 1,
             nsg: 3,
             transit: true,
@@ -594,6 +607,7 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
         }
 
         let loginResp = parseLoginResponse(responseData);
+        lastStatSN = loginResp.statSN;
 
         // Check if server chose CHAP
         let chapUsed = false;
@@ -647,7 +661,8 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
           const chapR = '0x' + hexString(chapResponseBytes);
 
           // Send CHAP response: CSG=0, NSG=1, T=1 (transit to LoginOp)
-          const chapRespPDU = buildLoginRequestAuth(initiatorName, 2, {
+          // RFC 7143 §11.12.3: ExpStatSN = StatSN from the last Login Response
+          const chapRespPDU = buildLoginRequestAuth(initiatorName, 2, lastStatSN, {
             chapResponse: { chapN: username!, chapR },
             csg: 0,
             nsg: 1,
@@ -663,6 +678,7 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
           }
           responseData = chapRespData;
           loginResp = parseLoginResponse(responseData);
+          lastStatSN = loginResp.statSN;
           chapUsed = true;
         }
 
@@ -692,7 +708,8 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
           // Send LoginOperational phase PDU to complete login
           if (!loginResp.isTransit || loginResp.nsg !== 3) {
             // Need to send another login PDU to transition to FullFeature
-            const loginOp = buildLoginRequestAuth(initiatorName, 3, {
+            // RFC 7143 §11.12.3: ExpStatSN = StatSN from the last Login Response
+            const loginOp = buildLoginRequestAuth(initiatorName, 3, lastStatSN, {
               csg: 1,
               nsg: 3,
               transit: true,
@@ -709,11 +726,12 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
                   error: 'Failed to transition to FullFeature phase',
                 };
               }
+              lastStatSN = lResp.statSN;
             }
           }
 
           // Now send SendTargets text request
-          const textReq = buildTextRequest(4, loginResp.statSN + 1);
+          const textReq = buildTextRequest(4, lastStatSN + 1);
           await writer.write(textReq);
 
           const textData = await readISCSIPDU(reader);

@@ -23,7 +23,7 @@ export class GaduGaduClient {
 	constructor(config: GaduGaduConfig) {
 		// Validate UIN
 		if (!validateUIN(config.uin)) {
-			throw new Error('Invalid UIN format (must be 1-99999999)');
+			throw new Error('Invalid UIN format (must be a positive integer up to 4294967295)');
 		}
 
 		this.config = {
@@ -80,7 +80,7 @@ export class GaduGaduClient {
 				throw new Error('Invalid GG_WELCOME packet: payload too short');
 			}
 
-			const seed = new DataView(welcomePacket.payload.buffer).getUint32(0, true);
+			const seed = new DataView(welcomePacket.payload.buffer, welcomePacket.payload.byteOffset, welcomePacket.payload.byteLength).getUint32(0, true);
 
 			// Step 3: Build and send GG_LOGIN80 packet
 			const loginStart = Date.now();

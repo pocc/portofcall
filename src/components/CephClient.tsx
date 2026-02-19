@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -79,10 +81,11 @@ export default function CephClient({ onBack }: { onBack: () => void }) {
           <div>
             <h1 className="text-2xl font-bold text-white">Ceph Monitor</h1>
             <p className="text-slate-400 text-sm">MSGR Protocol — Port 6789</p>
-          </div>
-        </div>
+          </div>        </div>
+
       </div>
 
+      <ApiExamples examples={apiExamples.Ceph || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 mb-6">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

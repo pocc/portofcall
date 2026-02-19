@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface MPDClientProps {
   onBack: () => void;
@@ -176,6 +178,7 @@ export default function MPDClient({ onBack }: MPDClientProps) {
 
   return (
     <ProtocolClientLayout title="MPD Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.MPD || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="MPD Server" />
 

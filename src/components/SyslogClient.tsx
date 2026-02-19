@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface SyslogClientProps {
   onBack: () => void;
@@ -122,6 +124,7 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
 
   return (
     <ProtocolClientLayout title="Syslog Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.Syslog || []} />
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Configuration & Send Panel */}
         <div className="lg:col-span-2">

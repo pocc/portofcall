@@ -280,6 +280,11 @@ export async function handleL2TPConnect(request: Request): Promise<Response> {
           type: AVPType.FramingCapabilities,
           value: Buffer.from([0x00, 0x00, 0x00, 0x03]),
         },
+        // Bearer Capabilities (analog + digital) — MUST be present per RFC 2661 Section 4.1
+        {
+          type: AVPType.BearerCapabilities,
+          value: Buffer.from([0x00, 0x00, 0x00, 0x03]),
+        },
         // Assigned Tunnel ID
         {
           type: AVPType.AssignedTunnelID,
@@ -295,7 +300,7 @@ export async function handleL2TPConnect(request: Request): Promise<Response> {
       // Fix the Assigned Tunnel ID AVP value
       const tunnelIdBuffer = Buffer.allocUnsafe(2);
       tunnelIdBuffer.writeUInt16BE(localTunnelId, 0);
-      avps[4].value = tunnelIdBuffer;
+      avps[5].value = tunnelIdBuffer;
 
       const sccrq = buildL2TPMessage(
         L2TPMessageType.SCCRQ,
@@ -606,7 +611,8 @@ export async function handleL2TPSession(request: Request): Promise<Response> {
         const vendorId = avpDv.getUint16(2, false);
         const attrType = avpDv.getUint16(4, false);
         if (vendorId === 0 && avpLen > 6) {
-          const val = data.slice(data.byteOffset + off + 6, data.byteOffset + off + avpLen);
+          // Uint8Array.slice() takes indices relative to the typed array, not the buffer
+          const val = data.slice(off + 6, off + avpLen);
           if (attrType === 0  && val.length >= 2) msgType           = new DataView(val.buffer, val.byteOffset).getUint16(0, false);
           if (attrType === 9  && val.length >= 2) assignedTunnelId  = new DataView(val.buffer, val.byteOffset).getUint16(0, false);
           if (attrType === 14 && val.length >= 2) assignedSessionId = new DataView(val.buffer, val.byteOffset).getUint16(0, false);
@@ -659,8 +665,9 @@ export async function handleL2TPSession(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       let ns = 0;
-      const localTunnelId = 1;
-      const localSessionId = 1;
+      // Use random IDs to avoid collisions; 0 is reserved per RFC 2661 Section 3.1
+      const localTunnelId = Math.floor(Math.random() * 65534) + 1;
+      const localSessionId = Math.floor(Math.random() * 65534) + 1;
 
       try {
         // ── 1. SCCRQ ───────────────────────────────────────────────────────
@@ -682,13 +689,25 @@ export async function handleL2TPSession(request: Request): Promise<Response> {
         }
         const peerTunnelId = sccrp.assignedTunnelId ?? sccrp.tunnelId;
 
+        // Track the highest Ns received from the peer so Nr stays correct
+        let peerNs = sccrp.ns;
+
         // ── 3. SCCCN ───────────────────────────────────────────────────────
-        await writer.write(buildControl(peerTunnelId, 0, ns++, sccrp.ns + 1, [
+        await writer.write(buildControl(peerTunnelId, 0, ns++, peerNs + 1, [
           avp(0, u16(3)),  // MessageType = SCCCN (3)
         ]));
 
+        // The peer may send a ZLB ACK for SCCCN — try to read it so we keep Nr in sync
+        try {
+          const ackData = await readMsg(reader, 2000);
+          const ack = parseControl(ackData);
+          if (ack) peerNs = ack.ns;
+        } catch {
+          // No ZLB ACK within 2s — proceed; some implementations skip it
+        }
+
         // ── 4. ICRQ (Incoming-Call-Request) ────────────────────────────────
-        await writer.write(buildControl(peerTunnelId, 0, ns++, sccrp.ns + 1, [
+        await writer.write(buildControl(peerTunnelId, 0, ns++, peerNs + 1, [
           avp(0,  u16(10)),             // MessageType = ICRQ (10)
           avp(14, u16(localSessionId)), // AssignedSessionID
           avp(15, u32(1)),              // CallSerialNumber
@@ -704,10 +723,11 @@ export async function handleL2TPSession(request: Request): Promise<Response> {
         if (!icrp || icrp.msgType !== 11) {
           throw new Error(`Expected ICRP (11), got msgType=${icrp?.msgType ?? '?'}`);
         }
+        peerNs = icrp.ns;
         const peerSessionId = icrp.assignedSessionId ?? icrp.sessionId;
 
         // ── 6. ICCN ────────────────────────────────────────────────────────
-        await writer.write(buildControl(peerTunnelId, peerSessionId, ns++, icrp.ns + 1, [
+        await writer.write(buildControl(peerTunnelId, peerSessionId, ns++, peerNs + 1, [
           avp(0,  u16(12)),         // MessageType = ICCN (12)
           avp(19, u32(0x00000001)), // FramingType: async
           avp(24, u32(115200)),     // TxConnectSpeedBPS
@@ -775,13 +795,16 @@ export async function handleL2TPStartControl(request: Request): Promise<Response
       const writer = socket.writable.getWriter();
       try {
         // Build SCCRQ with required AVPs
+        const localTunId = Math.floor(Math.random() * 65534) + 1;
+        const tunnelIdBuf = Buffer.allocUnsafe(2);
+        tunnelIdBuf.writeUInt16BE(localTunId, 0);
         const avps = [
           { type: AVPType.MessageType,          value: Buffer.from([0x00, L2TPMessageType.SCCRQ]) },
           { type: AVPType.ProtocolVersion,      value: Buffer.from([0x01, 0x00]) },
           { type: AVPType.HostName,             value: Buffer.from('cloudflare-worker', 'ascii') },
           { type: AVPType.FramingCapabilities,  value: Buffer.from([0x00, 0x00, 0x00, 0x03]) },
           { type: AVPType.BearerCapabilities,   value: Buffer.from([0x00, 0x00, 0x00, 0x03]) },
-          { type: AVPType.AssignedTunnelID,     value: Buffer.from([0x00, 0x01]) },
+          { type: AVPType.AssignedTunnelID,     value: tunnelIdBuf },
         ];
         const sccrq = buildL2TPMessage(L2TPMessageType.SCCRQ, 0, 0, 0, 0, avps);
         await writer.write(sccrq);

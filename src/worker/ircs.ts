@@ -116,7 +116,7 @@ export async function handleIRCSConnect(request: Request): Promise<Response> {
               // Auto-respond to PING during registration
               if (msg.command === 'PING') {
                 const pongWriter = socket.writable.getWriter();
-                await pongWriter.write(encoder.encode(`PONG ${msg.params[0] || ''}\r\n`));
+                await pongWriter.write(encoder.encode(`PONG :${msg.params[0] || ''}\r\n`));
                 pongWriter.releaseLock();
               }
 
@@ -426,7 +426,7 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
               if (msg.command === 'PING') {
                 const pongWriter = socket.writable.getWriter();
                 await pongWriter.write(
-                  encoder.encode(`PONG ${msg.params[0] || ''}\r\n`)
+                  encoder.encode(`PONG :${msg.params[0] || ''}\r\n`)
                 );
                 pongWriter.releaseLock();
               }
@@ -441,7 +441,7 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
                   const hasSasl = availCaps.some(c => c === 'sasl' || c.startsWith('sasl='));
                   if (saslUsername && saslPassword && hasSasl) {
                     const w = socket.writable.getWriter();
-                    await w.write(encoder.encode('CAP REQ :sasl\r\n'));
+                    await w.write(encoder.encode('CAP REQ sasl\r\n'));
                     w.releaseLock();
                     saslState = 'cap_req';
                   } else {

@@ -1,699 +1,396 @@
-# Remote Desktop Protocol (RDP) Implementation Plan
+# RDP — Remote Desktop Protocol (Port 3389)
 
-## Overview
+Power-user reference for `src/worker/rdp.ts` (842 lines).
 
-**Protocol:** Remote Desktop Protocol (RDP)
-**Port:** 3389 (TCP)
-**Specification:** [MS-RDPBCGR](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/)
-**Complexity:** Very High
-**Purpose:** Remote desktop access and control
+Three endpoints, all POST. No authentication or graphical session — this is an X.224/CredSSP probe, not an RDP client.
 
-RDP provides **remote desktop functionality** - full graphical remote control of Windows systems, multi-channel virtual connections, clipboard sharing, drive redirection, and multimedia streaming.
+---
 
-### Use Cases
-- Remote Windows desktop access
-- System administration
-- Remote support and troubleshooting
-- Virtual desktop infrastructure (VDI)
-- Remote application delivery
-- Windows server management
+## Endpoints
 
-## Protocol Specification
+| # | Endpoint | Purpose | Default port | Default timeout | Cloudflare check | Port validation |
+|---|----------|---------|-------------|----------------|------------------|-----------------|
+| 1 | `POST /api/rdp/connect` | X.224 handshake + security detection | 3389 | 10 000 ms | Yes | Yes (1–65535) |
+| 2 | `POST /api/rdp/negotiate` | X.224 handshake with configurable protocol bitmask | 3389 | 10 000 ms | Yes | Yes (1–65535) |
+| 3 | `POST /api/rdp/nla-probe` | TLS upgrade + CredSSP + NTLM Type 2 extraction | 3389 | 12 000 ms | Yes | **No** |
 
-### Connection Sequence
+---
 
-```
-1. X.224 Connection Request
-2. X.224 Connection Confirm
-3. MCS Connect Initial (with GCC Conference Create Request)
-4. MCS Connect Response (with GCC Conference Create Response)
-5. MCS Erect Domain Request
-6. MCS Attach User Request
-7. MCS Attach User Confirm
-8. MCS Channel Join Requests (for each channel)
-9. Security Exchange (encryption setup)
-10. Client Info (credentials)
-11. Licensing
-12. Capabilities Exchange
-13. Connection Finalization
-14. Graphics/Input data exchange
+## 1. POST /api/rdp/connect
+
+Basic connectivity test. Sends X.224 CR requesting all protocols (`SSL | HYBRID | RDSTLS` = `0x0B`) and parses the CC response.
+
+### Request
+
+```json
+{ "host": "10.0.0.5", "port": 3389, "timeout": 10000 }
 ```
 
-### X.224 Connection Request
+All fields except `host` are optional.
 
-```
-TPKT Header:
-  version: 3
-  reserved: 0
-  length: [packet length]
+### Response (success)
 
-X.224 COTP:
-  length: 0x0E
-  type: 0xE0 (CR - Connection Request)
-  dst-ref: 0x0000
-  src-ref: 0x0000
-  class: 0x00
-
-RDP Negotiation Request:
-  type: TYPE_RDP_NEG_REQ (0x01)
-  flags: 0x00
-  length: 0x0008
-  requestedProtocols: PROTOCOL_RDP (0x00000000)
-                    | PROTOCOL_SSL (0x00000001)
-                    | PROTOCOL_HYBRID (0x00000002)
-```
-
-### MCS Connect Initial PDU
-
-Contains GCC Conference Create Request with:
-- Client core data
-- Client security data
-- Client network data
-- Client cluster data
-
-### Encryption
-
-RDP supports multiple encryption levels:
-- **Standard RDP Security** - RC4, RSA
-- **TLS/SSL** - Modern RDP uses TLS 1.2+
-- **CredSSP** - Network Level Authentication (NLA)
-
-## Worker Implementation
-
-```typescript
-// src/worker/protocols/rdp/client.ts
-
-import { connect } from 'cloudflare:sockets';
-
-export interface RDPConfig {
-  host: string;
-  port?: number;
-  username?: string;
-  password?: string;
-  domain?: string;
-  width?: number;
-  height?: number;
-  colorDepth?: number;
-  useNLA?: boolean; // Network Level Authentication
+```json
+{
+  "success": true,
+  "host": "10.0.0.5",
+  "port": 3389,
+  "connectTime": 12,
+  "rtt": 45,
+  "tpktVersion": 3,
+  "x224Type": "0xD0 (Connection Confirm)",
+  "hasNegotiation": true,
+  "selectedProtocol": 2,
+  "selectedProtocolNames": ["CredSSP/NLA"],
+  "negotiationFlags": 0,
+  "nlaRequired": false
 }
+```
 
-// RDP Protocol Constants
-const PROTOCOL_RDP = 0x00000000;
-const PROTOCOL_SSL = 0x00000001;
-const PROTOCOL_HYBRID = 0x00000002;
+- `connectTime` — TCP handshake only (ms).
+- `rtt` — total round-trip including X.224 exchange (ms).
+- `selectedProtocol` — integer from server's NEG_RSP.
+- `selectedProtocolNames` — human-readable array via bitmask decode.
+- `nlaRequired` — true if bit 1 of `negotiationFlags` is set.
+- `failureCode` / `failureMessage` — present only when the server sends a NEG_FAILURE.
 
-export class RDPClient {
-  private socket: any;
-  private config: Required<RDPConfig>;
-  private mcsUserId?: number;
-  private channels = new Map<number, string>();
+### Known bug: negotiation offset
 
-  constructor(config: RDPConfig) {
-    this.config = {
-      port: 3389,
-      username: '',
-      password: '',
-      domain: '',
-      width: 1024,
-      height: 768,
-      colorDepth: 16,
-      useNLA: true,
-      ...config,
-    };
-  }
+`/connect` computes the negotiation-response offset as `negOffset = x224Length` (the X.224 Length Indicator value), but the negotiation data starts at a fixed offset of 7 bytes into the X.224 payload (1 LI byte + 6 fixed CC bytes). For a standard CC+NEG_RSP (LI = 14), the handler reads byte 14 instead of byte 7 — which is the last byte of the 4-byte `selectedProtocol` field (always `0x00` for protocol values 0–3). Result: **`/connect` always reports `selectedProtocol: 0` (Standard RDP Security) regardless of what the server negotiated.** The `nlaRequired` flag is similarly always false.
 
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
+Use `/negotiate` or `/nla-probe` for accurate protocol detection.
 
-    // Step 1: X.224 Connection Request
-    await this.sendX224ConnectionRequest();
-    await this.receiveX224ConnectionConfirm();
+---
 
-    // Step 2: MCS Connect Initial
-    await this.sendMCSConnectInitial();
-    await this.receiveMCSConnectResponse();
+## 2. POST /api/rdp/negotiate
 
-    // Step 3: MCS Erect Domain Request
-    await this.sendMCSErectDomainRequest();
+Accurate X.224 negotiation with a configurable protocol bitmask and correct response parsing.
 
-    // Step 4: MCS Attach User Request
-    await this.sendMCSAttachUserRequest();
-    this.mcsUserId = await this.receiveMCSAttachUserConfirm();
+### Request
 
-    // Step 5: Join channels
-    await this.joinChannels();
+```json
+{
+  "host": "10.0.0.5",
+  "port": 3389,
+  "requestProtocols": 3,
+  "timeout": 10000
+}
+```
 
-    // Step 6: Security Exchange
-    await this.securityExchange();
+- `requestProtocols` — bitmask of protocols to offer (default `3` = SSL `0x01` | HYBRID `0x02`). Does not include RDSTLS by default (unlike `/connect` which hardcodes `0x0B`).
 
-    // Step 7: Send Client Info (credentials)
-    await this.sendClientInfo();
+### Response (success)
 
-    // Step 8: Licensing
-    await this.handleLicensing();
+```json
+{
+  "success": true,
+  "selectedProtocol": 2,
+  "protocolName": "NLA (CredSSP)",
+  "serverFlags": 15,
+  "rdpVersion": "RDP 6.0+ (NLA/CredSSP)",
+  "latencyMs": 48,
+  "raw": [3, 0, 0, 19, 14, 208, 0, 0, 0, 0, 0, 2, 31, 8, 0, 2, 0, 0, 0]
+}
+```
 
-    // Step 9: Capabilities Exchange
-    await this.sendClientCapabilities();
-    await this.receiveServerCapabilities();
+- `protocolName` — single string (vs `/connect`'s array).
+- `serverFlags` — the flags byte from the NEG_RSP (offset +1).
+- `rdpVersion` — derived heuristic: NLA → "RDP 6.0+", TLS → "RDP 5.2+", Standard → "RDP 5.x".
+- `raw` — full TPKT+X.224+NEG_RSP packet as integer array for offline analysis.
+- `note` — present when the server omits a Negotiation Response ("Server responded without RDP Negotiation Response — likely Standard RDP Security only").
 
-    // Step 10: Finalization
-    await this.sendClientFinalization();
-  }
+### Response (negotiation failure)
 
-  private async sendX224ConnectionRequest(): Promise<void> {
-    const buffer = new ArrayBuffer(43);
-    const view = new DataView(buffer);
-    let offset = 0;
+```json
+{
+  "success": true,
+  "selectedProtocol": 0,
+  "protocolName": "Standard RDP",
+  "serverFlags": 0,
+  "rdpVersion": "RDP 5.x (Standard RDP Security)",
+  "latencyMs": 52,
+  "raw": [3, 0, 0, 19, ...],
+  "failureCode": 5,
+  "failureMessage": "HYBRID_REQUIRED_BY_SERVER"
+}
+```
 
-    // TPKT Header
-    view.setUint8(offset++, 3); // version
-    view.setUint8(offset++, 0); // reserved
-    view.setUint16(offset, 43, false); // length
-    offset += 2;
+Note: `success: true` even when the server sends a NEG_FAILURE. The failure is reported in `failureCode`/`failureMessage` — check these fields.
 
-    // X.224 COTP Connection Request
-    view.setUint8(offset++, 0x0E); // length
-    view.setUint8(offset++, 0xE0); // type: CR
-    view.setUint16(offset, 0, false); // dst-ref
-    offset += 2;
-    view.setUint16(offset, 0, false); // src-ref
-    offset += 2;
-    view.setUint8(offset++, 0); // class
+### Failure codes
 
-    // Cookie (optional)
-    const cookie = `Cookie: mstshash=${this.config.username}\r\n`;
-    const cookieBytes = new TextEncoder().encode(cookie);
-    new Uint8Array(buffer).set(cookieBytes, offset);
-    offset += cookieBytes.length;
+| Code | Constant | Meaning |
+|------|----------|---------|
+| 1 | `SSL_REQUIRED_BY_SERVER` | Server requires TLS but client didn't offer it |
+| 2 | `SSL_NOT_ALLOWED_BY_SERVER` | Client offered TLS but server doesn't support it |
+| 3 | `SSL_CERT_NOT_ON_SERVER` | TLS requested but no certificate configured |
+| 4 | `INCONSISTENT_FLAGS` | Contradictory flags in the request |
+| 5 | `HYBRID_REQUIRED_BY_SERVER` | Server requires NLA but client didn't offer it |
+| 6 | `SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER` | Server requires TLS + user-level auth |
 
-    // RDP Negotiation Request
-    view.setUint8(offset++, 0x01); // type: TYPE_RDP_NEG_REQ
-    view.setUint8(offset++, 0x00); // flags
-    view.setUint16(offset, 0x0008, true); // length
-    offset += 2;
+---
 
-    const protocols = this.config.useNLA
-      ? PROTOCOL_HYBRID
-      : PROTOCOL_SSL | PROTOCOL_RDP;
-    view.setUint32(offset, protocols, true);
+## 3. POST /api/rdp/nla-probe
 
-    await this.send(new Uint8Array(buffer));
-  }
+Full NLA probe: X.224 → TLS upgrade → CredSSP TSRequest v6 with NTLM Type 1 → parse NTLM Type 2 challenge. Extracts the server's Windows identity (computer name, domain, DNS names) without needing valid credentials.
 
-  private async receiveX224ConnectionConfirm(): Promise<void> {
-    const response = await this.receive(19); // Minimum size
-    const view = new DataView(response.buffer);
+### Request
 
-    // Verify TPKT
-    if (view.getUint8(0) !== 3) {
-      throw new Error('Invalid TPKT version');
-    }
+```json
+{ "host": "10.0.0.5", "port": 3389, "timeout": 12000 }
+```
 
-    // Verify X.224 Connection Confirm
-    if (view.getUint8(5) !== 0xD0) {
-      throw new Error('Expected X.224 Connection Confirm');
-    }
+### Response (NLA success — full NTLM challenge extracted)
 
-    // Check for RDP Negotiation Response
-    if (response.length >= 19) {
-      const negType = view.getUint8(11);
-      if (negType === 0x02) {
-        const selectedProtocol = view.getUint32(15, true);
-        console.log('Selected protocol:', selectedProtocol);
+```json
+{
+  "success": true,
+  "selectedProtocol": 2,
+  "protocolName": "NLA (CredSSP)",
+  "tlsUpgraded": true,
+  "nlaProbed": true,
+  "ntlmChallenge": {
+    "serverChallenge": "a1b2c3d4e5f6a7b8",
+    "targetName": "MYSERVER",
+    "nbComputerName": "MYSERVER",
+    "nbDomainName": "MYDOMAIN",
+    "dnsComputerName": "myserver.mydomain.local",
+    "dnsDomainName": "mydomain.local",
+    "ntlmFlags": 1615462421
+  },
+  "note": "NLA probe successful — extracted Windows server identity via NTLM challenge",
+  "x224LatencyMs": 23,
+  "latencyMs": 187
+}
+```
+
+- `serverChallenge` — 8-byte hex string (the NTLM nonce).
+- `ntlmFlags` — raw 32-bit NTLM negotiate flags from the Type 2 message.
+- `x224LatencyMs` — time for the X.224 round-trip only.
+- `latencyMs` — total probe duration.
+
+### Response (TLS only, no NLA)
+
+```json
+{
+  "success": true,
+  "selectedProtocol": 1,
+  "protocolName": "SSL/TLS",
+  "tlsUpgraded": true,
+  "nlaProbed": false,
+  "note": "TLS upgraded (server selected TLS, not NLA — NTLM challenge not available)",
+  "x224LatencyMs": 18,
+  "latencyMs": 95
+}
+```
+
+### Response (Standard RDP, no TLS)
+
+```json
+{
+  "success": true,
+  "selectedProtocol": 0,
+  "protocolName": "Standard RDP",
+  "tlsUpgraded": false,
+  "nlaProbed": false,
+  "note": "Server selected Standard RDP Security — TLS/NLA not available",
+  "x224LatencyMs": 15,
+  "latencyMs": 15
+}
+```
+
+### NLA probe internals
+
+1. Opens TCP with `secureTransport: 'starttls'` (Cloudflare Workers API for deferred TLS upgrade).
+2. Sends X.224 CR requesting only `PROTOCOL_HYBRID` (0x02) — not SSL, not RDSTLS.
+3. Parses X.224 CC to determine selected protocol.
+4. If NLA or TLS selected: calls `socket.startTls()` to upgrade.
+5. If NLA: sends CredSSP TSRequest v6 containing NTLM Type 1 (NEGOTIATE_MESSAGE).
+6. Reads up to 512 bytes with a 6-second inner deadline to capture the NTLM Type 2.
+7. Scans the response for the `NTLMSSP\0` signature, then parses Type 2 fields.
+
+---
+
+## Wire Format Reference
+
+### TPKT Header (4 bytes, RFC 1006)
+
+```
+[0]   Version = 0x03
+[1]   Reserved = 0x00
+[2-3] Length (uint16 BE) — total packet including header
+```
+
+### X.224 Connection Request (variable)
+
+```
+[0]     LI (Length Indicator) — bytes following this field
+[1]     TPDU code = 0xE0 (Connection Request)
+[2-3]   DST-REF = 0x0000
+[4-5]   SRC-REF = 0x4321 (hardcoded)
+[6]     Class = 0x00
+[7-14]  RDP Negotiation Request (8 bytes):
+          [7]     type = 0x01 (TYPE_RDP_NEG_REQ)
+          [8]     flags = 0x00
+          [9-10]  length = 8 (uint16 LE)
+          [11-14] requestedProtocols (uint32 LE, bitmask)
+```
+
+### X.224 Connection Confirm (variable)
+
+```
+[0]     LI
+[1]     TPDU code = 0xD0 (Connection Confirm)
+[2-3]   DST-REF
+[4-5]   SRC-REF
+[6]     Class
+[7-14]  RDP Negotiation Response (8 bytes, when LI > 6):
+          [7]     type = 0x02 (NEG_RSP) or 0x03 (NEG_FAILURE)
+          [8]     flags
+          [9-10]  length = 8 (uint16 LE)
+          [11-14] selectedProtocol (uint32 LE) or failureCode (uint32 LE)
+```
+
+### Protocol bitmask values
+
+| Bit | Value | Name |
+|-----|-------|------|
+| — | `0x00000000` | Standard RDP Security (RC4/RSA) |
+| 0 | `0x00000001` | TLS 1.0/1.1/1.2 (`PROTOCOL_SSL`) |
+| 1 | `0x00000002` | CredSSP / NLA (`PROTOCOL_HYBRID`) |
+| 3 | `0x00000008` | RDSTLS (`PROTOCOL_RDSTLS`) |
+
+### Selected protocol values (in NEG_RSP)
+
+| Value | Name | Handler label |
+|-------|------|---------------|
+| 0 | Standard RDP | "Standard RDP" |
+| 1 | SSL/TLS | "SSL/TLS" |
+| 2 | NLA (CredSSP) | "NLA (CredSSP)" |
+| 3 | NLA+TLS (HYBRID_EX) | "NLA+TLS" |
+
+### NTLM Type 1 (NEGOTIATE_MESSAGE)
+
+Built by `buildNTLMNegotiate()`. 32 bytes fixed:
+- Signature: `NTLMSSP\0`
+- MessageType: 1
+- NegotiateFlags: `0x60088215` (UNICODE, OEM, REQUEST_TARGET, NTLM, EXTENDED_SESSIONSECURITY)
+- DomainNameFields: len=0, max=0, offset=32
+- WorkstationFields: len=0, max=0, offset=32
+
+### NTLM Type 2 AV_PAIR IDs parsed
+
+| AvId | Name | Extracted field |
+|------|------|-----------------|
+| 0 | MsvAvEOL | (terminates parse) |
+| 1 | MsvAvNbComputerName | `nbComputerName` |
+| 2 | MsvAvNbDomainName | `nbDomainName` |
+| 3 | MsvAvDnsComputerName | `dnsComputerName` |
+| 4 | MsvAvDnsDomainName | `dnsDomainName` |
+
+AvId 5 (DnsTreeName), 6 (Flags), 7 (Timestamp), 9 (TargetName), 10 (ChannelBindings) are **not parsed** — silently skipped.
+
+### CredSSP TSRequest v6
+
+`buildCredSSPRequest()` wraps the NTLM token in DER-encoded ASN.1:
+
+```
+SEQUENCE {                    -- TSRequest
+  [0] INTEGER 6               -- version
+  [1] SEQUENCE {              -- negoTokens
+    SEQUENCE {                -- NegoData
+      [0] OCTET STRING {     -- negoToken
+        <NTLM bytes>
       }
     }
   }
-
-  private async sendMCSConnectInitial(): Promise<void> {
-    // MCS Connect Initial PDU with GCC Conference Create Request
-    // This is complex - would include client data blocks:
-    // - CS_CORE (core settings)
-    // - CS_SECURITY (security settings)
-    // - CS_NET (network settings)
-    // - CS_CLUSTER (cluster settings)
-
-    // Simplified version
-    const gccData = this.buildGCCConferenceCreateRequest();
-    const mcsConnectInitial = this.buildMCSConnectInitial(gccData);
-
-    await this.sendTPKT(mcsConnectInitial);
-  }
-
-  private buildGCCConferenceCreateRequest(): Uint8Array {
-    // Build client data blocks
-    const coreData = this.buildClientCoreData();
-    const securityData = this.buildClientSecurityData();
-    const networkData = this.buildClientNetworkData();
-
-    // Combine into GCC packet
-    const totalLength = coreData.length + securityData.length + networkData.length;
-    const buffer = new Uint8Array(totalLength + 20); // +20 for headers
-
-    let offset = 0;
-
-    // GCC Conference Create Request header (simplified)
-    // ... BER encoding ...
-
-    buffer.set(coreData, offset);
-    offset += coreData.length;
-
-    buffer.set(securityData, offset);
-    offset += securityData.length;
-
-    buffer.set(networkData, offset);
-
-    return buffer;
-  }
-
-  private buildClientCoreData(): Uint8Array {
-    const buffer = new ArrayBuffer(216);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // CS_CORE header
-    view.setUint16(offset, 0xC001, true); // type
-    offset += 2;
-    view.setUint16(offset, 216, true); // length
-    offset += 2;
-
-    // Version
-    view.setUint32(offset, 0x00080004, true); // RDP 5.0+
-    offset += 4;
-
-    // Desktop width/height
-    view.setUint16(offset, this.config.width, true);
-    offset += 2;
-    view.setUint16(offset, this.config.height, true);
-    offset += 2;
-
-    // Color depth
-    view.setUint16(offset, 0xCA01, true); // RNS_UD_COLOR_8BPP
-    offset += 2;
-
-    // ... additional fields ...
-
-    return new Uint8Array(buffer);
-  }
-
-  private buildClientSecurityData(): Uint8Array {
-    const buffer = new ArrayBuffer(12);
-    const view = new DataView(buffer);
-
-    view.setUint16(0, 0xC002, true); // type: CS_SECURITY
-    view.setUint16(2, 12, true); // length
-    view.setUint32(4, 0x00000001, true); // encryption methods: 40-bit
-    view.setUint32(8, 0, true); // ext encryption methods
-
-    return new Uint8Array(buffer);
-  }
-
-  private buildClientNetworkData(): Uint8Array {
-    // CS_NET - lists virtual channels
-    const channels = ['rdpdr', 'rdpsnd', 'drdynvc']; // Device redirection, sound, dynamic VC
-
-    const buffer = new ArrayBuffer(8 + channels.length * 12);
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    view.setUint16(offset, 0xC003, true); // type: CS_NET
-    offset += 2;
-    view.setUint16(offset, buffer.byteLength, true); // length
-    offset += 2;
-    view.setUint32(offset, channels.length, true); // channel count
-    offset += 4;
-
-    for (const channel of channels) {
-      const nameBytes = new TextEncoder().encode(channel.padEnd(8, '\0'));
-      new Uint8Array(buffer).set(nameBytes.slice(0, 8), offset);
-      offset += 8;
-
-      view.setUint32(offset, 0x80000000, true); // options: initialized
-      offset += 4;
-    }
-
-    return new Uint8Array(buffer);
-  }
-
-  private buildMCSConnectInitial(gccData: Uint8Array): Uint8Array {
-    // MCS Connect Initial PDU (BER encoded)
-    // Simplified - real implementation needs proper BER encoding
-
-    const buffer = new Uint8Array(100 + gccData.length);
-    let offset = 0;
-
-    // MCS header (simplified BER)
-    buffer[offset++] = 0x7F; // Connect Initial
-    buffer[offset++] = 0x65; // ...
-
-    // ... BER encoding of MCS structure ...
-
-    // Embed GCC data
-    buffer.set(gccData, offset);
-
-    return buffer;
-  }
-
-  private async sendMCSErectDomainRequest(): Promise<void> {
-    const pdu = new Uint8Array([
-      0x04, 0x01, 0x00, // MCS Erect Domain Request
-      0x01, 0x00, // subHeight
-      0x01, 0x00, // subInterval
-    ]);
-
-    await this.sendTPKT(pdu);
-  }
-
-  private async sendMCSAttachUserRequest(): Promise<void> {
-    const pdu = new Uint8Array([0x28]); // MCS Attach User Request
-    await this.sendTPKT(pdu);
-  }
-
-  private async receiveMCSAttachUserConfirm(): Promise<number> {
-    const response = await this.receiveTPKT();
-
-    // Parse MCS Attach User Confirm
-    // Extract user ID
-
-    return 0; // Simplified - return actual user ID
-  }
-
-  private async joinChannels(): Promise<void> {
-    const channelIds = [1003, 1004, 1005]; // I/O, RDPDR, ClipRdr channels
-
-    for (const channelId of channelIds) {
-      await this.sendMCSChannelJoinRequest(channelId);
-      await this.receiveMCSChannelJoinConfirm();
-    }
-  }
-
-  private async sendMCSChannelJoinRequest(channelId: number): Promise<void> {
-    const buffer = new ArrayBuffer(5);
-    const view = new DataView(buffer);
-
-    view.setUint8(0, 0x38); // MCS Channel Join Request
-    view.setUint16(1, this.mcsUserId!, false);
-    view.setUint16(3, channelId, false);
-
-    await this.sendTPKT(new Uint8Array(buffer));
-  }
-
-  private async receiveMCSChannelJoinConfirm(): Promise<void> {
-    await this.receiveTPKT();
-  }
-
-  private async securityExchange(): Promise<void> {
-    // Exchange encryption keys
-    // For TLS connections, this may be simplified
-  }
-
-  private async sendClientInfo(): Promise<void> {
-    // Send credentials and client info
-    const info = this.buildClientInfoPDU();
-    await this.sendSecurityExchange(info);
-  }
-
-  private buildClientInfoPDU(): Uint8Array {
-    const encoder = new TextEncoder();
-    const domain = encoder.encode(this.config.domain + '\0');
-    const username = encoder.encode(this.config.username + '\0');
-    const password = encoder.encode(this.config.password + '\0');
-
-    const buffer = new ArrayBuffer(1000); // Simplified
-    const view = new DataView(buffer);
-    let offset = 0;
-
-    // Client Info PDU header
-    view.setUint32(offset, 0, true); // codePage
-    offset += 4;
-    view.setUint32(offset, 0x00000001, true); // flags: INFO_MOUSE
-    offset += 4;
-
-    // ... domain, username, password, etc. ...
-
-    return new Uint8Array(buffer.slice(0, offset));
-  }
-
-  private async handleLicensing(): Promise<void> {
-    // Receive and respond to licensing PDUs
-    // This can be complex - simplified here
-  }
-
-  private async sendClientCapabilities(): Promise<void> {
-    // Send capability sets
-    // - General, Bitmap, Order, Input, Font, etc.
-  }
-
-  private async receiveServerCapabilities(): Promise<void> {
-    // Receive server capability sets
-  }
-
-  private async sendClientFinalization(): Promise<void> {
-    // Send Synchronize, Control Cooperate, Control Request, Font List
-  }
-
-  // Graphics and Input
-
-  async sendMouseEvent(x: number, y: number, button: number, pressed: boolean): Promise<void> {
-    // Send TS_POINTER_EVENT
-  }
-
-  async sendKeyEvent(keyCode: number, pressed: boolean): Promise<void> {
-    // Send TS_KEYBOARD_EVENT
-  }
-
-  async sendRefreshRect(left: number, top: number, right: number, bottom: number): Promise<void> {
-    // Request screen refresh for specific area
-  }
-
-  // Utility methods
-
-  private async sendTPKT(data: Uint8Array): Promise<void> {
-    const buffer = new ArrayBuffer(4 + data.length);
-    const view = new DataView(buffer);
-
-    view.setUint8(0, 3); // TPKT version
-    view.setUint8(1, 0); // reserved
-    view.setUint16(2, buffer.byteLength, false); // length
-
-    new Uint8Array(buffer).set(data, 4);
-
-    await this.send(new Uint8Array(buffer));
-  }
-
-  private async receiveTPKT(): Promise<Uint8Array> {
-    const header = await this.receive(4);
-    const view = new DataView(header.buffer);
-    const length = view.getUint16(2, false);
-
-    if (length > 4) {
-      const payload = await this.receive(length - 4);
-      return payload;
-    }
-
-    return new Uint8Array(0);
-  }
-
-  private async send(data: Uint8Array): Promise<void> {
-    const writer = this.socket.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
-  }
-
-  private async receive(length: number): Promise<Uint8Array> {
-    const reader = this.socket.readable.getReader();
-    const buffer = new Uint8Array(length);
-    let offset = 0;
-
-    while (offset < length) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error('Connection closed');
-
-      const remaining = length - offset;
-      const toCopy = Math.min(remaining, value.length);
-      buffer.set(value.slice(0, toCopy), offset);
-      offset += toCopy;
-    }
-
-    reader.releaseLock();
-    return buffer;
-  }
-
-  private async sendSecurityExchange(data: Uint8Array): Promise<void> {
-    // Send data with security header
-    await this.sendTPKT(data);
-  }
-
-  async close(): Promise<void> {
-    await this.socket.close();
-  }
 }
 ```
 
-## Web UI Design
+---
 
-```typescript
-// src/components/RDPClient.tsx
+## Cross-Endpoint Comparison
 
-export function RDPClient() {
-  const [host, setHost] = useState('');
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [domain, setDomain] = useState('');
-  const [connected, setConnected] = useState(false);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+| Field | `/connect` | `/negotiate` | `/nla-probe` |
+|-------|-----------|-------------|-------------|
+| Protocol request | `0x0B` (all) | configurable (default `3`) | `0x02` (HYBRID only) |
+| Timing | `connectTime` + `rtt` | `latencyMs` | `x224LatencyMs` + `latencyMs` |
+| Protocol name | `selectedProtocolNames` (array) | `protocolName` (string) | `protocolName` (string) |
+| Raw packet | — | `raw` (int array) | — |
+| Version heuristic | — | `rdpVersion` | — |
+| NLA required flag | `nlaRequired` | — | — |
+| NTLM challenge | — | — | `ntlmChallenge` |
+| Port validation | Yes | Yes | **No** |
+| Negotiation parsing | **Broken** (see bug above) | Correct | Correct |
 
-  const connect = async () => {
-    try {
-      const ws = new WebSocket('/api/rdp/connect');
+---
 
-      ws.onopen = () => {
-        ws.send(JSON.stringify({
-          host,
-          username,
-          password,
-          domain,
-          width: 1024,
-          height: 768,
-        }));
-      };
+## Quirks and Limitations
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+1. **`/connect` negotiation parsing is broken.** Uses `negOffset = x224Length` (the LI value, typically 14) instead of the fixed offset 7. Always reports `selectedProtocol: 0`. Use `/negotiate` for accurate protocol detection.
 
-        if (data.type === 'connected') {
-          setConnected(true);
-        } else if (data.type === 'bitmap') {
-          renderBitmap(data.bitmap);
-        }
-      };
+2. **`success: true` with failure.** `/negotiate` returns `success: true` even when the server sends `TYPE_RDP_NEG_FAILURE`. You must check `failureCode` to detect negotiation failures.
 
-    } catch (error) {
-      alert(`Connection failed: ${error.message}`);
-    }
-  };
+3. **No port validation in `/nla-probe`.** `/connect` and `/negotiate` validate `port ∈ [1, 65535]`, but `/nla-probe` passes the port directly to `connect()` without validation.
 
-  const renderBitmap = (bitmap: any) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+4. **`readExact()` discards excess bytes.** If the TCP read returns more bytes than requested, the surplus is silently dropped. For RDP's small packets (typically 19 bytes) this rarely matters, but it's a fragility if a server sends the TPKT header and CC in a single segment.
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+5. **`/nla-probe` requests only HYBRID.** It sends `requestedProtocols = 0x02` (CredSSP only). If the server supports TLS but not NLA, the server may fall back to Standard RDP or send a NEG_FAILURE, depending on configuration. The `/connect` endpoint requests `0x0B` (all protocols) for broader detection.
 
-    // Render RDP bitmap data
-    const imageData = ctx.createImageData(bitmap.width, bitmap.height);
-    imageData.data.set(bitmap.data);
-    ctx.putImageData(imageData, bitmap.x, bitmap.y);
-  };
+6. **`/nla-probe` 512-byte read cap with 6-second deadline.** NTLM Type 2 messages are typically well under 512 bytes, but servers with very long TargetInfo AV pairs could theoretically exceed this. The 6-second inner deadline is hardcoded and separate from the outer `timeout`.
 
-  return (
-    <div className="rdp-client">
-      <h2>Remote Desktop Protocol (RDP)</h2>
+7. **No Cookie in negotiate/nla-probe.** The planning doc's `RDPClient` class included a `Cookie: mstshash=<username>` in the X.224 CR. The actual implementation's `buildConnectionRequest()` does not include any cookie — the X.224 CR contains only the negotiation request. This is fine for probing but some RDP gateways may behave differently without a cookie.
 
-      {!connected ? (
-        <div className="connection">
-          <input
-            type="text"
-            placeholder="Host"
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Domain (optional)"
-            value={domain}
-            onChange={(e) => setDomain(e.target.value)}
-          />
-          <button onClick={connect}>Connect</button>
-        </div>
-      ) : (
-        <div className="desktop">
-          <canvas
-            ref={canvasRef}
-            width={1024}
-            height={768}
-            className="rdp-canvas"
-          />
-        </div>
-      )}
+8. **SRC-REF = 0x4321.** The X.224 Source Reference is hardcoded to `0x4321` (non-zero). Some protocol analyzers use this to fingerprint the client. Standard RDP clients use `0x0000`.
 
-      <div className="info">
-        <h3>About RDP</h3>
-        <ul>
-          <li>Remote Desktop Protocol (Microsoft)</li>
-          <li>Full graphical remote desktop</li>
-          <li>Supports TLS encryption</li>
-          <li>Network Level Authentication (NLA)</li>
-          <li>Multi-monitor support</li>
-          <li>RemoteFX for enhanced graphics</li>
-        </ul>
-      </div>
-    </div>
-  );
-}
-```
+9. **CredSSP version 6.** The TSRequest uses version 6 (latest). Servers running older Windows versions may reject or behave unexpectedly with v6. No version negotiation or fallback is implemented.
 
-## Security
+10. **NTLM AvId 7 (Timestamp) not extracted.** The server's FILETIME timestamp in the Type 2 message could be used to detect clock skew, but `parseNTLMChallenge()` only decodes AvIds 1–4.
 
-### Network Level Authentication (NLA)
+11. **No TLS certificate inspection.** After `startTls()`, the server's TLS certificate is not examined. Certificate subject/SAN could provide additional server identity information.
 
-```typescript
-// CredSSP authentication
-const config: RDPConfig = {
-  host: 'windows-server.example.com',
-  username: 'admin',
-  password: 'password',
-  useNLA: true, // Enable NLA
-};
-```
+12. **Single TCP read for X.224 CC.** Both `/connect` and `/negotiate` use `readExact()` which accumulates chunks correctly, so TCP fragmentation is handled. However, there's no protection against a server that sends a partial TPKT and then stalls — the timeout covers this at the outer level.
 
-### TLS Encryption
+13. **Cloudflare check runs outside the timeout.** All three endpoints call `checkIfCloudflare()` before starting the timeout race. A slow DNS resolution for the CF check isn't covered by the user-specified timeout.
+
+---
+
+## curl Examples
+
+### Basic connectivity test
 
 ```bash
-# RDP server must have valid TLS certificate
-# Client verifies certificate (or can accept any in testing)
+curl -s -X POST https://portofcall.app/api/rdp/connect \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.5"}' | jq .
 ```
 
-## Testing
+### Detect supported security protocol
 
 ```bash
-# Test RDP connection with rdesktop
-rdesktop -u admin -p password windows-server.example.com
+# Offer all protocols
+curl -s -X POST https://portofcall.app/api/rdp/negotiate \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.5","requestProtocols":11}' | jq .
 
-# Or with xfreerdp (FreeRDP)
-xfreerdp /v:windows-server.example.com /u:admin /p:password
-
-# Windows built-in client
-mstsc /v:windows-server.example.com
+# Test if NLA is required (offer only Standard RDP)
+curl -s -X POST https://portofcall.app/api/rdp/negotiate \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.5","requestProtocols":0}' | jq .failureMessage
 ```
 
-## Resources
+### Extract Windows server identity via NLA probe
 
-- **MS-RDPBCGR**: [Core Protocol Spec](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/)
-- **FreeRDP**: [Open source RDP client](https://www.freerdp.com/)
-- **RDP Security**: [Best practices](https://docs.microsoft.com/en-us/windows-server/remote/remote-desktop-services/rds-security)
+```bash
+curl -s -X POST https://portofcall.app/api/rdp/nla-probe \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.5","timeout":15000}' | jq .ntlmChallenge
+```
 
-## Notes
+### Scan a non-standard port
 
-- **Very complex protocol** - full implementation requires 1000s of lines
-- **Multi-layered** - X.224, MCS, RDP, virtual channels
-- **Binary protocol** - requires careful parsing
-- **Encryption** - TLS/SSL, CredSSP for NLA
-- **Graphics** - Bitmap orders, RemoteFX, H.264 codec
-- **Virtual channels** - Device redirection, audio, clipboard
-- **Widely used** - default Windows remote access
-- **Port 3389** - often targeted, use strong passwords/NLA
-- **Licensing** - Microsoft RDP licensing requirements
-- Consider using **FreeRDP library** for full implementation
+```bash
+curl -s -X POST https://portofcall.app/api/rdp/negotiate \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"10.0.0.5","port":13389}' | jq '{proto: .protocolName, ms: .latencyMs}'
+```

@@ -7,6 +7,8 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import ApiExamples from './ApiExamples';
+import apiExamples from '../data/api-examples';
 
 interface SANEClientProps {
   onBack: () => void;
@@ -106,6 +108,7 @@ export default function SANEClient({ onBack }: SANEClientProps) {
 
   return (
     <ProtocolClientLayout title="SANE Network Client" onBack={onBack}>
+      <ApiExamples examples={apiExamples.SANE || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="SANE Daemon Connection" />
 

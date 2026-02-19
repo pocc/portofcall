@@ -63,12 +63,12 @@ The February 2026 protocol review focused on **86 protocols** that were already 
 36. **GIT** - Git version control protocol
 37. **GPSD** - GPS daemon protocol
 38. **GRAFANA** - Grafana monitoring platform
-39. **GRPC** - gRPC (HTTP/2-based RPC)
+39. **GRPC** - gRPC (HTTP/2-based RPC) ❌ *Cannot be implemented - requires TLS ALPN (see IMPOSSIBLE.md)*
 40. **HAPROXY** - HAProxy stats protocol
 41. **HL7** - Health Level 7 healthcare protocol
 42. **HSRP** - Hot Standby Router Protocol
 43. **HTTP** - Hypertext Transfer Protocol
-44. **HTTP2** - HTTP/2
+44. **HTTP2** - HTTP/2 ❌ *Cannot be implemented - requires TLS ALPN for h2, impractical for h2c (see IMPOSSIBLE.md)*
 45. **HTTPPROXY** - HTTP proxy protocol
 46. **ICECAST** - Icecast streaming server
 47. **IDENT** - Identification Protocol (RFC 1413)
@@ -104,7 +104,7 @@ The February 2026 protocol review focused on **86 protocols** that were already 
 ### N-S (14 protocols)
 74. **NSQ** - NSQ messaging platform
 75. **ORACLE** - Oracle Database TNS protocol
-76. **POSTGRESQL** - PostgreSQL wire protocol (alternate spec)
+76. **POSTGRESQL** - PostgreSQL wire protocol (alternate spec) 📄 *Duplicate - postgres.ts already implemented and reviewed*
 77. **PROMETHEUS** - Prometheus monitoring
 78. **S7COMM** - Siemens S7 PLC protocol
 79. **SHOUTCAST** - Shoutcast streaming protocol
@@ -163,5 +163,8 @@ If you need a protocol from this list to be reviewed:
 **Last Updated:** February 2026
 **Review Coverage:** 151 of 244 total protocol-related files (62%)
 **Protocols Reviewed:** 151 of 244 (62%)
-**Protocols Not Reviewed:** 93 (38%)
+**Protocols Not Reviewed:** 93 total (38%)
+  - **87 implemented, ready for review** (listed above)
+  - **3 cannot be implemented**: GRPC ❌, HTTP2 ❌, POSTGRESQL 📄 (duplicate)
+  - **3 not eligible for review** (impossible/duplicate specs)
 **Documentation Files:** 5 (IMPLEMENTATION_GUIDE, QUICK_REFERENCE, README, SUMMARY, SHOUTCAST_REVIEW)

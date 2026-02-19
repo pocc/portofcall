@@ -629,6 +629,21 @@ This document tracks all protocols that have been fully implemented in Port of C
 - **UI**: Yes
 - **Tests**: ⚠️ Awaiting deployment (4 real-world tests)
 
+### GELF (Graylog Extended Log Format) TCP
+- **Port**: 12201 (default)
+- **Status**: ✅ Complete (not yet deployed)
+- **Features**:
+  - Null-byte delimited JSON messages
+  - Batch message sending (up to 100 per request)
+  - Required fields validation (version, host, short_message)
+  - Auto-population of timestamp and version
+  - Custom fields support (underscore-prefixed)
+  - Syslog severity levels (0-7)
+  - Connectivity probe endpoint
+- **UI**: No (API-only)
+- **Tests**: ⚠️ Awaiting deployment
+- **Documentation**: docs/protocols/GELF.md
+
 ### Git Protocol (pack protocol v1)
 - **Port**: 9418 (default)
 - **Status**: ✅ Complete (not yet deployed)

@@ -421,21 +421,24 @@ This file is kept for backwards compatibility with existing links.
 
 ---
 
-### Priority 3: Not-Yet-Implemented Protocols (89 protocols)
+### Priority 3A: Implemented but Not Reviewed (87 protocols)
 
-**Issue:** These protocols have specification files but no implementation in `src/worker/`. They need to be implemented before they can be reviewed.
+**Issue:** These protocols are **already implemented** in `src/worker/` but do not have changelog entries in `changelog/by-protocol/`. They need code review and documentation following the February 2026 audit template.
 
-**Action Required:** Choose protocols to implement based on demand/priority. After implementation, follow the [ADD_PROTOCOL Guide](guides/ADD_PROTOCOL.md) and conduct code review.
+**Action Required:** Create code reviews following the template in [postgres.md](changelog/by-protocol/postgres.md). Extract bugs found, document fixes, and create comprehensive protocol specifications.
+
+**Status:** 240 protocols implemented, 153 reviewed, **87 remaining for review**
 
 <details>
-<summary>Click to expand full list of 89 not-yet-implemented protocols</summary>
+<summary>Click to expand full list of 87 implemented-but-not-reviewed protocols</summary>
 
-**Messaging & Queues (3):**
+**Messaging & Queues:**
 - [ ] ACTIVEMQ - Apache ActiveMQ messaging broker
 - [ ] BEANSTALKD - Beanstalkd work queue
 - [ ] GEARMAN - Gearman job server
+- [ ] NSQ - NSQ messaging platform
 
-**Databases (10):**
+**Databases:**
 - [ ] AEROSPIKE - Aerospike NoSQL database
 - [ ] CLICKHOUSE - ClickHouse database
 - [ ] COUCHBASE - Couchbase NoSQL database
@@ -444,9 +447,10 @@ This file is kept for backwards compatibility with existing links.
 - [ ] INFORMIX - Informix database
 - [ ] MAXDB - SAP MaxDB database
 - [ ] MEILISEARCH - Meilisearch search engine
+- [ ] ORACLE - Oracle Database TNS protocol
 - [ ] TARANTOOL - Tarantool in-memory database
 
-**Monitoring & Observability (7):**
+**Monitoring & Observability:**
 - [ ] COLLECTD - Collectd monitoring daemon
 - [ ] GANGLIA - Ganglia monitoring system
 - [ ] GRAFANA - Grafana monitoring platform
@@ -454,7 +458,7 @@ This file is kept for backwards compatibility with existing links.
 - [ ] MUNIN - Munin monitoring system
 - [ ] PROMETHEUS - Prometheus monitoring
 
-**DevOps & Infrastructure (7):**
+**DevOps & Infrastructure:**
 - [ ] CONSUL - HashiCorp Consul service discovery
 - [ ] CEPH - Ceph distributed storage
 - [ ] GIT - Git version control protocol
@@ -462,54 +466,54 @@ This file is kept for backwards compatibility with existing links.
 - [ ] IGNITE - Apache Ignite in-memory computing
 - [ ] JUPYTER - Jupyter notebook protocol
 
-**Industrial/SCADA (7):**
+**Industrial/SCADA:**
 - [ ] CDP - Cisco Discovery Protocol
 - [ ] DNP3 - Distributed Network Protocol 3 (SCADA)
 - [ ] ETHERNETIP - EtherNet/IP industrial protocol
 - [ ] FINS - Omron FINS factory automation
 - [ ] IEC104 - IEC 60870-5-104 SCADA protocol
 - [ ] MODBUS - Modbus industrial protocol
+- [ ] MMS - Manufacturing Message Specification
 - [ ] S7COMM - Siemens S7 PLC protocol
 
-**Legacy/Simple Protocols (6):**
-- [ ] ACTIVEUSERS - RFC 866 Active Users Protocol
-- [ ] CHARGEN - RFC 864 Character Generator Protocol
-- [ ] DAYTIME - RFC 867 Daytime Protocol
-- [ ] DICT - Dictionary Server Protocol (RFC 2229)
-- [ ] DISCARD - RFC 863 Discard Protocol
-- [ ] IDENT - Identification Protocol (RFC 1413)
-- [ ] TIME - RFC 868 Time Protocol
+**Legacy/Simple Protocols:**
+- [ ] ACTIVEUSERS - RFC 866 Active Users Protocol (implemented in `src/worker/activeusers.ts`)
+- [ ] CHARGEN - RFC 864 Character Generator Protocol (implemented in `src/worker/chargen.ts`)
+- [ ] DAYTIME - RFC 867 Daytime Protocol (implemented in `src/worker/daytime.ts`)
+- [ ] DICT - Dictionary Server Protocol RFC 2229 (implemented in `src/worker/dict.ts`)
+- [ ] DISCARD - RFC 863 Discard Protocol (implemented in `src/worker/discard.ts`)
+- [ ] IDENT - Identification Protocol RFC 1413 (implemented in `src/worker/ident.ts`)
+- [ ] TIME - RFC 868 Time Protocol (implemented in `src/worker/time.ts`)
 
-**Secure Protocol Variants (5):**
+**Secure Protocol Variants:**
 - [ ] FTPS - FTP over TLS (explicit FTPS)
 - [ ] IMAPS - IMAP over TLS (implicit, port 993)
 - [ ] NNTPS - NNTP over TLS (implicit)
 - [ ] SIPS - SIP over TLS (secure SIP)
+- [ ] SMPP - Short Message Peer-to-Peer
 - [ ] SMTPS - SMTP over TLS (implicit, port 465)
 
-**Web & HTTP (5):**
-- [ ] GRPC - gRPC (HTTP/2-based RPC)
+**Web & HTTP:**
 - [ ] HTTP - Hypertext Transfer Protocol
-- [ ] HTTP2 - HTTP/2
 - [ ] HTTPPROXY - HTTP proxy protocol
 - [ ] SOAP - Simple Object Access Protocol
+- [ ] WEBSOCKET - WebSocket Protocol
 
-**Voice/Video/Streaming (4):**
+**Voice/Video/Streaming:**
 - [ ] ICECAST - Icecast streaming server
 - [ ] MGCP - Media Gateway Control Protocol
-- [ ] SHOUTCAST - Shoutcast streaming protocol
 - [ ] VENTRILO - Ventrilo voice chat
 
-**Network Protocols (8):**
+**Network Protocols:**
 - [ ] HSRP - Hot Standby Router Protocol
 - [ ] IKE - Internet Key Exchange (IPsec)
 - [ ] L2TP - Layer 2 Tunneling Protocol
 - [ ] LDP - Label Distribution Protocol
 - [ ] LLMNR - Link-Local Multicast Name Resolution
 - [ ] SSDP - Simple Service Discovery Protocol
-- [ ] STUN - Session Traversal Utilities for NAT (already has spec, needs implementation)
+- [ ] STUN - Session Traversal Utilities for NAT
 
-**Specialized Protocols (27):**
+**Specialized Protocols:**
 - [ ] ADB - Android Debug Bridge
 - [ ] AMI - Asterisk Manager Interface
 - [ ] BATTLENET - Battle.net gaming protocol
@@ -517,8 +521,8 @@ This file is kept for backwards compatibility with existing links.
 - [ ] CVS - Concurrent Versions System
 - [ ] DAP - Data Access Protocol
 - [ ] DCERPC - Distributed Computing Environment RPC
-- [ ] EPMD - Erlang Port Mapper Daemon
 - [ ] EPP - Extensible Provisioning Protocol
+- [ ] EPMD - Erlang Port Mapper Daemon
 - [ ] ETHEREUM - Ethereum blockchain protocol
 - [ ] GADUGADU - Gadu-Gadu instant messaging
 - [ ] GEMINI - Gemini protocol (alternative to HTTP)
@@ -531,25 +535,38 @@ This file is kept for backwards compatibility with existing links.
 - [ ] JSONRPC - JSON-RPC
 - [ ] LPD - Line Printer Daemon (RFC 1179)
 - [ ] LSP - Language Server Protocol
-- [ ] MINECRAFT_RCON - Minecraft Remote Console (distinct from RCON)
-- [ ] MMS - Manufacturing Message Specification
-- [ ] NSQ - NSQ messaging platform (has spec, needs implementation)
-- [ ] SMPP - Short Message Peer-to-Peer
-- [ ] SOURCE_RCON - Source Engine RCON (distinct from RCON)
-- [ ] WEBSOCKET - WebSocket Protocol
-- [ ] XMPP-S2S - XMPP Server-to-Server
+- [ ] NINEP - Plan 9 Filesystem Protocol (9P)
 - [ ] ZMTP - ZeroMQ Message Transport Protocol
 
 </details>
 
-**Implementation Priority:**
-1. **High demand:** HTTP, HTTP2, GRPC, WEBSOCKET, GIT, PROMETHEUS
-2. **Security testing:** FTPS, IMAPS, SMTPS, NNTPS, SIPS (TLS variants)
-3. **Legacy/Educational:** CHARGEN, DAYTIME, DISCARD, TIME, IDENT
-4. **Industrial:** MODBUS, DNP3, S7COMM (high-value niche)
-5. **Modern databases:** CLICKHOUSE, COUCHBASE, MEILISEARCH
+**Review Priority:**
+1. **High-traffic protocols:** HTTP, WEBSOCKET, PROMETHEUS, GRAFANA
+2. **Legacy/Simple RFCs:** CHARGEN, DAYTIME, DISCARD, TIME, IDENT, DICT, ACTIVEUSERS (quick wins)
+3. **Security-critical TLS variants:** FTPS, IMAPS, SMTPS, NNTPS, SIPS
+4. **Industrial protocols:** MODBUS, DNP3, S7COMM, IEC104 (high-value niche)
+5. **Modern databases:** CLICKHOUSE, COUCHBASE, MEILISEARCH, TARANTOOL
 
-**Estimated effort:** Varies by protocol complexity (1-8 hours each)
+---
+
+### Priority 3B: Cannot Be Implemented (3 protocol specs)
+
+**Issue:** These protocol specification files exist in `docs/protocols/` but cannot be implemented on Cloudflare Workers due to technical limitations documented in [reference/IMPOSSIBLE.md](reference/IMPOSSIBLE.md).
+
+**Status:** ❌ Impossible / ⚠️ Impractical / 📄 Duplicate
+
+**Protocols:**
+- [ ] ❌ **GRPC** - gRPC requires HTTP/2 as transport, blocked by same ALPN limitation (see IMPOSSIBLE.md lines 99-108)
+- [ ] ❌ **HTTP2** (h2 over TLS) - Requires TLS ALPN negotiation (`h2` token), which Workers Sockets API doesn't expose (see IMPOSSIBLE.md lines 88-91)
+  - ⚠️ **HTTP2** (h2c cleartext) - Technically possible but impractical; requires full HTTP/2 binary framing implementation from scratch (HPACK, multiplexing, flow control) with no suitable library for Workers runtime (see IMPOSSIBLE.md lines 93-97)
+- [ ] 📄 **POSTGRESQL** - Duplicate spec file; PostgreSQL wire protocol is already implemented in `src/worker/postgres.ts` and reviewed in [changelog/by-protocol/postgres.md](changelog/by-protocol/postgres.md)
+
+**Action Required:**
+1. Move `docs/protocols/GRPC.md` → `docs/protocols/non-tcp/GRPC.md` (document as impossible due to ALPN)
+2. Move `docs/protocols/HTTP2.md` → `docs/protocols/non-tcp/HTTP2.md` (document as impossible/impractical)
+3. Delete `docs/protocols/POSTGRESQL.md` (duplicate of existing postgres spec)
+
+**See:** [reference/IMPOSSIBLE.md](reference/IMPOSSIBLE.md) for detailed technical explanations
 
 ---
 

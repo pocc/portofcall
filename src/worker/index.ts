@@ -61,6 +61,7 @@ import { handleChargenStream } from './chargen';
 import { handleDiscardSend } from './discard';
 import { handleGaduGaduConnect, handleGaduGaduSendMessage, handleGaduGaduContacts } from './gadugadu';
 import { handleGeminiFetch } from './gemini';
+import { handleGelfSend, handleGelfProbe } from './gelf';
 import { handleGopherFetch } from './gopher';
 import { handleIRCConnect, handleIRCWebSocket } from './irc';
 import { handleIRCSConnect, handleIRCSWebSocket } from './ircs';
@@ -369,7 +370,7 @@ export default {
     }
 
     // Daytime API endpoint
-    if (url.pathname === '/api/daytime/get') {
+    if (url.pathname === '/api/daytime/query' || url.pathname === '/api/daytime/get') {
       return handleDaytimeGet(request);
     }
 
@@ -407,6 +408,15 @@ export default {
     // GEMINI API endpoint
     if (url.pathname === '/api/gemini/fetch') {
       return handleGeminiFetch(request);
+    }
+
+    // GELF API endpoints
+    if (url.pathname === '/api/gelf/send') {
+      return handleGelfSend(request);
+    }
+
+    if (url.pathname === '/api/gelf/probe') {
+      return handleGelfProbe(request);
     }
 
     // Gopher API endpoint

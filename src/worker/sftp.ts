@@ -26,44 +26,17 @@ import { openSSHSubsystem, SSHSubsystemIO, SSHTerminalOptions } from './ssh2-imp
 
 const SSH_FXP_INIT        = 1;
 const SSH_FXP_VERSION     = 2;
-const SSH_FXP_OPEN        = 3;
-const SSH_FXP_CLOSE       = 4;
-const SSH_FXP_READ        = 5;
-const SSH_FXP_WRITE       = 6;
-const SSH_FXP_OPENDIR     = 11;
-const SSH_FXP_READDIR     = 12;
-const SSH_FXP_REMOVE      = 13;
-const SSH_FXP_MKDIR       = 14;
 const SSH_FXP_STAT        = 17;
-const SSH_FXP_RENAME      = 18;
 const SSH_FXP_STATUS      = 101;
-const SSH_FXP_HANDLE      = 102;
-const SSH_FXP_DATA        = 103;
-const SSH_FXP_NAME        = 104;
 const SSH_FXP_ATTRS       = 105;
 
 // SFTP status codes
 const SSH_FX_OK           = 0;
-const SSH_FX_EOF          = 1;
-
-// Open flags
-const SSH_FXF_READ        = 0x00000001;
-const SSH_FXF_WRITE       = 0x00000002;
-const SSH_FXF_CREAT       = 0x00000008;
-const SSH_FXF_TRUNC       = 0x00000010;
-
-const MAX_READ_SIZE = 32768; // 32 KB per SFTP read request
-const MAX_DOWNLOAD  = 4 * 1024 * 1024; // 4 MB download cap
 
 // ─── Binary helpers ───────────────────────────────────────────────────────────
 
 function u32BE(n: number): Uint8Array {
   return new Uint8Array([(n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
-}
-
-function u64BE(n: number): Uint8Array {
-  // Use two 32-bit halves; for files up to ~4 GB this suffices
-  return new Uint8Array([0, 0, 0, 0, (n >>> 24) & 0xff, (n >>> 16) & 0xff, (n >>> 8) & 0xff, n & 0xff]);
 }
 
 function readU32BE(b: Uint8Array, off: number): number {
@@ -96,9 +69,6 @@ function sftpPkt(type: number, id: number | null, ...payloads: Uint8Array[]): Ui
   const body = concat(...parts);
   return concat(u32BE(body.length), body);
 }
-
-/** Empty ATTRS structure (flags=0) */
-function emptyAttrs(): Uint8Array { return u32BE(0); }
 
 // ─── SFTP session wrapper ─────────────────────────────────────────────────────
 
@@ -376,7 +346,7 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
  * List directory contents.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path? }
  */
-export async function handleSFTPList(request: Request): Promise<Response> {
+export async function handleSFTPList(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
     message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
@@ -388,7 +358,7 @@ export async function handleSFTPList(request: Request): Promise<Response> {
  * Download a file (base64-encoded, up to 4 MB).
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
  */
-export async function handleSFTPDownload(request: Request): Promise<Response> {
+export async function handleSFTPDownload(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
     message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
@@ -400,7 +370,7 @@ export async function handleSFTPDownload(request: Request): Promise<Response> {
  * Upload a file (content as base64 string).
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path, content, encoding? }
  */
-export async function handleSFTPUpload(request: Request): Promise<Response> {
+export async function handleSFTPUpload(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
     message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
@@ -412,7 +382,7 @@ export async function handleSFTPUpload(request: Request): Promise<Response> {
  * Delete a file.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
  */
-export async function handleSFTPDelete(request: Request): Promise<Response> {
+export async function handleSFTPDelete(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
     message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
@@ -424,7 +394,7 @@ export async function handleSFTPDelete(request: Request): Promise<Response> {
  * Create a directory.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
  */
-export async function handleSFTPMkdir(request: Request): Promise<Response> {
+export async function handleSFTPMkdir(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
     message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
@@ -436,7 +406,7 @@ export async function handleSFTPMkdir(request: Request): Promise<Response> {
  * Rename or move a file or directory.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, oldPath, newPath }
  */
-export async function handleSFTPRename(request: Request): Promise<Response> {
+export async function handleSFTPRename(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
     message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',

@@ -81,7 +81,7 @@ JJJJJ YY-MM-DD HH:MM:SS TT L H msADV UTC(NIST) OTM
 ## Port of Call Implementation
 
 **File:** `src/worker/daytime.ts`
-**API Endpoint:** `POST /api/daytime/get`
+**API Endpoint:** `POST /api/daytime/query` (also supports `/api/daytime/get` for backward compatibility)
 **Handler:** `handleDaytimeGet(request: Request)`
 
 ### Request
@@ -191,12 +191,12 @@ nc time.nist.gov 13
 nc -w 5 time.nist.gov 13
 
 # Test via the API
-curl -X POST https://your-worker.dev/api/daytime/get \
+curl -X POST https://your-worker.dev/api/daytime/query \
   -H 'Content-Type: application/json' \
   -d '{"host": "time.nist.gov"}'
 
 # Test with custom port
-curl -X POST https://your-worker.dev/api/daytime/get \
+curl -X POST https://your-worker.dev/api/daytime/query \
   -H 'Content-Type: application/json' \
   -d '{"host": "time.nist.gov", "port": 13, "timeout": 5000}'
 ```

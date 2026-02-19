@@ -1,0 +1,246 @@
+# GPT Protocol Review Tracker
+
+Generated: 2026-02-19
+
+Total protocol modules reviewed: 238
+
+| Protocol | Docs | Routes | CF Guard | Timeout Clear | Buffer | Status |
+|---|---:|---:|---:|---:|---:|---|
+| activemq | 1 | 9 | yes | yes | no | Reviewed |
+| activeusers | 1 | 3 | no | yes | no | Reviewed |
+| adb | 1 | 4 | yes | no | yes | Reviewed |
+| aerospike | 1 | 4 | yes | no | no | Reviewed |
+| afp | 1 | 13 | no | no | no | Reviewed |
+| ajp | 1 | 2 | yes | no | no | Reviewed |
+| ami | 1 | 6 | no | no | no | Reviewed |
+| amqp | 1 | 6 | yes | no | no | Reviewed |
+| amqps | 1 | 3 | yes | no | no | Reviewed |
+| battlenet | 1 | 3 | no | no | no | Reviewed |
+| beanstalkd | 1 | 4 | yes | no | no | Reviewed |
+| beats | 1 | 3 | no | no | no | Reviewed |
+| bgp | 1 | 3 | yes | no | no | Reviewed |
+| bitcoin | 1 | 3 | yes | no | no | Reviewed |
+| bittorrent | 1 | 4 | yes | no | no | Reviewed |
+| cassandra | 1 | 3 | yes | no | no | Reviewed |
+| cdp | 1 | 3 | yes | no | no | Reviewed |
+| ceph | 1 | 6 | yes | yes | no | Reviewed |
+| chargen | 1 | 1 | no | no | yes | Reviewed |
+| cifs | 1 | 7 | yes | no | yes | Reviewed |
+| clamav | 1 | 4 | yes | no | no | Reviewed |
+| clickhouse | 1 | 3 | yes | no | no | Reviewed |
+| coap | 1 | 4 | yes | no | no | Reviewed |
+| collectd | 1 | 4 | yes | no | no | Reviewed |
+| consul | 1 | 6 | yes | no | no | Doc mismatch |
+| couchbase | 1 | 7 | yes | no | no | Reviewed |
+| couchdb | 1 | 2 | yes | no | no | Reviewed |
+| cvs | 1 | 4 | yes | no | no | Reviewed |
+| dap | 1 | 2 | yes | no | no | Reviewed |
+| daytime | 1 | 2 | no | no | no | Reviewed |
+| dcerpc | 1 | 3 | yes | no | no | Reviewed |
+| diameter | 1 | 5 | yes | no | no | Reviewed |
+| dicom | 1 | 3 | no | no | no | Reviewed |
+| dict | 1 | 3 | yes | no | no | Reviewed |
+| discard | 1 | 1 | no | no | no | Reviewed |
+| dnp3 | 1 | 3 | yes | no | yes | Reviewed |
+| dns | 1 | 2 | yes | no | no | Reviewed |
+| docker | 1 | 7 | yes | yes | no | Reviewed |
+| doh | 1 | 1 | no | no | no | Reviewed |
+| dot | 1 | 1 | no | no | no | Reviewed |
+| drda | 1 | 7 | yes | no | no | Reviewed |
+| echo | 1 | 2 | no | no | no | Reviewed |
+| elasticsearch | 1 | 6 | no | yes | no | Reviewed |
+| epmd | 1 | 2 | no | no | no | Reviewed |
+| epp | 1 | 8 | no | n/a | no | Reviewed |
+| etcd | 1 | 2 | no | no | no | Reviewed |
+| ethereum | 1 | 4 | yes | yes | no | Reviewed |
+| ethernetip | 1 | 5 | yes | no | no | Reviewed |
+| fastcgi | 1 | 2 | yes | no | no | Reviewed |
+| finger | 1 | 1 | no | no | no | Reviewed |
+| fins | 1 | 3 | yes | no | no | Reviewed |
+| firebird | 1 | 4 | yes | no | no | Reviewed |
+| fix | 1 | 3 | yes | no | no | Reviewed |
+| fluentd | 1 | 3 | yes | no | no | Reviewed |
+| ftp | 1 | 11 | yes | no | no | Reviewed |
+| ftps | 1 | 8 | yes | no | no | Reviewed |
+| gadugadu | 1 | 3 | yes | no | no | Reviewed |
+| ganglia | 1 | 2 | yes | no | no | Reviewed |
+| gearman | 1 | 3 | yes | no | no | Reviewed |
+| gelf | 1 | 2 | yes | no | no | Reviewed |
+| gemini | 1 | 1 | no | no | no | Reviewed |
+| git | 1 | 2 | yes | no | yes | Reviewed |
+| gopher | 1 | 1 | no | no | no | Reviewed |
+| gpsd | 1 | 5 | yes | no | no | Reviewed |
+| grafana | 1 | 9 | yes | no | no | Doc mismatch |
+| graphite | 1 | 4 | yes | no | no | Reviewed |
+| h323 | 1 | 4 | no | no | no | Reviewed |
+| haproxy | 1 | 8 | yes | no | no | Reviewed |
+| hazelcast | 1 | 10 | yes | no | no | Reviewed |
+| hl7 | 1 | 4 | yes | no | no | Reviewed |
+| hsrp | 1 | 4 | no | no | yes | Reviewed |
+| http | 1 | 3 | yes | no | no | Reviewed |
+| httpproxy | 1 | 2 | yes | no | no | Reviewed |
+| icecast | 1 | 3 | yes | no | no | Reviewed |
+| ident | 1 | 1 | no | no | no | Reviewed |
+| iec104 | 1 | 3 | yes | no | no | Doc mismatch |
+| ignite | 1 | 6 | yes | no | no | Reviewed |
+| ike | 1 | 3 | no | no | yes | Reviewed |
+| imap | 1 | 4 | yes | no | no | Reviewed |
+| imaps | 1 | 4 | yes | no | no | Reviewed |
+| influxdb | 1 | 3 | no | no | no | Reviewed |
+| informix | 1 | 3 | no | no | no | Reviewed |
+| ipfs | 1 | 9 | yes | no | no | Reviewed |
+| ipmi | 1 | 3 | yes | yes | no | Reviewed |
+| ipp | 1 | 2 | no | no | no | Reviewed |
+| irc | 1 | 1 | yes | no | no | Reviewed |
+| ircs | 1 | 1 | yes | no | no | Reviewed |
+| iscsi | 1 | 2 | yes | no | no | Reviewed |
+| jabber-component | 1 | 4 | no | no | no | Doc mismatch |
+| jdwp | 1 | 3 | yes | no | no | Reviewed |
+| jetdirect | 1 | 2 | yes | no | no | Reviewed |
+| jsonrpc | 1 | 3 | no | no | no | Reviewed |
+| jupyter | 1 | 6 | yes | no | no | Reviewed |
+| kafka | 1 | 7 | yes | no | no | Reviewed |
+| kerberos | 1 | 3 | yes | no | no | Reviewed |
+| kibana | 1 | 5 | yes | no | no | Reviewed |
+| kubernetes | 1 | 5 | yes | no | no | Reviewed |
+| l2tp | 1 | 4 | no | no | yes | Reviewed |
+| ldap | 1 | 6 | yes | no | no | Reviewed |
+| ldaps | 1 | 5 | yes | no | no | Reviewed |
+| ldp | 1 | 3 | yes | no | no | Reviewed |
+| livestatus | 1 | 5 | yes | no | no | Reviewed |
+| llmnr | 1 | 3 | yes | no | no | Reviewed |
+| lmtp | 1 | 2 | yes | no | no | Reviewed |
+| loki | 1 | 5 | yes | yes | no | Reviewed |
+| lpd | 1 | 4 | yes | no | no | Reviewed |
+| lsp | 1 | 2 | yes | no | no | Reviewed |
+| managesieve | 1 | 6 | yes | no | no | Reviewed |
+| matrix | 1 | 7 | no | no | no | Reviewed |
+| maxdb | 1 | 3 | yes | no | no | Reviewed |
+| mdns | 1 | 3 | no | no | yes | Reviewed |
+| meilisearch | 1 | 4 | yes | no | no | Reviewed |
+| memcached | 1 | 5 | yes | no | no | Reviewed |
+| mgcp | 1 | 3 | no | no | no | Reviewed |
+| minecraft | 1 | 2 | yes | no | no | Reviewed |
+| mms | 1 | 2 | yes | no | no | Doc mismatch |
+| modbus | 1 | 4 | yes | no | no | Reviewed |
+| mongodb | 1 | 6 | yes | no | no | Reviewed |
+| mpd | 1 | 8 | no | yes | no | Reviewed |
+| mqtt | 1 | 3 | yes | no | no | Reviewed |
+| msn | 1 | 4 | no | yes | no | Reviewed |
+| msrp | 1 | 3 | no | no | no | Reviewed |
+| mumble | 1 | 5 | yes | no | yes | Reviewed |
+| munin | 1 | 2 | yes | yes | no | Reviewed |
+| mysql | 1 | 4 | yes | no | no | Reviewed |
+| napster | 1 | 5 | no | no | no | Reviewed |
+| nats | 1 | 8 | yes | yes | no | Reviewed |
+| nbd | 1 | 4 | yes | yes | no | Reviewed |
+| neo4j | 1 | 5 | yes | no | no | Reviewed |
+| netbios | 1 | 3 | yes | yes | no | Reviewed |
+| nfs | 1 | 7 | yes | no | no | Reviewed |
+| ninep | 1 | 4 | no | no | no | Reviewed |
+| nntp | 1 | 6 | no | no | no | Reviewed |
+| nntps | 1 | 6 | yes | no | no | Doc mismatch |
+| node-inspector | 1 | 3 | yes | no | yes | Reviewed |
+| nomad | 1 | 6 | yes | no | no | Reviewed |
+| nrpe | 1 | 3 | yes | yes | yes | Reviewed |
+| nsca | 1 | 3 | no | yes | no | Reviewed |
+| nsq | 1 | 5 | yes | yes | no | Reviewed |
+| ntp | 1 | 3 | yes | no | no | Reviewed |
+| opcua | 1 | 3 | yes | yes | no | Reviewed |
+| openflow | 1 | 3 | yes | no | no | Reviewed |
+| opentsdb | 1 | 5 | yes | yes | no | Reviewed |
+| openvpn | 1 | 2 | yes | yes | no | Reviewed |
+| oracle-tns | 1 | 4 | yes | no | no | Reviewed |
+| oracle | 1 | 2 | yes | no | no | Doc mismatch |
+| oscar | 1 | 6 | no | yes | yes | Reviewed |
+| pcep | 1 | 3 | yes | yes | no | Reviewed |
+| perforce | 1 | 5 | yes | yes | no | Reviewed |
+| pjlink | 1 | 2 | yes | yes | no | Reviewed |
+| pop3 | 1 | 7 | yes | no | no | Reviewed |
+| pop3s | 1 | 7 | yes | no | no | Reviewed |
+| portmapper | 1 | 3 | no | yes | no | Reviewed |
+| postgres | 1 | 5 | yes | yes | no | Reviewed |
+| pptp | 1 | 3 | yes | no | no | Reviewed |
+| prometheus | 1 | 4 | yes | no | no | Reviewed |
+| qotd | 1 | 1 | no | yes | no | Reviewed |
+| quake3 | 1 | 2 | yes | yes | no | Reviewed |
+| rabbitmq | 1 | 3 | yes | no | no | Reviewed |
+| radius | 1 | 3 | yes | no | no | Reviewed |
+| radsec | 1 | 3 | no | no | no | Reviewed |
+| rcon | 1 | 2 | no | yes | no | Reviewed |
+| rdp | 1 | 3 | yes | no | no | Reviewed |
+| realaudio | 1 | 4 | no | no | yes | Reviewed |
+| redis | 1 | 3 | yes | no | no | Reviewed |
+| relp | 1 | 3 | yes | yes | no | Reviewed |
+| rethinkdb | 1 | 7 | yes | yes | no | Reviewed |
+| rexec | 1 | 1 | yes | no | no | Reviewed |
+| riak | 1 | 4 | yes | yes | no | Reviewed |
+| rip | 1 | 6 | no | yes | yes | Reviewed |
+| rlogin | 1 | 2 | yes | no | no | Reviewed |
+| rmi | 1 | 3 | yes | yes | no | Reviewed |
+| rserve | 1 | 2 | yes | yes | no | Reviewed |
+| rsh | 1 | 3 | yes | no | no | Reviewed |
+| rsync | 1 | 3 | yes | no | no | Reviewed |
+| rtmp | 1 | 3 | yes | no | no | Reviewed |
+| rtsp | 1 | 3 | yes | no | no | Reviewed |
+| s7comm | 1 | 3 | yes | yes | no | Reviewed |
+| sane | 1 | 5 | yes | yes | no | Reviewed |
+| sccp | 1 | 4 | no | no | no | Reviewed |
+| scp | 1 | 4 | yes | no | no | Reviewed |
+| sentinel | 1 | 7 | no | yes | no | Reviewed |
+| sftp | 1 | 8 | yes | n/a | no | Reviewed |
+| shadowsocks | 1 | 1 | yes | no | no | Reviewed |
+| shoutcast | 1 | 4 | no | no | no | Reviewed |
+| sip | 1 | 4 | no | yes | no | Reviewed |
+| sips | 1 | 4 | no | no | no | Doc mismatch |
+| slp | 1 | 3 | yes | no | no | Reviewed |
+| smb | 1 | 5 | yes | no | no | Reviewed |
+| smpp | 1 | 4 | yes | no | no | Reviewed |
+| smtp | 1 | 2 | yes | no | no | Reviewed |
+| smtps | 1 | 2 | yes | no | no | Reviewed |
+| snmp | 1 | 5 | yes | no | no | Reviewed |
+| snpp | 1 | 2 | no | yes | no | Reviewed |
+| soap | 1 | 2 | no | no | no | Reviewed |
+| socks4 | 1 | 2 | no | no | no | Reviewed |
+| socks5 | 1 | 2 | yes | no | no | Reviewed |
+| solr | 1 | 4 | yes | yes | no | Reviewed |
+| sonic | 1 | 5 | yes | yes | no | Reviewed |
+| spamd | 1 | 3 | no | yes | no | Reviewed |
+| spdy | 1 | 2 | yes | no | no | Reviewed |
+| spice | 1 | 2 | yes | no | no | Reviewed |
+| ssdp | 1 | 5 | yes | no | no | Reviewed |
+| ssh | 1 | 6 | yes | no | no | Reviewed |
+| stomp | 1 | 3 | no | no | no | Reviewed |
+| stun | 1 | 2 | yes | no | no | Reviewed |
+| submission | 0 | 2 | yes | no | no | Needs docs |
+| svn | 1 | 3 | no | no | no | Reviewed |
+| sybase | 1 | 5 | no | no | no | Reviewed |
+| syslog | 1 | 1 | no | no | no | Reviewed |
+| tacacs | 2 | 2 | yes | yes | no | Reviewed |
+| tarantool | 1 | 4 | yes | no | no | Reviewed |
+| tcp | 0 | 1 | yes | no | no | Needs docs |
+| tds | 1 | 3 | yes | no | no | Reviewed |
+| teamspeak | 1 | 6 | no | yes | no | Reviewed |
+| telnet | 1 | 3 | yes | no | no | Reviewed |
+| tftp | 0 | 5 | no | no | no | Needs docs |
+| thrift | 1 | 2 | yes | no | no | Reviewed |
+| time | 1 | 1 | no | no | no | Reviewed |
+| torcontrol | 0 | 3 | yes | no | no | Needs docs |
+| turn | 1 | 3 | no | no | yes | Reviewed |
+| uucp | 1 | 2 | yes | yes | no | Reviewed |
+| uwsgi | 0 | 2 | yes | no | no | Needs docs |
+| varnish | 0 | 4 | no | no | no | Needs docs |
+| vault | 1 | 4 | yes | no | no | Reviewed |
+| ventrilo | 1 | 2 | no | yes | no | Reviewed |
+| vnc | 1 | 2 | yes | no | no | Reviewed |
+| websocket | 1 | 1 | yes | no | no | Doc mismatch |
+| whois | 1 | 2 | yes | no | no | Reviewed |
+| winrm | 1 | 3 | yes | yes | no | Reviewed |
+| x11 | 1 | 2 | no | no | no | Reviewed |
+| xmpp-s2s | 1 | 4 | no | no | no | Reviewed |
+| xmpp | 1 | 4 | yes | no | no | Reviewed |
+| xmpps2s | 1 | 3 | no | no | no | Reviewed |
+| ymsg | 0 | 4 | no | no | yes | Needs docs |
+| zabbix | 1 | 3 | no | no | no | Reviewed |
+| zmtp | 1 | 4 | yes | no | no | Reviewed |
+| zookeeper | 1 | 5 | yes | no | no | Reviewed |

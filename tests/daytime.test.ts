@@ -16,8 +16,8 @@ describe('Daytime Protocol Integration Tests', () => {
   // Note: These tests will fail without a Daytime server
   // They are designed to test the protocol implementation
 
-  it('should retrieve time from a Daytime server', async () => {
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+  it('should retrieve time from a Daytime server (query endpoint)', async () => {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -39,7 +39,7 @@ describe('Daytime Protocol Integration Tests', () => {
   }, 10000);
 
   it('should calculate time offset when parseable', async () => {
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -60,7 +60,7 @@ describe('Daytime Protocol Integration Tests', () => {
   }, 10000);
 
   it('should reject empty host', async () => {
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -78,7 +78,7 @@ describe('Daytime Protocol Integration Tests', () => {
   });
 
   it('should reject invalid port number', async () => {
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -96,7 +96,7 @@ describe('Daytime Protocol Integration Tests', () => {
   });
 
   it('should handle connection timeout gracefully', async () => {
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -116,7 +116,7 @@ describe('Daytime Protocol Integration Tests', () => {
 
   it('should handle various time formats', async () => {
     // This test verifies we can handle different time format responses
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -140,7 +140,7 @@ describe('Daytime Protocol Integration Tests', () => {
   }, 10000);
 
   it('should return proper response structure', async () => {
-    const response = await fetch(`${API_BASE}/daytime/get`, {
+    const response = await fetch(`${API_BASE}/daytime/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

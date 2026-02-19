@@ -43,6 +43,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface DictDefineRequest {
   host?: string;
@@ -527,6 +528,19 @@ export async function handleDictDefine(request: Request): Promise<Response> {
       });
     }
 
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const { banner, response } = await dictSession(
       host, port,
       `DEFINE ${database} "${word}"`,
@@ -682,6 +696,19 @@ export async function handleDictMatch(request: Request): Promise<Response> {
       });
     }
 
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const { response } = await dictSession(
       host, port,
       `MATCH ${database} ${strategy} "${word}"`,
@@ -768,6 +795,19 @@ export async function handleDictDatabases(request: Request): Promise<Response> {
         count: 0,
       } satisfies DictDatabasesResponse), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if the target is behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

@@ -4,6 +4,37 @@ Browser-to-TCP bridge via Cloudflare Workers Sockets API. Run SSH, connect to da
 
 **Live Demo**: [portofcall.ross.gg](https://portofcall.ross.gg)
 
+## GPT-TODO
+
+<!-- GPT-TODO-START -->
+### Protocol Review Scope (2026-02-19)
+- Status: Completed initial expert review pass across all protocol modules in `src/worker/*.ts`.
+- Tracker: `docs/gpt/PROTOCOL-REVIEW-TRACKER.md`
+- Findings: `docs/gpt/FINDINGS-2026-02-19.md`
+- Current follow-up queue (missing protocol docs): `submission`, `tcp`, `tftp`, `torcontrol`, `uwsgi`, `varnish`, `ymsg`.
+
+<details>
+<summary>Protocols reviewed in this pass (238)</summary>
+
+`activemq`, `activeusers`, `adb`, `aerospike`, `afp`, `ajp`, `ami`, `amqp`, `amqps`, `battlenet`, `beanstalkd`, `beats`, `bgp`, `bitcoin`, `bittorrent`, `cassandra`
+`cdp`, `ceph`, `chargen`, `cifs`, `clamav`, `clickhouse`, `coap`, `collectd`, `consul`, `couchbase`, `couchdb`, `cvs`, `dap`, `daytime`, `dcerpc`, `diameter`
+`dicom`, `dict`, `discard`, `dnp3`, `dns`, `docker`, `doh`, `dot`, `drda`, `echo`, `elasticsearch`, `epmd`, `epp`, `etcd`, `ethereum`, `ethernetip`
+`fastcgi`, `finger`, `fins`, `firebird`, `fix`, `fluentd`, `ftp`, `ftps`, `gadugadu`, `ganglia`, `gearman`, `gelf`, `gemini`, `git`, `gopher`, `gpsd`
+`grafana`, `graphite`, `h323`, `haproxy`, `hazelcast`, `hl7`, `hsrp`, `http`, `httpproxy`, `icecast`, `ident`, `iec104`, `ignite`, `ike`, `imap`, `imaps`
+`influxdb`, `informix`, `ipfs`, `ipmi`, `ipp`, `irc`, `ircs`, `iscsi`, `jabber-component`, `jdwp`, `jetdirect`, `jsonrpc`, `jupyter`, `kafka`, `kerberos`, `kibana`
+`kubernetes`, `l2tp`, `ldap`, `ldaps`, `ldp`, `livestatus`, `llmnr`, `lmtp`, `loki`, `lpd`, `lsp`, `managesieve`, `matrix`, `maxdb`, `mdns`, `meilisearch`
+`memcached`, `mgcp`, `minecraft`, `mms`, `modbus`, `mongodb`, `mpd`, `mqtt`, `msn`, `msrp`, `mumble`, `munin`, `mysql`, `napster`, `nats`, `nbd`
+`neo4j`, `netbios`, `nfs`, `ninep`, `nntp`, `nntps`, `node-inspector`, `nomad`, `nrpe`, `nsca`, `nsq`, `ntp`, `opcua`, `openflow`, `opentsdb`, `openvpn`
+`oracle`, `oracle-tns`, `oscar`, `pcep`, `perforce`, `pjlink`, `pop3`, `pop3s`, `portmapper`, `postgres`, `pptp`, `prometheus`, `qotd`, `quake3`, `rabbitmq`, `radius`
+`radsec`, `rcon`, `rdp`, `realaudio`, `redis`, `relp`, `rethinkdb`, `rexec`, `riak`, `rip`, `rlogin`, `rmi`, `rserve`, `rsh`, `rsync`, `rtmp`
+`rtsp`, `s7comm`, `sane`, `sccp`, `scp`, `sentinel`, `sftp`, `shadowsocks`, `shoutcast`, `sip`, `sips`, `slp`, `smb`, `smpp`, `smtp`, `smtps`
+`snmp`, `snpp`, `soap`, `socks4`, `socks5`, `solr`, `sonic`, `spamd`, `spdy`, `spice`, `ssdp`, `ssh`, `stomp`, `stun`, `submission`, `svn`
+`sybase`, `syslog`, `tacacs`, `tarantool`, `tcp`, `tds`, `teamspeak`, `telnet`, `tftp`, `thrift`, `time`, `torcontrol`, `turn`, `uucp`, `uwsgi`, `varnish`
+`vault`, `ventrilo`, `vnc`, `websocket`, `whois`, `winrm`, `x11`, `xmpp`, `xmpp-s2s`, `xmpps2s`, `ymsg`, `zabbix`, `zmtp`, `zookeeper`
+
+</details>
+<!-- GPT-TODO-END -->
+
 ## What is Port of Call?
 
 Port of Call leverages [Cloudflare Workers' Sockets API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) (released May 16, 2023) to enable browser-based access to TCP protocols that were previously impossible to reach from the web.

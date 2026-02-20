@@ -368,8 +368,8 @@ export async function handleIEC104Probe(request: Request): Promise<Response> {
  *   [5]   bits 0-3: month (1-12)
  *   [6]   bits 0-6: year (offset from 2000, 0-99)
  */
-function parseCP56Time2a(data: Uint8Array, offset: number): string {
-  if (offset + 7 > data.length) return 'invalid';
+function parseCP56Time2a(data: Uint8Array, offset: number): string | null {
+  if (offset + 7 > data.length) return null;
 
   // Bytes 0-1: milliseconds within the minute as uint16 LE (0-59999)
   const msInMinute = data[offset] | (data[offset + 1] << 8);
@@ -382,8 +382,8 @@ function parseCP56Time2a(data: Uint8Array, offset: number): string {
   const month   = data[offset + 5] & 0x0F;
   const year    = 2000 + (data[offset + 6] & 0x7F);
 
-  if (month < 1 || month > 12 || day < 1 || day > 31) return 'invalid';
-  if (sec > 59 || minutes > 59 || hours > 23) return 'invalid';
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  if (sec > 59 || minutes > 59 || hours > 23) return null;
 
   const pad = (n: number, w = 2) => n.toString().padStart(w, '0');
   return `${year}-${pad(month)}-${pad(day)}T${pad(hours)}:${pad(minutes)}:${pad(sec)}.${pad(msRem, 3)}Z`;
@@ -426,7 +426,13 @@ function parseASDU(asduData: Uint8Array): ASDUInfo[] {
   const typeName = ASDU_TYPE_NAMES[typeId] || `Type ${typeId}`;
   let offset = 6; // start of IO objects
 
-  for (let i = 0; i < numObj && offset < asduData.length; i++) {
+  // Prevent iterating past buffer end
+  const asduHeaderSize = 6;
+  const minObjectSize = 4; // 3 bytes IOA + 1 byte minimum value
+  const maxPossibleObjects = Math.floor((asduData.length - asduHeaderSize) / minObjectSize);
+  const safeNumObj = Math.min(numObj, maxPossibleObjects, 255);
+
+  for (let i = 0; i < safeNumObj && offset < asduData.length; i++) {
     // IOA: 3 bytes LE (for IEC 104, CA length=2 and IOA length=3 are default)
     let ioa: number;
     if (!sq || i === 0) {
@@ -440,7 +446,7 @@ function parseASDU(asduData: Uint8Array): ASDUInfo[] {
     const rawStart = offset;
     let value: number | boolean | null = null;
     let quality = 0;
-    let timestamp: string | undefined;
+    let timestamp: string | null | undefined;
 
     switch (typeId) {
       case 1: // M_SP_NA_1 — Single Point (1 byte: value+quality combined)
@@ -595,7 +601,7 @@ function parseASDU(asduData: Uint8Array): ASDUInfo[] {
       qualityFlags: parseQualityFlags(quality),
       raw,
     };
-    if (timestamp !== undefined) entry.timestamp = timestamp;
+    if (timestamp != null) entry.timestamp = timestamp;
 
     results.push(entry);
   }
@@ -1045,10 +1051,40 @@ export async function handleIEC104Write(request: Request): Promise<Response> {
             const flen = 2 + ackResp[1];
             if (ackResp.length >= flen && flen > 6) {
               const asduResp = ackResp.slice(6, flen);
-              if (asduResp.length >= 4) {
+              if (asduResp.length >= 10) {
                 ackTypeId = asduResp[0];
-                ackCot = asduResp[2]; // COT low byte; 7 = Activation Confirmation
-                confirmed = ackCot === 7;
+                ackCot = asduResp[2]; // COT low byte
+
+                // Parse response IOA (3 bytes at offset 6-8)
+                const responseIOA = asduResp[6] | (asduResp[7] << 8) | (asduResp[8] << 16);
+
+                // Parse response command value (SCO/DCO byte at offset 9)
+                const responseValue = asduResp[9];
+
+                // Comprehensive validation per IEC 60870-5-104 spec
+
+                // Check for negative confirmation first (COT=10)
+                if (ackCot === 10) {
+                  throw new Error(`Command rejected by outstation (negative confirmation, COT=10)`);
+                }
+
+                // Verify activation confirmation (COT=7)
+                if (ackCot !== 7) {
+                  throw new Error(`Unexpected Cause of Transmission: ${ackCot} (expected 7 for activation)`);
+                }
+
+                // Verify Information Object Address matches request
+                if (responseIOA !== ioa) {
+                  throw new Error(`IOA mismatch: received ${responseIOA}, expected ${ioa}`);
+                }
+
+                // Verify command value was echoed correctly
+                if (responseValue !== commandQualifier) {
+                  throw new Error(`Command value mismatch: received ${responseValue}, expected ${commandQualifier}`);
+                }
+
+                // All validations passed
+                confirmed = true;
                 recvSeq = ((((ackResp[3] << 8) | ackResp[2]) >> 1) + 1) & 0x7FFF;
               }
             }

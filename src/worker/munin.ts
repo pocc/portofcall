@@ -136,7 +136,7 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
     }
 
     const host = options.host;
-    const port = options.port || 4949;
+    const port = options.port ?? 4949;
     const timeoutMs = options.timeout || 10000;
 
     // Fix: validate port range
@@ -321,7 +321,7 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
     }
 
     const host = options.host;
-    const port = options.port || 4949;
+    const port = options.port ?? 4949;
     const plugin = options.plugin;
     const timeoutMs = options.timeout || 10000;
 

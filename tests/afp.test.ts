@@ -64,11 +64,9 @@ describe('AFP /api/afp/connect', () => {
       port: 548,
       timeout: SHORT_TIMEOUT,
     });
-    // Either succeeds (unlikely) or returns an error — never throws
-    if (!data.success) {
-      expect(data.error).toBeDefined();
-      expect(typeof data.error).toBe('string');
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
+    expect(typeof data.error).toBe('string');
   }, 15000);
 
   it('should use default port 548 when omitted', async () => {
@@ -76,27 +74,19 @@ describe('AFP /api/afp/connect', () => {
       host: UNREACHABLE,
       timeout: SHORT_TIMEOUT,
     });
-    if (data.success) {
-      expect(data.port).toBe(548);
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 10000);
 
-  it('should return valid response structure on success', async () => {
+  it('should fail with unreachable host', async () => {
     const { data } = await post('/afp/connect', {
       host: UNREACHABLE,
       port: 548,
       timeout: SHORT_TIMEOUT,
     });
-    if (data.success && data.status === 'connected') {
-      expect(typeof data.host).toBe('string');
-      expect(typeof data.port).toBe('number');
-      expect(typeof data.connectTime).toBe('number');
-      expect(typeof data.rtt).toBe('number');
-      if (data.serverName !== undefined) expect(typeof data.serverName).toBe('string');
-      if (data.afpVersions !== undefined) expect(Array.isArray(data.afpVersions)).toBe(true);
-      if (data.uams !== undefined) expect(Array.isArray(data.uams)).toBe(true);
-      if (data.flags !== undefined) expect(typeof data.flags).toBe('number');
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
+    expect(typeof data.error).toBe('string');
   }, 15000);
 });
 
@@ -125,32 +115,24 @@ describe('AFP /api/afp/login', () => {
     const { data } = await post('/afp/login', {
       host: UNREACHABLE, port: 548, uam: 'DHCAST128', timeout: SHORT_TIMEOUT,
     });
-    // Either connection error or unsupported UAM error — never throws
-    if (!data.success) {
-      expect(data.error).toBeDefined();
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 15000);
 
   it('should handle unreachable host', async () => {
     const { data } = await post('/afp/login', {
       host: UNREACHABLE, port: 548, uam: 'No User Authent', timeout: SHORT_TIMEOUT,
     });
-    if (!data.success) {
-      expect(typeof data.error).toBe('string');
-    }
+    expect(data.success).toBe(false);
+    expect(typeof data.error).toBe('string');
   }, 15000);
 
-  it('should return volumes array on success', async () => {
+  it('should fail with unreachable host', async () => {
     const { data } = await post('/afp/login', {
       host: UNREACHABLE, port: 548, uam: 'No User Authent', timeout: SHORT_TIMEOUT,
     });
-    if (data.success) {
-      expect(Array.isArray(data.volumes)).toBe(true);
-      for (const vol of data.volumes ?? []) {
-        expect(typeof vol.name).toBe('string');
-        expect(typeof vol.hasPassword).toBe('boolean');
-      }
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 15000);
 });
 
@@ -175,18 +157,13 @@ describe('AFP /api/afp/list-dir', () => {
     expect(data.error).toBe('Host is required');
   });
 
-  it('should return entries array on success', async () => {
+  it('should fail with unreachable host', async () => {
     const { data } = await post('/afp/list-dir', {
       host: UNREACHABLE, port: 548, uam: 'No User Authent',
       volumeName: 'Data', dirId: 2, timeout: SHORT_TIMEOUT,
     });
-    if (data.success) {
-      expect(Array.isArray(data.entries)).toBe(true);
-      for (const e of data.entries ?? []) {
-        expect(typeof e.name).toBe('string');
-        expect(typeof e.isDir).toBe('boolean');
-      }
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 15000);
 });
 
@@ -357,14 +334,12 @@ describe('AFP /api/afp/read-file', () => {
     expect(data.error).toBe('volumeName and name are required');
   });
 
-  it('should return base64 data on success', async () => {
+  it('should fail with unreachable host', async () => {
     const { data } = await post('/afp/read-file', {
       host: UNREACHABLE, port: 548, uam: 'No User Authent',
       volumeName: 'Data', name: 'readme.txt', timeout: SHORT_TIMEOUT,
     });
-    if (data.success) {
-      expect(typeof data.data).toBe('string'); // base64
-      expect(typeof data.size).toBe('number');
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 15000);
 });

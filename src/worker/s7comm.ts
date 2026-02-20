@@ -183,6 +183,23 @@ function buildS7ReadSZL(): Uint8Array {
 // --- Response Parsing ---
 
 /**
+ * Get error message for S7comm return codes
+ */
+function getS7ErrorMessage(returnCode: number): string {
+  const errorMessages: Record<number, string> = {
+    0x00: 'Reserved',
+    0x01: 'Hardware error',
+    0x03: 'Accessing the object not allowed',
+    0x05: 'Invalid address',
+    0x06: 'Data type not supported',
+    0x07: 'Data type inconsistent',
+    0x0A: 'Object does not exist',
+    0xFF: 'Success',
+  };
+  return errorMessages[returnCode] ?? `Unknown error code: 0x${returnCode.toString(16).toUpperCase()}`;
+}
+
+/**
  * Read a complete TPKT packet from socket
  */
 async function readTPKTPacket(
@@ -628,13 +645,11 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
         try { writer.releaseLock(); } catch {}
         try { reader.releaseLock(); } catch {}
       }
-    } catch (error) {
-      throw error;
     } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-      socket.close();
+      try { socket.close(); } catch {}
     }
   } catch (error) {
     return new Response(
@@ -752,13 +767,11 @@ export async function handleS7ReadDB(request: Request): Promise<Response> {
         try { writer.releaseLock(); } catch {}
         try { reader.releaseLock(); } catch {}
       }
-    } catch (error) {
-      throw error;
     } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-      socket.close();
+      try { socket.close(); } catch {}
     }
   } catch (error) {
     return new Response(
@@ -865,37 +878,52 @@ export async function handleS7WriteDB(request: Request): Promise<Response> {
         await writer.write(buildS7WriteDB(dbNumber, startByte, writeData));
         const writeResp = await readTPKTPacket(reader, timeoutPromise);
 
-        // Parse WriteVar response: ack at TPKT(4)+COTP(3)+S7Header(10) = offset 17
-        // Data section: returnCode at offset 21, for write it's just 1 byte per item
-        let writeOk = false;
-        if (writeResp.length > 21 && writeResp[7] === 0x32 && writeResp[8] === 0x03) {
-          const returnCode = writeResp[21];
-          writeOk = returnCode === 0xFF;
+        // Parse WriteVar response structure:
+        // TPKT(4) + COTP(3) + S7Header(10) + Parameter section + Data section
+        // S7 Header at offset 7: [Protocol ID][Msg Type][Reserved:2][PDU Ref:2][Param Len:2][Data Len:2][Error Class][Error Code]
+        // For Ack_Data (0x03), data section contains ack_data items with return codes
+
+        if (writeResp.length < 22 || writeResp[7] !== 0x32 || writeResp[8] !== 0x03) {
+          throw new Error('Invalid S7 Write response format');
+        }
+
+        // Get parameter length from S7 header
+        const s7HeaderOffset = 7;
+        const paramLen = (writeResp[s7HeaderOffset + 6] << 8) | writeResp[s7HeaderOffset + 7];
+
+        // Data section starts after: TPKT(4) + COTP(3) + S7Header(10) + Parameters
+        const ackDataOffset = 4 + 3 + 10 + paramLen;
+
+        if (writeResp.length < ackDataOffset + 1) {
+          throw new Error('S7 Write response too short - missing ack_data');
+        }
+
+        // First byte of ack_data is the return code
+        const returnCode = writeResp[ackDataOffset];
+
+        if (returnCode !== 0xFF) {
+          const errorMsg = getS7ErrorMessage(returnCode);
+          throw new Error(`S7comm Write failed: ${errorMsg} (code: 0x${returnCode.toString(16).toUpperCase()})`);
         }
 
         return new Response(JSON.stringify({
-          success: writeOk,
+          success: true,
           host, port, rack, slot,
           db: dbNumber,
           startByte,
-          bytesWritten: writeOk ? writeData.length : 0,
-          error: writeOk ? undefined : 'Write failed — check DB number, address, and write permissions',
-          message: writeOk
-            ? `Wrote ${writeData.length} bytes to DB${dbNumber}[${startByte}..${startByte + writeData.length - 1}]`
-            : 'DB write failed',
+          bytesWritten: writeData.length,
+          message: `Wrote ${writeData.length} bytes to DB${dbNumber}[${startByte}..${startByte + writeData.length - 1}]`,
         } satisfies S7commResponse & { db: number; startByte: number; bytesWritten: number }),
           { headers: { 'Content-Type': 'application/json' } });
       } finally {
         try { writer.releaseLock(); } catch {}
         try { reader.releaseLock(); } catch {}
       }
-    } catch (error) {
-      throw error;
     } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-      socket.close();
+      try { socket.close(); } catch {}
     }
   } catch (error) {
     return new Response(

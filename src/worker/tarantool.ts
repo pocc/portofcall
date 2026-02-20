@@ -228,7 +228,7 @@ function mpDecodeUint(data: Uint8Array, offset: number): [number, number] {
   // uint32
   if (byte === 0xCE) {
     return [
-      ((data[offset + 1] << 24) | (data[offset + 2] << 16) | (data[offset + 3] << 8) | data[offset + 4]) >>> 0,
+      new DataView(data.buffer, data.byteOffset + offset + 1).getUint32(0, false),
       offset + 5,
     ];
   }
@@ -285,7 +285,7 @@ function mpSkipValue(data: Uint8Array, offset: number): number {
   // str16 / bin16
   if (b === 0xDA || b === 0xC5) return offset + 3 + ((data[offset + 1] << 8) | data[offset + 2]);
   // str32 / bin32
-  if (b === 0xDB || b === 0xC6) return offset + 5 + ((data[offset + 1] << 24) | (data[offset + 2] << 16) | (data[offset + 3] << 8) | data[offset + 4]) >>> 0;
+  if (b === 0xDB || b === 0xC6) return offset + 5 + new DataView(data.buffer, data.byteOffset + offset + 1).getUint32(0, false);
   // array16
   if (b === 0xDC) {
     const len = (data[offset + 1] << 8) | data[offset + 2];
@@ -795,7 +795,7 @@ function mpDecode(data: Uint8Array, off: number): [unknown, number] {
   if (b === 0xCD) return [((data[off + 1] << 8) | data[off + 2]), off + 3];
   // uint32
   if (b === 0xCE) {
-    const v = ((data[off+1] << 24) | (data[off+2] << 16) | (data[off+3] << 8) | data[off+4]) >>> 0;
+    const v = new DataView(data.buffer, data.byteOffset + off + 1).getUint32(0, false);
     return [v, off + 5];
   }
 
@@ -921,7 +921,7 @@ async function readIprotoResponse(
 
   if (sizeBytes[0] === 0xCE) {
     // 5-byte uint32: no over-read
-    msgLen = ((sizeBytes[1] << 24) | (sizeBytes[2] << 16) | (sizeBytes[3] << 8) | sizeBytes[4]) >>> 0;
+    msgLen = new DataView(sizeBytes.buffer, sizeBytes.byteOffset + 1).getUint32(0, false);
     const payload = await readExact(reader, msgLen, timeoutPromise);
     const full = new Uint8Array(5 + msgLen);
     full.set(sizeBytes, 0);

@@ -396,11 +396,10 @@ export async function handleIKEProbe(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      // Generate random initiator cookie (8 bytes)
-      const initiatorCookie = Buffer.allocUnsafe(8);
-      for (let i = 0; i < 8; i++) {
-        initiatorCookie[i] = Math.floor(Math.random() * 256);
-      }
+      // Generate random initiator cookie (8 bytes) using a CSPRNG
+      const cookieBytes = new Uint8Array(8);
+      crypto.getRandomValues(cookieBytes);
+      const initiatorCookie = Buffer.from(cookieBytes);
 
       // Responder cookie is zero for initial request
       const responderCookie = Buffer.alloc(8, 0);
@@ -986,12 +985,14 @@ export async function handleIKEv2SA(request: Request): Promise<Response> {
     try {
       await Promise.race([socket.opened, timeoutPromise]);
 
-      // Build IKEv2 IKE_SA_INIT packet
-      const initiatorSPI = Buffer.allocUnsafe(8);
-      for (let i = 0; i < 8; i++) initiatorSPI[i] = Math.floor(Math.random() * 256);
+      // Build IKEv2 IKE_SA_INIT packet — use CSPRNG for SPI and nonce
+      const spiBytes = new Uint8Array(8);
+      crypto.getRandomValues(spiBytes);
+      const initiatorSPI = Buffer.from(spiBytes);
 
-      const nonce = Buffer.allocUnsafe(32);
-      for (let i = 0; i < 32; i++) nonce[i] = Math.floor(Math.random() * 256);
+      const nonceBytes = new Uint8Array(32);
+      crypto.getRandomValues(nonceBytes);
+      const nonce = Buffer.from(nonceBytes);
 
       const packet = buildIKEv2SAInit(initiatorSPI, nonce);
 

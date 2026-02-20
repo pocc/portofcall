@@ -101,7 +101,7 @@ describe('MySQL Protocol Integration Tests', () => {
   });
 
   describe('MySQL Query Endpoint', () => {
-    it('should return 501 for query endpoint (not implemented)', async () => {
+    it('should handle query to unreachable host', async () => {
       const response = await fetch(`${API_BASE}/mysql/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -111,11 +111,14 @@ describe('MySQL Protocol Integration Tests', () => {
         }),
       });
 
-      expect(response.status).toBe(501);
-      const data = await response.json();
-      expect(data.success).toBe(false);
-      expect(data.error).toBeDefined();
-    });
+      // Endpoint is implemented; unreachable host returns connection error
+      expect(response.ok).toBe(false);
+      if (response.headers.get('content-type')?.includes('json')) {
+        const data = await response.json();
+        expect(data.success).toBe(false);
+        expect(data.error).toBeDefined();
+      }
+    }, 15000);
 
     it('should reject GET requests to query endpoint', async () => {
       const response = await fetch(`${API_BASE}/mysql/query`, {

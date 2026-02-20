@@ -197,9 +197,13 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
       message: 'Connected to Telnet server',
     }));
 
+    // Acquire a single writer for the socket's writable side.
+    // Both pipe functions share this writer so only one lock is held.
+    const socketWriter = socket.writable.getWriter();
+
     // Pipe data bidirectionally with Telnet protocol handling
-    pipeWebSocketToTelnet(server, socket);
-    pipeTelnetToWebSocket(socket, server);
+    pipeWebSocketToTelnet(server, socketWriter);
+    pipeTelnetToWebSocket(socket, socketWriter, server);
 
     return new Response(null, {
       status: 101,
@@ -217,11 +221,10 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
 }
 
 /**
- * Pipe WebSocket messages to Telnet server
+ * Pipe WebSocket messages to Telnet server.
+ * Accepts a pre-acquired writer so the writable lock is not duplicated.
  */
-function pipeWebSocketToTelnet(ws: WebSocket, socket: Socket): void {
-  const writer = socket.writable.getWriter();
-
+function pipeWebSocketToTelnet(ws: WebSocket, writer: WritableStreamDefaultWriter<Uint8Array>): void {
   ws.addEventListener('message', async (event) => {
     try {
       if (typeof event.data === 'string') {
@@ -241,10 +244,83 @@ function pipeWebSocketToTelnet(ws: WebSocket, socket: Socket): void {
 }
 
 /**
- * Pipe Telnet server data to WebSocket
- * Handles Telnet IAC commands transparently
+ * Process IAC (Interpret As Command) sequences from raw Telnet data.
+ *
+ * Implements the RFC 854 IAC state machine:
+ *   - WILL (0xFB) / DO (0xFD)     → refuse with WONT/DONT for all options
+ *   - WONT (0xFC) / DONT (0xFE)   → no response required, skip option byte
+ *   - SB   (0xFA) subnegotiation  → skip until IAC SE (0xFF 0xF0)
+ *   - All other bytes              → pass through as displayable text
+ *
+ * Returns the cleaned text and any IAC response bytes to send back to
+ * the server.
  */
-async function pipeTelnetToWebSocket(socket: Socket, ws: WebSocket): Promise<void> {
+function processIACData(data: Uint8Array): { text: string; responses: Uint8Array[] } {
+  const responses: Uint8Array[] = [];
+  let i = 0;
+  const textBytes: number[] = [];
+
+  while (i < data.length) {
+    if (data[i] !== IAC) {
+      // Normal data byte — pass through
+      textBytes.push(data[i++]);
+      continue;
+    }
+
+    // IAC byte — need at least one more byte
+    i++;
+    if (i >= data.length) break;
+
+    const cmd = data[i];
+
+    if (cmd === WILL || cmd === DO) {
+      // Server sent WILL X or DO X — refuse with WONT X / DONT X
+      i++;
+      if (i >= data.length) break;
+      const opt = data[i++];
+      const reply = cmd === WILL ? WONT : DONT;
+      responses.push(new Uint8Array([IAC, reply, opt]));
+
+    } else if (cmd === WONT || cmd === DONT) {
+      // Server sent WONT X or DONT X — no response needed, just skip option
+      i++;
+      if (i < data.length) i++; // skip option byte
+
+    } else if (cmd === SB) {
+      // Subnegotiation — skip until IAC SE
+      i++;
+      while (i < data.length) {
+        if (data[i] === IAC && i + 1 < data.length && data[i + 1] === SE) {
+          i += 2; // skip IAC SE
+          break;
+        }
+        i++;
+      }
+
+    } else {
+      // Other single-byte IAC command (NOP, DM, BRK, etc.) — skip
+      i++;
+    }
+  }
+
+  return {
+    text: new TextDecoder('utf-8', { fatal: false }).decode(new Uint8Array(textBytes)),
+    responses,
+  };
+}
+
+/**
+ * Pipe Telnet server data to WebSocket.
+ * IAC command sequences are filtered out of the output stream and
+ * appropriate responses are sent back to the Telnet server per RFC 854.
+ *
+ * Accepts the shared writer so the writable lock is not duplicated.
+ */
+async function pipeTelnetToWebSocket(
+  socket: Socket,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  ws: WebSocket,
+): Promise<void> {
   const reader = socket.readable.getReader();
 
   try {
@@ -256,9 +332,21 @@ async function pipeTelnetToWebSocket(socket: Socket, ws: WebSocket): Promise<voi
         break;
       }
 
-      // For now, pass data through as-is
-      // Could add IAC command parsing here if needed
-      ws.send(value);
+      // Process IAC negotiation sequences per RFC 854
+      const { text, responses } = processIACData(value);
+
+      // Send negotiation responses back to the Telnet server
+      if (responses.length > 0) {
+        const combined = new Uint8Array(responses.reduce((sum, r) => sum + r.length, 0));
+        let off = 0;
+        for (const r of responses) { combined.set(r, off); off += r.length; }
+        writer.write(combined).catch(() => {});
+      }
+
+      // Forward cleaned text to the WebSocket client
+      if (text.length > 0) {
+        ws.send(text);
+      }
     }
   } catch (error) {
     console.error('Error reading from Telnet socket:', error);

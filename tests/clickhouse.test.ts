@@ -134,11 +134,8 @@ describe('ClickHouse Protocol Integration Tests', () => {
     });
 
     const data = await response.json();
-
-    // Should fail gracefully (no server running)
-    if (!data.success) {
-      expect(data.error).toBeDefined();
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 10000);
 
   it('should use default port 8123', async () => {
@@ -152,9 +149,7 @@ describe('ClickHouse Protocol Integration Tests', () => {
     });
 
     const data = await response.json();
-
-    if (!data.success) {
-      expect(data.error).toBeDefined();
-    }
+    expect(data.success).toBe(false);
+    expect(data.error).toBeDefined();
   }, 10000);
 });

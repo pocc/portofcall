@@ -140,7 +140,7 @@ import {
   handleAFPWriteFile,
   handleAFPReadResourceFork,
 } from './afp';
-import { handleNFSProbe, handleNFSExports, handleNFSLookup, handleNFSGetAttr, handleNFSRead, handleNFSReaddir, handleNFSWrite } from './nfs';
+import { handleNFSProbe, handleNFSExports, handleNFSLookup, handleNFSGetAttr, handleNFSRead, handleNFSReaddir, handleNFSWrite, handleNFSCreate, handleNFSRemove, handleNFSRename, handleNFSMkdir, handleNFSRmdir } from './nfs';
 import { handleMGCPAudit, handleMGCPCommand, handleMGCPCallSetup } from './mgcp';
 import { handleFTPSConnect, handleFTPSLogin, handleFTPSList, handleFTPSDownload, handleFTPSUpload, handleFTPSDelete, handleFTPSMkdir, handleFTPSRename } from './ftps';
 import { handleDictDefine, handleDictMatch, handleDictDatabases } from './dict';
@@ -290,6 +290,75 @@ import { handleIPMIConnect, handleIPMIGetAuthCaps, handleIPMIGetDeviceID } from 
 import { handleSCPConnect, handleSCPList, handleSCPGet, handleSCPPut } from './scp';
 import { handleSPDYConnect, handleSPDYH2Probe } from './spdy';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+type TimeoutHandle = ReturnType<typeof setTimeout>;
+
+type TimerTrackingStore = {
+  timers: Set<TimeoutHandle>;
+};
+
+const timerStore = new AsyncLocalStorage<TimerTrackingStore>();
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
+const nativeClearTimeout = globalThis.clearTimeout.bind(globalThis);
+
+const TIMER_PATCH_FLAG = '__portOfCallTimeoutPatchInstalled';
+const timerPatchGlobal = globalThis as typeof globalThis & { [TIMER_PATCH_FLAG]?: boolean };
+
+if (!timerPatchGlobal[TIMER_PATCH_FLAG]) {
+  timerPatchGlobal[TIMER_PATCH_FLAG] = true;
+
+  globalThis.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
+    const store = timerStore.getStore();
+
+    if (!store) {
+      return nativeSetTimeout(handler, timeout, ...(args as []));
+    }
+
+    if (typeof handler !== 'function') {
+      const timeoutHandle = nativeSetTimeout(handler, timeout, ...(args as [])) as unknown as TimeoutHandle;
+      store.timers.add(timeoutHandle);
+      return timeoutHandle;
+    }
+
+    let timeoutHandle: TimeoutHandle;
+    const wrappedHandler = (...handlerArgs: unknown[]): void => {
+      try {
+        (handler as (...callbackArgs: unknown[]) => unknown)(...handlerArgs);
+      } finally {
+        store.timers.delete(timeoutHandle);
+      }
+    };
+
+    timeoutHandle = nativeSetTimeout(wrappedHandler, timeout, ...(args as []));
+    store.timers.add(timeoutHandle);
+    return timeoutHandle;
+  }) as typeof setTimeout;
+
+  globalThis.clearTimeout = ((timeoutHandle?: TimeoutHandle): void => {
+    const store = timerStore.getStore();
+    if (store && timeoutHandle !== undefined) {
+      store.timers.delete(timeoutHandle);
+    }
+    nativeClearTimeout(timeoutHandle);
+  }) as typeof clearTimeout;
+}
+
+async function withRequestTimeoutCleanup<T>(operation: () => Promise<T>): Promise<T> {
+  return timerStore.run({ timers: new Set<TimeoutHandle>() }, async () => {
+    try {
+      return await operation();
+    } finally {
+      const store = timerStore.getStore();
+      if (store) {
+        for (const timeoutHandle of store.timers) {
+          nativeClearTimeout(timeoutHandle);
+        }
+        store.timers.clear();
+      }
+    }
+  });
+}
 
 const ROUTER_CLOUDFLARE_GUARD_PROTOCOLS = new Set([
   'activeusers',
@@ -473,12 +542,16 @@ export interface Env {
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
+    const upgradeHeader = request.headers.get('Upgrade');
+    const isWebSocketUpgrade = upgradeHeader?.toLowerCase() === 'websocket';
 
-    const cloudflareGuardResponse = await maybeBlockCloudflareTarget(request, url);
-    if (cloudflareGuardResponse) {
-      return cloudflareGuardResponse;
-    }
+    const executeRequest = async (): Promise<Response> => {
+      const url = new URL(request.url);
+
+      const cloudflareGuardResponse = await maybeBlockCloudflareTarget(request, url);
+      if (cloudflareGuardResponse) {
+        return cloudflareGuardResponse;
+      }
 
     // API endpoint for TCP ping
     if (url.pathname === '/api/ping') {
@@ -1823,6 +1896,7 @@ export default {
 
     // DAP (Debug Adapter Protocol) endpoints
     if (url.pathname === '/api/dap/health') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleDAPHealth(request);
     }
 
@@ -1937,31 +2011,63 @@ export default {
 
     // NFS API endpoints
     if (url.pathname === '/api/nfs/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSProbe(request);
     }
 
     if (url.pathname === '/api/nfs/exports') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSExports(request);
     }
 
     if (url.pathname === '/api/nfs/lookup') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSLookup(request);
     }
 
     if (url.pathname === '/api/nfs/getattr') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSGetAttr(request);
     }
 
     if (url.pathname === '/api/nfs/read') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSRead(request);
     }
 
     if (url.pathname === '/api/nfs/readdir') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSReaddir(request);
     }
 
     if (url.pathname === '/api/nfs/write') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleNFSWrite(request);
+    }
+
+    if (url.pathname === '/api/nfs/create') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNFSCreate(request);
+    }
+
+    if (url.pathname === '/api/nfs/remove') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNFSRemove(request);
+    }
+
+    if (url.pathname === '/api/nfs/rename') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNFSRename(request);
+    }
+
+    if (url.pathname === '/api/nfs/mkdir') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNFSMkdir(request);
+    }
+
+    if (url.pathname === '/api/nfs/rmdir') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+      return handleNFSRmdir(request);
     }
 
     // MGCP API endpoints
@@ -3627,14 +3733,17 @@ export default {
 
     // Tor Control API endpoints
     if (url.pathname === '/api/torcontrol/probe') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleTorControlProbe(request);
     }
 
     if (url.pathname === '/api/torcontrol/getinfo') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleTorControlGetInfo(request);
     }
 
     if (url.pathname === '/api/torcontrol/signal') {
+      if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
       return handleTorControlSignal(request);
     }
 
@@ -4298,7 +4407,14 @@ export default {
     }
 
     // Serve static assets (built React app)
-    return env.ASSETS.fetch(request);
+      return env.ASSETS.fetch(request);
+    };
+
+    if (isWebSocketUpgrade) {
+      return executeRequest();
+    }
+
+    return withRequestTimeoutCleanup(executeRequest);
   },
 };
 

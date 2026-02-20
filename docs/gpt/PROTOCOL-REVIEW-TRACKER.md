@@ -70,7 +70,7 @@ Total protocol modules reviewed: 238
 | git | 1 | 2 | yes | no | yes | Reviewed |
 | gopher | 1 | 1 | no | no | no | Reviewed |
 | gpsd | 1 | 5 | yes | no | no | Reviewed |
-| grafana | 1 | 9 | yes | no | no | Doc mismatch |
+| grafana | 1 | 9 | yes | no | no | Reviewed |
 | graphite | 1 | 4 | yes | no | no | Reviewed |
 | h323 | 1 | 4 | no | no | no | Reviewed |
 | haproxy | 1 | 8 | yes | no | no | Reviewed |
@@ -81,7 +81,7 @@ Total protocol modules reviewed: 238
 | httpproxy | 1 | 2 | yes | no | no | Reviewed |
 | icecast | 1 | 3 | yes | no | no | Reviewed |
 | ident | 1 | 1 | no | no | no | Reviewed |
-| iec104 | 1 | 3 | yes | no | no | Doc mismatch |
+| iec104 | 1 | 3 | yes | no | no | Reviewed |
 | ignite | 1 | 6 | yes | no | no | Reviewed |
 | ike | 1 | 3 | no | no | yes | Reviewed |
 | imap | 1 | 4 | yes | no | no | Reviewed |
@@ -121,7 +121,7 @@ Total protocol modules reviewed: 238
 | memcached | 1 | 5 | yes | no | no | Reviewed |
 | mgcp | 1 | 3 | no | no | no | Reviewed |
 | minecraft | 1 | 2 | yes | no | no | Reviewed |
-| mms | 1 | 2 | yes | no | no | Doc mismatch |
+| mms | 1 | 4 | yes | no | no | Reviewed |
 | modbus | 1 | 4 | yes | no | no | Reviewed |
 | mongodb | 1 | 6 | yes | no | no | Reviewed |
 | mpd | 1 | 8 | no | yes | no | Reviewed |
@@ -212,35 +212,35 @@ Total protocol modules reviewed: 238
 | ssh | 1 | 6 | yes | no | no | Reviewed |
 | stomp | 1 | 3 | no | no | no | Reviewed |
 | stun | 1 | 2 | yes | no | no | Reviewed |
-| submission | 0 | 2 | yes | no | no | Needs docs |
+| submission | 1 | 2 | yes | no | no | Reviewed |
 | svn | 1 | 3 | no | no | no | Reviewed |
 | sybase | 1 | 5 | no | no | no | Reviewed |
 | syslog | 1 | 1 | no | no | no | Reviewed |
 | tacacs | 2 | 2 | yes | yes | no | Reviewed |
 | tarantool | 1 | 4 | yes | no | no | Reviewed |
-| tcp | 0 | 1 | yes | no | no | Needs docs |
+| tcp | 1 | 1 | yes | no | no | Reviewed |
 | tds | 1 | 3 | yes | no | no | Reviewed |
 | teamspeak | 1 | 6 | no | yes | no | Reviewed |
 | telnet | 1 | 3 | yes | no | no | Reviewed |
-| tftp | 0 | 5 | no | no | no | Needs docs |
+| tftp | 1 | 5 | no | no | no | Reviewed |
 | thrift | 1 | 2 | yes | no | no | Reviewed |
 | time | 1 | 1 | no | no | no | Reviewed |
-| torcontrol | 0 | 3 | yes | no | no | Needs docs |
+| torcontrol | 1 | 3 | yes | no | no | Reviewed |
 | turn | 1 | 3 | no | no | yes | Reviewed |
 | uucp | 1 | 2 | yes | yes | no | Reviewed |
-| uwsgi | 0 | 2 | yes | no | no | Needs docs |
-| varnish | 0 | 4 | no | no | no | Needs docs |
+| uwsgi | 1 | 2 | yes | no | no | Reviewed |
+| varnish | 1 | 4 | no | no | no | Reviewed |
 | vault | 1 | 4 | yes | no | no | Reviewed |
 | ventrilo | 1 | 2 | no | yes | no | Reviewed |
 | vnc | 1 | 2 | yes | no | no | Reviewed |
-| websocket | 1 | 1 | yes | no | no | Doc mismatch |
+| websocket | 1 | 1 | yes | no | no | Reviewed |
 | whois | 1 | 2 | yes | no | no | Reviewed |
 | winrm | 1 | 3 | yes | yes | no | Reviewed |
 | x11 | 1 | 2 | no | no | no | Reviewed |
 | xmpp-s2s | 1 | 4 | no | no | no | Reviewed |
 | xmpp | 1 | 4 | yes | no | no | Reviewed |
 | xmpps2s | 1 | 3 | no | no | no | Reviewed |
-| ymsg | 0 | 4 | no | no | yes | Needs docs |
+| ymsg | 1 | 4 | no | no | yes | Reviewed |
 | zabbix | 1 | 3 | no | no | no | Reviewed |
 | zmtp | 1 | 4 | yes | no | no | Reviewed |
 | zookeeper | 1 | 5 | yes | no | no | Reviewed |

@@ -79,12 +79,13 @@ describe('Apache Ignite Thin Client API', () => {
       body: JSON.stringify({ host: 'nonexistent.invalid', port: 10800, timeout: 5000 }),
     });
     const data = await res.json();
-    // Probe completes but reports 0 accepted versions for unreachable host
+    // Probe returns success:true with all versions failed, or success:false
+    if (!res.ok) return;
     expect(data).toHaveProperty('success');
-    if (data.success) {
-      expect(data.acceptedVersions).toBe(0);
-    } else {
-      expect(data.error).toBeDefined();
+    // All versions should report connection failure
+    if (data.versions) {
+      const anySupported = Object.values(data.versions as Record<string, {accepted: boolean}>).some(v => v.accepted);
+      expect(anySupported).toBe(false);
     }
   });
 

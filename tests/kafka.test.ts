@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = 'http://localhost:8787';
+const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
 
 describe('Kafka Protocol (Port 9092)', () => {
   describe('ApiVersions - Input Validation', () => {

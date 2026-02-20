@@ -23,6 +23,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface ChargenRequest {
   host: string;
@@ -88,6 +89,18 @@ export async function handleChargenStream(request: Request): Promise<Response> {
 
     // Enforce safety limit - max 1MB
     const safeMaxBytes = Math.min(maxBytes, 1048576);
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const startTime = Date.now();
 

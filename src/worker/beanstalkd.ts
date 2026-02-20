@@ -87,7 +87,12 @@ async function readBeanstalkdResponse(
     totalBytes += result.value.length;
     if (totalBytes >= maxBytes) break;
 
-    // Check if we have a complete response
+    // Check for a complete response by decoding only the new chunk for a quick
+    // terminator scan, then doing a single full decode only when needed.
+    const tail = new TextDecoder().decode(result.value);
+    if (!tail.includes('\r\n')) continue; // No line ending in this chunk yet
+
+    // We have at least one \r\n somewhere — do a single full reassembly to parse
     const combined = new Uint8Array(totalBytes);
     let offset = 0;
     for (const chunk of chunks) {

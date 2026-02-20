@@ -614,7 +614,6 @@ export async function handleSCPPut(request: Request): Promise<Response> {
     };
     const { host, port = 22, timeout = 30000, username, password, privateKey, passphrase } = body;
     const remotePath = body.remotePath;
-    const filename = body.filename ?? remotePath.split('/').pop() ?? 'file';
     const mode = body.mode ?? '0644';
 
     if (!host || !username) {
@@ -627,6 +626,7 @@ export async function handleSCPPut(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    const filename = body.filename ?? remotePath.split('/').pop() ?? 'file';
     if (!body.data) {
       return new Response(JSON.stringify({ success: false, error: 'data (base64) is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },

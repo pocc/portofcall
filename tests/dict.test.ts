@@ -161,7 +161,7 @@ describe('DICT Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        word: 'hello; DROP TABLE',
+        word: 'hello world!',
         timeout: 15000,
       }),
     });

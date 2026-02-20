@@ -97,6 +97,10 @@ async function readExactBytes(
     // Buffer any excess
     if (value.length > toCopy) {
       const excess = value.length - toCopy;
+      const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10 MB
+      if (bufferOffset + excess > MAX_BUFFER_SIZE) {
+        throw new Error('Git response too large (>10 MB)');
+      }
       // Grow buffer if needed
       if (bufferOffset + excess > existingBuffer.length) {
         const newBuf = new Uint8Array(bufferOffset + excess + 4096);

@@ -149,8 +149,8 @@ function encodeVarUInt(value: number): Uint8Array {
  * Returns [value, bytesConsumed].
  */
 function decodeVarUInt(data: Uint8Array, offset: number): [number, number] {
-  let result = 0;
-  let shift = 0;
+  let result = 0n; // Use BigInt to avoid precision loss for shift >= 53
+  let shift = 0n;
   let bytesRead = 0;
 
   for (let i = 0; i < 9; i++) { // max 9 bytes for 64-bit
@@ -159,11 +159,11 @@ function decodeVarUInt(data: Uint8Array, offset: number): [number, number] {
     }
     const byte = data[offset + bytesRead];
     bytesRead++;
-    result += (byte & 0x7F) * Math.pow(2, shift); // use multiply for large values
+    result |= BigInt(byte & 0x7F) << shift;
+    shift += 7n;
     if ((byte & 0x80) === 0) {
-      return [result, bytesRead];
+      return [Number(result), bytesRead]; // Safe for values < 2^53
     }
-    shift += 7;
   }
   throw new Error('VarUInt: too many bytes (max 9)');
 }

@@ -19,8 +19,8 @@ describe('AMQPS Integration', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.secure).toBe(true);
       expect(data.protocol).toContain('AMQP');

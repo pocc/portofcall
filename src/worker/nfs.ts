@@ -45,8 +45,18 @@ const NFSPROC3_GETATTR = 1;
 const NFSPROC3_LOOKUP = 3;
 const NFSPROC3_READ = 6;
 const NFSPROC3_WRITE = 7;
+// const NFSPROC3_CREATE = 8;    // Reserved for future use
+// const NFSPROC3_MKDIR = 9;     // Reserved for future use
+// const NFSPROC3_REMOVE = 12;   // Reserved for future use
+// const NFSPROC3_RMDIR = 13;    // Reserved for future use
+// const NFSPROC3_RENAME = 14;   // Reserved for future use
 const NFSPROC3_READDIR = 16;
 const NFS3_FILE_SYNC = 2; // stable_how: write synchronously
+
+// NFSv3 create modes (reserved for future use)
+// const UNCHECKED = 0;
+// const GUARDED = 1;
+// const EXCLUSIVE = 2;
 
 // NFSv3 file types
 const NF3_FILE_TYPES: Record<number, string> = {
@@ -448,6 +458,12 @@ async function mountExportPath(
  * Handle NFS probe - detect supported NFS versions via NULL calls
  */
 export async function handleNFSProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -565,6 +581,12 @@ export async function handleNFSProbe(request: Request): Promise<Response> {
  * NFSv4 doesn't use the mount protocol, but many servers still support it.
  */
 export async function handleNFSExports(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -659,6 +681,12 @@ export async function handleNFSExports(request: Request): Promise<Response> {
  * Response:     { fileHandle, type, mode, size, uid, gid, mtime, rtt }
  */
 export async function handleNFSLookup(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -817,6 +845,12 @@ export async function handleNFSLookup(request: Request): Promise<Response> {
  * Response:     { type, mode, modeStr, nlink, uid, gid, size, atime, mtime, ctime, rtt }
  */
 export async function handleNFSGetAttr(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -997,6 +1031,12 @@ async function resolveNFSFilePath(
  * Response:     { data, eof, bytesRead, encoding, rtt }
  */
 export async function handleNFSRead(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -1140,6 +1180,12 @@ export async function handleNFSRead(request: Request): Promise<Response> {
  *   count — max reply size in bytes (default: 4096)
  */
 export async function handleNFSReaddir(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; mountPort?: number; timeout?: number;
@@ -1230,6 +1276,12 @@ export async function handleNFSReaddir(request: Request): Promise<Response> {
  * Note: Most NFS exports are read-only; the server will reject writes if not permitted.
  */
 export async function handleNFSWrite(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; mountPort?: number; timeout?: number;
@@ -1310,6 +1362,555 @@ export async function handleNFSWrite(request: Request): Promise<Response> {
     }
 
     return new Response(JSON.stringify({ success: true, host, port, exportPath, path, offset, bytesWritten, committed: committedStr, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 CREATE — create a new file.
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, path, mode?, data? }
+ *   path — path to the new file (including filename)
+ *   mode — file permissions in octal (default: 0644)
+ *   data — optional base64-encoded initial file content
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. Resolve parent directory path → parent directory file handle
+ *  3. NFSv3 CREATE (proc 8) → create file and get file handle
+ *  4. Optional: if data provided, WRITE to the new file
+ */
+export async function handleNFSCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; path: string; mode?: number; data?: string;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath, path } = body;
+    const mode = body.mode ?? 0o644;
+
+    if (!host || !exportPath || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Split path into parent directory and filename
+    const pathParts = path.split('/').filter(p => p.length > 0);
+    if (pathParts.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid path: must specify a filename' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const filename = pathParts[pathParts.length - 1];
+    const parentPath = pathParts.slice(0, -1).join('/');
+
+    const parentFH = parentPath ? await resolveNFSFilePath(host, port, rootFH, parentPath, timeout) : rootFH;
+    if (!parentFH) return new Response(JSON.stringify({ success: false, error: `Parent directory not found: ${parentPath || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // CREATE args: where(diropargs3) + how(createhow3)
+    // diropargs3: dir(nfs_fh3) + name(filename3)
+    // createhow3: mode(uint32) + [if mode==UNCHECKED or GUARDED] sattr3
+    // sattr3: mode(set_mode3) + uid(set_uid3) + gid(set_gid3) + size(set_size3) + atime(set_atime) + mtime(set_mtime)
+    // set_mode3: set_it(bool/uint32) + [if set_it] mode(uint32)
+    const fhEncoded = xdrEncodeFileHandle(parentFH);
+    const nameEncoded = xdrEncodeString(filename);
+
+    // Build sattr3 with mode set, others unset
+    const sattr3 = new Uint8Array(24); // 6 fields * 4 bytes each
+    const sattr3View = new DataView(sattr3.buffer);
+    sattr3View.setUint32(0, 1); // set mode
+    sattr3View.setUint32(4, mode); // mode value
+    sattr3View.setUint32(8, 0); // don't set uid
+    sattr3View.setUint32(12, 0); // don't set gid
+    sattr3View.setUint32(16, 0); // don't set size
+    sattr3View.setUint32(20, 0); // don't set atime
+
+    const createArgs = new Uint8Array(fhEncoded.length + nameEncoded.length + 4 + sattr3.length);
+    const av = new DataView(createArgs.buffer);
+    let ao = 0;
+    createArgs.set(fhEncoded, ao); ao += fhEncoded.length;
+    createArgs.set(nameEncoded, ao); ao += nameEncoded.length;
+    av.setUint32(ao, 0); ao += 4; // createmode = UNCHECKED (0)
+    createArgs.set(sattr3, ao);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, 8, createArgs, timeout); // proc 8 = CREATE
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `CREATE failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cr = reply.data;
+    const crv = new DataView(cr.buffer, cr.byteOffset, cr.byteLength);
+    let crOff = 0;
+
+    if (cr.length < 4) return new Response(JSON.stringify({ success: false, error: 'CREATE reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = crv.getUint32(crOff); crOff += 4;
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 CREATE error status: ${nfsStatus} (export may be read-only or file exists)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // CREATE3res: status + post_op_fh3 (optional file handle) + post_op_attr + wcc_data
+    // post_op_fh3: handle_follows(bool) + [if follows] nfs_fh3
+    let createdFH: Uint8Array | null = null;
+    if (crOff + 4 <= cr.length) {
+      const handleFollows = crv.getUint32(crOff); crOff += 4;
+      if (handleFollows === 1 && crOff + 4 <= cr.length) {
+        const fhLen = crv.getUint32(crOff); crOff += 4;
+        if (fhLen <= 64 && crOff + fhLen <= cr.length) {
+          createdFH = cr.slice(crOff, crOff + fhLen);
+        }
+      }
+    }
+
+    // If data is provided and we have the file handle, write it
+    let bytesWritten = 0;
+    if (body.data && createdFH) {
+      let writeBytes: Uint8Array;
+      try {
+        const binary = atob(body.data);
+        writeBytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) writeBytes[i] = binary.charCodeAt(i);
+      } catch {
+        return new Response(JSON.stringify({ success: true, created: true, warning: 'File created but data is invalid base64', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+
+      if (writeBytes.length <= 65536) {
+        const fhEncoded2 = xdrEncodeFileHandle(createdFH);
+        const dataPadded = Math.ceil(writeBytes.length / 4) * 4;
+        const writeArgs = new Uint8Array(fhEncoded2.length + 8 + 4 + 4 + 4 + dataPadded);
+        const wv = new DataView(writeArgs.buffer);
+        let wo = 0;
+        writeArgs.set(fhEncoded2, wo); wo += fhEncoded2.length;
+        wv.setUint32(wo, 0); wo += 4; // offset hi
+        wv.setUint32(wo, 0); wo += 4; // offset lo
+        wv.setUint32(wo, writeBytes.length); wo += 4;
+        wv.setUint32(wo, NFS3_FILE_SYNC); wo += 4;
+        wv.setUint32(wo, writeBytes.length); wo += 4;
+        writeArgs.set(writeBytes, wo);
+
+        const writeReply = await sendRpcCall(host, port, NFS_PROGRAM, 3, NFSPROC3_WRITE, writeArgs, timeout);
+        if (writeReply && writeReply.accepted && writeReply.acceptStat === ACCEPT_SUCCESS && writeReply.data) {
+          const wd = writeReply.data;
+          const wdv = new DataView(wd.buffer, wd.byteOffset, wd.byteLength);
+          if (wd.length >= 4 && wdv.getUint32(0) === 0) {
+            let wdOff = 4;
+            if (wdOff + 4 <= wd.length) { const pf = wdv.getUint32(wdOff); wdOff += 4; if (pf === 1) wdOff += 24; }
+            if (wdOff + 4 <= wd.length) { const qf = wdv.getUint32(wdOff); wdOff += 4; if (qf === 1) wdOff += 84; }
+            if (wdOff + 4 <= wd.length) {
+              bytesWritten = wdv.getUint32(wdOff);
+            }
+          }
+        }
+      }
+    }
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      path,
+      created: true,
+      bytesWritten: bytesWritten > 0 ? bytesWritten : undefined,
+      rtt
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 REMOVE — delete a file.
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, path }
+ *   path — path to the file to delete
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. Resolve parent directory path → parent directory file handle
+ *  3. NFSv3 REMOVE (proc 12) → delete the file
+ */
+export async function handleNFSRemove(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; path: string;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath, path } = body;
+
+    if (!host || !exportPath || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Split path into parent directory and filename
+    const pathParts = path.split('/').filter(p => p.length > 0);
+    if (pathParts.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid path: must specify a filename' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const filename = pathParts[pathParts.length - 1];
+    const parentPath = pathParts.slice(0, -1).join('/');
+
+    const parentFH = parentPath ? await resolveNFSFilePath(host, port, rootFH, parentPath, timeout) : rootFH;
+    if (!parentFH) return new Response(JSON.stringify({ success: false, error: `Parent directory not found: ${parentPath || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // REMOVE args: diropargs3 (dir + name)
+    const fhEncoded = xdrEncodeFileHandle(parentFH);
+    const nameEncoded = xdrEncodeString(filename);
+    const removeArgs = new Uint8Array(fhEncoded.length + nameEncoded.length);
+    removeArgs.set(fhEncoded, 0);
+    removeArgs.set(nameEncoded, fhEncoded.length);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, 12, removeArgs, timeout); // proc 12 = REMOVE
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `REMOVE failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const rm = reply.data;
+    const rmv = new DataView(rm.buffer, rm.byteOffset, rm.byteLength);
+
+    if (rm.length < 4) return new Response(JSON.stringify({ success: false, error: 'REMOVE reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = rmv.getUint32(0);
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 REMOVE error status: ${nfsStatus} (export may be read-only or file not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      path,
+      deleted: true,
+      rtt
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 RENAME — rename or move a file.
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, fromPath, toPath }
+ *   fromPath — current file path
+ *   toPath   — new file path
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. Resolve source parent directory → from parent file handle
+ *  3. Resolve destination parent directory → to parent file handle
+ *  4. NFSv3 RENAME (proc 14) → rename/move the file
+ */
+export async function handleNFSRename(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; fromPath: string; toPath: string;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath, fromPath, toPath } = body;
+
+    if (!host || !exportPath || !fromPath || !toPath) {
+      return new Response(JSON.stringify({ success: false, error: 'host, exportPath, fromPath, and toPath are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Parse source path
+    const fromParts = fromPath.split('/').filter(p => p.length > 0);
+    if (fromParts.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid fromPath: must specify a filename' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const fromFilename = fromParts[fromParts.length - 1];
+    const fromParentPath = fromParts.slice(0, -1).join('/');
+
+    // Parse destination path
+    const toParts = toPath.split('/').filter(p => p.length > 0);
+    if (toParts.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid toPath: must specify a filename' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const toFilename = toParts[toParts.length - 1];
+    const toParentPath = toParts.slice(0, -1).join('/');
+
+    const fromParentFH = fromParentPath ? await resolveNFSFilePath(host, port, rootFH, fromParentPath, timeout) : rootFH;
+    if (!fromParentFH) return new Response(JSON.stringify({ success: false, error: `Source parent directory not found: ${fromParentPath || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    const toParentFH = toParentPath ? await resolveNFSFilePath(host, port, rootFH, toParentPath, timeout) : rootFH;
+    if (!toParentFH) return new Response(JSON.stringify({ success: false, error: `Destination parent directory not found: ${toParentPath || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // RENAME args: from(diropargs3) + to(diropargs3)
+    // diropargs3: dir(nfs_fh3) + name(filename3)
+    const fromDirEncoded = xdrEncodeFileHandle(fromParentFH);
+    const fromNameEncoded = xdrEncodeString(fromFilename);
+    const toDirEncoded = xdrEncodeFileHandle(toParentFH);
+    const toNameEncoded = xdrEncodeString(toFilename);
+
+    const renameArgs = new Uint8Array(
+      fromDirEncoded.length + fromNameEncoded.length +
+      toDirEncoded.length + toNameEncoded.length
+    );
+    let offset = 0;
+    renameArgs.set(fromDirEncoded, offset); offset += fromDirEncoded.length;
+    renameArgs.set(fromNameEncoded, offset); offset += fromNameEncoded.length;
+    renameArgs.set(toDirEncoded, offset); offset += toDirEncoded.length;
+    renameArgs.set(toNameEncoded, offset);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, 14, renameArgs, timeout); // proc 14 = RENAME
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `RENAME failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const rn = reply.data;
+    const rnv = new DataView(rn.buffer, rn.byteOffset, rn.byteLength);
+
+    if (rn.length < 4) return new Response(JSON.stringify({ success: false, error: 'RENAME reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = rnv.getUint32(0);
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 RENAME error status: ${nfsStatus} (export may be read-only or file not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      fromPath,
+      toPath,
+      renamed: true,
+      rtt
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 MKDIR — create a new directory.
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, path, mode? }
+ *   path — path to the new directory
+ *   mode — directory permissions in octal (default: 0755)
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. Resolve parent directory path → parent directory file handle
+ *  3. NFSv3 MKDIR (proc 9) → create directory
+ */
+export async function handleNFSMkdir(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; path: string; mode?: number;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath, path } = body;
+    const mode = body.mode ?? 0o755;
+
+    if (!host || !exportPath || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Split path into parent directory and dirname
+    const pathParts = path.split('/').filter(p => p.length > 0);
+    if (pathParts.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid path: must specify a directory name' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const dirname = pathParts[pathParts.length - 1];
+    const parentPath = pathParts.slice(0, -1).join('/');
+
+    const parentFH = parentPath ? await resolveNFSFilePath(host, port, rootFH, parentPath, timeout) : rootFH;
+    if (!parentFH) return new Response(JSON.stringify({ success: false, error: `Parent directory not found: ${parentPath || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // MKDIR args: where(diropargs3) + attributes(sattr3)
+    const fhEncoded = xdrEncodeFileHandle(parentFH);
+    const nameEncoded = xdrEncodeString(dirname);
+
+    // Build sattr3 with mode set, others unset
+    const sattr3 = new Uint8Array(24);
+    const sattr3View = new DataView(sattr3.buffer);
+    sattr3View.setUint32(0, 1); // set mode
+    sattr3View.setUint32(4, mode); // mode value
+    sattr3View.setUint32(8, 0); // don't set uid
+    sattr3View.setUint32(12, 0); // don't set gid
+    sattr3View.setUint32(16, 0); // don't set size
+    sattr3View.setUint32(20, 0); // don't set atime
+
+    const mkdirArgs = new Uint8Array(fhEncoded.length + nameEncoded.length + sattr3.length);
+    let ao = 0;
+    mkdirArgs.set(fhEncoded, ao); ao += fhEncoded.length;
+    mkdirArgs.set(nameEncoded, ao); ao += nameEncoded.length;
+    mkdirArgs.set(sattr3, ao);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, 9, mkdirArgs, timeout); // proc 9 = MKDIR
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `MKDIR failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const md = reply.data;
+    const mdv = new DataView(md.buffer, md.byteOffset, md.byteLength);
+
+    if (md.length < 4) return new Response(JSON.stringify({ success: false, error: 'MKDIR reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = mdv.getUint32(0);
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 MKDIR error status: ${nfsStatus} (export may be read-only or directory exists)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      path,
+      created: true,
+      rtt
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle NFSv3 RMDIR — remove an empty directory.
+ *
+ * Request body: { host, port?, mountPort?, timeout?, exportPath, path }
+ *   path — path to the directory to remove (must be empty)
+ *
+ * Flow:
+ *  1. MOUNT MNT(exportPath) → root file handle
+ *  2. Resolve parent directory path → parent directory file handle
+ *  3. NFSv3 RMDIR (proc 13) → remove directory
+ */
+export async function handleNFSRmdir(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as {
+      host: string; port?: number; mountPort?: number; timeout?: number;
+      exportPath: string; path: string;
+    };
+    const { host, port = 2049, timeout = 15000, exportPath, path } = body;
+
+    if (!host || !exportPath || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const startTime = Date.now();
+    const mountPort = body.mountPort ?? port;
+
+    const rootFH = await mountExportPath(host, mountPort, exportPath, timeout);
+    if (!rootFH) return new Response(JSON.stringify({ success: false, error: `MOUNT failed for: ${exportPath}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // Split path into parent directory and dirname
+    const pathParts = path.split('/').filter(p => p.length > 0);
+    if (pathParts.length === 0) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid path: must specify a directory name' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const dirname = pathParts[pathParts.length - 1];
+    const parentPath = pathParts.slice(0, -1).join('/');
+
+    const parentFH = parentPath ? await resolveNFSFilePath(host, port, rootFH, parentPath, timeout) : rootFH;
+    if (!parentFH) return new Response(JSON.stringify({ success: false, error: `Parent directory not found: ${parentPath || '/'}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    // RMDIR args: diropargs3 (dir + name)
+    const fhEncoded = xdrEncodeFileHandle(parentFH);
+    const nameEncoded = xdrEncodeString(dirname);
+    const rmdirArgs = new Uint8Array(fhEncoded.length + nameEncoded.length);
+    rmdirArgs.set(fhEncoded, 0);
+    rmdirArgs.set(nameEncoded, fhEncoded.length);
+
+    const reply = await sendRpcCall(host, port, NFS_PROGRAM, 3, 13, rmdirArgs, timeout); // proc 13 = RMDIR
+    const rtt = Date.now() - startTime;
+
+    if (!reply || !reply.accepted || reply.acceptStat !== ACCEPT_SUCCESS || !reply.data) {
+      return new Response(JSON.stringify({ success: false, error: reply ? `RMDIR failed: ${reply.acceptStatName}` : 'No reply', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const rd = reply.data;
+    const rdv = new DataView(rd.buffer, rd.byteOffset, rd.byteLength);
+
+    if (rd.length < 4) return new Response(JSON.stringify({ success: false, error: 'RMDIR reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    const nfsStatus = rdv.getUint32(0);
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 RMDIR error status: ${nfsStatus} (export may be read-only, directory not empty, or not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+    return new Response(JSON.stringify({
+      success: true,
+      host,
+      port,
+      exportPath,
+      path,
+      deleted: true,
+      rtt
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }

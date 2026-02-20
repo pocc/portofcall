@@ -1212,30 +1212,35 @@ export async function handlePostgresListen(request: Request): Promise<Response> 
           const remaining = deadline - Date.now();
           if (remaining <= 0) break;
 
-          const result = await Promise.race([
-            reader.readMessage(),
-            new Promise<null>(resolve => setTimeout(() => resolve(null), remaining)),
-          ]);
+          let waitTimeout: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const result = await Promise.race([
+              reader.readMessage(),
+              new Promise<null>(resolve => { waitTimeout = setTimeout(() => resolve(null), remaining); }),
+            ]);
 
-          if (result === null) break; // wait window expired
+            if (result === null) break; // wait window expired
 
-          const msg = result as { type: string; payload: Uint8Array };
-          if (msg.type === 'A') {
-            // NotificationResponse: pid(4 BE) + channel_name\0 + payload\0
-            const view = new DataView(msg.payload.buffer, msg.payload.byteOffset);
-            const pid = view.getInt32(0, false);
-            let i = 4; let j = i;
-            while (j < msg.payload.length && msg.payload[j] !== 0) j++;
-            const notifChannel = dec.decode(msg.payload.slice(i, j));
-            i = j + 1; j = i;
-            while (j < msg.payload.length && msg.payload[j] !== 0) j++;
-            const notifPayload = dec.decode(msg.payload.slice(i, j));
-            notifications.push({ pid, channel: notifChannel, payload: notifPayload, receivedAt: new Date().toISOString() });
-          } else if (msg.type === 'E') {
-            const err = parseErrorResponse(msg.payload);
-            throw new Error(`Server error while listening: ${err.message}`);
+            const msg = result as { type: string; payload: Uint8Array };
+            if (msg.type === 'A') {
+              // NotificationResponse: pid(4 BE) + channel_name\0 + payload\0
+              const view = new DataView(msg.payload.buffer, msg.payload.byteOffset);
+              const pid = view.getInt32(0, false);
+              let i = 4; let j = i;
+              while (j < msg.payload.length && msg.payload[j] !== 0) j++;
+              const notifChannel = dec.decode(msg.payload.slice(i, j));
+              i = j + 1; j = i;
+              while (j < msg.payload.length && msg.payload[j] !== 0) j++;
+              const notifPayload = dec.decode(msg.payload.slice(i, j));
+              notifications.push({ pid, channel: notifChannel, payload: notifPayload, receivedAt: new Date().toISOString() });
+            } else if (msg.type === 'E') {
+              const err = parseErrorResponse(msg.payload);
+              throw new Error(`Server error while listening: ${err.message}`);
+            }
+            // NoticeResponse ('N'), ParameterStatus ('S'), ReadyForQuery ('Z') are silently skipped
+          } finally {
+            if (waitTimeout !== undefined) clearTimeout(waitTimeout);
           }
-          // NoticeResponse ('N'), ParameterStatus ('S'), ReadyForQuery ('Z') are silently skipped
         }
 
         return new Response(JSON.stringify({

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
 
+const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
+
 describe('Firebird Protocol Endpoints', () => {
   describe('POST /api/firebird/probe', () => {
     it('should reject requests with empty host', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/probe', {
+      const response = await fetch(`${API_BASE}/api/firebird/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: '', port: 3050 }),
@@ -16,7 +18,7 @@ describe('Firebird Protocol Endpoints', () => {
     });
 
     it('should reject requests with invalid port', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/probe', {
+      const response = await fetch(`${API_BASE}/api/firebird/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: 'test.example.com', port: 99999 }),
@@ -29,7 +31,7 @@ describe('Firebird Protocol Endpoints', () => {
     });
 
     it('should handle connection timeout gracefully', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/probe', {
+      const response = await fetch(`${API_BASE}/api/firebird/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: 'unreachable-host-12345.invalid', port: 3050 }),
@@ -42,7 +44,7 @@ describe('Firebird Protocol Endpoints', () => {
 
     it('should handle non-Firebird server gracefully', async () => {
       // Try to connect to a known HTTP server on wrong port
-      const response = await fetch('http://localhost:8787/api/firebird/probe', {
+      const response = await fetch(`${API_BASE}/api/firebird/probe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: 'example.com', port: 80 }),
@@ -59,7 +61,7 @@ describe('Firebird Protocol Endpoints', () => {
 
   describe('POST /api/firebird/version', () => {
     it('should reject requests with empty host', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/version', {
+      const response = await fetch(`${API_BASE}/api/firebird/version`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: '', port: 3050 }),
@@ -72,7 +74,7 @@ describe('Firebird Protocol Endpoints', () => {
     });
 
     it('should handle connection timeout gracefully', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/version', {
+      const response = await fetch(`${API_BASE}/api/firebird/version`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host: 'unreachable-host-12345.invalid', port: 3050 }),
@@ -86,7 +88,7 @@ describe('Firebird Protocol Endpoints', () => {
 
   describe('Method validation', () => {
     it('should reject GET requests to probe endpoint', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/probe', {
+      const response = await fetch(`${API_BASE}/api/firebird/probe`, {
         method: 'GET',
       });
 
@@ -94,7 +96,7 @@ describe('Firebird Protocol Endpoints', () => {
     });
 
     it('should reject GET requests to version endpoint', async () => {
-      const response = await fetch('http://localhost:8787/api/firebird/version', {
+      const response = await fetch(`${API_BASE}/api/firebird/version`, {
         method: 'GET',
       });
 

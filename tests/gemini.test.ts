@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = 'http://localhost:8787';
+const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
 
 describe('Gemini Protocol Integration Tests', () => {
   it('should fetch resource from Gemini server', async () => {

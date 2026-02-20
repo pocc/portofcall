@@ -391,6 +391,7 @@ function extractTLSData(payload: Uint8Array): Uint8Array | null {
   if (opcode !== 0x04) return null; // Only P_CONTROL_V1
   let pos = 1 + 8; // skip opcode + session_id
   const ackCount = payload[pos++];
+  if (pos + ackCount * 4 + (ackCount > 0 ? 8 : 0) + 4 > payload.length) return null;
   pos += ackCount * 4; // skip ack IDs
   if (ackCount > 0) pos += 8; // skip remote session ID
   pos += 4; // skip packet_id

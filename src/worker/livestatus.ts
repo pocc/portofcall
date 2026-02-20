@@ -565,6 +565,16 @@ export async function handleLivestatusCommand(request: Request): Promise<Respons
       });
     }
 
+    // Validate each argument against an allowlist before joining.
+    // Rejecting characters outside the safe set prevents command injection
+    // via semicolons, newlines, or shell metacharacters embedded in args.
+    const SAFE_ARG_PATTERN = /^[a-zA-Z0-9_.:\-=+]+$/;
+    for (const arg of args) {
+      if (!SAFE_ARG_PATTERN.test(arg)) {
+        return new Response(JSON.stringify({ error: `Invalid command argument: ${arg}` }), { status: 400 });
+      }
+    }
+
     // Nagios external command format: COMMAND [timestamp] COMMAND_NAME;arg1;arg2...
     const timestamp = Math.floor(Date.now() / 1000);
     const argsStr = args.length > 0 ? ';' + args.join(';') : '';

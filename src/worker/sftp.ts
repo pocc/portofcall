@@ -1,19 +1,105 @@
 /**
  * SFTP Protocol Implementation (SSH File Transfer Protocol, draft-ietf-secsh-filexfer-02)
  *
- * SFTP runs as a subsystem over an SSH channel. This implementation uses the
- * openSSHSubsystem() function from ssh2-impl.ts to establish an authenticated
- * SSH session and then speaks the SFTP wire protocol over the channel.
+ * ===============================================================================
+ * ARCHITECTURAL BLOCKER: SFTP File Operations Require WebSocket Tunnel
+ * ===============================================================================
  *
- * Supported operations:
- *   POST /api/sftp/connect  — SSH banner grab + server info (no credentials needed)
- *   POST /api/sftp/list     — list directory contents
- *   POST /api/sftp/download — download a file (base64-encoded, up to 4 MB)
- *   POST /api/sftp/upload   — upload a file (base64-encoded content)
- *   POST /api/sftp/delete   — delete a file
- *   POST /api/sftp/mkdir    — create a directory
- *   POST /api/sftp/rename   — rename/move a file or directory
- *   POST /api/sftp/stat     — get file/directory metadata
+ * PROBLEM:
+ * SFTP is a stateful, bidirectional protocol that runs over an SSH channel.
+ * The SSH channel uses SSH_MSG_CHANNEL_DATA packets (type 94) for bidirectional
+ * communication between client and server. This creates a fundamental incompatibility
+ * with the HTTP request/response model:
+ *
+ *   1. SFTP protocol requires multiple round-trips (INIT → VERSION → OPEN → READ → DATA → CLOSE)
+ *   2. Each SFTP request packet expects a corresponding response packet
+ *   3. The SSH channel must remain open and actively process incoming messages
+ *   4. HTTP requests are inherently one-shot: send request → wait → receive response → close
+ *
+ * CURRENT STATE:
+ * All SFTP file operations (list, download, upload, delete, mkdir, rename) return
+ * HTTP 501 Not Implemented because they cannot work over HTTP. Only the /connect
+ * endpoint works (SSH banner grab) because it doesn't require an SSH channel.
+ *
+ * WHY HTTP DOESN'T WORK:
+ * When openSFTP() calls openSSHSubsystem(), it gets an SSHSubsystemIO object with:
+ *   - sendChannelData(data): sends SSH_MSG_CHANNEL_DATA to server
+ *   - readChannelData(): waits for incoming SSH_MSG_CHANNEL_DATA from server
+ *
+ * The readChannelData() method is asynchronous and waits for the TCP socket to
+ * deliver the next SSH packet. In an HTTP handler, once the Response is returned,
+ * the request is done — there's no way to keep reading from the socket.
+ *
+ * SOLUTION: WebSocket Tunnel (Like SSH Exec Sessions)
+ * ===============================================================================
+ *
+ * SFTP operations need the same WebSocket-based architecture used by SSH terminal
+ * sessions (handleSSHTerminal in ssh2-impl.ts). The WebSocket provides:
+ *
+ *   1. Persistent connection: The WebSocket stays open during the entire SFTP session
+ *   2. Bidirectional messaging: Browser ↔ Worker via WebSocket, Worker ↔ SSH via TCP
+ *   3. Asynchronous I/O: The Worker can read SSH_MSG_CHANNEL_DATA packets while
+ *      simultaneously waiting for browser commands over the WebSocket
+ *
+ * REFERENCE IMPLEMENTATION:
+ * See openSSHSubsystem() in ssh2-impl.ts (lines 854-1123) for the SSH channel
+ * infrastructure. This function already handles:
+ *   - Version exchange, key exchange, authentication
+ *   - Opening a session channel
+ *   - Requesting a subsystem (e.g., "sftp")
+ *   - Bidirectional channel data forwarding
+ *
+ * The SSH terminal uses this pattern:
+ *   1. Browser sends WebSocket upgrade request
+ *   2. Worker accepts WebSocket, opens TCP socket to SSH server
+ *   3. Worker calls openSSHSubsystem(socket, opts, 'sftp') to get SSHSubsystemIO
+ *   4. Worker forwards data: WebSocket ↔ SFTPSession ↔ SSHSubsystemIO ↔ TCP
+ *   5. SFTPSession handles SFTP protocol parsing (this file already has the logic)
+ *
+ * IMPLEMENTATION STEPS NEEDED:
+ * ===============================================================================
+ *
+ * 1. Create WebSocket endpoint: POST /api/sftp/session (upgrade to WebSocket)
+ *    - Accept WebSocket upgrade request with connection params (host, user, auth)
+ *    - Open TCP socket via connect()
+ *    - Call openSSHSubsystem(socket, opts, 'sftp') to establish SSH+SFTP session
+ *
+ * 2. Create browser-to-worker protocol over WebSocket:
+ *    Browser → Worker (JSON commands):
+ *      { type: 'list', path: '/home/user' }
+ *      { type: 'download', path: '/path/to/file' }
+ *      { type: 'upload', path: '/path/to/file', content: '<base64>' }
+ *      { type: 'delete', path: '/path/to/file' }
+ *      { type: 'mkdir', path: '/new/dir' }
+ *      { type: 'rename', oldPath: '/old', newPath: '/new' }
+ *      { type: 'stat', path: '/path' }
+ *      { type: 'close' }
+ *
+ *    Worker → Browser (JSON responses):
+ *      { type: 'result', data: { ... } }
+ *      { type: 'error', message: 'Permission denied' }
+ *      { type: 'progress', bytesTransferred: 1024 }
+ *
+ * 3. Wire up SFTPSession (lines 75-134) to WebSocket message loop:
+ *    - Create SFTPSession wrapper around SSHSubsystemIO
+ *    - On WebSocket message: parse command → call SFTP operation → send result
+ *    - Keep reading SSH_MSG_CHANNEL_DATA via SSHSubsystemIO.readChannelData()
+ *
+ * 4. Update frontend to use WebSocket instead of fetch() for SFTP operations
+ *
+ * TODO: Implement WebSocket-based SFTP session handler (see Issue #TBD)
+ *
+ * ===============================================================================
+ *
+ * OPERATIONS:
+ *   POST /api/sftp/connect  — SSH banner grab + server info (no auth, works via HTTP)
+ *   POST /api/sftp/list     — BLOCKED: requires WebSocket (returns 501)
+ *   POST /api/sftp/download — BLOCKED: requires WebSocket (returns 501)
+ *   POST /api/sftp/upload   — BLOCKED: requires WebSocket (returns 501)
+ *   POST /api/sftp/delete   — BLOCKED: requires WebSocket (returns 501)
+ *   POST /api/sftp/mkdir    — BLOCKED: requires WebSocket (returns 501)
+ *   POST /api/sftp/rename   — BLOCKED: requires WebSocket (returns 501)
+ *   POST /api/sftp/stat     — Partially works via HTTP (one-shot stat, inefficient)
  *
  * All authenticated endpoints require: host, username, and either password or privateKey.
  */
@@ -71,6 +157,16 @@ function sftpPkt(type: number, id: number | null, ...payloads: Uint8Array[]): Ui
 }
 
 // ─── SFTP session wrapper ─────────────────────────────────────────────────────
+//
+// This class handles the SFTP wire protocol (packet framing, request/response matching).
+// It depends on SSHSubsystemIO for bidirectional SSH_MSG_CHANNEL_DATA communication.
+//
+// CRITICAL: The recv() method is asynchronous and waits indefinitely for the next
+// SSH packet. This requires a persistent connection (WebSocket or long-lived TCP socket).
+// In an HTTP request handler, once the Response is returned, the connection closes,
+// so recv() will fail mid-operation.
+//
+// This is the core reason why SFTP cannot work over HTTP request/response.
 
 class SFTPSession {
   private buf = new Uint8Array(0);
@@ -103,11 +199,22 @@ class SFTPSession {
     return { type, id, payload };
   }
 
-  /** Read one complete SFTP packet, fetching channel data as needed. */
+  /**
+   * Read one complete SFTP packet, fetching channel data as needed.
+   *
+   * BLOCKING REQUIREMENT: This method calls io.readChannelData() in a loop,
+   * which waits for the next SSH_MSG_CHANNEL_DATA packet from the server.
+   * This requires the SSH channel to remain open and actively receiving data.
+   *
+   * In HTTP handlers, once Response is returned, the request is done and the
+   * connection closes, causing readChannelData() to fail.
+   */
   async recv(): Promise<{ type: number; id: number; payload: Uint8Array }> {
     while (true) {
       const pkt = this.tryParse();
       if (pkt) return pkt;
+      // BLOCKER: This await will never resolve if the SSH channel is closed
+      // (which happens immediately after HTTP response is sent)
       const chunk = await this.io.readChannelData();
       if (!chunk) throw new Error('SSH channel closed unexpectedly');
       this.append(chunk);
@@ -122,10 +229,21 @@ class SFTPSession {
   /** Generate a new request ID. */
   id(): number { return this.nextReqId++; }
 
-  /** Send a packet and wait for the response with the matching request ID. */
+  /**
+   * Send a packet and wait for the response with the matching request ID.
+   *
+   * BLOCKING REQUIREMENT: This method calls recv() in a loop, which in turn
+   * waits for SSH_MSG_CHANNEL_DATA packets from the server. This is the
+   * fundamental SFTP request/response pattern, but it requires a persistent
+   * bidirectional channel.
+   *
+   * In HTTP handlers, the response must be returned immediately, so the
+   * recv() loop cannot wait for the server's reply.
+   */
   async rpc(pkt: Uint8Array, reqId: number): Promise<{ type: number; payload: Uint8Array }> {
     await this.send(pkt);
     while (true) {
+      // BLOCKER: This await will never resolve in HTTP context
       const { type, id, payload } = await this.recv();
       if (id === reqId) return { type, payload };
       // Ignore out-of-order responses (shouldn't happen in sequential mode)
@@ -214,7 +332,21 @@ function checkStatus(type: number, payload: Uint8Array, operation: string): void
   throw new Error(`${operation} failed: ${codeNames[code] ?? `status ${code}`} — ${msg}`);
 }
 
-/** Establish SSH+SFTP session from request params. */
+/**
+ * Establish SSH+SFTP session from request params.
+ *
+ * INFRASTRUCTURE: This function uses openSSHSubsystem() from ssh2-impl.ts to
+ * establish a full SSH connection and open the "sftp" subsystem channel. The
+ * returned SSHSubsystemIO provides bidirectional channel data communication.
+ *
+ * DESIGN NOTE: This function is designed to work in a WebSocket context where
+ * the SSH session persists across multiple SFTP operations. The returned
+ * SFTPSession can be reused for hundreds of operations.
+ *
+ * CURRENT LIMITATION: When called from HTTP handlers (like handleSFTPStat),
+ * the session is used for exactly one operation and then closed. This works
+ * but is extremely inefficient (2-3 second overhead per operation).
+ */
 async function openSFTP(body: {
   host: string;
   port?: number;
@@ -345,11 +477,15 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
  * POST /api/sftp/list
  * List directory contents.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path? }
+ *
+ * TODO: This operation requires a WebSocket tunnel to support bidirectional
+ * SSH_MSG_CHANNEL_DATA communication. See top-of-file documentation for details.
  */
 export async function handleSFTPList(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
-    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+    message: 'SFTP list operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
+    details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
   }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -357,11 +493,15 @@ export async function handleSFTPList(_request: Request): Promise<Response> {
  * POST /api/sftp/download
  * Download a file (base64-encoded, up to 4 MB).
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
+ *
+ * TODO: This operation requires a WebSocket tunnel to support bidirectional
+ * SSH_MSG_CHANNEL_DATA communication. See top-of-file documentation for details.
  */
 export async function handleSFTPDownload(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
-    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+    message: 'SFTP download operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
+    details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
   }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -369,11 +509,15 @@ export async function handleSFTPDownload(_request: Request): Promise<Response> {
  * POST /api/sftp/upload
  * Upload a file (content as base64 string).
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path, content, encoding? }
+ *
+ * TODO: This operation requires a WebSocket tunnel to support bidirectional
+ * SSH_MSG_CHANNEL_DATA communication. See top-of-file documentation for details.
  */
 export async function handleSFTPUpload(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
-    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+    message: 'SFTP upload operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
+    details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
   }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -381,11 +525,15 @@ export async function handleSFTPUpload(_request: Request): Promise<Response> {
  * POST /api/sftp/delete
  * Delete a file.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
+ *
+ * TODO: This operation requires a WebSocket tunnel to support bidirectional
+ * SSH_MSG_CHANNEL_DATA communication. See top-of-file documentation for details.
  */
 export async function handleSFTPDelete(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
-    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+    message: 'SFTP delete operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
+    details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
   }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -393,11 +541,15 @@ export async function handleSFTPDelete(_request: Request): Promise<Response> {
  * POST /api/sftp/mkdir
  * Create a directory.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
+ *
+ * TODO: This operation requires a WebSocket tunnel to support bidirectional
+ * SSH_MSG_CHANNEL_DATA communication. See top-of-file documentation for details.
  */
 export async function handleSFTPMkdir(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
-    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+    message: 'SFTP mkdir operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
+    details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
   }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -405,11 +557,15 @@ export async function handleSFTPMkdir(_request: Request): Promise<Response> {
  * POST /api/sftp/rename
  * Rename or move a file or directory.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, oldPath, newPath }
+ *
+ * TODO: This operation requires a WebSocket tunnel to support bidirectional
+ * SSH_MSG_CHANNEL_DATA communication. See top-of-file documentation for details.
  */
 export async function handleSFTPRename(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
     error: 'Not Implemented',
-    message: 'SFTP file operations require WebSocket tunnel support (not available over HTTP)',
+    message: 'SFTP rename operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
+    details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
   }), { status: 501, headers: { 'Content-Type': 'application/json' } });
 }
 
@@ -417,6 +573,21 @@ export async function handleSFTPRename(_request: Request): Promise<Response> {
  * POST /api/sftp/stat
  * Get file or directory metadata.
  * Body: { host, port?, username, password?, privateKey?, passphrase?, path }
+ *
+ * NOTE: This operation works via HTTP but is highly inefficient because it:
+ *   1. Opens a full SSH connection (version exchange, key exchange, auth)
+ *   2. Opens an SFTP subsystem channel
+ *   3. Performs SFTP handshake (INIT → VERSION)
+ *   4. Sends a single STAT request
+ *   5. Closes the entire session
+ *
+ * For one-off stat operations, this overhead (2-3 seconds) is acceptable. However,
+ * for multiple operations (e.g., listing a directory with stat() per file), this
+ * creates a connection storm. A WebSocket-based session can reuse the SSH channel
+ * for hundreds of operations in milliseconds.
+ *
+ * RECOMMENDATION: Use WebSocket session for any use case involving multiple SFTP
+ * operations. Keep this HTTP endpoint for debugging/testing only.
  */
 export async function handleSFTPStat(request: Request): Promise<Response> {
   try {

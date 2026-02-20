@@ -13,7 +13,7 @@ const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('Beanstalkd Protocol Integration Tests', () => {
   describe('POST /api/beanstalkd/connect', () => {
-    it('should connect and retrieve stats', async () => {
+    it('should fail to connect to localhost without a running Beanstalkd server', async () => {
       const response = await fetch(`${API_BASE}/beanstalkd/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -25,15 +25,8 @@ describe('Beanstalkd Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (data.success) {
-        expect(data.host).toBe('localhost');
-        expect(data.port).toBe(11300);
-        expect(data.rtt).toBeDefined();
-        expect(data.protocol).toBe('Beanstalkd');
-        expect(data.version).toBeDefined();
-        expect(data.rawStats).toBeDefined();
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 10000);
 
     it('should reject empty host', async () => {
@@ -82,15 +75,13 @@ describe('Beanstalkd Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (!data.success) {
-        expect(data.error).toBeDefined();
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 5000);
   });
 
   describe('POST /api/beanstalkd/command', () => {
-    it('should execute list-tubes command', async () => {
+    it('should fail list-tubes command without a running Beanstalkd server', async () => {
       const response = await fetch(`${API_BASE}/beanstalkd/command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -103,13 +94,8 @@ describe('Beanstalkd Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (data.success) {
-        expect(data.command).toBe('list-tubes');
-        expect(data.status).toBe('OK');
-        expect(data.response).toBeDefined();
-        expect(data.rtt).toBeDefined();
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 10000);
 
     it('should reject empty command', async () => {
@@ -148,7 +134,7 @@ describe('Beanstalkd Protocol Integration Tests', () => {
       expect(data.error).toContain('not allowed');
     });
 
-    it('should execute stats-tube command', async () => {
+    it('should fail stats-tube command without a running Beanstalkd server', async () => {
       const response = await fetch(`${API_BASE}/beanstalkd/command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -161,11 +147,8 @@ describe('Beanstalkd Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (data.success) {
-        expect(data.command).toBe('stats-tube default');
-        expect(data.rtt).toBeDefined();
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 10000);
   });
 });

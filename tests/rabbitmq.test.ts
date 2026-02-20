@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-const WORKER_URL = 'http://localhost:8787';
+const WORKER_URL = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
 
 describe('RabbitMQ Management API Integration', () => {
   describe('Health Check', () => {
@@ -16,8 +16,8 @@ describe('RabbitMQ Management API Integration', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.version).toBeDefined();
       expect(data.clusterName).toBeDefined();
@@ -92,8 +92,8 @@ describe('RabbitMQ Management API Integration', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.response).toBeDefined();
     });

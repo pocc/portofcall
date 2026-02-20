@@ -391,11 +391,16 @@ export async function handleLMTPSend(request: Request): Promise<Response> {
           throw new Error(`DATA command failed: ${dataResp.message}`);
         }
 
+        // Sanitize header field values: strip CR and LF to prevent header injection
+        const safeFrom = (options.from ?? '').replace(/[\r\n]/g, ' ');
+        const safeTo = recipients.map(r => r.replace(/[\r\n]/g, ' ')).join(', ');
+        const safeSubject = (options.subject ?? '').replace(/[\r\n]/g, ' ');
+
         // Build message content with proper MIME headers
         const emailContent = [
-          `From: ${options.from}`,
-          `To: ${recipients.join(', ')}`,
-          `Subject: ${options.subject}`,
+          `From: ${safeFrom}`,
+          `To: ${safeTo}`,
+          `Subject: ${safeSubject}`,
           `Date: ${new Date().toUTCString()}`,
           `MIME-Version: 1.0`,
           `Content-Type: text/plain; charset=UTF-8`,

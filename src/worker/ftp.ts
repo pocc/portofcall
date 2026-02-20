@@ -212,7 +212,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      await dataSocket.close();
+      try { dataReader.releaseLock(); } catch {}
+      try { await dataSocket.close(); } catch {}
     }
 
     await this.readResponse(); // 226 Transfer Complete
@@ -259,7 +260,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      await dataSocket.close();
+      try { dataReader.releaseLock(); } catch {}
+      try { await dataSocket.close(); } catch {}
     }
 
     await this.readResponse(); // 226
@@ -365,7 +367,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      await dataSocket.close();
+      try { dataReader.releaseLock(); } catch {}
+      try { await dataSocket.close(); } catch {}
     }
 
     // CRITICAL: Read the 226 Transfer Complete response
@@ -408,9 +411,10 @@ export class FTPClient {
     const dataWriter = dataSocket.writable.getWriter();
     try {
       await dataWriter.write(fileData);
-    } finally {
       await dataWriter.close();
-      await dataSocket.close();
+    } finally {
+      try { dataWriter.releaseLock(); } catch {}
+      try { await dataSocket.close(); } catch {}
     }
 
     // Read transfer complete response
@@ -462,7 +466,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      await dataSocket.close();
+      try { dataReader.releaseLock(); } catch {}
+      try { await dataSocket.close(); } catch {}
     }
 
     // Read transfer complete response

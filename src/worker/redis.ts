@@ -28,30 +28,131 @@ function encodeRESPArray(args: string[]): Uint8Array {
 }
 
 /**
- * Read a RESP response from the socket
+ * Read raw bytes from the socket into a growing buffer until a predicate is
+ * satisfied, then return the accumulated string.
  */
-async function readRESPResponse(reader: ReadableStreamDefaultReader<Uint8Array>, timeoutMs: number): Promise<string> {
+async function readUntilComplete(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<string> {
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
   );
 
   const readPromise = (async () => {
     let buffer = '';
-    while (true) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
       const { value, done } = await reader.read();
       if (done) break;
-
       buffer += new TextDecoder().decode(value);
-
-      // Check if we have a complete response
-      if (buffer.includes('\r\n')) {
-        return buffer;
-      }
+      // Stop accumulating once we have a complete top-level RESP value
+      if (isCompleteRESP(buffer)) break;
     }
     return buffer;
   })();
 
   return Promise.race([readPromise, timeoutPromise]);
+}
+
+/**
+ * Heuristic check: does `buf` contain a complete top-level RESP value?
+ * This avoids returning partial arrays or bulk strings.
+ */
+function isCompleteRESP(buf: string): boolean {
+  if (!buf.includes('\r\n')) return false;
+  const firstCrlf = buf.indexOf('\r\n');
+  const firstLine = buf.slice(0, firstCrlf);
+  const type = firstLine[0];
+
+  if (type === '+' || type === '-' || type === ':') {
+    // Simple string / error / integer — one line
+    return true;
+  }
+
+  if (type === '$') {
+    const len = parseInt(firstLine.slice(1), 10);
+    if (len === -1) return true; // null bulk string
+    // Need: $N\r\n + N bytes + \r\n
+    const needed = firstCrlf + 2 + len + 2;
+    return buf.length >= needed;
+  }
+
+  if (type === '*') {
+    const count = parseInt(firstLine.slice(1), 10);
+    if (count <= 0) return true; // empty or null array
+    // Parse the full array to see if we have all elements
+    try {
+      const [, consumed] = parseRESPValue(buf, 0);
+      return consumed > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  return buf.includes('\r\n');
+}
+
+/**
+ * Parse a single RESP value starting at `pos` in `buf`.
+ * Returns [serialisedValue, endPosition].
+ * Throws if the buffer does not yet contain a complete value.
+ */
+function parseRESPValue(buf: string, pos: number): [string, number] {
+  if (pos >= buf.length) throw new Error('incomplete');
+  const type = buf[pos];
+  const crlf = buf.indexOf('\r\n', pos);
+  if (crlf === -1) throw new Error('incomplete');
+  const firstLine = buf.slice(pos, crlf);
+  const afterLine = crlf + 2;
+
+  if (type === '+' || type === '-' || type === ':') {
+    return [buf.slice(pos, afterLine), afterLine];
+  }
+
+  if (type === '$') {
+    const len = parseInt(firstLine.slice(1), 10);
+    if (len === -1) return [buf.slice(pos, afterLine), afterLine];
+    const dataEnd = afterLine + len + 2; // +2 for trailing \r\n
+    if (buf.length < dataEnd) throw new Error('incomplete');
+    return [buf.slice(pos, dataEnd), dataEnd];
+  }
+
+  if (type === '*') {
+    const count = parseInt(firstLine.slice(1), 10);
+    if (count <= 0) return [buf.slice(pos, afterLine), afterLine];
+    let cur = afterLine;
+    for (let i = 0; i < count; i++) {
+      const [, next] = parseRESPValue(buf, cur);
+      cur = next;
+    }
+    return [buf.slice(pos, cur), cur];
+  }
+
+  // Unknown type — treat as single line
+  return [buf.slice(pos, afterLine), afterLine];
+}
+
+/**
+ * Read a complete RESP response from the socket.
+ *
+ * Handles all RESP types correctly:
+ *   +OK\r\n                        → simple string
+ *   -ERR message\r\n               → error
+ *   :42\r\n                        → integer
+ *   $6\r\nfoobar\r\n               → bulk string
+ *   *2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n → array
+ */
+async function readRESPResponse(reader: ReadableStreamDefaultReader<Uint8Array>, timeoutMs: number): Promise<string> {
+  const raw = await readUntilComplete(reader, timeoutMs);
+  // Return the fully-parsed slice (drops any trailing buffered bytes)
+  try {
+    const [value] = parseRESPValue(raw, 0);
+    return value;
+  } catch {
+    // Parsing failed (incomplete data) — return what we have
+    return raw;
+  }
 }
 
 /**

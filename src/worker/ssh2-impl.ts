@@ -746,15 +746,21 @@ async function runSSHSession(
     if (text.startsWith('{') && text.includes('"type"')) return;
 
     const data = enc.encode(text);
-    if (data.length === 0 || data.length > remoteWindow) return;
+    if (data.length === 0) return;
 
     try {
-      await sendPayload(cat(
-        new Uint8Array([MSG_CHANNEL_DATA]),
-        u32(remoteChannel),
-        sshBytes(data),
-      ));
-      remoteWindow -= data.length;
+      // Split data into chunks that fit the available remote window
+      for (let offset = 0; offset < data.length; offset += remoteWindow) {
+        const chunkSize = Math.min(data.length - offset, remoteWindow);
+        if (chunkSize === 0) break;
+        const chunk = data.slice(offset, offset + chunkSize);
+        await sendPayload(cat(
+          new Uint8Array([MSG_CHANNEL_DATA]),
+          u32(remoteChannel),
+          sshBytes(chunk),
+        ));
+        remoteWindow -= chunk.length;
+      }
     } catch { /* connection may have closed */ }
   });
 
@@ -1059,7 +1065,20 @@ export async function openSSHSubsystem(
     if (chClosed) throw new Error('Channel closed');
     for (let off2 = 0; off2 < data.length; off2 += localMax) {
       const chunk = data.slice(off2, off2 + localMax);
-      if (chunk.length > remoteWin) throw new Error('Remote window exhausted');
+      // Wait for remote window to have enough space for this chunk
+      while (chunk.length > remoteWin) {
+        const p = await readPayload2();
+        if (p[0] === MSG_CHANNEL_WINDOW_ADJUST) {
+          remoteWin += readU32(p, 5);
+        } else if (p[0] === MSG_CHANNEL_EOF || p[0] === MSG_CHANNEL_CLOSE) {
+          chClosed = true;
+          throw new Error('Channel closed while waiting for window');
+        } else if (p[0] === MSG_GLOBAL_REQUEST) {
+          const [, ne] = readStr(p, 1);
+          if (p[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
+        }
+        // Ignore other message types
+      }
       await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_DATA]), u32(remoteCh), sshBytes(chunk)));
       remoteWin -= chunk.length;
     }

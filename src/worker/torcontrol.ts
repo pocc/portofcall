@@ -154,6 +154,12 @@ function parseProtocolInfo(raw: string): {
  * POST /api/torcontrol/probe
  */
 export async function handleTorControlProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -274,6 +280,12 @@ export async function handleTorControlProbe(request: Request): Promise<Response>
  * Body: { host, port?, password?, signal, timeout? }
  */
 export async function handleTorControlSignal(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -441,6 +453,12 @@ export async function handleTorControlSignal(request: Request): Promise<Response
  * POST /api/torcontrol/getinfo
  */
 export async function handleTorControlGetInfo(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;

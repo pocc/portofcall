@@ -81,27 +81,26 @@ function wrapMLLP(message: string): Uint8Array {
 }
 
 /**
- * Extract HL7 message from MLLP framing
+ * Extract HL7 message from MLLP framing.
+ * Per the MLLP spec, the START_OF_BLOCK (0x0B) must be the very first byte.
+ * The END_OF_BLOCK (0x1C) followed by CARRIAGE_RETURN (0x0D) marks the end.
+ * This avoids false matches on payload bytes that happen to equal 0x0B or 0x1C.
  */
 function unwrapMLLP(data: Uint8Array): string {
   const decoder = new TextDecoder();
-  // Find start and end of block
-  let start = -1;
-  let end = -1;
-  for (let i = 0; i < data.length; i++) {
-    if (data[i] === START_OF_BLOCK && start === -1) {
-      start = i + 1;
-    }
-    if (data[i] === END_OF_BLOCK) {
-      end = i;
-      break;
+  if (data.length === 0) return decoder.decode(data);
+  if (data[0] !== START_OF_BLOCK) {
+    // If no MLLP framing found, return raw text
+    return decoder.decode(data);
+  }
+  // Find END_OF_BLOCK (0x1C) followed by CR (0x0D)
+  for (let i = 1; i < data.length - 1; i++) {
+    if (data[i] === END_OF_BLOCK && data[i + 1] === CARRIAGE_RETURN) {
+      return decoder.decode(data.slice(1, i)); // Content between SB and EB
     }
   }
-  if (start >= 0 && end > start) {
-    return decoder.decode(data.slice(start, end));
-  }
-  // If no MLLP framing found, return raw text
-  return decoder.decode(data);
+  // Incomplete frame — return what we have after the start byte
+  return decoder.decode(data.slice(1));
 }
 
 /**

@@ -158,7 +158,7 @@ describe('NNTP Protocol Integration Tests', () => {
         body: JSON.stringify({
           host: 'news.aioe.org',
           port: 119,
-          group: 'comp.lang;rm -rf /',
+          group: 'comp.lang$%^invalid',
           timeout: 5000,
         }),
       });
@@ -258,7 +258,7 @@ describe('NNTP Protocol Integration Tests', () => {
         body: JSON.stringify({
           host: 'news.aioe.org',
           port: 119,
-          group: '../../../etc/passwd',
+          group: 'comp.lang$%^invalid',
           articleNumber: 1,
           timeout: 5000,
         }),

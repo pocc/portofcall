@@ -103,7 +103,7 @@ describe('SIP Protocol Integration Tests', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         host: 'sip.example.com',
-        username: 'user; DROP TABLE',
+        username: 'user!@#invalid format',
         timeout: 10000,
       }),
     });

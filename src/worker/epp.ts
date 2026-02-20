@@ -307,10 +307,9 @@ export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
     port: config.port,
   });
 
+  const reader = socket.readable.getReader();
+  const writer = socket.writable.getWriter();
   try {
-    const reader = socket.readable.getReader();
-    const writer = socket.writable.getWriter();
-
     // Read initial server greeting
     const greeting = await readEPPFrame(reader);
 
@@ -328,10 +327,6 @@ export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
     // A greeting has no result code; success = we got a valid greeting back
     const gotGreeting = isGreeting(helloResponse);
 
-    reader.releaseLock();
-    writer.releaseLock();
-    await socket.close();
-
     return {
       success: gotGreeting,
       message: gotGreeting ? 'EPP server greeting received' : 'Unexpected response to hello',
@@ -342,12 +337,14 @@ export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
       },
     };
   } catch (error: any) {
-    try { await socket.close(); } catch {}
-
     return {
       success: false,
       message: `EPP connection failed: ${error.message}`,
     };
+  } finally {
+    try { reader.releaseLock(); } catch {}
+    try { writer.releaseLock(); } catch {}
+    try { await socket.close(); } catch {}
   }
 }
 

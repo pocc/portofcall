@@ -310,6 +310,15 @@ export async function handleGPSDVersion(request: Request): Promise<Response> {
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Just connect — gpsd sends VERSION banner automatically
     const { lines, rtt } = await sendCommand(host, port, timeout);
     const { objects, errors } = parseLines(lines);

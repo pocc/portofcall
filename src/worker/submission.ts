@@ -354,23 +354,28 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
         }
 
         // Step 9: Message with dot-stuffing per RFC 5321 section 4.5.2
-        const bodyLines = (options.body || '').split('\n').map(line =>
-          line.startsWith('.') ? '.' + line : line
-        ).join('\r\n');
-
+        // Sanitize header field values to prevent CRLF injection
+        const safeFrom = (options.from ?? '').replace(/[\r\n]/g, ' ');
+        const safeTo = (options.to ?? '').replace(/[\r\n]/g, ' ');
+        const safeSubject = (options.subject ?? '').replace(/[\r\n]/g, ' ');
         const messageBody = [
-          `From: ${options.from}`,
-          `To: ${options.to}`,
-          `Subject: ${options.subject}`,
+          `From: ${safeFrom}`,
+          `To: ${safeTo}`,
+          `Subject: ${safeSubject}`,
           `Date: ${new Date().toUTCString()}`,
           'MIME-Version: 1.0',
           'Content-Type: text/plain; charset=UTF-8',
           '',
-          bodyLines,
-          '.',
-        ].join('\r\n') + '\r\n';
+          options.body,
+        ].join('\r\n');
 
-        await writer.write(new TextEncoder().encode(messageBody));
+        // RFC 5321 §4.5.2: Dot-stuff the body — any line starting with "."
+        // must have an extra "." prepended to avoid being interpreted as the
+        // end-of-data marker (".\r\n").
+        const dotStuffedBody = messageBody.replace(/(^|\r\n)\./g, '$1..');
+        const finalContent = dotStuffedBody + '\r\n.\r\n';
+
+        await writer.write(new TextEncoder().encode(finalContent));
         const sendResp = await readSMTPResponse(reader, 10000);
         const sendResult = parseSMTPResponse(sendResp);
         if (sendResult.code !== 250) {

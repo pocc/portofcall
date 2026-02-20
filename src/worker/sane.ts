@@ -113,8 +113,9 @@ function decodeString(data: Uint8Array, offset: number): { value: string; nextOf
   const length = decodeWord(data, offset);
   offset += 4;
   if (length === 0) return { value: '', nextOffset: offset };
-  // Validate length is reasonable and doesn't exceed buffer
-  if (length < 0 || length > 1048576) return { value: '', nextOffset: offset };
+  // Validate length is reasonable and doesn't exceed buffer.
+  // A length > 65535 almost certainly indicates a malformed or malicious response.
+  if (length < 0 || length > 65535) return { value: '', nextOffset: offset };
   if (offset + length > data.length) return { value: '', nextOffset: offset };
   const bytes = data.slice(offset, offset + length);
   // Strip null terminator if present
@@ -158,6 +159,9 @@ function buildOpenRequest(deviceName: string): Uint8Array {
   }
   if (deviceName.includes('\0') || deviceName.includes('..')) {
     throw new Error('Invalid device name (contains null bytes or path traversal)');
+  }
+  if (deviceName === '.' || deviceName.startsWith('/') || deviceName.includes('\\') || deviceName.includes('./')) {
+    throw new Error('Invalid device name');
   }
   const opcode = encodeWord(2);
   const nameStr = encodeString(deviceName);

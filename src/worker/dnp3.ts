@@ -689,6 +689,61 @@ export async function handleDNP3Read(request: Request): Promise<Response> {
 }
 
 /**
+ * Parse the control echo from a SELECT/OPERATE response.
+ * Extracts the control code, point index, and status from the response objects.
+ *
+ * For Group 12 Var 1 (CROB):
+ *   Object Header: Group(1) Var(1) Qualifier(1) Count(1)
+ *   For each object: Index(1) ControlCode(1) Count(1) OnTime(4) OffTime(4) Status(1)
+ *
+ * For Group 41 Var 2 (Analog Output):
+ *   Object Header: Group(1) Var(1) Qualifier(1) Count(1)
+ *   For each object: Index(1) Value(2) Status(1)
+ */
+function parseControlEcho(objects: Uint8Array): {
+  objectGroup: number;
+  objectVariation: number;
+  objectIndex: number;
+  controlCode?: number;
+  analogValue?: number;
+  status: number;
+} | null {
+  // Minimum: Group(1) + Var(1) + Qualifier(1) + Count(1) + Index(1) + ...
+  if (objects.length < 5) return null;
+
+  const objectGroup = objects[0];
+  const objectVariation = objects[1];
+  const qualifier = objects[2];
+  const count = objects[3];
+
+  if (count !== 1) return null; // We only support single-object responses for now
+
+  // Qualifier 0x17 = 1-byte count, 1-byte index
+  if (qualifier !== 0x17) return null;
+
+  const objectIndex = objects[4];
+
+  if (objectGroup === 12 && objectVariation === 1) {
+    // CROB: Index(1) + ControlCode(1) + Count(1) + OnTime(4) + OffTime(4) + Status(1) = 12 bytes
+    // Total header + object = 4 (header) + 12 (object) = 16 bytes
+    if (objects.length < 16) return null;
+    const controlCode = objects[5];
+    const status = objects[15];
+    return { objectGroup, objectVariation, objectIndex, controlCode, status };
+  }
+
+  if (objectGroup === 41 && objectVariation === 2) {
+    // Analog Output: Index(1) + Value(2 LE) + Status(1) = 4 bytes
+    if (objects.length < 4 + 4) return null;
+    const analogValue = objects[5] | (objects[6] << 8);
+    const status = objects[7];
+    return { objectGroup, objectVariation, objectIndex, analogValue, status };
+  }
+
+  return null;
+}
+
+/**
  * Build a DNP3 CROB (Control Relay Output Block) application layer payload
  * for SELECT or OPERATE (Function Code 0x03 or 0x04)
  *
@@ -862,6 +917,7 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
         let selectFunctionName = '';
         let selectIIN = '';
         let selectIINFlags: string[] = [];
+        let selectError = '';
 
         if (selectResponseBytes.length >= 10) {
           const selectDL = parseDataLinkResponse(selectResponseBytes);
@@ -876,7 +932,31 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
               // Mask covers IIN2: No FC Support (0x0100), Object Unknown (0x0200),
               // Parameter Error (0x0400), Already Executing (0x1000), Config Corrupt (0x2000)
               const errorIIN = selectApp.iin & 0x3700;
-              selected = selectApp.functionCode === 0x81 && errorIIN === 0;
+
+              if (selectApp.functionCode !== 0x81) {
+                selectError = `Unexpected function code: ${selectFunctionName}`;
+              } else if (errorIIN !== 0) {
+                selectError = `Error IIN bits set: ${selectIINFlags.join(', ')}`;
+              } else {
+                // Parse the control echo to validate the SELECT response
+                const echo = parseControlEcho(selectApp.objects);
+                if (!echo) {
+                  selectError = 'Failed to parse SELECT response objects';
+                } else if (echo.objectGroup !== objectGroup || echo.objectVariation !== objectVariation) {
+                  selectError = `Object mismatch: expected Group ${objectGroup} Var ${objectVariation}, got Group ${echo.objectGroup} Var ${echo.objectVariation}`;
+                } else if (echo.objectIndex !== objectIndex) {
+                  selectError = `Point index mismatch: expected ${objectIndex}, got ${echo.objectIndex}`;
+                } else if (objectGroup === 12 && echo.controlCode !== controlCode) {
+                  selectError = `Control code mismatch: expected 0x${controlCode.toString(16)}, got 0x${echo.controlCode?.toString(16)}`;
+                } else if (objectGroup === 41 && echo.analogValue !== undefined && echo.analogValue !== (controlCode & 0xFFFF)) {
+                  selectError = `Analog value mismatch: expected ${controlCode & 0xFFFF}, got ${echo.analogValue}`;
+                } else if (echo.status !== 0) {
+                  selectError = `SELECT rejected with status code ${echo.status}`;
+                } else {
+                  // All validations passed
+                  selected = true;
+                }
+              }
             }
           }
         }
@@ -900,7 +980,7 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
               iinFlags: selectIINFlags,
             },
             rtt: Date.now() - startTime,
-            error: 'SELECT was not confirmed by the outstation',
+            error: selectError || 'SELECT was not confirmed by the outstation',
           };
         }
 

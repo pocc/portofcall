@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = 'http://localhost:8787';
+const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
 
 describe('Zabbix Protocol Integration Tests', () => {
   // --- Server Probe Tests (/api/zabbix/connect) ---

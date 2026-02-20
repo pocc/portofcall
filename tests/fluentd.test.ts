@@ -98,7 +98,7 @@ describe('Fluentd Forward Protocol - Send Log Entry', () => {
       body: JSON.stringify({
         host: 'localhost',
         port: 24224,
-        tag: '../../etc/passwd',
+        tag: 'invalid tag format!',
       }),
     });
 

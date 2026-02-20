@@ -388,6 +388,9 @@ async function readTPKTFrame(
   }
 
   const payloadLength = totalLength - 4;
+  if (payloadLength < 0 || payloadLength > 65535) {
+    throw new Error(`Invalid TPKT length: ${payloadLength}`);
+  }
   if (payloadLength === 0) {
     return new Uint8Array(0);
   }

@@ -74,15 +74,16 @@ function md4(data: Uint8Array): Uint8Array {
   const H = (x: number, y: number, z: number) => (x ^ y ^ z) >>> 0;
 
   const len = data.length;
-  const bitLen = len * 8;
   // Pad to 56 mod 64 bytes, then append 8-byte LE bit length
   const padLen = ((55 - len % 64 + 64) % 64) + 1;
   const msg = new Uint8Array(len + padLen + 8);
   msg.set(data);
   msg[len] = 0x80;
   const dv = new DataView(msg.buffer);
-  dv.setUint32(msg.length - 8, bitLen >>> 0, true);
-  dv.setUint32(msg.length - 4, Math.floor(bitLen / 0x100000000) >>> 0, true);
+  // Use BigInt for the 64-bit message bit length to avoid precision loss
+  const bitLenBig = BigInt(len) * 8n;
+  dv.setUint32(msg.length - 8, Number(bitLenBig & 0xFFFFFFFFn), true);
+  dv.setUint32(msg.length - 4, Number(bitLenBig >> 32n), true);
 
   let A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476;
 
@@ -91,51 +92,39 @@ function md4(data: Uint8Array): Uint8Array {
     const M: number[] = Array.from({ length: 16 }, (_, j) => dv2.getUint32(j * 4, true));
     let a = A, b = B, c = C, d = D;
 
-    // Round 1
-    const s1 = [3,7,11,19, 3,7,11,19, 3,7,11,19, 3,7,11,19];
-    const r1 = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
-    for (let k = 0; k < 16; k++) {
-      const t = add(([a,d,c,b][k&3]), add(F(b,c,d), M[r1[k]]));
-      const r = rotl(t, s1[k]);
-      [a, d, c, b] = k%4===0?[r,a,b,c] : k%4===1?[b,r,a,c] : k%4===2?[b,c,r,a] : [b,c,d,r];
-    }
-    // Simpler rewrite of Round 1:
-    a = A; b = B; c = C; d = D;
-    for (const [x, s, ki] of [
-      [0,3,0],[1,7,1],[2,11,2],[3,19,3],
-      [0,3,4],[1,7,5],[2,11,6],[3,19,7],
-      [0,3,8],[1,7,9],[2,11,10],[3,19,11],
-      [0,3,12],[1,7,13],[2,11,14],[3,19,15],
-    ] as [number,number,number][]) {
-      const tmp = ([a,d,c,b][x]);
-      const res = rotl(add(tmp, add(F(b,c,d), M[ki])), s);
-      if (x===0){a=res;} else if (x===1){d=res;} else if (x===2){c=res;} else {b=res;}
+    // Round 1: a = rotl(a + F(b,c,d) + X[k], s); [a,b,c,d] = [d, a, b, c]
+    for (const [ki, s] of [
+      [0,3],[1,7],[2,11],[3,19],
+      [4,3],[5,7],[6,11],[7,19],
+      [8,3],[9,7],[10,11],[11,19],
+      [12,3],[13,7],[14,11],[15,19],
+    ] as [number,number][]) {
+      const na = rotl(add(a, add(F(b, c, d), M[ki])), s);
+      [a, b, c, d] = [d, na, b, c];
     }
 
-    // Round 2
+    // Round 2: a = rotl(a + G(b,c,d) + X[k] + 5A827999, s); [a,b,c,d] = [d, a, b, c]
     const C2 = 0x5A827999;
-    for (const [x, s, ki] of [
-      [0,3,0],[1,5,4],[2,9,8],[3,13,12],
-      [0,3,1],[1,5,5],[2,9,9],[3,13,13],
-      [0,3,2],[1,5,6],[2,9,10],[3,13,14],
-      [0,3,3],[1,5,7],[2,9,11],[3,13,15],
-    ] as [number,number,number][]) {
-      const tmp = ([a,d,c,b][x]);
-      const res = rotl(add(tmp, add(G(b,c,d), add(M[ki], C2))), s);
-      if (x===0){a=res;} else if (x===1){d=res;} else if (x===2){c=res;} else {b=res;}
+    for (const [ki, s] of [
+      [0,3],[4,5],[8,9],[12,13],
+      [1,3],[5,5],[9,9],[13,13],
+      [2,3],[6,5],[10,9],[14,13],
+      [3,3],[7,5],[11,9],[15,13],
+    ] as [number,number][]) {
+      const na = rotl(add(a, add(G(b, c, d), add(M[ki], C2))), s);
+      [a, b, c, d] = [d, na, b, c];
     }
 
-    // Round 3
+    // Round 3: a = rotl(a + H(b,c,d) + X[k] + 6ED9EBA1, s); [a,b,c,d] = [d, a, b, c]
     const C3 = 0x6ED9EBA1;
-    for (const [x, s, ki] of [
-      [0,3,0],[1,9,8],[2,11,4],[3,15,12],
-      [0,3,2],[1,9,10],[2,11,6],[3,15,14],
-      [0,3,1],[1,9,9],[2,11,5],[3,15,13],
-      [0,3,3],[1,9,11],[2,11,7],[3,15,15],
-    ] as [number,number,number][]) {
-      const tmp = ([a,d,c,b][x]);
-      const res = rotl(add(tmp, add(H(b,c,d), add(M[ki], C3))), s);
-      if (x===0){a=res;} else if (x===1){d=res;} else if (x===2){c=res;} else {b=res;}
+    for (const [ki, s] of [
+      [0,3],[8,9],[4,11],[12,15],
+      [2,3],[10,9],[6,11],[14,15],
+      [1,3],[9,9],[5,11],[13,15],
+      [3,3],[11,9],[7,11],[15,15],
+    ] as [number,number][]) {
+      const na = rotl(add(a, add(H(b, c, d), add(M[ki], C3))), s);
+      [a, b, c, d] = [d, na, b, c];
     }
 
     A = add(A,a); B = add(B,b); C = add(C,c); D = add(D,d);
@@ -161,14 +150,15 @@ function md5(data: Uint8Array): Uint8Array {
              6,10,15,21, 6,10,15,21, 6,10,15,21, 6,10,15,21];
 
   const len = data.length;
-  const bitLen = len * 8;
   const padLen = ((55 - len % 64 + 64) % 64) + 1;
   const msg = new Uint8Array(len + padLen + 8);
   msg.set(data);
   msg[len] = 0x80;
   const dv = new DataView(msg.buffer);
-  dv.setUint32(msg.length - 8, bitLen >>> 0, true);
-  dv.setUint32(msg.length - 4, Math.floor(bitLen / 0x100000000) >>> 0, true);
+  // Use BigInt for the 64-bit message bit length to avoid precision loss
+  const bitLenBig = BigInt(len) * 8n;
+  dv.setUint32(msg.length - 8, Number(bitLenBig & 0xFFFFFFFFn), true);
+  dv.setUint32(msg.length - 4, Number(bitLenBig >> 32n), true);
 
   let A = 0x67452301, B = 0xEFCDAB89, C = 0x98BADCFE, D = 0x10325476;
 
@@ -759,7 +749,8 @@ function parseQueryDirectoryBody(body: Uint8Array): DirEntry[] {
     const nextOffset = entDV.getUint32(0, true);
     const fileAttrs = entDV.getUint32(56, true);
     const eofLo = entDV.getUint32(40, true);
-    const nameLen = entDV.getUint32(60, true);
+    let nameLen = entDV.getUint32(60, true);
+    if (nameLen % 2 !== 0) nameLen = nameLen - 1; // Round down to even byte count for UTF-16LE
 
     // Timestamps (FILETIME) at offsets 8, 16, 24, 32
     const readFT = (off: number): string => {

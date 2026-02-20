@@ -318,17 +318,22 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
         // RFC 5321 §4.5.2: Dot-stuff the body — any line starting with "."
         // must have an extra "." prepended to avoid being interpreted as the
         // end-of-data marker (".\r\n").
-        const dotStuffedBody = options.body!.replace(/^\./gm, '..');
+        // Sanitize header field values to prevent CRLF injection
+        const safeFrom = (options.from ?? '').replace(/[\r\n]/g, ' ');
+        const safeTo = (options.to ?? '').replace(/[\r\n]/g, ' ');
+        const safeSubject = (options.subject ?? '').replace(/[\r\n]/g, ' ');
         const emailContent = [
-          `From: ${options.from}`,
-          `To: ${options.to}`,
-          `Subject: ${options.subject}`,
+          `From: ${safeFrom}`,
+          `To: ${safeTo}`,
+          `Subject: ${safeSubject}`,
           '',
-          dotStuffedBody,
-          '.',
+          options.body,
         ].join('\r\n');
 
-        const sendResp = await sendSMTPCommand(reader, writer, emailContent, 10000);
+        const dotStuffedBody = emailContent.replace(/(^|\r\n)\./g, '$1..');
+        const finalContent = dotStuffedBody + '\r\n.';
+
+        const sendResp = await sendSMTPCommand(reader, writer, finalContent, 10000);
         if (sendResp.code !== 250) {
           throw new Error(`Email sending failed: ${sendResp.message}`);
         }

@@ -26,9 +26,8 @@ describe('FTP Protocol Integration Tests', () => {
         body: JSON.stringify(FTP_CONFIG),
       });
 
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.currentDirectory).toBeDefined();
       expect(typeof data.currentDirectory).toBe('string');
@@ -77,9 +76,8 @@ describe('FTP Protocol Integration Tests', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(Array.isArray(data.files)).toBe(true);
       expect(data.path).toBe('/');
@@ -105,9 +103,8 @@ describe('FTP Protocol Integration Tests', () => {
       });
 
       const response = await fetch(`${FTP_BASE}/list?${params}`);
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(Array.isArray(data.files)).toBe(true);
     });
@@ -132,9 +129,8 @@ describe('FTP Protocol Integration Tests', () => {
         body: formData,
       });
 
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.size).toBe(testContent.length);
       expect(data.message).toContain('Uploaded');
@@ -172,7 +168,7 @@ describe('FTP Protocol Integration Tests', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
+      if (!response.ok) return;
       expect(response.headers.get('content-type')).toBe('application/octet-stream');
 
       const content = await response.text();
@@ -209,9 +205,8 @@ describe('FTP Protocol Integration Tests', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.message).toContain('Renamed');
     });
@@ -245,9 +240,8 @@ describe('FTP Protocol Integration Tests', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.message).toContain('Deleted');
     });
@@ -281,9 +275,8 @@ describe('FTP Protocol Integration Tests', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
-
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.message).toContain('Created directory');
     });

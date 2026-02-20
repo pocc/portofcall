@@ -973,13 +973,66 @@ function parseColumnValue(
     return { value: new TextDecoder().decode(data.slice(offset, offset + len)), nextOffset: offset + len };
   }
 
-  // Fallback: treat as 2LE-prefixed bytes
-  const fallbackLen = readU16LE(data, offset); offset += 2;
-  if (fallbackLen === 0xFFFF) return { value: null, nextOffset: offset };
-  return {
-    value: `[type:0x${type.toString(16)},len:${fallbackLen}]`,
-    nextOffset: offset + fallbackLen,
+  // Fallback: unknown/unrecognized type — choose skip strategy based on type class.
+  // Fixed-length types have no length prefix in the data stream; variable-length
+  // types carry a 1-byte or 2-byte length prefix.  Using the wrong strategy for
+  // fixed-length types would misparse subsequent columns.
+
+  // Fixed-length types and their sizes (bytes consumed after the type byte).
+  const FIXED_SIZES: Record<number, number> = {
+    [TYPE_NULL]:  0,  // 0x1F — no data bytes
+    [TYPE_BIT]:   1,  // 0x32
+    [TYPE_INT1]:  1,  // 0x30
+    [TYPE_INT2]:  2,  // 0x34
+    [TYPE_INT4]:  4,  // 0x38
+    [TYPE_INT8]:  8,  // 0x7F
+    [TYPE_FLOAT4]:4,  // 0x3B
+    [TYPE_FLOAT8]:8,  // 0x3D
+    [TYPE_MONEY4]:4,  // 0x7A
+    [TYPE_MONEY8]:8,  // 0x3C
+    [TYPE_UNIQUEID]:16, // 0x24
+    [TYPE_DATE]:  3,  // 0x28 — 3-byte day count, no length prefix
   };
+  if (Object.prototype.hasOwnProperty.call(FIXED_SIZES, type)) {
+    return { value: null, nextOffset: offset + FIXED_SIZES[type] };
+  }
+
+  // Nullable variable-length types that carry a 1-byte length prefix in data.
+  const ONE_BYTE_PREFIX_TYPES = new Set([
+    TYPE_INTN,      // 0x26
+    TYPE_FLOATN,    // 0x6D
+    TYPE_BITN,      // 0x68
+    TYPE_MONEYN,    // 0x6E
+    TYPE_DATETIMEN, // 0x6F
+    TYPE_DECIMALN,  // 0x6A
+    TYPE_NUMERICN,  // 0x6C
+    TYPE_TIME,      // 0x29
+    TYPE_DATETIME2, // 0x2A
+    TYPE_DATETIMEOFFSET, // 0x2B
+  ]);
+  if (ONE_BYTE_PREFIX_TYPES.has(type)) {
+    const len = data[offset++];
+    if (len === 0) return { value: null, nextOffset: offset };
+    return { value: null, nextOffset: offset + len };
+  }
+
+  // Variable-length types that carry a 2-byte LE length prefix in data.
+  const TWO_BYTE_PREFIX_TYPES = new Set([
+    TYPE_VARCHAR,   // 0xA7
+    TYPE_NVARCHAR,  // 0xE7
+    TYPE_CHAR,      // 0xAF
+    TYPE_NCHAR,     // 0xEF
+    TYPE_VARBINARY, // 0xA5
+    TYPE_BINARY,    // 0xAD
+  ]);
+  if (TWO_BYTE_PREFIX_TYPES.has(type)) {
+    const len = readU16LE(data, offset); offset += 2;
+    if (len === 0xFFFF) return { value: null, nextOffset: offset };
+    return { value: null, nextOffset: offset + len };
+  }
+
+  // Final unknown fallback: advance 1 byte to avoid an infinite loop.
+  return { value: null, nextOffset: offset + 1 };
 }
 
 // ---------------------------------------------------------------------------

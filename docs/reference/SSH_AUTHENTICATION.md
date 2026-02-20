@@ -144,6 +144,165 @@ const sshOptions = {
 };
 ```
 
+### 5. Command Execution (SSH Exec Endpoint)
+
+Execute commands non-interactively via the SSH exec channel:
+
+```bash
+curl -X POST https://portofcall.ross.gg/api/ssh/exec \
+  -H "Content-Type: application/json" \
+  -d '{
+    "host": "192.0.2.1",
+    "username": "root",
+    "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----",
+    "command": "uptime"
+  }'
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "stdout": " 10:30:42 up 35 days,  2:15,  1 user,  load average: 0.00, 0.01, 0.05\n",
+  "stderr": "",
+  "executionTime": 1234,
+  "colo": "SJC",
+  "note": "SSH exec channel combines stdout and stderr. Use pty-req for separate streams."
+}
+```
+
+#### Bash Shell Wrapper
+
+Create an interactive shell-like experience with this bash function:
+
+```bash
+myssh() {
+  if [ -z "$1" ]; then
+    # Interactive mode - get hostname first
+    local hostname_result=$(jq -n \
+      --arg key "$(cat ~/.ssh/id_ed25519)" \
+      --arg host "192.0.2.1" \
+      '{
+        host: $host,
+        username: "root",
+        privateKey: $key,
+        command: "hostname"
+      }' | curl -s -X POST https://portofcall.ross.gg/api/ssh/exec \
+        -H "Content-Type: application/json" \
+        -d @-)
+
+    local hostname=$(echo "$hostname_result" | jq -r '.stdout // "unknown"' | tr -d '\n\r' | tr -d '[:cntrl:]')
+    local colo=$(echo "$hostname_result" | jq -r '.colo // "unknown"')
+
+    echo -e "\033[36mEntering remote shell (type 'exit' to quit)...\033[0m"
+
+    while true; do
+      echo -ne "\033[33m${hostname} via ${colo}>\033[0m "
+      read -r cmd
+
+      [ "$cmd" = "exit" ] && break
+      [ -z "$cmd" ] && continue
+
+      local api_response=$(jq -n \
+        --arg key "$(cat ~/.ssh/id_ed25519)" \
+        --arg host "192.0.2.1" \
+        --arg cmds "$cmd" \
+        '{
+          host: $host,
+          username: "root",
+          privateKey: $key,
+          command: $cmds
+        }' | curl -s -X POST https://portofcall.ross.gg/api/ssh/exec \
+          -H "Content-Type: application/json" \
+          -d @-)
+
+      local success=$(echo "$api_response" | jq -r '.success')
+      if [ "$success" = "true" ]; then
+        echo "$api_response" | jq -r '.stdout // ""' | sed $'s/^/\033[32m/' | sed $'s/$/\033[0m/'
+      else
+        echo "$api_response" | jq -r '.error // "Unknown error"' | sed $'s/^/\033[31mError: /' | sed $'s/$/\033[0m/'
+      fi
+    done
+    echo -e "\033[36mExited remote shell.\033[0m"
+  else
+    # Single command mode
+    local api_response=$(jq -n \
+      --arg key "$(cat ~/.ssh/id_ed25519)" \
+      --arg host "192.0.2.1" \
+      --arg cmds "$1" \
+      '{
+        host: $host,
+        username: "root",
+        privateKey: $key,
+        command: $cmds
+      }' | curl -s -X POST https://portofcall.ross.gg/api/ssh/exec \
+        -H "Content-Type: application/json" \
+        -d @-)
+
+    local success=$(echo "$api_response" | jq -r '.success')
+    if [ "$success" = "true" ]; then
+      echo "$api_response" | jq -r '.stdout // ""' | sed $'s/^/\033[32m/' | sed $'s/$/\033[0m/'
+    else
+      echo "$api_response" | jq -r '.error // "Unknown error"' | sed $'s/^/\033[31mError: /' | sed $'s/$/\033[0m/'
+    fi
+  fi
+}
+```
+
+**Usage:**
+
+Single command:
+```bash
+$ myssh "ls -la"
+total 48
+drwx------ 6 root root 4096 Feb 19 10:30 .
+drwxr-xr-x 18 root root 4096 Jan 15 08:22 ..
+```
+
+Interactive mode:
+```bash
+$ myssh
+Entering remote shell (type 'exit' to quit)...
+example-server via SJC> pwd
+/root
+example-server via SJC> uptime
+10:30:42 up 35 days, 2:15, 1 user, load average: 0.00, 0.01, 0.05
+example-server via SJC> exit
+Exited remote shell.
+```
+
+#### JSON Payload Reference
+
+The SSH exec endpoint accepts the following JSON structure:
+
+```json
+{
+  "host": "192.0.2.1",
+  "port": 22,
+  "username": "root",
+  "authMethod": "privateKey",
+  "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----",
+  "passphrase": "optional-key-passphrase",
+  "command": "ls -la /var/log",
+  "timeout": 30000
+}
+```
+
+**Authentication auto-detection:**
+- If `privateKey` is provided without `authMethod`, automatically uses `privateKey` auth
+- If `password` is provided without `authMethod`, automatically uses `password` auth
+- You can explicitly set `authMethod` to `"password"` or `"privateKey"`
+
+**Alternative: Using script instead of command:**
+```json
+{
+  "host": "192.0.2.1",
+  "username": "root",
+  "privateKey": "...",
+  "script": "#!/bin/bash\nuptime\ndf -h\nfree -m"
+}
+```
+
 ## Advanced SSH Options
 
 ### Connection Timeouts

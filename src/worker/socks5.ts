@@ -84,7 +84,7 @@ function parseBoundAddress(data: Uint8Array, offset: number): { address: string;
       const parts: string[] = [];
       for (let i = 0; i < 8; i++) {
         const val = (data[offset + i * 2] << 8) | data[offset + i * 2 + 1];
-        parts.push(val.toString(16));
+        parts.push(val.toString(16).padStart(4, '0'));
       }
       address = parts.join(':');
       offset += 16;

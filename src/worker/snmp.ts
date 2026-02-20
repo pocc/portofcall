@@ -127,6 +127,16 @@ function encodeOctetString(str: string): Uint8Array {
  */
 function encodeOID(oid: string): Uint8Array {
   const parts = oid.split('.').map(Number);
+
+  // Validate all components are non-negative integers
+  if (parts.some(p => !Number.isInteger(p) || p < 0 || isNaN(p))) {
+    throw new Error(`Invalid OID: ${oid}`);
+  }
+  // Validate root arc: first component 0-2, second component 0-39 for arcs 0 and 1
+  if (parts.length < 2 || parts[0] > 2 || (parts[0] < 2 && parts[1] > 39)) {
+    throw new Error(`Invalid OID root arc: ${oid}`);
+  }
+
   const bytes: number[] = [];
 
   // First two components are encoded as: 40 * first + second

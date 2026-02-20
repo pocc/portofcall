@@ -210,7 +210,9 @@ async function zkRequest(
 }
 
 /**
- * Send a four-letter word command to a ZooKeeper server
+ * Send a four-letter word command to a ZooKeeper server.
+ * Validates the command against VALID_COMMANDS before sending to prevent
+ * injection of arbitrary data into the ZooKeeper control channel.
  */
 async function sendFourLetterWord(
   host: string,
@@ -218,6 +220,10 @@ async function sendFourLetterWord(
   command: string,
   timeout: number,
 ): Promise<string> {
+  if (!VALID_COMMANDS.includes(command)) {
+    throw new Error(`Invalid command: "${command}". Valid commands: ${VALID_COMMANDS.join(', ')}`);
+  }
+
   const socket = connect(`${host}:${port}`);
 
   const timeoutPromise = new Promise<never>((_, reject) => {

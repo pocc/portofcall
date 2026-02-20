@@ -740,16 +740,64 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
     let blocksReceived = 0;
     let nextBlockNum = 0;
 
+    // ── RFC 7959 §2.4 block-wise exchange helper ──────────────────────────────
+    // For each CON request we must:
+    //   1. Send the CON request.
+    //   2. Receive the response.  It may be:
+    //      a. A piggybacked ACK (type=2, code≠0.00) → this IS the response.
+    //      b. A separate empty ACK (type=2, code=0.00) → discard; wait for a
+    //         separate CON/NON response that carries the payload.
+    //      c. A non-confirmable (type=1) response → treat as final response.
+    //   3. Check the code:
+    //      - 2.05 (0x45) Content  → this is either the only block or the last.
+    //      - 2.31 (0x5F) Continue → more blocks to request.
+    //      - anything else        → error; abort.
+    //
+    // Response codes:
+    //   CONTENT  = 0x45  (class 2, detail 5)
+    //   CONTINUE = 0x5F  (class 2, detail 31) — used for Block1 upload; for
+    //              Block2 download the server always returns CONTENT (2.05).
+    //              We keep the CONTINUE check for completeness.
+    const COAP_CODE_CONTENT  = 0x45; // 2.05
+    const COAP_CODE_CONTINUE = 0x5F; // 2.31
+    const COAP_TYPE_ACK      = 2;
+
+    /**
+     * Read one CoAP PDU, skipping empty ACKs (piggybacked-ACK acknowledgement
+     * without a response code) per RFC 7252 §4.2.
+     * Returns the first PDU that carries actual response data.
+     */
+    async function readBlockResponse(): Promise<Uint8Array> {
+      while (true) {
+        const result = await Promise.race([reader.read(), timeoutPromise]);
+        if (result.done || !result.value) throw new Error('Connection closed during block transfer');
+        const pdu = result.value;
+        if (pdu.length < 4) continue;
+        const pduType = (pdu[0] >> 4) & 0x3;
+        const pduCode = pdu[1];
+        // Empty ACK (type=ACK, code=0.00) — server is still preparing the response.
+        // RFC 7252 §4.2: discard and keep reading for the separate response.
+        if (pduType === COAP_TYPE_ACK && pduCode === 0x00) continue;
+        return pdu;
+      }
+    }
+
     // Phase 1: initial GET with no Block2 option (let server choose block size)
     const initMsg = buildCoAPRequest(COAP_METHOD.GET, path, undefined, true);
     let msgId = (initMsg[2] << 8) | initMsg[3];
     await writer.write(initMsg);
 
     while (blocksReceived < maxBlocks) {
-      const result = await Promise.race([reader.read(), timeoutPromise]);
-      if (result.done || !result.value) break;
+      // RFC 7959 §2.4: wait for response to the CON request we just sent.
+      const pdu = await readBlockResponse();
 
-      const resp = parseCoAPResponse(result.value);
+      const resp = parseCoAPResponse(pdu);
+
+      // Verify the response carries an expected code before accepting payload.
+      if (resp.code !== COAP_CODE_CONTENT && resp.code !== COAP_CODE_CONTINUE) {
+        // Server returned an error (4.xx / 5.xx) or unexpected code — stop.
+        break;
+      }
 
       // Content-Format from first response
       if (contentFormat === undefined && resp.contentFormat !== undefined) {
@@ -757,8 +805,7 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
       }
 
       // Check response for Block2 option in raw options
-      const rawOpts = result.value;
-      const { block2, rawPayload } = extractBlock2AndPayload(rawOpts);
+      const { block2, rawPayload } = extractBlock2AndPayload(pdu);
 
       if (rawPayload) {
         payloadChunks.push(rawPayload);
@@ -771,10 +818,11 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
         break;
       }
 
-      // More blocks to fetch — request next block with same SZX
+      // More blocks to fetch — send next CON request, then loop back to read.
       nextBlockNum = block2.num + 1;
       msgId = (msgId + 1) & 0xFFFF;
       const blockReq = buildCoAPBlockRequest(path, nextBlockNum, block2.szx, msgId);
+      // Send the next block request AFTER receiving the previous response (RFC 7959 §2.4)
       await writer.write(blockReq);
     }
 

@@ -14,7 +14,7 @@ const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('H.323 Protocol Integration Tests', () => {
   describe('Connect endpoint', () => {
-    it('should attempt H.323 call signaling probe', async () => {
+    it('should fail H.323 call signaling probe to unreachable host', async () => {
       const response = await fetch(`${API_BASE}/h323/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -28,15 +28,8 @@ describe('H.323 Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      // Either succeeds with probe data or fails with connection error
-      if (data.success) {
-        expect(data.host).toBe('unreachable-host-12345.invalid');
-        expect(data.port).toBe(1720);
-        expect(data.status).toBeDefined();
-        expect(typeof data.connectTime).toBe('number');
-        expect(typeof data.rtt).toBe('number');
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 15000);
 
     it('should reject empty host', async () => {
@@ -100,7 +93,7 @@ describe('H.323 Protocol Integration Tests', () => {
         body: JSON.stringify({
           host: 'pbx.example.com',
           port: 1720,
-          callingNumber: 'abc;rm -rf /',
+          callingNumber: 'abc$%^invalid',
           calledNumber: '2000',
           timeout: 5000,
         }),
@@ -121,7 +114,7 @@ describe('H.323 Protocol Integration Tests', () => {
           host: 'pbx.example.com',
           port: 1720,
           callingNumber: '1000',
-          calledNumber: '../../../etc/passwd',
+          calledNumber: '2000$%^invalid',
           timeout: 5000,
         }),
       });
@@ -167,10 +160,8 @@ describe('H.323 Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (data.success) {
-        expect(data.port).toBe(1720);
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 10000);
 
     it('should use default calling/called numbers when not specified', async () => {
@@ -185,11 +176,8 @@ describe('H.323 Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (data.success) {
-        expect(data.callingNumber).toBe('1000');
-        expect(data.calledNumber).toBe('2000');
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 10000);
 
     it('should handle connection timeout gracefully', async () => {
@@ -204,10 +192,8 @@ describe('H.323 Protocol Integration Tests', () => {
       });
 
       const data = await response.json();
-
-      if (!data.success) {
-        expect(data.error).toBeDefined();
-      }
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
     }, 15000);
   });
 });

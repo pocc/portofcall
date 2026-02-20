@@ -83,11 +83,13 @@ async function readPOP3MultiLine(
       }
     }
 
-    // RFC 1939 §3: Dot-unstuffing — remove the extra leading "." from
-    // any line that was byte-stuffed by the server.
-    response = response.replace(/^\.\./gm, '.');
-
-    return response;
+    // RFC 1939 §3: reverse dot-stuffing
+    // Lines starting with ".." become "." and the lone "." line marks end
+    const lines = response.split('\r\n');
+    const destuffed = lines
+      .filter(line => line !== '.') // Remove terminator
+      .map(line => line.startsWith('..') ? line.slice(1) : line); // Undo stuffing
+    return destuffed.join('\r\n');
   })();
 
   const timeoutPromise = new Promise<never>((_, reject) =>

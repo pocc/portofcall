@@ -193,38 +193,46 @@ function extractErrorCode(text: string): string | null {
   return null;
 }
 
-/** Read exactly n bytes from a socket reader, buffering across multiple TCP chunks.
+/**
+ * BufferedReader wraps a ReadableStreamDefaultReader and maintains an internal
+ * byte buffer so that read(n) always returns exactly n bytes, even when the
+ * underlying stream delivers them in larger chunks. This fixes the hung-connection
+ * bug where readBytes(reader, 8) consumed an entire TCP packet and the subsequent
+ * readBytes(reader, packetLength - 8) stalled forever waiting for bytes that had
+ * already been discarded.
  *
- * Bug fix: the previous implementation returned "at least n" bytes because the loop
- * condition was (totalRead < n) but the combined buffer was never sliced before return.
- * This broke the two-step read pattern used in doTNSConnect, handleOracleQuery, and
- * handleOracleSQLQuery: when the OS delivers the full TNS packet in one TCP chunk,
- * readBytes(reader, 8) consumed e.g. all 50 bytes of an ACCEPT packet, and the
- * subsequent readBytes(reader, 42) stalled indefinitely waiting for bytes that had
- * already been consumed. Fixed by returning combined.subarray(0, n).
+ * readChunk() reads one logical chunk: returns buffered data immediately if any
+ * is available, otherwise waits for the next stream chunk. Used for phase 2+
+ * reads where the exact response size is unknown.
  */
-async function readBytes(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  n: number,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let totalRead = 0;
-  while (totalRead < n) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed before full TNS response received');
-    chunks.push(value);
-    totalRead += value.length;
+class BufferedReader {
+  private buf = new Uint8Array(0);
+  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
+
+  async read(n: number): Promise<Uint8Array> {
+    while (this.buf.length < n) {
+      const { value, done } = await this.reader.read();
+      if (done || !value) throw new Error('Connection closed before full TNS response received');
+      const merged = new Uint8Array(this.buf.length + value.length);
+      merged.set(this.buf);
+      merged.set(value, this.buf.length);
+      this.buf = merged;
+    }
+    const result = this.buf.slice(0, n);
+    this.buf = this.buf.slice(n);
+    return result;
   }
-  let combined: Uint8Array;
-  if (chunks.length === 1) {
-    combined = chunks[0];
-  } else {
-    combined = new Uint8Array(totalRead);
-    let off = 0;
-    for (const chunk of chunks) { combined.set(chunk, off); off += chunk.length; }
+
+  async readChunk(): Promise<{ value: Uint8Array; done: false } | { value: undefined; done: true }> {
+    if (this.buf.length > 0) {
+      const chunk = this.buf;
+      this.buf = new Uint8Array(0);
+      return { value: chunk, done: false };
+    }
+    const { value, done } = await this.reader.read();
+    if (done || !value) return { value: undefined, done: true };
+    return { value, done: false };
   }
-  // Slice to exactly n bytes — discard surplus bytes from an oversized last chunk.
-  return combined.length === n ? combined : combined.subarray(0, n);
 }
 
 /**
@@ -244,19 +252,19 @@ async function doTNSConnect(
   await socket.opened;
 
   const writer = socket.writable.getWriter();
-  const reader = socket.readable.getReader();
+  const buffered = new BufferedReader(socket.readable.getReader());
 
   try {
     const connectPacket = buildTNSConnectPacket(host, port, serviceName);
     await writer.write(connectPacket);
 
     // Read header first to learn total packet length
-    const headerData = await readBytes(reader, 8);
+    const headerData = await buffered.read(8);
     const packetLength = (headerData[0] << 8) | headerData[1];
 
     let fullPacket: Uint8Array;
     if (packetLength > 8) {
-      const remaining = await readBytes(reader, packetLength - 8);
+      const remaining = await buffered.read(packetLength - 8);
       fullPacket = new Uint8Array(packetLength);
       fullPacket.set(headerData, 0);
       fullPacket.set(remaining, 8);
@@ -532,19 +540,19 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
       await socket.opened;
 
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       try {
         // Phase 1: TNS Connect
         const connectPacket = buildTNSConnectPacket(host, port, service);
         await writer.write(connectPacket);
 
-        const headerData = await readBytes(reader, 8);
+        const headerData = await buffered.read(8);
         const packetLength = (headerData[0] << 8) | headerData[1];
 
         let fullPacket: Uint8Array;
         if (packetLength > 8) {
-          const remaining = await readBytes(reader, packetLength - 8);
+          const remaining = await buffered.read(packetLength - 8);
           fullPacket = new Uint8Array(packetLength);
           fullPacket.set(headerData, 0);
           fullPacket.set(remaining, 8);
@@ -634,7 +642,7 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
           const dataReadTimeout = new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('data_timeout')), 3000)
           );
-          const dataResult = await Promise.race([reader.read(), dataReadTimeout]);
+          const dataResult = await Promise.race([buffered.readChunk(), dataReadTimeout]);
           if (!dataResult.done && dataResult.value && dataResult.value.length > 10) {
             const dataRespType = dataResult.value[4];
             if (dataRespType === TNS_DATA) {
@@ -757,7 +765,7 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
       await socket.opened;
 
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      const buffered = new BufferedReader(socket.readable.getReader());
 
       const result: Record<string, unknown> = {
         success: false,
@@ -773,12 +781,12 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
         const connectPacket = buildTNSConnectPacket(host, port, service);
         await writer.write(connectPacket);
 
-        const headerData = await readBytes(reader, 8);
+        const headerData = await buffered.read(8);
         const packetLength = (headerData[0] << 8) | headerData[1];
 
         let fullPacket: Uint8Array;
         if (packetLength > 8) {
-          const remaining = await readBytes(reader, packetLength - 8);
+          const remaining = await buffered.read(packetLength - 8);
           fullPacket = new Uint8Array(packetLength);
           fullPacket.set(headerData, 0);
           fullPacket.set(remaining, 8);
@@ -844,7 +852,7 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           const negTimeout = new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('neg_timeout')), 3000)
           );
-          const negResult = await Promise.race([reader.read(), negTimeout]);
+          const negResult = await Promise.race([buffered.readChunk(), negTimeout]);
           if (!negResult.done && negResult.value && negResult.value.length > 8) {
             const negText = new TextDecoder('utf-8', { fatal: false })
               .decode(negResult.value.slice(8));
@@ -911,7 +919,7 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           const loginTimeout = new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('login_timeout')), 5000)
           );
-          const loginResult = await Promise.race([reader.read(), loginTimeout]);
+          const loginResult = await Promise.race([buffered.readChunk(), loginTimeout]);
           if (!loginResult.done && loginResult.value && loginResult.value.length >= 8) {
             const respType = loginResult.value[4];
             if (respType === TNS_DATA) {
@@ -969,7 +977,7 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           const queryTimeout = new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error('query_timeout')), 5000)
           );
-          const queryResult = await Promise.race([reader.read(), queryTimeout]);
+          const queryResult = await Promise.race([buffered.readChunk(), queryTimeout]);
           if (!queryResult.done && queryResult.value && queryResult.value.length > 10) {
             const qRespText = new TextDecoder('utf-8', { fatal: false })
               .decode(queryResult.value.slice(10));

@@ -309,10 +309,6 @@ export async function handleCassandraConnect(request: Request): Promise<Response
         // Determine protocol version from response
         const protocolVersion = optionsResponse.version & 0x7F; // mask off response bit
 
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
-
         return {
           success: true,
           host,
@@ -327,11 +323,10 @@ export async function handleCassandraConnect(request: Request): Promise<Response
           startupError: startupError || undefined,
           startupResponse: getOpcodeName(startupResponse.opcode),
         };
-      } catch (error) {
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
-        throw error;
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { socket.close(); } catch {}
       }
     })();
 
@@ -812,7 +807,6 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
 
         if (queryResp.opcode === OPCODE_ERROR) {
           const err = parseError(queryResp.body);
-          writer.releaseLock(); reader.releaseLock(); socket.close();
           return {
             success: false, host, port, rtt,
             error: `Query error: ${err.message} (code ${err.code})`,
@@ -826,15 +820,15 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
           ({ columns, rows } = parseResultRows(queryResp.body));
         }
 
-        writer.releaseLock(); reader.releaseLock(); socket.close();
         return {
           success: true, host, port, rtt,
           cqlVersions: supported['CQL_VERSION'] ?? [],
           columns, rows, rowCount: rows.length,
         };
-      } catch (err) {
-        writer.releaseLock(); reader.releaseLock(); socket.close();
-        throw err;
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { socket.close(); } catch {}
       }
     })();
 
@@ -969,7 +963,6 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
 
         if (execResp.opcode === OPCODE_ERROR) {
           const err = parseError(execResp.body);
-          writer.releaseLock(); reader.releaseLock(); socket.close();
           return { success: false, host, port, rtt, error: `EXECUTE error: ${err.message} (code ${err.code})`, cqlVersions: supported['CQL_VERSION'] ?? [] };
         }
 
@@ -979,16 +972,16 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
           ({ columns, rows } = parseResultRows(execResp.body));
         }
 
-        writer.releaseLock(); reader.releaseLock(); socket.close();
         return {
           success: true, host, port, rtt,
           preparedIdHex: Array.from(preparedId).map(b => b.toString(16).padStart(2, '0')).join(''),
           cqlVersions: supported['CQL_VERSION'] ?? [],
           columns, rows, rowCount: rows.length,
         };
-      } catch (err) {
-        writer.releaseLock(); reader.releaseLock(); socket.close();
-        throw err;
+      } finally {
+        try { writer.releaseLock(); } catch {}
+        try { reader.releaseLock(); } catch {}
+        try { socket.close(); } catch {}
       }
     })();
 

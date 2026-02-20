@@ -206,6 +206,7 @@ function parseL2TPMessage(data: Buffer): {
     }
 
     offset += avpLength;
+    if (offset > data.length) break;
   }
 
   return { tunnelId, sessionId, ns, nr, avps };

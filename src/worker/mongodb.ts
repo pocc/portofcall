@@ -87,7 +87,8 @@ function encodeBSON(doc: Record<string, unknown>): Uint8Array {
  * BSON decoder - parses a BSON document into a JS object.
  * Handles all common types returned by MongoDB server responses.
  */
-function decodeBSON(data: Uint8Array, startOffset: number = 0): Record<string, unknown> {
+function decodeBSON(data: Uint8Array, startOffset: number = 0, depth: number = 0): Record<string, unknown> {
+  if (depth > 10) throw new Error('BSON nesting too deep');
   const view = new DataView(data.buffer, data.byteOffset + startOffset);
   const docLength = view.getInt32(0, true);
   const result: Record<string, unknown> = {};
@@ -121,13 +122,13 @@ function decodeBSON(data: Uint8Array, startOffset: number = 0): Record<string, u
       }
       case BSON_DOCUMENT: {
         const subDocLen = new DataView(data.buffer, data.byteOffset + startOffset + offset).getInt32(0, true);
-        result[key] = decodeBSON(data, startOffset + offset);
+        result[key] = decodeBSON(data, startOffset + offset, depth + 1);
         offset += subDocLen;
         break;
       }
       case BSON_ARRAY: {
         const arrDocLen = new DataView(data.buffer, data.byteOffset + startOffset + offset).getInt32(0, true);
-        const arrDoc = decodeBSON(data, startOffset + offset);
+        const arrDoc = decodeBSON(data, startOffset + offset, depth + 1);
         // Convert document with numeric keys to array
         const arr: unknown[] = [];
         for (let i = 0; arrDoc[String(i)] !== undefined; i++) {

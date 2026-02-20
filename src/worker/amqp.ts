@@ -180,7 +180,15 @@ function readLongString(data: Uint8Array, offset: number): { value: string; byte
   return { value, bytesRead: 4 + len };
 }
 
-/** Parse an AMQP field table into a Record<string, string> (simplified -- extracts string values) */
+/**
+ * Parse an AMQP field table into a Record<string, string>.
+ *
+ * Handles all standard AMQP 0-9-1 field types: S (long string), s (short string),
+ * F (nested table), I (int32), t (boolean), l (int64), d (double), T (timestamp),
+ * D (decimal), A (array), b/B (byte), u (unsigned short).
+ * For genuinely unknown types, bails out of the table rather than advancing by
+ * 1 byte, which would corrupt subsequent field reads for multi-byte types.
+ */
 function readFieldTable(data: Uint8Array, offset: number): { value: Record<string, string>; bytesRead: number } {
   const view = new DataView(data.buffer, data.byteOffset + offset, 4);
   const tableLen = view.getUint32(0, false);
@@ -216,15 +224,15 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         pos += nestedResult.bytesRead;
         break;
       }
-      case 't': { // boolean
-        table[nameResult.value] = data[pos] !== 0 ? 'true' : 'false';
-        pos += 1;
-        break;
-      }
       case 'I': { // signed 32-bit int
         const intView = new DataView(data.buffer, data.byteOffset + pos, 4);
         table[nameResult.value] = intView.getInt32(0, false).toString();
         pos += 4;
+        break;
+      }
+      case 't': { // boolean
+        table[nameResult.value] = data[pos] !== 0 ? 'true' : 'false';
+        pos += 1;
         break;
       }
       case 'l': { // signed 64-bit int
@@ -233,8 +241,40 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         pos += 8;
         break;
       }
+      case 'd': { // double (IEEE 754, 8 bytes)
+        const dblView = new DataView(data.buffer, data.byteOffset + pos, 8);
+        table[nameResult.value] = dblView.getFloat64(0, false).toString();
+        pos += 8;
+        break;
+      }
+      case 'T': { // timestamp (uint64, seconds since Unix epoch)
+        const tsView = new DataView(data.buffer, data.byteOffset + pos, 8);
+        table[nameResult.value] = tsView.getBigUint64(0, false).toString();
+        pos += 8;
+        break;
+      }
+      case 'D': { // decimal (1-byte scale + 4-byte unsigned int mantissa = 5 bytes)
+        pos += 5;
+        break;
+      }
+      case 'A': { // array (4-byte length prefix + elements)
+        const arrView = new DataView(data.buffer, data.byteOffset + pos, 4);
+        const arrLen = arrView.getUint32(0, false);
+        pos += 4 + arrLen;
+        break;
+      }
+      case 'b': case 'B': { // signed/unsigned byte (1 byte)
+        pos += 1;
+        break;
+      }
+      case 'u': { // unsigned short (2 bytes) — RabbitMQ extension
+        pos += 2;
+        break;
+      }
       default: {
-        // Skip unknown types -- bail out of table parsing
+        // Unknown type: bail out of table parsing rather than misaligning the
+        // read cursor by advancing only 1 byte (which would corrupt all
+        // subsequent field reads for multi-byte types like int64, double, etc.).
         table[nameResult.value] = `<type:${type}>`;
         pos = end;
         break;

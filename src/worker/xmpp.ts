@@ -194,7 +194,8 @@ export async function handleXMPPConnect(request: Request): Promise<Response> {
     }
 
     const connectionPromise = (async () => {
-      const socket = connect(`${host}:${port}`);
+      // Use 'starttls' transport so the probe accurately reflects TLS capability
+      const socket = connect(`${host}:${port}`, { secureTransport: 'starttls', allowHalfOpen: false });
       await socket.opened;
 
       const reader = socket.readable.getReader();
@@ -339,6 +340,72 @@ async function openXMPPStream(
 }
 
 /**
+ * Attempt STARTTLS upgrade on an open XMPP stream (RFC 6120 §5).
+ *
+ * Protocol exchange:
+ *   Client → <starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>
+ *   Server ← <proceed xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>
+ *   [TLS handshake via socket.startTls()]
+ *   Client → new XML stream header
+ *   Server ← new stream:features (with SASL mechanisms)
+ *
+ * The Cloudflare Workers `socket.startTls()` API requires:
+ *  1. The socket was opened with `secureTransport: 'starttls'`.
+ *  2. All reader/writer locks are released before calling startTls().
+ *
+ * Returns a tuple of [newReader, newWriter, newFeaturesXml] after the upgrade,
+ * or throws if TLS is unavailable or the server rejects the upgrade.
+ *
+ * NOTE: If the socket does not expose `startTls` (older type stubs), we throw
+ * a descriptive error so the caller can fall back gracefully.
+ */
+async function performStartTLS(
+  socket: ReturnType<typeof connect>,
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  domain: string,
+): Promise<{
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  featuresXml: string;
+}> {
+  // Send STARTTLS request
+  await writer.write(encoder.encode(
+    `<starttls xmlns='urn:ietf:params:xml:ns:xmpp-tls'/>`,
+  ));
+
+  // Wait for <proceed/> or <failure/>
+  const resp = await readUntil(reader, ['<proceed', '<failure'], 5000);
+  if (!resp.includes('<proceed')) {
+    throw new Error('STARTTLS rejected by server (received <failure/>)');
+  }
+
+  // Release locks before TLS upgrade — required by the Cloudflare Workers API
+  reader.releaseLock();
+  writer.releaseLock();
+
+  // Upgrade socket to TLS
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const socketAny = socket as any;
+  if (typeof socketAny.startTls !== 'function') {
+    throw new Error(
+      'STARTTLS: socket.startTls() is not available in this Workers runtime. ' +
+      'Ensure the socket was created with secureTransport: "starttls". ' +
+      'STARTTLS upgrade cannot proceed.',
+    );
+  }
+
+  const tlsSocket = socketAny.startTls() as ReturnType<typeof connect>;
+  const newReader = tlsSocket.readable.getReader();
+  const newWriter = tlsSocket.writable.getWriter();
+
+  // Re-open XML stream over the now-encrypted channel
+  const featuresXml = await openXMPPStream(newWriter, newReader, domain);
+
+  return { reader: newReader, writer: newWriter, featuresXml };
+}
+
+/**
  * Handle XMPP SASL PLAIN login, resource binding, and session establishment.
  * POST /api/xmpp/login
  *
@@ -367,18 +434,37 @@ export async function handleXMPPLogin(request: Request): Promise<Response> {
     const phases: string[] = [];
 
     const connectionPromise = (async () => {
-      const socket = connect(`${host}:${port}`);
+      // Use 'starttls' transport so socket.startTls() is available for STARTTLS upgrade
+      const socket = connect(`${host}:${port}`, { secureTransport: 'starttls', allowHalfOpen: false });
       await socket.opened;
-      const reader = socket.readable.getReader();
-      const writer = socket.writable.getWriter();
+      let reader = socket.readable.getReader();
+      let writer = socket.writable.getWriter();
 
       try {
-        const featuresXml = await openXMPPStream(writer, reader, domain);
+        let featuresXml = await openXMPPStream(writer, reader, domain);
         phases.push('stream_opened');
-        const features = parseStreamFeatures(featuresXml);
+        let features = parseStreamFeatures(featuresXml);
+
+        // RFC 6120 §5 — attempt STARTTLS if offered before SASL auth
+        if (features.tlsAvailable) {
+          try {
+            const tls = await performStartTLS(socket, reader, writer, domain);
+            reader = tls.reader;
+            writer = tls.writer;
+            featuresXml = tls.featuresXml;
+            features = parseStreamFeatures(featuresXml);
+            phases.push('starttls_upgraded');
+          } catch (tlsErr) {
+            // If TLS upgrade fails but not required, continue on plaintext
+            if (features.tlsRequired) {
+              throw tlsErr;
+            }
+            phases.push(`starttls_skipped: ${tlsErr instanceof Error ? tlsErr.message : String(tlsErr)}`);
+          }
+        }
 
         if (!features.saslMechanisms.includes('PLAIN')) {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore */ }
           return {
             success: false, host, port, phases,
             error: `SASL PLAIN not supported. Available: ${features.saslMechanisms.join(', ')}`,
@@ -396,7 +482,7 @@ export async function handleXMPPLogin(request: Request): Promise<Response> {
         const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
         if (!authResp.includes('<success')) {
           const failureMatch = authResp.match(/<([a-z-]+)\s*\/>/);
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore */ }
           return {
             success: false, host, port, phases,
             error: `SASL authentication failed: ${failureMatch?.[1] || 'unknown failure'}`,
@@ -487,18 +573,34 @@ export async function handleXMPPRoster(request: Request): Promise<Response> {
     const phases: string[] = [];
 
     const connectionPromise = (async () => {
-      const socket = connect(`${host}:${port}`);
+      // Use 'starttls' transport so socket.startTls() is available for STARTTLS upgrade
+      const socket = connect(`${host}:${port}`, { secureTransport: 'starttls', allowHalfOpen: false });
       await socket.opened;
-      const reader = socket.readable.getReader();
-      const writer = socket.writable.getWriter();
+      let reader = socket.readable.getReader();
+      let writer = socket.writable.getWriter();
 
       try {
-        const featuresXml = await openXMPPStream(writer, reader, domain);
+        let featuresXml = await openXMPPStream(writer, reader, domain);
         phases.push('stream_opened');
-        const features = parseStreamFeatures(featuresXml);
+        let features = parseStreamFeatures(featuresXml);
+
+        // RFC 6120 §5 — attempt STARTTLS if offered before SASL auth
+        if (features.tlsAvailable) {
+          try {
+            const tls = await performStartTLS(socket, reader, writer, domain);
+            reader = tls.reader;
+            writer = tls.writer;
+            featuresXml = tls.featuresXml;
+            features = parseStreamFeatures(featuresXml);
+            phases.push('starttls_upgraded');
+          } catch (tlsErr) {
+            if (features.tlsRequired) throw tlsErr;
+            phases.push(`starttls_skipped: ${tlsErr instanceof Error ? tlsErr.message : String(tlsErr)}`);
+          }
+        }
 
         if (!features.saslMechanisms.includes('PLAIN')) {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore */ }
           return { success: false, host, port, phases, error: 'SASL PLAIN not available' };
         }
 
@@ -508,7 +610,7 @@ export async function handleXMPPRoster(request: Request): Promise<Response> {
         ));
         const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
         if (!authResp.includes('<success')) {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore */ }
           return { success: false, host, port, phases, error: 'Authentication failed' };
         }
         phases.push('authenticated');
@@ -619,18 +721,34 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
     const phases: string[] = [];
 
     const connectionPromise = (async () => {
-      const socket = connect(`${host}:${port}`);
+      // Use 'starttls' transport so socket.startTls() is available for STARTTLS upgrade
+      const socket = connect(`${host}:${port}`, { secureTransport: 'starttls', allowHalfOpen: false });
       await socket.opened;
-      const reader = socket.readable.getReader();
-      const writer = socket.writable.getWriter();
+      let reader = socket.readable.getReader();
+      let writer = socket.writable.getWriter();
 
       try {
-        const featuresXml = await openXMPPStream(writer, reader, domain);
+        let featuresXml = await openXMPPStream(writer, reader, domain);
         phases.push('stream_opened');
-        const features = parseStreamFeatures(featuresXml);
+        let features = parseStreamFeatures(featuresXml);
+
+        // RFC 6120 §5 — attempt STARTTLS if offered before SASL auth
+        if (features.tlsAvailable) {
+          try {
+            const tls = await performStartTLS(socket, reader, writer, domain);
+            reader = tls.reader;
+            writer = tls.writer;
+            featuresXml = tls.featuresXml;
+            features = parseStreamFeatures(featuresXml);
+            phases.push('starttls_upgraded');
+          } catch (tlsErr) {
+            if (features.tlsRequired) throw tlsErr;
+            phases.push(`starttls_skipped: ${tlsErr instanceof Error ? tlsErr.message : String(tlsErr)}`);
+          }
+        }
 
         if (!features.saslMechanisms.includes('PLAIN')) {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore */ }
           return { success: false, host, port, phases, error: 'SASL PLAIN not available' };
         }
 
@@ -640,7 +758,7 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
         ));
         const authResp = await readUntil(reader, ['<success', '<failure'], 5000);
         if (!authResp.includes('<success')) {
-          await socket.close();
+          try { await socket.close(); } catch { /* ignore */ }
           return { success: false, host, port, phases, error: 'Authentication failed' };
         }
         phases.push('authenticated');

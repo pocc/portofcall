@@ -591,9 +591,13 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
         await writer.write(buildKeepaliveMessage());
 
         // Detect if both sides negotiated 4-octet AS capability (RFC 6793).
-        // We always advertise capability 65 in buildOpenMessageWithCaps, so
-        // the capability is negotiated when the peer also advertises it.
+        // True negotiation requires both peers to have advertised capability 65.
+        // peerFourByteAS: peer advertised cap 65 in their OPEN.
+        // localFourByteAS: we included cap 65 in our OPEN (buildOpenMessageWithCaps always does).
+        // agreedFourByteAS: mutual agreement — both sides advertised cap 65.
         const peerFourByteAS = peerOpen.fourByteAS === true;
+        const localFourByteAS = true; // buildOpenMessageWithCaps always includes capability 65
+        const agreedFourByteAS = peerFourByteAS && localFourByteAS;
 
         // 4. Collect UPDATE messages
         const routes: BGPRoute[] = [];
@@ -628,7 +632,7 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
               await writer.write(buildKeepaliveMessage());
             } else if (parsed.type === MSG_UPDATE) {
               updateCount++;
-              const update = parseUpdateMessage(msgData, peerFourByteAS);
+              const update = parseUpdateMessage(msgData, agreedFourByteAS);
               for (const r of update.reachable) {
                 if (routes.length < maxRoutes) routes.push(r);
               }

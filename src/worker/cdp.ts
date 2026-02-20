@@ -73,24 +73,29 @@ async function sendHttpRequest(
   request += `User-Agent: PortOfCall/1.0\r\n`;
   request += `\r\n`;
 
-  await writer.write(encoder.encode(request));
-  writer.releaseLock();
+  try {
+    await writer.write(encoder.encode(request));
+  } finally {
+    try { writer.releaseLock(); } catch {}
+  }
 
   const reader = socket.readable.getReader();
   const decoder = new TextDecoder();
   let response = '';
   const maxSize = 512000; // 512KB max response
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+  try {
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        response += decoder.decode(value, { stream: true });
+      }
     }
+  } finally {
+    try { reader.releaseLock(); } catch {}
+    try { socket.close(); } catch {}
   }
-
-  reader.releaseLock();
-  socket.close();
 
   const headerEnd = response.indexOf('\r\n\r\n');
   if (headerEnd === -1) {
@@ -393,20 +398,25 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
           // Wrap in WebSocket frame and send to CDP
           const frame = buildWebSocketTextFrame(data);
           const writer = cdpSocket!.writable.getWriter();
-          await writer.write(frame);
-          writer.releaseLock();
+          try {
+            await writer.write(frame);
+          } finally {
+            try { writer.releaseLock(); } catch {}
+          }
         } catch (error) {
           console.error('Error forwarding to CDP:', error);
         }
       });
 
       // CDP -> Client (Chrome responses/events to browser)
+      let cdpLoopStopped = false;
+      server.addEventListener('close', () => { cdpLoopStopped = true; });
+
       (async () => {
+        const reader = cdpSocket!.readable.getReader();
         try {
-          while (true) {
-            const reader = cdpSocket!.readable.getReader();
+          while (!cdpLoopStopped) {
             const { value, done } = await reader.read();
-            reader.releaseLock();
 
             if (done) break;
             if (!value) continue;
@@ -421,19 +431,25 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
               } else if (frame.opcode === 0x8) {
                 // Close frame
                 server.close(1000, 'CDP connection closed');
+                cdpLoopStopped = true;
                 break;
               } else if (frame.opcode === 0x9) {
                 // Ping frame - respond with pong
                 const pongFrame = buildWebSocketPongFrame(frame.payload);
                 const writer = cdpSocket!.writable.getWriter();
-                await writer.write(pongFrame);
-                writer.releaseLock();
+                try {
+                  await writer.write(pongFrame);
+                } finally {
+                  try { writer.releaseLock(); } catch {}
+                }
               }
             }
           }
         } catch (error) {
           console.error('Error reading from CDP:', error);
           server.close(1011, 'CDP read error');
+        } finally {
+          try { reader.releaseLock(); } catch {}
         }
       })();
 

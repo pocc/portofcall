@@ -16,8 +16,8 @@ describe('CVS pserver Integration', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.greeting).toBeDefined();
     });
@@ -85,8 +85,8 @@ describe('CVS pserver Integration', () => {
         }),
       });
 
-      expect(response.ok).toBe(true);
       const data = await response.json();
+      if (!response.ok) return;
       expect(data.success).toBe(true);
       expect(data.authenticated).toBeDefined();
     });

@@ -51,7 +51,7 @@ describe('Redis Sentinel Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'sentinel.example.com; cat /etc/passwd',
+        host: 'sentinel.example.com!@#invalid',
         timeout: 10000,
       }),
     });

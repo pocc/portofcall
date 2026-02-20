@@ -12,7 +12,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
  * - Error handling: Validate error cases (unreachable host, timeout, etc.)
  */
 
-const API_BASE = 'http://localhost:8787';
+const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
 
 describe('SPICE Protocol Integration Tests', () => {
   beforeAll(() => {

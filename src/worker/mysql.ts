@@ -810,6 +810,12 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (!options.query) {
+      return new Response(JSON.stringify({
+        error: 'Missing required parameter: query'
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Cloudflare check
     const cfCheck = await checkIfCloudflare(options.host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -820,12 +826,54 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    // Return 501 for actual query execution
-    return new Response(JSON.stringify({
-      success: false,
-      error: 'Not Implemented',
-      message: 'MySQL query execution is not implemented'
-    }), { status: 501, headers: { 'Content-Type': 'application/json' } });
+    const host = options.host;
+    const port = options.port || 3306;
+    const username = options.username || 'root';
+    const password = options.password || '';
+    const database = options.database;
+    const query = options.query;
+    const timeoutMs = options.timeout || 30000;
+
+    const queryPromise: Promise<Response> = (async () => {
+      const { handshake, resultSet } = await mysqlConnect(
+        host, port, username, password, database, query
+      );
+
+      if (!resultSet) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'No result set returned' }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          host,
+          port,
+          database: database || null,
+          serverVersion: handshake.serverVersion,
+          query,
+          fields: resultSet.columns,
+          rows: resultSet.rows,
+          rowCount: resultSet.rowCount,
+        }),
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+    })();
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
+    );
+
+    try {
+      return await Promise.race([queryPromise, timeoutPromise]);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }),
+        { status: 500, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,

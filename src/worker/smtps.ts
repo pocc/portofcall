@@ -90,20 +90,10 @@ async function sendSMTPCommand(
  */
 export async function handleSMTPSConnect(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let options: Partial<SMTPSConnectionOptions>;
-
-    if (request.method === 'POST') {
-      options = await request.json() as Partial<SMTPSConnectionOptions>;
-    } else {
-      options = {
-        host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '465'),
-        username: url.searchParams.get('username') || undefined,
-        password: url.searchParams.get('password') || undefined,
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
-      };
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const options = await request.json() as Partial<SMTPSConnectionOptions>;
 
     if (!options.host) {
       return new Response(JSON.stringify({

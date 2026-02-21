@@ -506,21 +506,11 @@ function parseLDAPBindResponse(data: Uint8Array): { success: boolean; resultCode
  */
 export async function handleLDAPConnect(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let options: Partial<LDAPConnectionOptions>;
-
-    if (request.method === 'POST') {
-      const raw = await request.json() as Partial<LDAPConnectionOptions> & { bindDn?: string };
-      options = { ...raw, bindDN: raw.bindDN || raw.bindDn };
-    } else {
-      options = {
-        host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '389'),
-        bindDN: url.searchParams.get('bindDN') || url.searchParams.get('bindDn') || undefined,
-        password: url.searchParams.get('password') || undefined,
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
-      };
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const raw = await request.json() as Partial<LDAPConnectionOptions> & { bindDn?: string };
+    const options = { ...raw, bindDN: raw.bindDN || raw.bindDn };
 
     // Validate required fields
     if (!options.host) {

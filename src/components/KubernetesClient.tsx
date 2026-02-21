@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import ProtocolClientLayout, {
   SectionHeader,
   FormField,
@@ -20,6 +20,13 @@ export default function KubernetesClient({ onBack }: KubernetesClientProps) {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
+
+  // Clear sensitive state on unmount
+  useEffect(() => {
+    return () => {
+      setBearerToken('');
+    };
+  }, []);
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],

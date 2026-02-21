@@ -24,10 +24,10 @@ const BLOCKED_IPV4_CIDRS: Array<{ addr: number; mask: number }> = [
 function ipv4ToInt(ip: string): number {
   const parts = ip.split('.');
   return (
-    (parseInt(parts[0]) * 16777216 +   // 256^3
-     parseInt(parts[1]) * 65536 +       // 256^2
-     parseInt(parts[2]) * 256 +         // 256^1
-     parseInt(parts[3])) >>> 0
+    (parseInt(parts[0], 10) * 16777216 +   // 256^3
+     parseInt(parts[1], 10) * 65536 +       // 256^2
+     parseInt(parts[2], 10) * 256 +         // 256^1
+     parseInt(parts[3], 10)) >>> 0
   );
 }
 
@@ -48,8 +48,8 @@ function expandIPv6(ip: string): string {
   // Handle IPv4-mapped/compatible suffix (e.g. ::ffff:127.0.0.1 → ::ffff:7f00:0001)
   const v4Suffix = addr.match(/:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (v4Suffix) {
-    const a = parseInt(v4Suffix[1]), b = parseInt(v4Suffix[2]);
-    const c = parseInt(v4Suffix[3]), d = parseInt(v4Suffix[4]);
+    const a = parseInt(v4Suffix[1], 10), b = parseInt(v4Suffix[2], 10);
+    const c = parseInt(v4Suffix[3], 10), d = parseInt(v4Suffix[4], 10);
     const hi = ((a << 8) | b).toString(16);
     const lo = ((c << 8) | d).toString(16);
     addr = addr.replace(v4Suffix[0], `:${hi}:${lo}`);

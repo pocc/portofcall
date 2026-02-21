@@ -42,10 +42,10 @@ const CLOUDFLARE_IPV6_RANGES = [
 function ipv4ToInt(ip: string): number {
   const parts = ip.split('.');
   return (
-    (parseInt(parts[0]) << 24) +
-    (parseInt(parts[1]) << 16) +
-    (parseInt(parts[2]) << 8) +
-    parseInt(parts[3])
+    (parseInt(parts[0], 10) << 24) +
+    (parseInt(parts[1], 10) << 16) +
+    (parseInt(parts[2], 10) << 8) +
+    parseInt(parts[3], 10)
   );
 }
 
@@ -56,19 +56,55 @@ function isIpv4InRange(ip: string, cidr: string): boolean {
   const [range, bits] = cidr.split('/');
   const ipInt = ipv4ToInt(ip);
   const rangeInt = ipv4ToInt(range);
-  const mask = -1 << (32 - parseInt(bits));
+  const mask = -1 << (32 - parseInt(bits, 10));
   return (ipInt & mask) === (rangeInt & mask);
 }
 
 /**
- * Check if an IPv6 address is in a CIDR range (simplified check)
+ * Expand an IPv6 address to 8 groups of 16-bit integers.
+ */
+function expandIPv6ToGroups(ip: string): number[] {
+  let addr = ip.toLowerCase().replace(/\s/g, '');
+
+  // Expand :: shorthand
+  const halves = addr.split('::');
+  let groups: string[];
+  if (halves.length === 2) {
+    const left = halves[0] ? halves[0].split(':') : [];
+    const right = halves[1] ? halves[1].split(':') : [];
+    const fill = 8 - left.length - right.length;
+    groups = [...left, ...Array(fill).fill('0'), ...right];
+  } else {
+    groups = addr.split(':');
+  }
+
+  return groups.map(g => parseInt(g, 16));
+}
+
+/**
+ * Check if an IPv6 address is in a CIDR range using proper bitwise comparison.
  */
 function isIpv6InRange(ip: string, cidr: string): boolean {
-  const [range] = cidr.split('/');
-  // Simplified: just check if IP starts with the range prefix
-  // This is approximate but sufficient for Cloudflare's large ranges
-  const prefix = range.split(':').slice(0, 2).join(':');
-  return ip.toLowerCase().startsWith(prefix.toLowerCase());
+  const [range, bitsStr] = cidr.split('/');
+  const prefixLen = parseInt(bitsStr, 10);
+  const ipGroups = expandIPv6ToGroups(ip);
+  const rangeGroups = expandIPv6ToGroups(range);
+
+  // Compare bit-by-bit through the 16-bit groups
+  let remaining = prefixLen;
+  for (let i = 0; i < 8 && remaining > 0; i++) {
+    if (remaining >= 16) {
+      // Full group must match
+      if (ipGroups[i] !== rangeGroups[i]) return false;
+      remaining -= 16;
+    } else {
+      // Partial group: mask the high bits
+      const mask = 0xFFFF << (16 - remaining);
+      if ((ipGroups[i] & mask) !== (rangeGroups[i] & mask)) return false;
+      remaining = 0;
+    }
+  }
+  return true;
 }
 
 /**

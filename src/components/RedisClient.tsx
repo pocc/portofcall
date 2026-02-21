@@ -30,6 +30,17 @@ export default function RedisClient({ onBack }: RedisClientProps) {
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Clear sensitive state and close WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) {
+        wsRef.current.close(1000, 'component unmount');
+      }
+      wsRef.current = null;
+      setPassword('');
+    };
+  }, []);
+
   // Scroll output to bottom whenever history changes
   useEffect(() => {
     if (outputRef.current) {
@@ -51,12 +62,19 @@ export default function RedisClient({ onBack }: RedisClientProps) {
     setHistory([]);
 
     const params = new URLSearchParams({ host, port });
-    if (password) params.set('password', password);
-    if (database && database !== '0') params.set('database', database);
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/api/redis/session?${params}`);
     wsRef.current = ws;
+
+    ws.onopen = () => {
+      // Send credentials as the first message (never in query params)
+      ws.send(JSON.stringify({
+        type: 'auth',
+        ...(password ? { password } : {}),
+        ...(database && database !== '0' ? { database: parseInt(database, 10) } : {}),
+      }));
+    };
 
     ws.onmessage = (event) => {
       try {
@@ -92,10 +110,12 @@ export default function RedisClient({ onBack }: RedisClientProps) {
     };
 
     ws.onclose = (e) => {
-      if (status !== 'disconnected') {
-        addEntry('info', `[closed: ${e.reason || e.code}]`);
-        setStatus('disconnected');
-      }
+      setStatus(prev => {
+        if (prev !== 'disconnected') {
+          addEntry('info', `[closed: ${e.reason || e.code}]`);
+        }
+        return 'disconnected';
+      });
       wsRef.current = null;
     };
   };
@@ -175,8 +195,9 @@ export default function RedisClient({ onBack }: RedisClientProps) {
             <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Host</label>
+                <label htmlFor="redis-host" className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
+                  id="redis-host"
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -186,8 +207,9 @@ export default function RedisClient({ onBack }: RedisClientProps) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Port</label>
+                <label htmlFor="redis-port" className="block text-sm font-medium text-slate-300 mb-1">Port</label>
                 <input
+                  id="redis-port"
                   type="number"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
@@ -196,10 +218,11 @@ export default function RedisClient({ onBack }: RedisClientProps) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="redis-password" className="block text-sm font-medium text-slate-300 mb-1">
                   Password <span className="text-xs text-slate-400">(optional)</span>
                 </label>
                 <input
+                  id="redis-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -208,10 +231,11 @@ export default function RedisClient({ onBack }: RedisClientProps) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="redis-database" className="block text-sm font-medium text-slate-300 mb-1">
                   Database <span className="text-xs text-slate-400">(0–15)</span>
                 </label>
                 <input
+                  id="redis-database"
                   type="number"
                   value={database}
                   onChange={(e) => setDatabase(e.target.value)}

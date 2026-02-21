@@ -28,13 +28,16 @@ export default function SSHClient({ onBack }: SSHClientProps) {
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Close WebSocket on unmount to prevent leaks
+  // Close WebSocket and clear sensitive state on unmount
   useEffect(() => {
     return () => {
       if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) {
         wsRef.current.close(1000, 'component unmount');
       }
       wsRef.current = null;
+      setPassword('');
+      setPrivateKey('');
+      setPassphrase('');
     };
   }, []);
 
@@ -150,10 +153,12 @@ export default function SSHClient({ onBack }: SSHClientProps) {
     };
 
     ws.onclose = (event) => {
-      if (status !== 'disconnected') {
-        term.writeln(`\r\n\x1b[90m[closed: ${event.reason || event.code}]\x1b[0m`);
-        setStatus('disconnected');
-      }
+      setStatus(prev => {
+        if (prev !== 'disconnected') {
+          term.writeln(`\r\n\x1b[90m[closed: ${event.reason || event.code}]\x1b[0m`);
+        }
+        return 'disconnected';
+      });
       wsRef.current = null;
     };
   };
@@ -204,8 +209,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Host</label>
+                <label htmlFor="ssh-host" className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
+                  id="ssh-host"
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -216,8 +222,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Port</label>
+                <label htmlFor="ssh-port" className="block text-sm font-medium text-slate-300 mb-1">Port</label>
                 <input
+                  id="ssh-port"
                   type="number"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
@@ -227,8 +234,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Username</label>
+                <label htmlFor="ssh-username" className="block text-sm font-medium text-slate-300 mb-1">Username</label>
                 <input
+                  id="ssh-username"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -239,8 +247,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Auth method</label>
+                <label htmlFor="ssh-auth-method" className="block text-sm font-medium text-slate-300 mb-1">Auth method</label>
                 <select
+                  id="ssh-auth-method"
                   value={authMethod}
                   onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
                   disabled={status === 'connected' || status === 'connecting'}
@@ -253,8 +262,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
 
               {authMethod === 'password' ? (
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1">Password</label>
+                  <label htmlFor="ssh-password" className="block text-sm font-medium text-slate-300 mb-1">Password</label>
                   <input
+                    id="ssh-password"
                     type="password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
@@ -265,12 +275,13 @@ export default function SSHClient({ onBack }: SSHClientProps) {
               ) : (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-1">
+                    <label htmlFor="ssh-private-key" className="block text-sm font-medium text-slate-300 mb-1">
                       Private key
                       <span className="text-xs text-slate-400 ml-1">(OpenSSH Ed25519)</span>
                     </label>
                     <p className="text-xs text-slate-400 mb-1">Ed25519 only. Passphrase-protected keys are supported — enter the passphrase below.</p>
                     <textarea
+                      id="ssh-private-key"
                       value={privateKey}
                       onChange={(e) => setPrivateKey(e.target.value)}
                       placeholder={'-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----'}
@@ -299,10 +310,11 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-slate-300 mb-1">
+                    <label htmlFor="ssh-passphrase" className="block text-sm font-medium text-slate-300 mb-1">
                       Passphrase <span className="text-xs text-slate-400">(if encrypted)</span>
                     </label>
                     <input
+                      id="ssh-passphrase"
                       type="password"
                       value={passphrase}
                       onChange={(e) => setPassphrase(e.target.value)}

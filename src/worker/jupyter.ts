@@ -453,14 +453,17 @@ export async function handleJupyterKernelCreate(request: Request): Promise<Respo
 
 /**
  * List running Jupyter kernels.
- * GET /api/jupyter/kernels
+ * POST /api/jupyter/kernels
  */
 export async function handleJupyterKernelList(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '8888', 10);
-    const token = url.searchParams.get('token') || undefined;
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+    }
+    const body = await request.json() as { host?: string; port?: number; token?: string };
+    const host = body.host;
+    const port = body.port || 8888;
+    const token = body.token || undefined;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -497,15 +500,18 @@ export async function handleJupyterKernelDelete(request: Request): Promise<Respo
 
 /**
  * List notebooks and files at a path.
- * GET /api/jupyter/notebooks
+ * POST /api/jupyter/notebooks
  */
 export async function handleJupyterNotebooks(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '8888', 10);
-    const token = url.searchParams.get('token') || undefined;
-    const path = url.searchParams.get('path') || '';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+    }
+    const body = await request.json() as { host?: string; port?: number; token?: string; path?: string };
+    const host = body.host;
+    const port = body.port || 8888;
+    const token = body.token || undefined;
+    const path = body.path || '';
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -527,15 +533,18 @@ export async function handleJupyterNotebooks(request: Request): Promise<Response
 
 /**
  * Get notebook content (cells, outputs).
- * GET /api/jupyter/notebook
+ * POST /api/jupyter/notebook
  */
 export async function handleJupyterNotebookGet(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '8888', 10);
-    const token = url.searchParams.get('token') || undefined;
-    const path = url.searchParams.get('path');
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+    }
+    const body = await request.json() as { host?: string; port?: number; token?: string; path?: string };
+    const host = body.host;
+    const port = body.port || 8888;
+    const token = body.token || undefined;
+    const path = body.path;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!path) return new Response(JSON.stringify({ success: false, error: 'path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);

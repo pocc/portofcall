@@ -12,9 +12,10 @@ The Worker itself (the production application at portofcall.ross.gg) has these s
 
 - **SSRF Prevention:** `src/worker/host-validator.ts` blocks RFC 1918, loopback, link-local, CGN, metadata IPs, and dangerous hostnames (`.internal`, `.local`, `.localhost`). Enforced at the router level before any protocol handler runs.
 - **Cloudflare IP Detection:** `src/worker/cloudflare-detector.ts` blocks connections to Cloudflare-proxied IPs to prevent loop-back attacks through the CDN.
-- **Rate Limiting:** Handled at the infrastructure level (nginx connection limits, fail2ban).
+- **Rate Limiting:** Implemented at the Cloudflare zone level via Zone Settings rate limiting rules. Additional defense-in-depth via nginx connection limits and fail2ban for the Docker test environment.
+- **Origin Validation:** All requests (HTTP API and WebSocket) are validated against the `Origin` header to prevent cross-origin abuse and CSRF attacks.
 - **Security Headers:** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Strict-Transport-Security` set on all responses via the main fetch handler.
-- **SSH Credential Protection:** SSH passwords, private keys, and passphrases are sent over the WebSocket channel after upgrade (never in URL query parameters). Credentials are not echoed back in server responses.
+- **Credential Protection:** SSH passwords, private keys, and passphrases are sent over the WebSocket channel after upgrade (never in URL query parameters). Redis credentials are sent as the first WebSocket message, not in query params. FTP credentials are sanitized to prevent CRLF command injection. Error messages never leak raw server responses containing credentials.
 
 ### Known Limitation: DNS Rebinding
 
@@ -320,6 +321,6 @@ If you discover a security vulnerability:
 
 ---
 
-**Last Updated**: 2024-02-16
-**Security Reviewed**: 2024-02-16
-**Next Review**: 2024-03-16
+**Last Updated**: 2026-02-20
+**Security Reviewed**: 2026-02-20
+**Next Review**: 2026-03-20

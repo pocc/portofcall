@@ -721,21 +721,10 @@ async function executeQuery(
 
 export async function handlePostgreSQLConnect(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let options: Partial<PostgreSQLConnectionOptions>;
-
-    if (request.method === 'POST') {
-      options = (await request.json()) as Partial<PostgreSQLConnectionOptions>;
-    } else {
-      options = {
-        host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '5432'),
-        username: url.searchParams.get('username') || undefined,
-        password: url.searchParams.get('password') || undefined,
-        database: url.searchParams.get('database') || undefined,
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
-      };
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const options = (await request.json()) as Partial<PostgreSQLConnectionOptions>;
 
     if (!options.host) {
       return new Response(
@@ -823,22 +812,10 @@ export async function handlePostgreSQLConnect(request: Request): Promise<Respons
 
 export async function handlePostgreSQLQuery(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let options: Partial<PostgreSQLQueryOptions>;
-
-    if (request.method === 'POST') {
-      options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
-    } else {
-      options = {
-        host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '5432'),
-        username: url.searchParams.get('username') || undefined,
-        password: url.searchParams.get('password') || undefined,
-        database: url.searchParams.get('database') || undefined,
-        query: url.searchParams.get('query') || '',
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
-      };
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
 
     if (!options.host) {
       return new Response(
@@ -960,22 +937,10 @@ export interface PostgreSQLDescribeResult {
  */
 export async function handlePostgresDescribe(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let options: Partial<PostgreSQLQueryOptions>;
-
-    if (request.method === 'POST') {
-      options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
-    } else {
-      options = {
-        host:     url.searchParams.get('host') || '',
-        port:     parseInt(url.searchParams.get('port') || '5432'),
-        username: url.searchParams.get('username') || undefined,
-        password: url.searchParams.get('password') || undefined,
-        database: url.searchParams.get('database') || undefined,
-        query:    url.searchParams.get('query') || '',
-        timeout:  parseInt(url.searchParams.get('timeout') || '30000'),
-      };
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
 
     if (!options.host) {
       return new Response(

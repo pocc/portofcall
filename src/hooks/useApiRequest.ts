@@ -77,7 +77,13 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
       return null;
     } catch (err) {
       if (!controller.signal.aborted) {
-        setError(err instanceof DOMException && err.name === 'AbortError' ? 'Request cancelled' : 'Connection failed');
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          setError('Request timed out — the server did not respond in time');
+        } else if (err instanceof TypeError && err.message.includes('fetch')) {
+          setError('Network error — check that the host is reachable');
+        } else {
+          setError(err instanceof Error ? err.message : 'Connection failed');
+        }
       }
       return null;
     } finally {

@@ -37,6 +37,15 @@ interface FTPFeatures {
 }
 
 /**
+ * Strip CR/LF characters from a string to prevent FTP command injection.
+ * FTP commands are delimited by \r\n, so embedded newlines in user input
+ * (passwords, paths, etc.) could inject additional commands.
+ */
+function sanitizeFTPInput(input: string): string {
+  return input.replace(/[\r\n]/g, '');
+}
+
+/**
  * FTP Client using Cloudflare Workers Sockets API
  */
 export class FTPClient {
@@ -53,8 +62,8 @@ export class FTPClient {
   constructor(params: FTPConnectionParams) {
     this.host = params.host;
     this.port = params.port;
-    this.username = params.username;
-    this.password = params.password;
+    this.username = sanitizeFTPInput(params.username);
+    this.password = sanitizeFTPInput(params.password);
   }
 
   /**
@@ -71,7 +80,7 @@ export class FTPClient {
     // Read welcome message
     const welcome = await this.readResponse();
     if (!welcome.startsWith('220')) {
-      throw new Error(`FTP connection failed: ${welcome}`);
+      throw new Error('FTP connection failed: server rejected connection');
     }
 
     // Send username
@@ -79,7 +88,7 @@ export class FTPClient {
     const userResponse = await this.readResponse();
 
     if (!userResponse.startsWith('331')) {
-      throw new Error(`Username rejected: ${userResponse}`);
+      throw new Error('Username rejected by server');
     }
 
     // Send password
@@ -87,7 +96,7 @@ export class FTPClient {
     const passResponse = await this.readResponse();
 
     if (!passResponse.startsWith('230')) {
-      throw new Error(`Authentication failed: ${passResponse}`);
+      throw new Error('Authentication failed: invalid credentials');
     }
 
     // Set binary mode
@@ -105,10 +114,10 @@ export class FTPClient {
 
     // 211 is the FEAT response code; 500/502 means not supported
     if (response.startsWith('500') || response.startsWith('502')) {
-      throw new Error(`FEAT not supported: ${response}`);
+      throw new Error('FEAT not supported by server');
     }
     if (!response.startsWith('211')) {
-      throw new Error(`FEAT failed: ${response}`);
+      throw new Error('FEAT command failed');
     }
 
     // Parse feature list: lines between "211-Features:" and "211 End"
@@ -137,17 +146,17 @@ export class FTPClient {
    * Returns ISO 8601 timestamp string.
    */
   async mdtm(remotePath: string): Promise<string> {
-    await this.sendCommand(`MDTM ${remotePath}`);
+    await this.sendCommand(`MDTM ${sanitizeFTPInput(remotePath)}`);
     const response = await this.readResponse();
 
     if (!response.startsWith('213')) {
-      throw new Error(`MDTM failed: ${response}`);
+      throw new Error('MDTM failed');
     }
 
     // Response: 213 YYYYMMDDHHmmss[.fraction]
     const match = response.match(/^213\s+(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/);
     if (!match) {
-      throw new Error(`Failed to parse MDTM response: ${response}`);
+      throw new Error('Failed to parse MDTM response');
     }
 
     const [, yr, mo, dy, hh, mm, ss] = match;
@@ -173,10 +182,10 @@ export class FTPClient {
    */
   async mlsd(path: string = '/'): Promise<FTPFile[]> {
     if (path !== '/') {
-      await this.sendCommand(`CWD ${path}`);
+      await this.sendCommand(`CWD ${sanitizeFTPInput(path)}`);
       const cwdResponse = await this.readResponse();
       if (!cwdResponse.startsWith('250')) {
-        throw new Error(`Failed to change directory: ${cwdResponse}`);
+        throw new Error('Failed to change directory');
       }
     }
 
@@ -194,7 +203,7 @@ export class FTPClient {
 
     if (!mlsdResponse.startsWith('150') && !mlsdResponse.startsWith('125')) {
       await dataSocket.close();
-      throw new Error(`MLSD command failed: ${mlsdResponse}`);
+      throw new Error('MLSD command failed');
     }
 
     const dataReader = dataSocket.readable.getReader();
@@ -224,7 +233,7 @@ export class FTPClient {
       ),
     ]); // 226 Transfer Complete
     if (!mlsdComplete.startsWith('226')) {
-      throw new Error(`MLSD transfer failed: ${mlsdComplete}`);
+      throw new Error('MLSD transfer failed');
     }
 
     const listing = this.decoder.decode(this.concatenateChunks(chunks));
@@ -241,7 +250,7 @@ export class FTPClient {
     const dataSocket = connect(`${host}:${port}`);
     const dataOpened = dataSocket.opened;
 
-    const cmd = path !== '/' ? `NLST ${path}` : 'NLST';
+    const cmd = path !== '/' ? `NLST ${sanitizeFTPInput(path)}` : 'NLST';
     await this.sendCommand(cmd);
 
     const [nlstResponse] = await Promise.all([
@@ -251,7 +260,7 @@ export class FTPClient {
 
     if (!nlstResponse.startsWith('150') && !nlstResponse.startsWith('125')) {
       await dataSocket.close();
-      throw new Error(`NLST command failed: ${nlstResponse}`);
+      throw new Error('NLST command failed');
     }
 
     const dataReader = dataSocket.readable.getReader();
@@ -281,7 +290,7 @@ export class FTPClient {
       ),
     ]); // 226
     if (!nlstComplete.startsWith('226')) {
-      throw new Error(`NLST transfer failed: ${nlstComplete}`);
+      throw new Error('NLST transfer failed');
     }
 
     const listing = this.decoder.decode(this.concatenateChunks(chunks));
@@ -296,7 +305,7 @@ export class FTPClient {
    * Power-user escape hatch for SITE CHMOD, SITE CHOWN, SITE EXEC, etc.
    */
   async site(command: string): Promise<string> {
-    await this.sendCommand(`SITE ${command}`);
+    await this.sendCommand(`SITE ${sanitizeFTPInput(command)}`);
     return await this.readResponse();
   }
 
@@ -308,7 +317,7 @@ export class FTPClient {
     const response = await this.readResponse();
 
     if (!response.startsWith('227')) {
-      throw new Error(`Passive mode failed: ${response}`);
+      throw new Error('Passive mode failed');
     }
 
     // Parse PASV response: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
@@ -319,8 +328,8 @@ export class FTPClient {
 
     const [, h1, h2, h3, h4, p1, p2] = match;
     const host = `${h1}.${h2}.${h3}.${h4}`;
-    const p1Num = parseInt(p1);
-    const p2Num = parseInt(p2);
+    const p1Num = parseInt(p1, 10);
+    const p2Num = parseInt(p2, 10);
     if (isNaN(p1Num) || isNaN(p2Num) || p1Num < 0 || p1Num > 255 || p2Num < 0 || p2Num > 255) {
       throw new Error('Invalid PASV response: port octets out of range');
     }
@@ -345,10 +354,10 @@ export class FTPClient {
 
     // Change to directory if not root
     if (path !== '/') {
-      await this.sendCommand(`CWD ${path}`);
+      await this.sendCommand(`CWD ${sanitizeFTPInput(path)}`);
       const cwdResponse = await this.readResponse();
       if (!cwdResponse.startsWith('250')) {
-        throw new Error(`Failed to change directory: ${cwdResponse}`);
+        throw new Error('Failed to change directory');
       }
     }
 
@@ -370,7 +379,7 @@ export class FTPClient {
 
     if (!listResponse.startsWith('150') && !listResponse.startsWith('125')) {
       await dataSocket.close();
-      throw new Error(`LIST command failed: ${listResponse}`);
+      throw new Error('LIST command failed');
     }
 
     // Read directory listing from data socket with timeout
@@ -403,7 +412,7 @@ export class FTPClient {
       ),
     ]);
     if (!completeResponse.startsWith('226')) {
-      throw new Error(`LIST transfer failed: ${completeResponse}`);
+      throw new Error('LIST transfer failed');
     }
 
     // Parse listing
@@ -423,7 +432,7 @@ export class FTPClient {
     const dataOpened = dataSocket.opened;
 
     // Send STOR command
-    await this.sendCommand(`STOR ${remotePath}`);
+    await this.sendCommand(`STOR ${sanitizeFTPInput(remotePath)}`);
 
     // Wait for both data socket ready and server response
     const [storResponse] = await Promise.all([
@@ -433,7 +442,7 @@ export class FTPClient {
 
     if (!storResponse.startsWith('150') && !storResponse.startsWith('125')) {
       await dataSocket.close();
-      throw new Error(`STOR command failed: ${storResponse}`);
+      throw new Error('STOR command failed');
     }
 
     // Write file data to data socket
@@ -455,7 +464,7 @@ export class FTPClient {
       ),
     ]);
     if (!completeResponse.startsWith('226')) {
-      throw new Error(`Upload failed: ${completeResponse}`);
+      throw new Error('Upload failed');
     }
   }
 
@@ -471,7 +480,7 @@ export class FTPClient {
     const dataOpened = dataSocket.opened;
 
     // Send RETR command
-    await this.sendCommand(`RETR ${remotePath}`);
+    await this.sendCommand(`RETR ${sanitizeFTPInput(remotePath)}`);
 
     // Wait for both data socket ready and server response
     const [retrResponse] = await Promise.all([
@@ -481,7 +490,7 @@ export class FTPClient {
 
     if (!retrResponse.startsWith('150') && !retrResponse.startsWith('125')) {
       await dataSocket.close();
-      throw new Error(`RETR command failed: ${retrResponse}`);
+      throw new Error('RETR command failed');
     }
 
     // Read file data from data socket
@@ -514,7 +523,7 @@ export class FTPClient {
       ),
     ]);
     if (!completeResponse.startsWith('226')) {
-      throw new Error(`Download incomplete: ${completeResponse}`);
+      throw new Error('Download incomplete');
     }
 
     return this.concatenateChunks(chunks);
@@ -524,11 +533,11 @@ export class FTPClient {
    * Delete file from server
    */
   async delete(remotePath: string): Promise<void> {
-    await this.sendCommand(`DELE ${remotePath}`);
+    await this.sendCommand(`DELE ${sanitizeFTPInput(remotePath)}`);
     const response = await this.readResponse();
 
     if (!response.startsWith('250')) {
-      throw new Error(`Delete failed: ${response}`);
+      throw new Error('Delete failed');
     }
   }
 
@@ -536,11 +545,11 @@ export class FTPClient {
    * Create directory
    */
   async mkdir(dirPath: string): Promise<void> {
-    await this.sendCommand(`MKD ${dirPath}`);
+    await this.sendCommand(`MKD ${sanitizeFTPInput(dirPath)}`);
     const response = await this.readResponse();
 
     if (!response.startsWith('257')) {
-      throw new Error(`Create directory failed: ${response}`);
+      throw new Error('Create directory failed');
     }
   }
 
@@ -548,11 +557,11 @@ export class FTPClient {
    * Remove directory
    */
   async rmdir(dirPath: string): Promise<void> {
-    await this.sendCommand(`RMD ${dirPath}`);
+    await this.sendCommand(`RMD ${sanitizeFTPInput(dirPath)}`);
     const response = await this.readResponse();
 
     if (!response.startsWith('250')) {
-      throw new Error(`Remove directory failed: ${response}`);
+      throw new Error('Remove directory failed');
     }
   }
 
@@ -561,19 +570,19 @@ export class FTPClient {
    */
   async rename(fromPath: string, toPath: string): Promise<void> {
     // Send RNFR (rename from)
-    await this.sendCommand(`RNFR ${fromPath}`);
+    await this.sendCommand(`RNFR ${sanitizeFTPInput(fromPath)}`);
     const rnfrResponse = await this.readResponse();
 
     if (!rnfrResponse.startsWith('350')) {
-      throw new Error(`Rename failed: ${rnfrResponse}`);
+      throw new Error('Rename failed');
     }
 
     // Send RNTO (rename to)
-    await this.sendCommand(`RNTO ${toPath}`);
+    await this.sendCommand(`RNTO ${sanitizeFTPInput(toPath)}`);
     const rntoResponse = await this.readResponse();
 
     if (!rntoResponse.startsWith('250')) {
-      throw new Error(`Rename failed: ${rntoResponse}`);
+      throw new Error('Rename failed');
     }
   }
 
@@ -581,11 +590,11 @@ export class FTPClient {
    * Get file size
    */
   async size(remotePath: string): Promise<number> {
-    await this.sendCommand(`SIZE ${remotePath}`);
+    await this.sendCommand(`SIZE ${sanitizeFTPInput(remotePath)}`);
     const response = await this.readResponse();
 
     if (!response.startsWith('213')) {
-      throw new Error(`SIZE command failed: ${response}`);
+      throw new Error('SIZE command failed');
     }
 
     // Extract size from response: 213 1234567
@@ -594,7 +603,7 @@ export class FTPClient {
       throw new Error('Failed to parse SIZE response');
     }
 
-    return parseInt(match[1]);
+    return parseInt(match[1], 10);
   }
 
   /**
@@ -605,7 +614,7 @@ export class FTPClient {
     const response = await this.readResponse();
 
     if (!response.startsWith('257')) {
-      throw new Error(`PWD failed: ${response}`);
+      throw new Error('PWD failed');
     }
 
     // Extract path from response: 257 "/path" is current directory
@@ -840,20 +849,10 @@ export class FTPClient {
  */
 export async function handleFTPConnect(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-
-    // Support both POST (with JSON body) and GET (with query params)
-    let host: string, port: number, username: string, password: string;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as { host: string; port: number; username: string; password: string };
-      ({ host, port, username, password } = body);
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '21');
-      username = url.searchParams.get('username') || '';
-      password = url.searchParams.get('password') || '';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const { host, port = 21, username, password } = await request.json() as { host: string; port?: number; username: string; password: string };
 
     if (!host || !username || !password) {
       return new Response(JSON.stringify({
@@ -911,27 +910,16 @@ export async function handleFTPConnect(request: Request): Promise<Response> {
  */
 export async function handleFTPList(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-
-    // Get connection params
-    let host: string, port: number, username: string, password: string, path: string, useMlsd: boolean;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as { host?: string; port?: number; username?: string; password?: string; path?: string; mlsd?: boolean };
-      host = body.host || '';
-      port = body.port || 21;
-      username = body.username || '';
-      password = body.password || '';
-      path = body.path || '/';
-      useMlsd = body.mlsd ?? false;
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '21');
-      username = url.searchParams.get('username') || '';
-      password = url.searchParams.get('password') || '';
-      path = url.searchParams.get('path') || '/';
-      useMlsd = url.searchParams.get('mlsd') === 'true';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const body = await request.json() as { host?: string; port?: number; username?: string; password?: string; path?: string; mlsd?: boolean };
+    const host = body.host || '';
+    const port = body.port || 21;
+    const username = body.username || '';
+    const password = body.password || '';
+    const path = body.path || '/';
+    const useMlsd = body.mlsd ?? false;
 
     if (!host || !username || !password) {
       return new Response(JSON.stringify({
@@ -973,26 +961,14 @@ export async function handleFTPList(request: Request): Promise<Response> {
 
 /**
  * Handle FTP FEAT negotiation.
- * POST/GET /api/ftp/feat — returns parsed server capability set.
+ * POST /api/ftp/feat — returns parsed server capability set.
  */
 export async function handleFTPFeat(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-
-    let host: string, port: number, username: string, password: string;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as { host: string; port?: number; username: string; password: string };
-      host = body.host;
-      port = body.port || 21;
-      username = body.username;
-      password = body.password;
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '21');
-      username = url.searchParams.get('username') || '';
-      password = url.searchParams.get('password') || '';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const { host, port = 21, username, password } = await request.json() as { host: string; port?: number; username: string; password: string };
 
     if (!host || !username || !password) {
       return new Response(JSON.stringify({
@@ -1032,28 +1008,14 @@ export async function handleFTPFeat(request: Request): Promise<Response> {
 
 /**
  * Handle FTP file stat (SIZE + MDTM) without transferring the file.
- * POST/GET /api/ftp/stat — returns size and ISO 8601 modification time.
+ * POST /api/ftp/stat — returns size and ISO 8601 modification time.
  */
 export async function handleFTPStat(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-
-    let host: string, port: number, username: string, password: string, remotePath: string;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
-      host = body.host;
-      port = body.port || 21;
-      username = body.username;
-      password = body.password;
-      remotePath = body.remotePath;
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '21');
-      username = url.searchParams.get('username') || '';
-      password = url.searchParams.get('password') || '';
-      remotePath = url.searchParams.get('remotePath') || '';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const { host, port = 21, username, password, remotePath } = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
 
     if (!host || !username || !password || !remotePath) {
       return new Response(JSON.stringify({
@@ -1094,28 +1056,16 @@ export async function handleFTPStat(request: Request): Promise<Response> {
 
 /**
  * Handle FTP NLST (name list) request.
- * POST/GET /api/ftp/nlst — returns bare filename array.
+ * POST /api/ftp/nlst — returns bare filename array.
  */
 export async function handleFTPNlst(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-
-    let host: string, port: number, username: string, password: string, path: string;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as { host: string; port?: number; username: string; password: string; path?: string };
-      host = body.host;
-      port = body.port || 21;
-      username = body.username;
-      password = body.password;
-      path = body.path || '/';
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '21');
-      username = url.searchParams.get('username') || '';
-      password = url.searchParams.get('password') || '';
-      path = url.searchParams.get('path') || '/';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const body = await request.json() as { host: string; port?: number; username: string; password: string; path?: string };
+    const { host, port = 21, username, password } = body;
+    const path = body.path || '/';
 
     if (!host || !username || !password) {
       return new Response(JSON.stringify({
@@ -1266,24 +1216,10 @@ export async function handleFTPUpload(request: Request): Promise<Response> {
  */
 export async function handleFTPDownload(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-
-    let host: string, port: number, username: string, password: string, remotePath: string;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
-      host = body.host;
-      port = body.port || 21;
-      username = body.username;
-      password = body.password;
-      remotePath = body.remotePath;
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '21');
-      username = url.searchParams.get('username') || '';
-      password = url.searchParams.get('password') || '';
-      remotePath = url.searchParams.get('remotePath') || '';
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const { host, port = 21, username, password, remotePath } = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
 
     if (!host || !username || !password || !remotePath) {
       return new Response(JSON.stringify({

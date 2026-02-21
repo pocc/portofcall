@@ -1117,16 +1117,18 @@ export async function handleNeo4jSchema(request: Request): Promise<Response> {
   let socket: ReturnType<typeof connect> | null = null;
 
   try {
-    const url = new URL(request.url);
-    const host = url.searchParams.get('host') || '';
-    const portStr = url.searchParams.get('port') || '7687';
-    const username = url.searchParams.get('username') || 'neo4j';
-    const password = url.searchParams.get('password') || '';
-    const port = parseInt(portStr, 10);
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+    }
+    const body = await request.json() as { host?: string; port?: number; username?: string; password?: string };
+    const host = body.host || '';
+    const port = body.port || 7687;
+    const username = body.username || 'neo4j';
+    const password = body.password || '';
     const timeout = 15000;
 
     if (!host) {
-      return new Response(JSON.stringify({ success: false, error: 'Host is required (query param)' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });

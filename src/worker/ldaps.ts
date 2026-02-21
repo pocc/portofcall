@@ -647,21 +647,11 @@ function extractPagedResultsCookie(data: Uint8Array): Uint8Array {
 
 export async function handleLDAPSConnect(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let options: Partial<LDAPSConnectionOptions>;
-
-    if (request.method === 'POST') {
-      const raw = await request.json() as Partial<LDAPSConnectionOptions>;
-      options = { ...raw, bindDN: resolveBindDN(raw) || undefined };
-    } else {
-      options = {
-        host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '636'),
-        bindDN: url.searchParams.get('bindDN') || url.searchParams.get('bindDn') || undefined,
-        password: url.searchParams.get('password') || undefined,
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
-      };
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const raw = await request.json() as Partial<LDAPSConnectionOptions>;
+    const options = { ...raw, bindDN: resolveBindDN(raw) || undefined };
 
     if (!options.host) {
       return new Response(JSON.stringify({

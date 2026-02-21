@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import { protocols } from './ProtocolSelector';
 
@@ -23,6 +23,7 @@ export default function ChecklistTab() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'incomplete' | 'complete'>('all');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/checklist')
@@ -38,36 +39,40 @@ export default function ChecklistTab() {
       [protocolId]: { ...(prev[protocolId] ?? {}), [item]: checked },
     }));
     setSaving(`${protocolId}:${item}`);
+    setSaveError(null);
     try {
-      await fetch('/api/checklist', {
+      const resp = await fetch('/api/checklist', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ protocolId, item, checked }),
       });
+      if (!resp.ok) throw new Error('Save failed');
     } catch {
       // Revert on failure
       setChecklist(prev => ({
         ...prev,
         [protocolId]: { ...(prev[protocolId] ?? {}), [item]: !checked },
       }));
+      setSaveError('Failed to save — change was reverted');
+      setTimeout(() => setSaveError(null), 4000);
     } finally {
       setSaving(null);
     }
   }, []);
 
-  const getProgress = (protocolId: string, features: string[]) => {
+  const getProgress = useCallback((protocolId: string, features: string[]) => {
     const state = checklist[protocolId] ?? {};
     const done = features.filter(f => state[f]).length;
     return { done, total: features.length };
-  };
+  }, [checklist]);
 
-  const grouped = categoryOrder.map(cat => ({
+  const grouped = useMemo(() => categoryOrder.map(cat => ({
     category: cat,
     label: categoryLabels[cat],
     items: protocols.filter(p => p.category === cat),
-  }));
+  })), []);
 
-  const filteredGrouped = grouped.map(g => ({
+  const filteredGrouped = useMemo(() => grouped.map(g => ({
     ...g,
     items: g.items.filter(p => {
       const { done, total } = getProgress(p.id, p.features);
@@ -75,14 +80,16 @@ export default function ChecklistTab() {
       if (filter === 'incomplete') return done < total;
       return true;
     }),
-  })).filter(g => g.items.length > 0);
+  })).filter(g => g.items.length > 0), [grouped, filter, getProgress]);
 
-  const totalDone = protocols.reduce((acc, p) => {
-    const state = checklist[p.id] ?? {};
-    return acc + p.features.filter(f => state[f]).length;
-  }, 0);
-  const totalItems = protocols.reduce((acc, p) => acc + p.features.length, 0);
-  const pct = totalItems ? Math.round((totalDone / totalItems) * 100) : 0;
+  const { totalDone, totalItems, pct } = useMemo(() => {
+    const done = protocols.reduce((acc, p) => {
+      const state = checklist[p.id] ?? {};
+      return acc + p.features.filter(f => state[f]).length;
+    }, 0);
+    const items = protocols.reduce((acc, p) => acc + p.features.length, 0);
+    return { totalDone: done, totalItems: items, pct: items ? Math.round((done / items) * 100) : 0 };
+  }, [checklist]);
 
   if (loading) {
     return (
@@ -94,6 +101,13 @@ export default function ChecklistTab() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 pb-16">
+      {/* Save error toast */}
+      {saveError && (
+        <div className={`mb-4 px-4 py-3 rounded-lg text-sm ${isRetro ? 'bg-red-900 retro-text' : 'bg-red-900/80 text-red-200'}`}>
+          {saveError}
+        </div>
+      )}
+
       {/* Summary header */}
       <div className={`mb-8 p-4 rounded-xl ${isRetro ? 'retro-panel' : 'bg-slate-800'}`}>
         <div className="flex items-center justify-between mb-3">

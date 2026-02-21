@@ -49,37 +49,23 @@ async function readWithTimeout(
  */
 export async function handleNATSConnect(request: Request): Promise<Response> {
   try {
-    const url = new URL(request.url);
-    let host: string;
-    let port: number;
-    let user: string | undefined;
-    let pass: string | undefined;
-    let token: string | undefined;
-    let timeoutMs: number;
-
-    if (request.method === 'POST') {
-      const body = await request.json() as {
-        host?: string;
-        port?: number;
-        user?: string;
-        pass?: string;
-        token?: string;
-        timeout?: number;
-      };
-      host = body.host || '';
-      port = body.port || 4222;
-      user = body.user || undefined;
-      pass = body.pass || undefined;
-      token = body.token || undefined;
-      timeoutMs = body.timeout || 30000;
-    } else {
-      host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '4222');
-      user = url.searchParams.get('user') || undefined;
-      pass = url.searchParams.get('pass') || undefined;
-      token = url.searchParams.get('token') || undefined;
-      timeoutMs = parseInt(url.searchParams.get('timeout') || '30000');
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
+    const body = await request.json() as {
+      host?: string;
+      port?: number;
+      user?: string;
+      pass?: string;
+      token?: string;
+      timeout?: number;
+    };
+    const host = body.host || '';
+    const port = body.port || 4222;
+    const user = body.user || undefined;
+    const pass = body.pass || undefined;
+    const token = body.token || undefined;
+    const timeoutMs = body.timeout || 30000;
 
     if (!host) {
       return new Response(JSON.stringify({

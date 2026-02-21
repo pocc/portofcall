@@ -48,8 +48,8 @@ export default function ChargenClient({ onBack }: ChargenClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          maxBytes: parseInt(maxBytes),
+          port: parseInt(port, 10),
+          maxBytes: parseInt(maxBytes, 10),
           timeout: 10000,
         }),
       });

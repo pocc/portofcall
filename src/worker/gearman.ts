@@ -401,9 +401,9 @@ export async function handleGearmanConnect(request: Request): Promise<Response> 
           if (parts.length >= 4) {
             functions.push({
               name: parts[0],
-              total: parseInt(parts[1]) || 0,
-              running: parseInt(parts[2]) || 0,
-              availableWorkers: parseInt(parts[3]) || 0,
+              total: parseInt(parts[1], 10) || 0,
+              running: parseInt(parts[2], 10) || 0,
+              availableWorkers: parseInt(parts[3], 10) || 0,
             });
           }
         }

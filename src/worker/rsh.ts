@@ -51,11 +51,11 @@ export async function handleRshExecute(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '514'),
+        port: parseInt(url.searchParams.get('port') || '514', 10),
         localUser: url.searchParams.get('localUser') || 'guest',
         remoteUser: url.searchParams.get('remoteUser') || 'guest',
         command: url.searchParams.get('command') || '',
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -344,7 +344,7 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '514');
+    const port = parseInt(url.searchParams.get('port') || '514', 10);
     const localUser = url.searchParams.get('localUser') || 'guest';
     const remoteUser = url.searchParams.get('remoteUser') || 'guest';
     const command = url.searchParams.get('command') || 'id';

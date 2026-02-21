@@ -48,7 +48,7 @@ export default function SIPClient({ onBack }: SIPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           uri: uri || undefined,
           timeout: 10000,
         }),
@@ -126,7 +126,7 @@ export default function SIPClient({ onBack }: SIPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           uri: uri || undefined,
           username: username || 'probe',
           domain: domain || undefined,

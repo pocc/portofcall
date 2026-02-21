@@ -408,7 +408,7 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
       const url = new URL(request.url);
       body = {
         host: url.searchParams.get('host') ?? '',
-        port: url.searchParams.has('port') ? parseInt(url.searchParams.get('port')!) : undefined,
+        port: url.searchParams.has('port') ? parseInt(url.searchParams.get('port')!, 10) : undefined,
         username: url.searchParams.get('username') ?? undefined
       };
     }

@@ -32,7 +32,7 @@ interface EPPResponse {
   message: string;
   code?: number;
   xml?: string;
-  data?: Record<string, any>;
+  data?: Record<string, unknown>;
 }
 
 /**
@@ -264,7 +264,7 @@ async function openEPPSession(config: EPPConfig, objURIs?: string[]): Promise<{
 
     return { reader, writer, socket, greeting };
   } catch (err) {
-    try { await socket.close(); } catch {}
+    try { await socket.close(); } catch { /* ignored */ }
     throw err;
   }
 }
@@ -280,9 +280,9 @@ async function closeEPPSession(
   try {
     await sendLogout(writer, reader);
   } finally {
-    try { reader.releaseLock(); } catch {}
-    try { writer.releaseLock(); } catch {}
-    try { await socket.close(); } catch {}
+    try { reader.releaseLock(); } catch { /* ignored */ }
+    try { writer.releaseLock(); } catch { /* ignored */ }
+    try { await socket.close(); } catch { /* ignored */ }
   }
 }
 
@@ -333,15 +333,15 @@ export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
         serverResponse: helloResponse.substring(0, 500),
       },
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     return {
       success: false,
-      message: `EPP connection failed: ${error.message}`,
+      message: `EPP connection failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   } finally {
-    try { reader.releaseLock(); } catch {}
-    try { writer.releaseLock(); } catch {}
-    try { await socket.close(); } catch {}
+    try { reader.releaseLock(); } catch { /* ignored */ }
+    try { writer.releaseLock(); } catch { /* ignored */ }
+    try { await socket.close(); } catch { /* ignored */ }
   }
 }
 
@@ -374,13 +374,13 @@ export async function eppLogin(config: EPPConfig): Promise<EPPResponse> {
         greeting: session.greeting.substring(0, 300),
       },
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (session) {
-      try { await closeEPPSession(session.reader, session.writer, session.socket); } catch {}
+      try { await closeEPPSession(session.reader, session.writer, session.socket); } catch { /* ignored */ }
     }
     return {
       success: false,
-      message: `EPP login failed: ${error.message}`,
+      message: `EPP login failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 }
@@ -446,13 +446,13 @@ export async function eppDomainCheck(config: EPPConfig, domain: string): Promise
         response: checkResponse.substring(0, 500),
       },
     };
-  } catch (error: any) {
+  } catch (error: unknown) {
     if (session) {
-      try { await closeEPPSession(session.reader, session.writer, session.socket); } catch {}
+      try { await closeEPPSession(session.reader, session.writer, session.socket); } catch { /* ignored */ }
     }
     return {
       success: false,
-      message: `EPP domain check failed: ${error.message}`,
+      message: `EPP domain check failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
 }
@@ -528,7 +528,7 @@ export async function handleEPPDomainInfo(request: Request): Promise<Response> {
         raw: infoResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch {}
+      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -612,7 +612,7 @@ export async function handleEPPDomainCreate(request: Request): Promise<Response>
         raw: createResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch {}
+      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -663,9 +663,8 @@ export async function handleEPPDomainUpdate(request: Request): Promise<Response>
   }
 
   const config: EPPConfig = { host, port, clid, pw };
-  let session: Awaited<ReturnType<typeof openEPPSession>> | null = null;
   try {
-    session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
     const { reader, writer, socket } = session;
 
     try {
@@ -708,7 +707,7 @@ export async function handleEPPDomainUpdate(request: Request): Promise<Response>
         raw: updateResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch {}
+      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -754,9 +753,8 @@ export async function handleEPPDomainDelete(request: Request): Promise<Response>
   }
 
   const config: EPPConfig = { host, port, clid, pw };
-  let session: Awaited<ReturnType<typeof openEPPSession>> | null = null;
   try {
-    session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
     const { reader, writer, socket } = session;
 
     try {
@@ -785,7 +783,7 @@ export async function handleEPPDomainDelete(request: Request): Promise<Response>
         raw: deleteResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch {}
+      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -832,9 +830,8 @@ export async function handleEPPDomainRenew(request: Request): Promise<Response> 
   }
 
   const config: EPPConfig = { host, port, clid, pw };
-  let session: Awaited<ReturnType<typeof openEPPSession>> | null = null;
   try {
-    session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
     const { reader, writer, socket } = session;
 
     try {
@@ -871,7 +868,7 @@ export async function handleEPPDomainRenew(request: Request): Promise<Response> 
         raw: renewResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch {}
+      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {

@@ -113,7 +113,7 @@ interface HazelcastMapSetRequest extends HazelcastMapRequest {
   ttl?: number;
 }
 
-interface HazelcastMapDeleteRequest extends HazelcastMapRequest {}
+type HazelcastMapDeleteRequest = HazelcastMapRequest;
 
 interface HazelcastMapSetResponse {
   success: boolean;

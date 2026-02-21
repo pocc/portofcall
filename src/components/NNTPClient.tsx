@@ -64,7 +64,7 @@ export default function NNTPClient({ onBack }: NNTPClientProps) {
       const response = await fetch('/api/nntp/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = (await response.json()) as {
@@ -115,7 +115,7 @@ export default function NNTPClient({ onBack }: NNTPClientProps) {
       const response = await fetch('/api/nntp/group', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), group: group.trim(), timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), group: group.trim(), timeout: 15000 }),
       });
 
       const data = (await response.json()) as {
@@ -148,7 +148,7 @@ export default function NNTPClient({ onBack }: NNTPClientProps) {
       const response = await fetch('/api/nntp/article', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), group: groupInfo.group, articleNumber, timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), group: groupInfo.group, articleNumber, timeout: 15000 }),
       });
 
       const data = (await response.json()) as {
@@ -173,7 +173,7 @@ export default function NNTPClient({ onBack }: NNTPClientProps) {
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !loading && host && port) {
-      group.trim() ? handleSelectGroup() : handleConnect();
+      if (group.trim()) { handleSelectGroup(); } else { handleConnect(); }
     }
   };
 

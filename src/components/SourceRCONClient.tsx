@@ -45,7 +45,7 @@ export default function SourceRCONClient({ onBack }: SourceRCONClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           password,
           timeout: 10000,
         }),
@@ -83,7 +83,7 @@ export default function SourceRCONClient({ onBack }: SourceRCONClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           password,
           command: command.trim(),
           timeout: 10000,

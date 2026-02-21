@@ -13,7 +13,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
   const [terminal, setTerminal] = useState<string[]>([]);
   const [command, setCommand] = useState('');
   const [loading, setLoading] = useState(false);
-  const [ws, setWs] = useState<WebSocket | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -26,11 +26,11 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
   // Cleanup WebSocket on unmount
   useEffect(() => {
     return () => {
-      if (ws) {
-        ws.close();
+      if (wsRef.current) {
+        wsRef.current.close();
       }
     };
-  }, [ws]);
+  }, []);
 
   const addToTerminal = (text: string, type: 'input' | 'output' | 'error' | 'info' = 'output') => {
     const prefix = {
@@ -40,7 +40,10 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
       info: '💡 ',
     }[type];
 
-    setTerminal(prev => [...prev, `${prefix}${text}`]);
+    setTerminal(prev => {
+      const next = [...prev, `${prefix}${text}`];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
   };
 
   const handleConnect = async () => {
@@ -59,7 +62,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
         }),
       });
 
@@ -84,7 +87,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
 
       websocket.onopen = () => {
         setConnected(true);
-        setWs(websocket);
+        wsRef.current = websocket;
         addToTerminal('WebSocket connected. Interactive session ready.', 'info');
       };
 
@@ -114,7 +117,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
 
       websocket.onclose = () => {
         setConnected(false);
-        setWs(null);
+        wsRef.current = null;
         addToTerminal('Connection closed', 'info');
       };
 
@@ -129,22 +132,22 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
   };
 
   const handleSendCommand = () => {
-    if (!ws || !command.trim()) return;
+    if (!wsRef.current || !command.trim()) return;
 
     const cmd = command.trim();
     addToTerminal(cmd, 'input');
 
     // Send command with newline
-    ws.send(cmd + '\r\n');
+    wsRef.current.send(cmd + '\r\n');
     setCommand('');
   };
 
   const handleDisconnect = () => {
-    if (ws) {
-      ws.close();
+    if (wsRef.current) {
+      wsRef.current.close();
     }
     setConnected(false);
-    setWs(null);
+    wsRef.current = null;
     addToTerminal('Disconnected from server', 'info');
   };
 

@@ -44,7 +44,7 @@ export default function NSCAClient({ onBack }: NSCAClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -107,12 +107,12 @@ export default function NSCAClient({ onBack }: NSCAClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           hostName,
           service,
-          returnCode: parseInt(returnCode),
+          returnCode: parseInt(returnCode, 10),
           output,
-          encryption: parseInt(encryption),
+          encryption: parseInt(encryption, 10),
           password: password || undefined,
           timeout: 15000,
         }),

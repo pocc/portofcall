@@ -56,6 +56,7 @@ export function parseIRCMessage(rawLine: string): IRCMessage {
             .replace(/\\\\/g, '\x00')  // temp-escape backslash
             .replace(/\\r/g, '\r')
             .replace(/\\n/g, '\n')
+            // eslint-disable-next-line no-control-regex
             .replace(/\x00/g, '\\');
         }
       }
@@ -114,7 +115,7 @@ export function parseIRCMessage(rawLine: string): IRCMessage {
  */
 export function validateNickname(nick: string): boolean {
   if (!nick || nick.length === 0 || nick.length > 30) return false;
-  return /^[a-zA-Z\[\]\\`_^{|}][a-zA-Z0-9\[\]\\`_^{|}\-]{0,29}$/.test(nick);
+  return /^[a-zA-Z[\]\\`_^{|}][a-zA-Z0-9[\]\\`_^{|}-]{0,29}$/.test(nick);
 }
 
 /**
@@ -304,7 +305,7 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '6667');
+    const port = parseInt(url.searchParams.get('port') || '6667', 10);
     const nickname = url.searchParams.get('nickname');
     const username = url.searchParams.get('username') || nickname || '';
     const realname = url.searchParams.get('realname') || nickname || '';

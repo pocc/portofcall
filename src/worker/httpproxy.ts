@@ -16,6 +16,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 interface HTTPProxyRequest {
   host: string;
@@ -44,7 +45,7 @@ function parseHTTPResponse(data: string): {
   const lines = headerSection.split('\r\n');
   const statusLine = lines[0] || '';
   const statusMatch = statusLine.match(/^HTTP\/[\d.]+ (\d+)\s*(.*)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
   const statusText = statusMatch ? statusMatch[2] : statusLine;
 
   const headers: Record<string, string> = {};
@@ -73,9 +74,9 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '3128'),
+        port: parseInt(url.searchParams.get('port') || '3128', 10),
         targetUrl: url.searchParams.get('targetUrl') || 'http://example.com/',
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -112,9 +113,20 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
     let targetHost = 'example.com';
     try {
       const parsedUrl = new URL(targetUrl);
-      targetHost = parsedUrl.host;
+      targetHost = parsedUrl.hostname;
     } catch {
       // Use default
+    }
+
+    // SSRF: block private/internal target hosts
+    if (isBlockedHost(targetHost)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${targetHost}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const connectionPromise = (async () => {
@@ -285,6 +297,17 @@ export async function handleHTTPProxyConnect(request: Request): Promise<Response
     const targetPort = options.targetPort || 443;
     const proxyAuth = options.proxyAuth || '';
     const timeoutMs = options.timeout || 10000;
+
+    // SSRF: block private/internal destination hosts
+    if (isBlockedHost(targetHost)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${targetHost}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);

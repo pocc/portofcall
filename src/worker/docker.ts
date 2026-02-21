@@ -121,7 +121,7 @@ async function sendHttpRequest(
   // Parse status line
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   // Parse headers
   const headers: Record<string, string> = {};
@@ -820,7 +820,7 @@ export async function handleDockerContainerLogs(request: Request): Promise<Respo
       // Extract status code from first line
       const headerStr = new TextDecoder().decode(combined.slice(0, headerEndIdx));
       const statusMatch = headerStr.match(/HTTP\/[\d.]+ (\d+)/);
-      statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+      statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
       rawBytes = combined.slice(headerEndIdx + 4);
 

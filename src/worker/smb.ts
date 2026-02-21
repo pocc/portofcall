@@ -266,8 +266,8 @@ export async function handleSMBConnect(request: Request): Promise<Response> {
     } else {
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '445'),
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
+        port: parseInt(url.searchParams.get('port') || '445', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '30000', 10),
       };
     }
 

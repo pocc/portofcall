@@ -45,7 +45,7 @@ export default function DockerClient({ onBack }: DockerClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
         }),
       });
 
@@ -151,7 +151,7 @@ export default function DockerClient({ onBack }: DockerClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           method,
           path,
           body: queryBody || undefined,

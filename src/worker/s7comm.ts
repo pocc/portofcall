@@ -394,7 +394,7 @@ function validateS7Input(host: string, port: number, rack: number, slot: number)
   // Hostname: alphanumeric, dots, hyphens
   // IPv4: digits and dots
   // IPv6: hex digits, colons, brackets
-  if (!/^[a-zA-Z0-9._:\[\]-]+$/.test(host)) {
+  if (!/^[a-zA-Z0-9._:[\]-]+$/.test(host)) {
     return 'Host contains invalid characters';
   }
 
@@ -649,14 +649,14 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
           { status: 200, headers: { 'Content-Type': 'application/json' } },
         );
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
       }
     } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-      try { socket.close(); } catch {}
+      try { socket.close(); } catch { /* ignored */ }
     }
   } catch (error) {
     return new Response(
@@ -771,14 +771,14 @@ export async function handleS7ReadDB(request: Request): Promise<Response> {
         } satisfies S7commResponse & { db: number; startByte: number; byteCount: number; hex: string | null; bytes: number[] | null }),
           { headers: { 'Content-Type': 'application/json' } });
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
       }
     } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-      try { socket.close(); } catch {}
+      try { socket.close(); } catch { /* ignored */ }
     }
   } catch (error) {
     return new Response(
@@ -923,14 +923,14 @@ export async function handleS7WriteDB(request: Request): Promise<Response> {
         } satisfies S7commResponse & { db: number; startByte: number; bytesWritten: number }),
           { headers: { 'Content-Type': 'application/json' } });
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
       }
     } finally {
       if (timeoutHandle !== null) {
         clearTimeout(timeoutHandle);
       }
-      try { socket.close(); } catch {}
+      try { socket.close(); } catch { /* ignored */ }
     }
   } catch (error) {
     return new Response(

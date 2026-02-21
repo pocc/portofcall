@@ -145,7 +145,7 @@ function parseTSError(line: string): { id: number; msg: string } | null {
   const match = line.match(/^error\s+id=(\d+)\s+msg=(.+)/);
   if (!match) return null;
   return {
-    id: parseInt(match[1]),
+    id: parseInt(match[1], 10),
     msg: tsUnescape(match[2]),
   };
 }

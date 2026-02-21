@@ -42,7 +42,7 @@ export default function XMPPS2SClient({ onBack }: XMPPS2SClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           fromDomain: fromDomain || 'probe.example.com',
           toDomain: toDomain || undefined,
           timeout: 15000,

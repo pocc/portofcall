@@ -140,7 +140,7 @@ function parseSipResponse(raw: string): SipResponse | null {
   const statusMatch = lines[0].match(/^SIP\/2\.0\s+(\d{3})\s+(.+)$/);
   if (!statusMatch) return null;
 
-  const statusCode = parseInt(statusMatch[1]);
+  const statusCode = parseInt(statusMatch[1], 10);
   const statusText = statusMatch[2];
 
   // Parse headers
@@ -228,7 +228,7 @@ async function readSipResponse(
         if (fullText.includes('\r\n\r\n')) {
           // Check Content-Length to see if we need to read body
           const clMatch = fullText.match(/Content-Length:\s*(\d+)/i);
-          const contentLength = clMatch ? parseInt(clMatch[1]) : 0;
+          const contentLength = clMatch ? parseInt(clMatch[1], 10) : 0;
 
           // Validate Content-Length
           if (contentLength < 0 || contentLength > MAX_RESPONSE_SIZE) {
@@ -272,7 +272,7 @@ async function readSipResponse(
  * Handle SIP OPTIONS request - probe server capabilities
  */
 export async function handleSipOptions(request: Request): Promise<Response> {
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect> | undefined;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
@@ -560,7 +560,7 @@ export async function handleSipInvite(request: Request): Promise<Response> {
       for (const line of rawResponse.split('\r\n')) {
         const m = line.match(/^SIP\/2\.0 (\d+)/);
         if (m) {
-          const code = parseInt(m[1]);
+          const code = parseInt(m[1], 10);
           if (code >= 200) { finalCode = code; break; }
         }
       }
@@ -713,7 +713,7 @@ export async function handleSipInvite(request: Request): Promise<Response> {
             for (const line of authRaw.split('\r\n')) {
               const m = line.match(/^SIP\/2\.0 (\d+)/);
               if (m) {
-                const code = parseInt(m[1]);
+                const code = parseInt(m[1], 10);
                 if (code >= 200) { authFinalCode = code; break; }
               }
             }
@@ -819,7 +819,7 @@ export async function handleSipInvite(request: Request): Promise<Response> {
  * Handle SIP REGISTER probe - test registration and auth requirements
  */
 export async function handleSipRegister(request: Request): Promise<Response> {
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect> | undefined;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
@@ -983,14 +983,14 @@ export async function handleSipRegister(request: Request): Promise<Response> {
 
         if (contact) {
           const expiresMatch = contact.match(/expires=(\d+)/i);
-          contactExpires = expiresMatch ? parseInt(expiresMatch[1]) : undefined;
+          contactExpires = expiresMatch ? parseInt(expiresMatch[1], 10) : undefined;
         }
 
         // Also check Expires header
         if (contactExpires === undefined) {
           const expiresHeader = getHeader(parsed.headers, 'Expires');
           if (expiresHeader) {
-            contactExpires = parseInt(expiresHeader);
+            contactExpires = parseInt(expiresHeader, 10);
           }
         }
 
@@ -1109,7 +1109,7 @@ function md5(input: string): string {
  * Request body: { host, port?, username, password, domain?, timeout? }
  */
 export async function handleSIPDigestAuth(request: Request): Promise<Response> {
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect> | undefined;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {

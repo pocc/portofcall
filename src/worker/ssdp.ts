@@ -78,7 +78,7 @@ const UPNP_DESCRIPTION_PATHS = [
  * Uses non-greedy match to handle nested elements and CDATA sections.
  */
 function xmlValue(xml: string, tag: string): string {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\/${tag}>`, 'i');
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i');
   const match = xml.match(re)?.[1]?.trim() ?? '';
   // Strip CDATA sections if present
   return match.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
@@ -88,7 +88,7 @@ function xmlValue(xml: string, tag: string): string {
  * Extract all occurrences of a block delimited by `tag`.
  */
 function xmlBlocks(xml: string, tag: string): string[] {
-  const re = new RegExp(`<${tag}[\\s>][\\s\\S]*?<\/${tag}>`, 'gi');
+  const re = new RegExp(`<${tag}[\\s>][\\s\\S]*?</${tag}>`, 'gi');
   return xml.match(re) ?? [];
 }
 

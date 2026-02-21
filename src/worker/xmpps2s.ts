@@ -420,7 +420,7 @@ export async function handleXMPPS2STlsDialback(request: Request): Promise<Respon
 
       let reader = socket.readable.getReader();
       let writer = socket.writable.getWriter();
-      let usedTls = false;
+      let usedTls: boolean;
 
       try {
         // RFC 6120 Section 4.7: Stream opening with proper namespace declarations

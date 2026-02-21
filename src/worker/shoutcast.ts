@@ -861,7 +861,7 @@ export async function handleSHOUTcastSource(request: Request): Promise<Response>
       const responseText = new TextDecoder().decode(responseRaw.value);
       const firstLine = responseText.split('\r\n')[0].trim();
       const accepted = firstLine.startsWith('ICY 200') || firstLine.startsWith('HTTP/1') && responseText.includes('200');
-      const statusCode = parseInt(firstLine.split(' ')[1] ?? '0') || 0;
+      const statusCode = parseInt(firstLine.split(' ')[1] ?? '0', 10) || 0;
 
       if (accepted) {
         // Send a small burst of silent MP3 frames (zero bytes) to confirm data path

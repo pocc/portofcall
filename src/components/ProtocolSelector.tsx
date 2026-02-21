@@ -798,8 +798,8 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         // Sort RFC entries
         const sortedRFCEntries = [...allRFCEntries].sort((a, b) => {
           if (rfcSortBy === 'rfc') {
-            const aNum = a.rfc ? parseInt(a.rfc) : 99999;
-            const bNum = b.rfc ? parseInt(b.rfc) : 99999;
+            const aNum = a.rfc ? parseInt(a.rfc, 10) : 99999;
+            const bNum = b.rfc ? parseInt(b.rfc, 10) : 99999;
             return rfcSortDirection === 'asc' ? aNum - bNum : bNum - aNum;
           } else if (rfcSortBy === 'year') {
             return rfcSortDirection === 'asc' ? a.year - b.year : b.year - a.year;
@@ -867,7 +867,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                         <td className={`py-3 px-4 ${isRetro ? 'retro-text' : 'text-white font-medium'}`}>
                           {entry.implemented && entry.protocolId ? (
                             <button
-                              onClick={() => onSelect(entry.protocolId as any)}
+                              onClick={() => onSelect(entry.protocolId as Parameters<typeof onSelect>[0])}
                               className={`flex items-center gap-2 ${isRetro ? 'retro-link' : 'hover:text-blue-400 transition-colors'} text-left`}
                             >
                               <span className="text-xl" aria-hidden="true">{entry.icon}</span>

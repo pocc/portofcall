@@ -40,8 +40,8 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
     } else {
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '23'),
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
+        port: parseInt(url.searchParams.get('port') || '23', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '30000', 10),
       };
     }
 
@@ -101,7 +101,7 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
           banner: banner.trim(),
           note: 'This is a connectivity test. For interactive sessions, use WebSocket mode.',
         };
-      } catch (error) {
+      } catch {
         await socket.close();
 
         // If read timeout, server is reachable but not responding
@@ -154,7 +154,7 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
     const url = new URL(request.url);
 
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '23');
+    const port = parseInt(url.searchParams.get('port') || '23', 10);
 
     if (!host) {
       return new Response(JSON.stringify({
@@ -447,7 +447,6 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
         ]);
 
         if (readResult.done || !readResult.value) {
-          collectionDone = true;
           break;
         }
 
@@ -541,7 +540,6 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
 
           if (option === TERMINAL_TYPE) {
             // Agree to send terminal type, then send SB TERMINAL-TYPE IS "VT100" SE
-            response = WILL;
             responseLabel = `WILL ${optionName}`;
             accepted = true;
             responseBytes.push(IAC, WILL, option);
@@ -551,7 +549,6 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
             responseBytes.push(IAC, SB, TERMINAL_TYPE, 0x00, ...ttBytes, IAC, SE);
           } else if (option === NAWS) {
             // Agree to send window size: 80 columns x 24 rows
-            response = WILL;
             responseLabel = `WILL ${optionName}`;
             accepted = true;
             responseBytes.push(IAC, WILL, option);

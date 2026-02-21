@@ -203,7 +203,7 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
         // Fix: wait for socket write to flush before closing
         try {
           await writer.close();
-        } catch (e) {
+        } catch {
           // Ignore close errors
         }
 
@@ -231,9 +231,9 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
         };
       } catch (error) {
         // Fix: ensure locks are released even if already released
-        try { reader.releaseLock(); } catch {}
-        try { writer.releaseLock(); } catch {}
-        try { await socket.close(); } catch {}
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { await socket.close(); } catch { /* ignored */ }
         throw error;
       }
     })();
@@ -371,7 +371,7 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
         // Fix: wait for socket write to flush before closing
         try {
           await writer.close();
-        } catch (e) {
+        } catch {
           // Ignore close errors
         }
 
@@ -417,9 +417,9 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
         };
       } catch (error) {
         // Fix: ensure locks are released even if already released
-        try { reader.releaseLock(); } catch {}
-        try { writer.releaseLock(); } catch {}
-        try { await socket.close(); } catch {}
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { await socket.close(); } catch { /* ignored */ }
         throw error;
       }
     })();

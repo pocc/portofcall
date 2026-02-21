@@ -271,9 +271,9 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
             searchReader.releaseLock();
             searchSocket.close();
           } catch {
-            try { searchWriter.releaseLock(); } catch {}
-            try { searchReader.releaseLock(); } catch {}
-            try { searchSocket.close(); } catch {}
+            try { searchWriter.releaseLock(); } catch { /* ignored */ }
+            try { searchReader.releaseLock(); } catch { /* ignored */ }
+            try { searchSocket.close(); } catch { /* ignored */ }
           }
         } catch {
           // Search mode test failed, not critical
@@ -294,9 +294,9 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
             ingestReader.releaseLock();
             ingestSocket.close();
           } catch {
-            try { ingestWriter.releaseLock(); } catch {}
-            try { ingestReader.releaseLock(); } catch {}
-            try { ingestSocket.close(); } catch {}
+            try { ingestWriter.releaseLock(); } catch { /* ignored */ }
+            try { ingestReader.releaseLock(); } catch { /* ignored */ }
+            try { ingestSocket.close(); } catch { /* ignored */ }
           }
         } catch {
           // Ingest mode test failed, not critical
@@ -321,9 +321,9 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
         return result;
 
       } catch (error) {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { socket.close(); } catch { /* ignored */ }
         throw error;
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -449,15 +449,15 @@ export async function handleSonicQuery(request: Request): Promise<Response> {
       if (!quitResponse.startsWith('ENDED')) {
         // Non-critical protocol violation
       }
-      try { writer.releaseLock(); } catch {}
-      try { reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
       return new Response(JSON.stringify({ success: true, host, port, collection, bucket, terms, results, count: results.length }),
         { headers: { 'Content-Type': 'application/json' } });
     } catch (e) {
-      try { writer.releaseLock(); } catch {}
-      try { reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
       throw e;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -546,15 +546,15 @@ export async function handleSonicPush(request: Request): Promise<Response> {
       if (!quitResponse.startsWith('ENDED')) {
         // Non-critical protocol violation
       }
-      try { writer.releaseLock(); } catch {}
-      try { reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
       return new Response(JSON.stringify({ success: ok, host, port, collection, bucket, objectId, response: pushResp }),
         { headers: { 'Content-Type': 'application/json' } });
     } catch (e) {
-      try { writer.releaseLock(); } catch {}
-      try { reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
       throw e;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -644,15 +644,15 @@ export async function handleSonicSuggest(request: Request): Promise<Response> {
       if (!quitResponse.startsWith('ENDED')) {
         // Non-critical protocol violation
       }
-      try { writer.releaseLock(); } catch {}
-      try { reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
       return new Response(JSON.stringify({ success: true, host, port, collection, bucket, word, suggestions }),
         { headers: { 'Content-Type': 'application/json' } });
     } catch (e) {
-      try { writer.releaseLock(); } catch {}
-      try { reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
       throw e;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -752,9 +752,9 @@ export async function handleSonicPing(request: Request): Promise<Response> {
           // Non-critical protocol violation
         }
 
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { socket.close(); } catch { /* ignored */ }
 
         return {
           success: true,
@@ -766,9 +766,9 @@ export async function handleSonicPing(request: Request): Promise<Response> {
         };
 
       } catch (error) {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { socket.close(); } catch { /* ignored */ }
         throw error;
       } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);

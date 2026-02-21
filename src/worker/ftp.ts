@@ -221,8 +221,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      try { dataReader.releaseLock(); } catch {}
-      try { await dataSocket.close(); } catch {}
+      try { dataReader.releaseLock(); } catch { /* ignored */ }
+      try { await dataSocket.close(); } catch { /* ignored */ }
     }
 
     const transferCompleteMs = 10000;
@@ -278,8 +278,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      try { dataReader.releaseLock(); } catch {}
-      try { await dataSocket.close(); } catch {}
+      try { dataReader.releaseLock(); } catch { /* ignored */ }
+      try { await dataSocket.close(); } catch { /* ignored */ }
     }
 
     const transferCompleteMs = 10000;
@@ -399,8 +399,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      try { dataReader.releaseLock(); } catch {}
-      try { await dataSocket.close(); } catch {}
+      try { dataReader.releaseLock(); } catch { /* ignored */ }
+      try { await dataSocket.close(); } catch { /* ignored */ }
     }
 
     // CRITICAL: Read the 226 Transfer Complete response
@@ -451,8 +451,8 @@ export class FTPClient {
       await dataWriter.write(fileData);
       await dataWriter.close();
     } finally {
-      try { dataWriter.releaseLock(); } catch {}
-      try { await dataSocket.close(); } catch {}
+      try { dataWriter.releaseLock(); } catch { /* ignored */ }
+      try { await dataSocket.close(); } catch { /* ignored */ }
     }
 
     // Read transfer complete response
@@ -510,8 +510,8 @@ export class FTPClient {
         chunks.push(value);
       }
     } finally {
-      try { dataReader.releaseLock(); } catch {}
-      try { await dataSocket.close(); } catch {}
+      try { dataReader.releaseLock(); } catch { /* ignored */ }
+      try { await dataSocket.close(); } catch { /* ignored */ }
     }
 
     // Read transfer complete response
@@ -732,7 +732,7 @@ export class FTPClient {
 
       files.push({
         name,
-        size: parseInt(facts['size'] || '0') || 0,
+        size: parseInt(facts['size'] || '0', 10) || 0,
         type,
         modified,
         permissions: facts['unix.mode'] || facts['perm'] || undefined,
@@ -767,7 +767,7 @@ export class FTPClient {
         const isDir = sizeOrDir.toUpperCase() === '<DIR>';
         files.push({
           name,
-          size: isDir ? 0 : parseInt(sizeOrDir) || 0,
+          size: isDir ? 0 : parseInt(sizeOrDir, 10) || 0,
           type: isDir ? 'directory' : 'file',
           modified: `${date} ${time}`,
         });
@@ -781,10 +781,10 @@ export class FTPClient {
       if (parts.length < 9) continue;
 
       const permissions = parts[0];
-      const links = parseInt(parts[1]) || undefined;
+      const links = parseInt(parts[1], 10) || undefined;
       const owner = parts[2];
       const group = parts[3];
-      const size = parseInt(parts[4]) || 0;
+      const size = parseInt(parts[4], 10) || 0;
       // Modified time: e.g. "Jan 01 12:00" or "Jan 01 2023"
       const modified = `${parts[5]} ${parts[6]} ${parts[7]}`;
 
@@ -1166,7 +1166,7 @@ export async function handleFTPUpload(request: Request): Promise<Response> {
 
     const formData = await request.formData();
     const host = formData.get('host') as string;
-    const port = parseInt(formData.get('port') as string || '21');
+    const port = parseInt(formData.get('port') as string || '21', 10);
     const username = formData.get('username') as string;
     const password = formData.get('password') as string;
     const remotePath = formData.get('remotePath') as string;

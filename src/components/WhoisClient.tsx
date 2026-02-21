@@ -42,7 +42,7 @@ export default function WhoisClient({ onBack }: WhoisClientProps) {
         body: JSON.stringify({
           domain,
           server: server || undefined,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });

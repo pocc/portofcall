@@ -157,7 +157,7 @@ function parseRR(data: Uint8Array, offset: number): { record: DOHRecord; bytesRe
   if (pos + rdlength > data.length) return null;
   const rdata = data.slice(pos, pos + rdlength);
 
-  let dataStr = '';
+  let dataStr: string;
   const typeName = RECORD_TYPE_NAMES[type] ?? `TYPE${type}`;
 
   if (type === 1 && rdlength === 4) {

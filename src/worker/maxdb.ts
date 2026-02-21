@@ -348,7 +348,7 @@ export async function handleMaxDBInfo(request: Request): Promise<Response> {
           if (parts.length >= 1 && /^[A-Z][A-Z0-9_]{0,17}$/i.test(parts[0])) {
             const entry: { name: string; xServerPort?: number; info?: string } = { name: parts[0] };
             if (parts.length >= 2 && /^\d+$/.test(parts[1])) {
-              entry.xServerPort = parseInt(parts[1]);
+              entry.xServerPort = parseInt(parts[1], 10);
             }
             if (parts.length >= 3) {
               entry.info = parts.slice(2).join(' ');

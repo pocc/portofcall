@@ -46,7 +46,7 @@ export default function TeamSpeakClient({ onBack }: TeamSpeakClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -112,7 +112,7 @@ export default function TeamSpeakClient({ onBack }: TeamSpeakClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           command: command.trim(),
           timeout: 10000,
         }),

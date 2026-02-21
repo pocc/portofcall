@@ -88,7 +88,7 @@ async function readRESPFull(
         if (buffer.startsWith('$')) {
           const lenEnd = buffer.indexOf('\r\n');
           if (lenEnd !== -1) {
-            const len = parseInt(buffer.substring(1, lenEnd));
+            const len = parseInt(buffer.substring(1, lenEnd), 10);
             if (isNaN(len)) throw new Error('Invalid bulk string length');
             if (len === -1) {
               buffer += decoder.decode(new Uint8Array(0), { stream: false });
@@ -106,7 +106,7 @@ async function readRESPFull(
         if (buffer.startsWith('*')) {
           const countEnd = buffer.indexOf('\r\n');
           if (countEnd !== -1) {
-            const count = parseInt(buffer.substring(1, countEnd));
+            const count = parseInt(buffer.substring(1, countEnd), 10);
             if (isNaN(count)) throw new Error('Invalid array count');
             if (count <= 0) {
               buffer += decoder.decode(new Uint8Array(0), { stream: false });
@@ -154,13 +154,13 @@ function parseRESP(raw: string): unknown {
     if (type === '+') return line.substring(1);
     if (type === '-') return { error: line.substring(1) };
     if (type === ':') {
-      const num = parseInt(line.substring(1));
+      const num = parseInt(line.substring(1), 10);
       if (isNaN(num)) throw new Error('Invalid RESP integer');
       return num;
     }
 
     if (type === '$') {
-      const len = parseInt(line.substring(1));
+      const len = parseInt(line.substring(1), 10);
       if (isNaN(len)) throw new Error('Invalid RESP bulk string length');
       if (len === -1) return null;
       const data = lines[idx++];
@@ -168,7 +168,7 @@ function parseRESP(raw: string): unknown {
     }
 
     if (type === '*') {
-      const count = parseInt(line.substring(1));
+      const count = parseInt(line.substring(1), 10);
       if (isNaN(count)) throw new Error('Invalid RESP array count');
       if (count === -1) return null;
       const arr: unknown[] = [];
@@ -454,9 +454,9 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     } finally {
-      try { reader.releaseLock(); } catch {}
-      try { writer.releaseLock(); } catch {}
-      try { await socket.close(); } catch {}
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { await socket.close(); } catch { /* ignored */ }
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -650,9 +650,9 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     } finally {
-      try { reader.releaseLock(); } catch {}
-      try { writer.releaseLock(); } catch {}
-      try { await socket.close(); } catch {}
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { await socket.close(); } catch { /* ignored */ }
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -831,9 +831,9 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     } finally {
-      try { reader.releaseLock(); } catch {}
-      try { writer.releaseLock(); } catch {}
-      try { await socket.close(); } catch {}
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { await socket.close(); } catch { /* ignored */ }
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -1004,9 +1004,9 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
         headers: { 'Content-Type': 'application/json' },
       });
     } finally {
-      try { reader.releaseLock(); } catch {}
-      try { writer.releaseLock(); } catch {}
-      try { await socket.close(); } catch {}
+      try { reader.releaseLock(); } catch { /* ignored */ }
+      try { writer.releaseLock(); } catch { /* ignored */ }
+      try { await socket.close(); } catch { /* ignored */ }
     }
   } catch (err) {
     return new Response(JSON.stringify({
@@ -1076,9 +1076,9 @@ async function sentinelWriteCommand(
 
     return { result, rtt };
   } finally {
-    try { reader.releaseLock(); } catch {}
-    try { writer.releaseLock(); } catch {}
-    try { await socket.close(); } catch {}
+    try { reader.releaseLock(); } catch { /* ignored */ }
+    try { writer.releaseLock(); } catch { /* ignored */ }
+    try { await socket.close(); } catch { /* ignored */ }
   }
 }
 

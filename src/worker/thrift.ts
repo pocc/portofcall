@@ -689,11 +689,11 @@ function encodeValue(type: number, value: string): Uint8Array {
     case T_BOOL:
       return new Uint8Array([value === 'true' || value === '1' ? 1 : 0]);
     case T_BYTE:
-      return new Uint8Array([parseInt(value) & 0xff]);
+      return new Uint8Array([parseInt(value, 10) & 0xff]);
     case T_I16:
-      return writeI16(parseInt(value));
+      return writeI16(parseInt(value, 10));
     case T_I32:
-      return writeI32(parseInt(value));
+      return writeI32(parseInt(value, 10));
     case T_I64: {
       const buf = new ArrayBuffer(8);
       new DataView(buf).setBigInt64(0, BigInt(value), false);

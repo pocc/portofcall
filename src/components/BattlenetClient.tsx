@@ -45,19 +45,19 @@ export default function BattlenetClient({ onBack }: BattlenetClientProps) {
 
     if (!isValid) return;
 
-    const portNum = parseInt(port);
+    const portNum = parseInt(port, 10);
     if (portNum < 1 || portNum > 65535) {
       alert('Port must be between 1 and 65535');
       return;
     }
 
-    const timeoutNum = parseInt(timeout);
+    const timeoutNum = parseInt(timeout, 10);
     if (timeoutNum < 1000) {
       alert('Timeout must be at least 1000ms');
       return;
     }
 
-    const protocolNum = parseInt(protocolId);
+    const protocolNum = parseInt(protocolId, 10);
     if (![1, 2, 3].includes(protocolNum)) {
       alert('Protocol ID must be 1 (Game), 2 (BNFTP), or 3 (Telnet)');
       return;

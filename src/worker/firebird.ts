@@ -397,7 +397,7 @@ async function recvPacket(s: FirebirdSocket, timeoutMs = 8000): Promise<FBRespon
     const msgs: string[] = [];
     let statusError: string | undefined;
 
-    // eslint-disable-next-line no-constant-condition
+     
     while (true) {
       const typeBuf = await recvBytes(s, 4, timeoutMs);
       const argType = readU32(typeBuf, 0);

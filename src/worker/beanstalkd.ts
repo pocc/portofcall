@@ -40,13 +40,13 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
  */
 function parseBodyByteCount(headerLine: string): number {
   if (headerLine.startsWith('OK ')) {
-    return parseInt(headerLine.substring(3));
+    return parseInt(headerLine.substring(3), 10);
   }
   if (headerLine.startsWith('RESERVED ') || headerLine.startsWith('FOUND ')) {
     // "RESERVED <id> <bytes>" or "FOUND <id> <bytes>"
     const parts = headerLine.split(' ');
     if (parts.length >= 3) {
-      return parseInt(parts[parts.length - 1]);
+      return parseInt(parts[parts.length - 1], 10);
     }
   }
   return -1;
@@ -394,7 +394,7 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
       let jobId: number | undefined;
       if (headerLine.startsWith('FOUND ')) {
         const parts = headerLine.split(' ');
-        jobId = parseInt(parts[1] || '0');
+        jobId = parseInt(parts[1] || '0', 10);
       }
 
       // Detect error responses that are technically "successful" TCP exchanges
@@ -535,7 +535,7 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
         const inserted = putResp.startsWith('INSERTED ');
         const buried = putResp.startsWith('BURIED');
         const idPart = putResp.split(/\s+/)[1];
-        const jobId = (inserted || buried) && idPart ? parseInt(idPart) : undefined;
+        const jobId = (inserted || buried) && idPart ? parseInt(idPart, 10) : undefined;
 
         // Per the protocol, BURIED means the server ran out of memory trying to
         // grow the priority queue. The job is stored but in the "buried" state --
@@ -664,8 +664,8 @@ export async function handleBeanstalkdReserve(request: Request): Promise<Respons
           const headerEnd = resp.indexOf('\r\n');
           const header = headerEnd >= 0 ? resp.substring(0, headerEnd) : resp;
           const parts = header.split(' ');
-          const jobId = parseInt(parts[1] || '0');
-          const jobBytes = parseInt(parts[2] || '0');
+          const jobId = parseInt(parts[1] || '0', 10);
+          const jobBytes = parseInt(parts[2] || '0', 10);
           const jobData = headerEnd >= 0 ? resp.substring(headerEnd + 2).trim() : '';
           return new Response(JSON.stringify({
             success: true, host, port, tube, rtt,

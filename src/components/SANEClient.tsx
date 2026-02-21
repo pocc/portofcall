@@ -49,7 +49,7 @@ export default function SANEClient({ onBack }: SANEClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || 'anonymous',
           timeout: 10000,
         }),

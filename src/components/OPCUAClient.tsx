@@ -30,7 +30,7 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           endpointUrl: endpointUrl || undefined,
           timeout: 10000,
         }),
@@ -122,7 +122,7 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           endpointUrl: endpointUrl || undefined,
           timeout: 10000,
         }),

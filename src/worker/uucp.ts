@@ -123,6 +123,7 @@ export async function handleUUCPProbe(request: Request): Promise<Response> {
           if (!done && value && value.length > 0) {
             const raw = new TextDecoder('utf-8', { fatal: false }).decode(value);
             // Strip null bytes for display
+            // eslint-disable-next-line no-control-regex
             serverGreeting = raw.replace(/\0/g, '\x00').replace(/[^\x20-\x7E\x00]/g, '?');
 
             // Traditional UUCP server greeting starts with 'S' (for "System name")
@@ -274,6 +275,7 @@ export async function handleUUCPHandshake(request: Request): Promise<Response> {
         const latencyMs = Date.now() - start;
         const rawBytes = (!done && value) ? value : new Uint8Array(0);
         const rawText = new TextDecoder('utf-8', { fatal: false }).decode(rawBytes);
+        // eslint-disable-next-line no-control-regex
         const displayBanner = rawText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, c => `<0x${c.charCodeAt(0).toString(16).padStart(2,'0')}>`);
 
         let remoteSite: string | undefined;
@@ -317,6 +319,7 @@ export async function handleUUCPHandshake(request: Request): Promise<Response> {
           clearTimeout(respTimeoutHandle);
 
           if (!resp.done && resp.value?.length) {
+            // eslint-disable-next-line no-control-regex
             exchangeResult = new TextDecoder('utf-8', { fatal: false }).decode(resp.value).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
           }
         }

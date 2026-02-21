@@ -277,7 +277,7 @@ function parseIdentityItem(data: Uint8Array, offset: number, length: number): De
   const statusParts: string[] = [];
   // Check individual bit flags (bits 0,2,8-11)
   for (const [bit, desc] of Object.entries(DEVICE_STATUS_BITS)) {
-    if (identity.status & parseInt(bit)) {
+    if (identity.status & parseInt(bit, 10)) {
       statusParts.push(desc);
     }
   }

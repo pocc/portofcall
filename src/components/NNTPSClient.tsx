@@ -40,7 +40,7 @@ export default function NNTPSClient({ onBack }: NNTPSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });
@@ -112,7 +112,7 @@ export default function NNTPSClient({ onBack }: NNTPSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           group,
           timeout: 15000,
         }),
@@ -169,7 +169,7 @@ export default function NNTPSClient({ onBack }: NNTPSClientProps) {
       setError('Newsgroup name is required');
       return;
     }
-    if (!articleNumber || parseInt(articleNumber) < 1) {
+    if (!articleNumber || parseInt(articleNumber, 10) < 1) {
       setError('Valid article number is required');
       return;
     }
@@ -184,9 +184,9 @@ export default function NNTPSClient({ onBack }: NNTPSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           group,
-          articleNumber: parseInt(articleNumber),
+          articleNumber: parseInt(articleNumber, 10),
           timeout: 15000,
         }),
       });

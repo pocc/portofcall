@@ -38,6 +38,7 @@ if (!timerPatchGlobal[TIMER_PATCH_FLAG]) {
       return timeoutHandle;
     }
 
+    // eslint-disable-next-line prefer-const
     let timeoutHandle: TimeoutHandle;
     const wrappedHandler = (...handlerArgs: unknown[]): void => {
       try {

@@ -67,6 +67,7 @@ function buildFrame(command: string, headers: Record<string, string>, body: stri
  */
 function parseFrame(text: string): StompFrame {
   // Remove trailing NULL byte if present
+  // eslint-disable-next-line no-control-regex
   const cleaned = text.replace(/\x00$/, '');
   const lines = cleaned.split('\n');
 

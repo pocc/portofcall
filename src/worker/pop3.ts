@@ -344,8 +344,8 @@ export async function handlePOP3List(request: Request): Promise<Response> {
 
         // Parse STAT response: +OK count size
         const statMatch = statResp.match(/\+OK (\d+) (\d+)/);
-        const totalMessages = statMatch ? parseInt(statMatch[1]) : 0;
-        const totalSize = statMatch ? parseInt(statMatch[2]) : 0;
+        const totalMessages = statMatch ? parseInt(statMatch[1], 10) : 0;
+        const totalSize = statMatch ? parseInt(statMatch[2], 10) : 0;
 
         // Get message list (LIST)
         await writer.write(new TextEncoder().encode('LIST\r\n'));
@@ -360,8 +360,8 @@ export async function handlePOP3List(request: Request): Promise<Response> {
           const match = line.match(/^(\d+)\s+(\d+)/);
           if (match) {
             messages.push({
-              id: parseInt(match[1]),
-              size: parseInt(match[2]),
+              id: parseInt(match[1], 10),
+              size: parseInt(match[2], 10),
             });
           }
         }
@@ -656,7 +656,7 @@ export async function handlePOP3Uidl(request: Request): Promise<Response> {
         for (const line of lines) {
           if (line === '.' || line.startsWith('+OK') || line === '') continue;
           const match = line.match(/^(\d+)\s+(\S+)/);
-          if (match) messages.push({ msgnum: parseInt(match[1]), uid: match[2] });
+          if (match) messages.push({ msgnum: parseInt(match[1], 10), uid: match[2] });
         }
         await sendPOP3Command(reader, writer, 'QUIT', 5000);
         await socket.close();
@@ -765,7 +765,7 @@ export async function handlePOP3Capa(request: Request): Promise<Response> {
       port = body.port || 110;
     } else {
       host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '110');
+      port = parseInt(url.searchParams.get('port') || '110', 10);
     }
     if (!host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {

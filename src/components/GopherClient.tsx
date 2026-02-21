@@ -96,7 +96,7 @@ export default function GopherClient({ onBack }: GopherClientProps) {
     query?: string,
   ) => {
     const targetHost = navHost || host;
-    const targetPort = navPort || parseInt(port);
+    const targetPort = navPort || parseInt(port, 10);
 
     const isValid = validateAll({ host: targetHost, port: String(targetPort) });
     if (!isValid) return;
@@ -130,11 +130,14 @@ export default function GopherClient({ onBack }: GopherClientProps) {
       if (response.ok && data.success) {
         // Push current location to history before navigating
         if (currentLocation || items.length > 0 || content) {
-          setHistory(prev => [...prev, {
-            host: targetHost,
-            port: targetPort,
-            selector: currentLocation,
-          }]);
+          setHistory(prev => {
+            const next = [...prev, {
+              host: targetHost,
+              port: targetPort,
+              selector: currentLocation,
+            }];
+            return next.length > 50 ? next.slice(-50) : next;
+          });
         }
 
         setHost(targetHost);
@@ -219,7 +222,7 @@ export default function GopherClient({ onBack }: GopherClientProps) {
       setSearchPrompt({
         selector: item.selector,
         host: item.host || host,
-        port: item.port || parseInt(port),
+        port: item.port || parseInt(port, 10),
       });
       setSearchQuery('');
       return;

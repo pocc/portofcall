@@ -42,7 +42,7 @@ export default function FingerClient({ onBack }: FingerClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           remoteHost: remoteHost || undefined,
           timeout: 10000,

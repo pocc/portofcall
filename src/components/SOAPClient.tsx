@@ -79,7 +79,7 @@ export default function SOAPClient({ onBack }: SOAPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path,
           soapAction: soapAction || undefined,
           body: soapBody,
@@ -146,7 +146,7 @@ export default function SOAPClient({ onBack }: SOAPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path,
         }),
       });

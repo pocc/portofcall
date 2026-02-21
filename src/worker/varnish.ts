@@ -100,8 +100,8 @@ function parseVcliResponse(data: string): { status: number; length: number; body
   const match = firstLine.match(/^(\d+)\s+(\d+)$/);
   if (!match) return null;
 
-  const status = parseInt(match[1]);
-  const length = parseInt(match[2]);
+  const status = parseInt(match[1], 10);
+  const length = parseInt(match[2], 10);
 
   // Body starts after first \n and should be `length` bytes
   const bodyStart = newlineIdx + 1;

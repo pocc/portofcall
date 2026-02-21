@@ -529,12 +529,12 @@ export async function handleIMAPSSelect(request: Request): Promise<Response> {
         const lines = selectResp.split('\r\n');
         for (const line of lines) {
           const existsMatch = line.match(/^\* (\d+) EXISTS/);
-          if (existsMatch) exists = parseInt(existsMatch[1]);
+          if (existsMatch) exists = parseInt(existsMatch[1], 10);
 
           // RECENT is from IMAP4rev1 (RFC 3501); not present in IMAP4rev2
           // but many servers still send it
           const recentMatch = line.match(/^\* (\d+) RECENT/);
-          if (recentMatch) recent = parseInt(recentMatch[1]);
+          if (recentMatch) recent = parseInt(recentMatch[1], 10);
         }
 
         // Send LOGOUT
@@ -603,7 +603,7 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
 
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
-  const port = parseInt(url.searchParams.get('port') || '993');
+  const port = parseInt(url.searchParams.get('port') || '993', 10);
   const username = url.searchParams.get('username') || '';
   const password = url.searchParams.get('password') || '';
 

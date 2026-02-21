@@ -42,10 +42,10 @@ export async function handleRloginConnect(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '513'),
+        port: parseInt(url.searchParams.get('port') || '513', 10),
         localUser: url.searchParams.get('localUser') || 'guest',
         remoteUser: url.searchParams.get('remoteUser') || 'guest',
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -270,6 +270,7 @@ export async function handleRloginBanner(request: Request): Promise<Response> {
         const rawBytes = !done && value ? value : new Uint8Array(0);
         const raw = new TextDecoder('utf-8', { fatal: false }).decode(rawBytes);
         // Strip control chars for display except newline/tab
+        // eslint-disable-next-line no-control-regex
         const banner = raw.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '').trim();
 
         writer.releaseLock();
@@ -308,7 +309,7 @@ export async function handleRloginWebSocket(request: Request): Promise<Response>
   try {
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '513');
+    const port = parseInt(url.searchParams.get('port') || '513', 10);
     const localUser = url.searchParams.get('localUser') || 'guest';
     const remoteUser = url.searchParams.get('remoteUser') || 'guest';
     const terminalType = url.searchParams.get('terminalType') || 'xterm';

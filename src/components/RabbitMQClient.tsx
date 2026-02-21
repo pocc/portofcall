@@ -43,7 +43,7 @@ export default function RabbitMQClient({ onBack }: RabbitMQClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || 'guest',
           password: password || 'guest',
           timeout: 15000,
@@ -149,7 +149,7 @@ export default function RabbitMQClient({ onBack }: RabbitMQClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path: pathToQuery,
           username: username || 'guest',
           password: password || 'guest',

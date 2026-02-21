@@ -98,7 +98,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
       const res = await fetch('/api/activemq/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(probePort), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(probePort, 10), timeout: 10000 }),
       });
       const data = await res.json() as {
         success?: boolean; error?: string; tcpLatency?: number;
@@ -143,7 +143,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(connectPort),
+          host, port: parseInt(connectPort, 10),
           username: username || undefined,
           password: password || undefined,
           timeout: 10000,
@@ -183,13 +183,13 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(sendPort),
+          host, port: parseInt(sendPort, 10),
           username: username || undefined,
           password: password || undefined,
           destination,
           body: messageBody,
           persistent,
-          priority: parseInt(priority),
+          priority: parseInt(priority, 10),
           timeout: 15000,
         }),
       });
@@ -229,11 +229,11 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(receivePort),
+          host, port: parseInt(receivePort, 10),
           username: username || undefined,
           password: password || undefined,
           destination: receiveDest,
-          maxMessages: parseInt(maxMessages),
+          maxMessages: parseInt(maxMessages, 10),
           selector: selector || undefined,
           timeout: 15000,
         }),
@@ -285,7 +285,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(adminPort),
+          host, port: parseInt(adminPort, 10),
           username: 'admin',
           password: adminPassword,
           brokerName,

@@ -76,10 +76,13 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
       }
       return null;
     } catch (err) {
-      if (!controller.signal.aborted) {
-        if (err instanceof DOMException && err.name === 'AbortError') {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Distinguish timeout-triggered abort from user-initiated cancel
+        if (controller.signal.aborted) {
           setError('Request timed out — the server did not respond in time');
-        } else if (err instanceof TypeError && err.message.includes('fetch')) {
+        }
+      } else if (!controller.signal.aborted) {
+        if (err instanceof TypeError && err.message.includes('fetch')) {
           setError('Network error — check that the host is reachable');
         } else {
           setError(err instanceof Error ? err.message : 'Connection failed');
@@ -89,9 +92,7 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
     } finally {
       clearTimeout(timeoutId);
       timeoutRef.current = null;
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
   }, [timeoutMs]);
 

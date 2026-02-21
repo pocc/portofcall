@@ -308,7 +308,7 @@ function parseApplicationResponse(userData: Uint8Array): {
   const iin = (userData[3] | (userData[4] << 8));
   const iinFlags: string[] = [];
   for (const [bit, name] of Object.entries(IIN_BITS)) {
-    if (iin & parseInt(bit)) {
+    if (iin & parseInt(bit, 10)) {
       iinFlags.push(name);
     }
   }

@@ -230,9 +230,9 @@ export async function handleRelpConnect(request: Request): Promise<Response> {
           rawResponse: responseRaw.trim(),
         };
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { await socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { await socket.close(); } catch { /* ignored */ }
       }
     })();
 
@@ -388,9 +388,9 @@ export async function handleRelpSend(request: Request): Promise<Response> {
           severityName: SEVERITY_NAMES[severity] || `severity${severity}`,
         };
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { await socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { await socket.close(); } catch { /* ignored */ }
       }
     })();
 
@@ -606,9 +606,9 @@ export async function handleRELPBatch(request: Request): Promise<Response> {
           severityName: SEVERITY_NAMES[severity] || `severity${severity}`,
         };
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { await socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { await socket.close(); } catch { /* ignored */ }
       }
     })();
 

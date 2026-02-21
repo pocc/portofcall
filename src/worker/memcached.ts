@@ -288,7 +288,7 @@ export async function handleMemcachedSession(request: Request): Promise<Response
 
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
-  const port = parseInt(url.searchParams.get('port') || '11211');
+  const port = parseInt(url.searchParams.get('port') || '11211', 10);
 
   if (!host) {
     return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });

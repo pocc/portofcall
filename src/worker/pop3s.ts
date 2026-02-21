@@ -190,8 +190,8 @@ export async function handlePOP3SConnect(request: Request): Promise<Response> {
             if (statResp.startsWith('+OK')) {
               const statMatch = statResp.match(/\+OK (\d+) (\d+)/);
               if (statMatch) {
-                messageCount = parseInt(statMatch[1]);
-                mailboxSize = parseInt(statMatch[2]);
+                messageCount = parseInt(statMatch[1], 10);
+                mailboxSize = parseInt(statMatch[2], 10);
               }
             }
           } else {
@@ -337,8 +337,8 @@ export async function handlePOP3SList(request: Request): Promise<Response> {
           throw new Error(`STAT command failed: ${statResp.trim()}`);
         }
         const statMatch = statResp.match(/\+OK (\d+) (\d+)/);
-        const totalMessages = statMatch ? parseInt(statMatch[1]) : 0;
-        const totalSize = statMatch ? parseInt(statMatch[2]) : 0;
+        const totalMessages = statMatch ? parseInt(statMatch[1], 10) : 0;
+        const totalSize = statMatch ? parseInt(statMatch[2], 10) : 0;
 
         // Get message list
         await writer.write(new TextEncoder().encode('LIST\r\n'));
@@ -352,8 +352,8 @@ export async function handlePOP3SList(request: Request): Promise<Response> {
           const match = line.match(/^(\d+)\s+(\d+)/);
           if (match) {
             messages.push({
-              id: parseInt(match[1]),
-              size: parseInt(match[2]),
+              id: parseInt(match[1], 10),
+              size: parseInt(match[2], 10),
             });
           }
         }
@@ -656,7 +656,7 @@ export async function handlePOP3SUidl(request: Request): Promise<Response> {
         for (const line of lines) {
           if (line === '.' || line.startsWith('+OK') || line === '') continue;
           const match = line.match(/^(\d+)\s+(\S+)/);
-          if (match) messages.push({ msgnum: parseInt(match[1]), uid: match[2] });
+          if (match) messages.push({ msgnum: parseInt(match[1], 10), uid: match[2] });
         }
         await sendPOP3Command(reader, writer, 'QUIT', 5000);
         await socket.close();
@@ -767,7 +767,7 @@ export async function handlePOP3SCapa(request: Request): Promise<Response> {
       port = body.port || 995;
     } else {
       host = url.searchParams.get('host') || '';
-      port = parseInt(url.searchParams.get('port') || '995');
+      port = parseInt(url.searchParams.get('port') || '995', 10);
     }
     if (!host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {

@@ -47,7 +47,7 @@ export default function InfluxDBClient({ onBack }: InfluxDBClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           token: token || undefined,
           timeout: 15000,
         }),
@@ -115,7 +115,7 @@ export default function InfluxDBClient({ onBack }: InfluxDBClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           token: token || undefined,
           org,
           bucket,
@@ -167,7 +167,7 @@ export default function InfluxDBClient({ onBack }: InfluxDBClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           token: token || undefined,
           org,
           query: fluxQuery,

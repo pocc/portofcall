@@ -89,7 +89,7 @@ async function sendHttpGet(
   // Parse status line
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   // Parse headers
   const headers: Record<string, string> = {};
@@ -563,7 +563,7 @@ export async function handleVaultSecretWrite(request: Request): Promise<Response
       const text = new TextDecoder().decode(combined);
       const headerEnd = text.indexOf('\r\n\r\n');
       const statusLine = text.split('\r\n')[0];
-      const statusCode = parseInt(statusLine.split(' ')[1] || '0');
+      const statusCode = parseInt(statusLine.split(' ')[1] || '0', 10);
       const respBody = headerEnd >= 0 ? text.slice(headerEnd + 4) : '';
 
       let parsed: Record<string, unknown> = {};

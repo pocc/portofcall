@@ -38,7 +38,7 @@ export default function ActiveUsersClient({ onBack }: ActiveUsersClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });

@@ -7,7 +7,8 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
+ 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 const { pbkdf: bcryptPbkdf } = require('bcrypt-pbkdf') as { pbkdf: (pass: Uint8Array, passlen: number, salt: Uint8Array, saltlen: number, key: Uint8Array, keylen: number, rounds: number) => number };
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -502,9 +503,9 @@ async function runSSHSession(
     throw new Error(`Expected KEXECDH_REPLY (31), got ${kexReply[0]}`);
   }
 
-  let off = 1;
-  const [hostKeyBlob, off1] = readStr(kexReply, off); off = off1;
-  const [serverEphPubRaw, off2] = readStr(kexReply, off); off = off2;
+  const off = 1;
+  const [hostKeyBlob, off1] = readStr(kexReply, off);
+  const [serverEphPubRaw] = readStr(kexReply, off1);
   // exchange hash signature (we skip host key verification in this implementation)
 
   // Compute shared secret via X25519
@@ -633,11 +634,12 @@ async function runSSHSession(
         break;
       case MSG_USERAUTH_FAILURE:
         throw new Error('Authentication failed');
-      case MSG_USERAUTH_BANNER:
+      case MSG_USERAUTH_BANNER: {
         // Show banner to user
         const [bannerBytes] = readStr(authReply, 1);
         wsInfo(dec.decode(bannerBytes).trim());
         break;
+      }
       default:
         // Ignore unexpected messages during auth
     }
@@ -1132,7 +1134,7 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
   // Only non-sensitive params from URL; credentials arrive via first WS message
   const url = new URL(request.url);
   const host = url.searchParams.get('host') ?? '';
-  const port = parseInt(url.searchParams.get('port') ?? '22');
+  const port = parseInt(url.searchParams.get('port') ?? '22', 10);
 
   if (!host) {
     return new Response(JSON.stringify({ error: 'host is required' }), {

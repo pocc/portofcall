@@ -46,9 +46,9 @@ export default function Socks4Client({ onBack }: Socks4ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           proxyHost,
-          proxyPort: parseInt(proxyPort),
+          proxyPort: parseInt(proxyPort, 10),
           destHost,
-          destPort: parseInt(destPort),
+          destPort: parseInt(destPort, 10),
           userId: userId || undefined,
           useSocks4a,
           timeout: 10000,

@@ -493,12 +493,12 @@ export async function handleIMAPSelect(request: Request): Promise<Response> {
         for (const line of lines) {
           const existsMatch = line.match(/\* (\d+) EXISTS/);
           if (existsMatch) {
-            exists = parseInt(existsMatch[1]);
+            exists = parseInt(existsMatch[1], 10);
           }
 
           const recentMatch = line.match(/\* (\d+) RECENT/);
           if (recentMatch) {
-            recent = parseInt(recentMatch[1]);
+            recent = parseInt(recentMatch[1], 10);
           }
         }
 
@@ -568,7 +568,7 @@ export async function handleIMAPSession(request: Request): Promise<Response> {
 
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
-  const port = parseInt(url.searchParams.get('port') || '143');
+  const port = parseInt(url.searchParams.get('port') || '143', 10);
   const username = url.searchParams.get('username') || '';
   const password = url.searchParams.get('password') || '';
 

@@ -942,7 +942,7 @@ export async function handlePerforceDescribe(request: Request): Promise<Response
         user: info['user'] ?? null,
         client: info['client'] ?? null,
         status: info['status'] ?? null,
-        time: info['time'] ? new Date(parseInt(info['time']) * 1000).toISOString() : null,
+        time: info['time'] ? new Date(parseInt(info['time'], 10) * 1000).toISOString() : null,
         files,
         fileCount: files.length,
         rtt: Date.now() - startTime,

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
 
@@ -35,8 +35,18 @@ export default function FTPClient({ onBack }: FTPClientProps) {
   const [newName, setNewName] = useState('');
   const [dirName, setDirName] = useState('');
 
+  // Clear sensitive state on unmount
+  useEffect(() => {
+    return () => {
+      setPassword('');
+    };
+  }, []);
+
   const addLog = (message: string) => {
-    setLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ${message}`]);
+    setLogs(prev => {
+      const next = [...prev, `[${new Date().toLocaleTimeString()}] ${message}`];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
   };
 
   const handleConnect = async () => {
@@ -54,7 +64,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
           password,
           passive: true,
@@ -88,7 +98,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
           password,
           path,
@@ -178,7 +188,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
           password,
           remotePath: downloadPath,
@@ -224,7 +234,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             host,
-            port: parseInt(port),
+            port: parseInt(port, 10),
             username,
             password,
             remotePath,
@@ -263,7 +273,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
           password,
           fromPath,
@@ -302,7 +312,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
           password,
           dirPath,
@@ -380,10 +390,11 @@ export default function FTPClient({ onBack }: FTPClientProps) {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="ftp-host" className="block text-sm font-medium text-slate-300 mb-1">
                   Host
                 </label>
                 <input
+                  id="ftp-host"
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -394,10 +405,11 @@ export default function FTPClient({ onBack }: FTPClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="ftp-port" className="block text-sm font-medium text-slate-300 mb-1">
                   Port
                 </label>
                 <input
+                  id="ftp-port"
                   type="number"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
@@ -407,10 +419,11 @@ export default function FTPClient({ onBack }: FTPClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="ftp-username" className="block text-sm font-medium text-slate-300 mb-1">
                   Username
                 </label>
                 <input
+                  id="ftp-username"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -421,10 +434,11 @@ export default function FTPClient({ onBack }: FTPClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="ftp-password" className="block text-sm font-medium text-slate-300 mb-1">
                   Password
                 </label>
                 <input
+                  id="ftp-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}

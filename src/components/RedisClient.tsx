@@ -49,7 +49,10 @@ export default function RedisClient({ onBack }: RedisClientProps) {
   }, [history]);
 
   const addEntry = useCallback((type: HistoryEntry['type'], text: string) => {
-    setHistory(prev => [...prev, { type, text }]);
+    setHistory(prev => {
+      const next = [...prev, { type, text }];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
   }, []);
 
   const handleConnect = () => {

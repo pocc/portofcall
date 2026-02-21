@@ -61,7 +61,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 80,
+          port: parseInt(port, 10) || 80,
           path: path || '/',
           protocols: protocols || undefined,
           sendPing,

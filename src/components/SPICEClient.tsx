@@ -52,7 +52,7 @@ export default function SPICEClient({ onBack }: SPICEClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: host.trim(),
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });

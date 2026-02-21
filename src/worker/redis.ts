@@ -323,7 +323,7 @@ function formatRESPResponse(resp: string): string {
   // Array: *N\r\n...
   if (trimmed.startsWith('*')) {
     const lines = trimmed.split('\r\n');
-    const count = parseInt(lines[0].slice(1));
+    const count = parseInt(lines[0].slice(1), 10);
     if (count === 0) return '(empty array)';
     if (count === -1) return '(nil)';
     const items: string[] = [];
@@ -384,6 +384,14 @@ export async function handleRedisSession(request: Request): Promise<Response> {
   const [client, server] = Object.values(pair);
   server.accept();
 
+  // Close the WebSocket if no auth message arrives within 15 seconds
+  const authTimeout = setTimeout(() => {
+    if (!initialized) {
+      server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+      server.close(4001, 'Auth timeout');
+    }
+  }, 15_000);
+
   // Wait for the first message containing credentials before connecting
   let initialized = false;
   server.addEventListener('message', async (event) => {
@@ -397,6 +405,7 @@ export async function handleRedisSession(request: Request): Promise<Response> {
 
       if (!initialized && msg.type === 'auth') {
         initialized = true;
+        clearTimeout(authTimeout);
         const password = msg.password || undefined;
         const database = msg.database;
 
@@ -467,6 +476,10 @@ export async function handleRedisSession(request: Request): Promise<Response> {
     } catch (e) {
       server.send(JSON.stringify({ type: 'error', message: String(e) }));
     }
+  });
+
+  server.addEventListener('close', () => {
+    clearTimeout(authTimeout);
   });
 
   return new Response(null, { status: 101, webSocket: client });

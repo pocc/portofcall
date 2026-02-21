@@ -36,7 +36,7 @@ export default function PerforceClient({ onBack }: PerforceClientProps) {
       const response = await fetch('/api/perforce/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await response.json() as {
@@ -87,7 +87,7 @@ export default function PerforceClient({ onBack }: PerforceClientProps) {
       const response = await fetch('/api/perforce/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await response.json() as {

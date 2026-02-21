@@ -95,7 +95,7 @@ function parseTorResponse(raw: string): {
   for (const line of lines) {
     const match = line.match(/^(\d{3})([ +-])(.*)$/);
     if (match) {
-      statusCode = parseInt(match[1]);
+      statusCode = parseInt(match[1], 10);
       const text = match[3];
       if (text) resultLines.push(text);
     } else {

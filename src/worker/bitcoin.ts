@@ -299,9 +299,9 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '8333'),
+        port: parseInt(url.searchParams.get('port') || '8333', 10),
         network: url.searchParams.get('network') || 'mainnet',
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -615,9 +615,9 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '8333'),
+        port: parseInt(url.searchParams.get('port') || '8333', 10),
         network: url.searchParams.get('network') || 'mainnet',
-        timeout: parseInt(url.searchParams.get('timeout') || '15000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '15000', 10),
       };
     }
 
@@ -827,10 +827,10 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '8333'),
+        port: parseInt(url.searchParams.get('port') || '8333', 10),
         network: url.searchParams.get('network') || 'mainnet',
-        timeout: parseInt(url.searchParams.get('timeout') || '20000'),
-        maxTxIds: parseInt(url.searchParams.get('maxTxIds') || '20'),
+        timeout: parseInt(url.searchParams.get('timeout') || '20000', 10),
+        maxTxIds: parseInt(url.searchParams.get('maxTxIds') || '20', 10),
       };
     }
 

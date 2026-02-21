@@ -555,10 +555,8 @@ function parseEnumerateEntry(data: Uint8Array, fileBitmap: number, dirBitmap: nu
   if (bitmap & kFPDataForkLenBit) {
     if (isDir) {
       if (o + 2 <= data.length) entry.size = view.getUint16(o, false);
-      o += 2;
     } else {
       if (o + 4 <= data.length) entry.size = view.getUint32(o, false);
-      o += 4;
     }
   }
 
@@ -664,7 +662,7 @@ async function readDSIResponse(
   const header = parseDSIHeader(headerBytes);
   if (!header) throw new Error('Invalid DSI header');
 
-  // eslint-disable-next-line prefer-const
+   
   let payload: Uint8Array = new Uint8Array(0);
   if (header.dataLength > 0 && header.dataLength < 1024 * 1024) {
     // Cast needed due to Uint8Array<ArrayBufferLike> vs Uint8Array<ArrayBuffer> variance

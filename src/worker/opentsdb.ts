@@ -126,13 +126,13 @@ export async function handleOpenTSDBVersion(request: Request): Promise<Response>
       } catch (error) {
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           await socket.close();
-        } catch {}
+        } catch { /* ignored */ }
         throw error;
       }
     })();
@@ -256,13 +256,13 @@ export async function handleOpenTSDBStats(request: Request): Promise<Response> {
       } catch (error) {
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           await socket.close();
-        } catch {}
+        } catch { /* ignored */ }
         throw error;
       }
     })();
@@ -406,13 +406,13 @@ export async function handleOpenTSDBSuggest(request: Request): Promise<Response>
       } catch (error) {
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           await socket.close();
-        } catch {}
+        } catch { /* ignored */ }
         throw error;
       }
     })();
@@ -561,13 +561,13 @@ export async function handleOpenTSDBPut(request: Request): Promise<Response> {
       } catch (err) {
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           await socket.close();
-        } catch {}
+        } catch { /* ignored */ }
         throw err;
       }
     })();

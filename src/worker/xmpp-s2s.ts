@@ -725,7 +725,7 @@ export async function handleXMPPS2SConnect(request: Request): Promise<Response> 
 
         const streamId = parseStreamOpen(raw);
         const features = parseStreamFeatures(raw);
-        const domainMatch = raw.match(/<stream:stream[^>]+from=['"]([\w.\-]+)['"]/);
+        const domainMatch = raw.match(/<stream:stream[^>]+from=['"]([\w.-]+)['"]/);
         const versionMatch = raw.match(/<stream:stream[^>]+version=['"]([\d.]+)['"]/);
 
         return {

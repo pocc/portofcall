@@ -30,7 +30,7 @@ export default function ConsulClient({ onBack }: ConsulClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           token: token || undefined,
           timeout: 15000,
         }),

@@ -32,7 +32,7 @@ interface EtcdRequest {
   timeout?: number;
 }
 
-interface EtcdHealthRequest extends EtcdRequest {}
+type EtcdHealthRequest = EtcdRequest;
 
 interface EtcdQueryRequest extends EtcdRequest {
   path: string;
@@ -126,7 +126,7 @@ async function sendHttpRequest(
   // Parse status line
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   // Parse headers
   const headers: Record<string, string> = {};

@@ -313,7 +313,7 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
               writer.releaseLock();
               reader.releaseLock();
               socket.close();
-            } catch {}
+            } catch { /* ignored */ }
 
             return {
               success: true,
@@ -411,7 +411,7 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
           writer.releaseLock();
           reader.releaseLock();
           socket.close();
-        } catch {}
+        } catch { /* ignored */ }
 
         return {
           success: true,
@@ -430,7 +430,7 @@ export async function handlePJLinkProbe(request: Request): Promise<Response> {
           writer.releaseLock();
           reader.releaseLock();
           socket.close();
-        } catch {}
+        } catch { /* ignored */ }
         throw error;
       }
     })();
@@ -551,7 +551,7 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
           writer.releaseLock();
           reader.releaseLock();
           socket.close();
-        } catch {}
+        } catch { /* ignored */ }
 
         const parsed = parseResponse(response);
         if (!parsed) {
@@ -584,7 +584,7 @@ export async function handlePJLinkPower(request: Request): Promise<Response> {
           writer.releaseLock();
           reader.releaseLock();
           socket.close();
-        } catch {}
+        } catch { /* ignored */ }
         throw error;
       }
     })();

@@ -40,8 +40,8 @@ export default function ModbusClient({ onBack }: ModbusClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          unitId: parseInt(unitId),
+          port: parseInt(port, 10),
+          unitId: parseInt(unitId, 10),
           timeout: 10000,
         }),
       });
@@ -87,17 +87,17 @@ export default function ModbusClient({ onBack }: ModbusClientProps) {
     setResult('');
 
     try {
-      const fc = parseInt(functionCode);
+      const fc = parseInt(functionCode, 10);
       const response = await fetch('/api/modbus/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          unitId: parseInt(unitId),
+          port: parseInt(port, 10),
+          unitId: parseInt(unitId, 10),
           functionCode: fc,
-          address: parseInt(address),
-          quantity: parseInt(quantity),
+          address: parseInt(address, 10),
+          quantity: parseInt(quantity, 10),
           timeout: 10000,
         }),
       });

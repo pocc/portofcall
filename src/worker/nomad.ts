@@ -120,7 +120,7 @@ async function sendHttpGet(
   // Parse status line
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   // Parse headers (multi-valued headers concatenated with comma per RFC 9110 §5.3)
   const headers: Record<string, string> = {};
@@ -212,7 +212,7 @@ async function sendHttpPost(
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);

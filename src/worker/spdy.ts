@@ -98,8 +98,8 @@ export async function handleSPDYConnect(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '443'),
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        port: parseInt(url.searchParams.get('port') || '443', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -183,8 +183,8 @@ export async function handleSPDYConnect(request: Request): Promise<Response> {
           note: 'SPDY is deprecated (2016). Most servers have dropped support in favor of HTTP/2. Note: ALPN "spdy/3.1" cannot be explicitly set via the Cloudflare Sockets API, so TLS negotiation uses the server\'s default (h2/http1.1).',
         };
       } catch (err) {
-        try { reader.releaseLock(); } catch (_) { /* ignore */ }
-        try { await socket.close(); } catch (_) { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
 
         // If we got here after socket.opened, TLS connected but read timed out
         return {
@@ -611,7 +611,7 @@ export async function handleSPDYH2Probe(request: Request): Promise<Response> {
           if (f.type === 0x01 && f.streamId === 1) {
             responseHeaders = parseHPACK(f.payload);
             const status = responseHeaders[':status'];
-            if (status) statusCode = parseInt(status);
+            if (status) statusCode = parseInt(status, 10);
             break;
           }
         }

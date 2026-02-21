@@ -42,7 +42,7 @@ export default function CollectdClient({ onBack }: CollectdClientProps) {
       const response = await fetch('/api/collectd/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await response.json() as {
@@ -97,7 +97,7 @@ export default function CollectdClient({ onBack }: CollectdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           plugin: plugin || 'test',
           pluginInstance: pluginInstance || undefined,
           type: metricType || 'gauge',

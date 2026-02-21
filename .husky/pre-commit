@@ -1,3 +1,7 @@
+# Run lint
+echo "🧹 Running ESLint..."
+npm run lint
+
 # Run type check
 echo "🔍 Running TypeScript type check..."
 npm run type-check

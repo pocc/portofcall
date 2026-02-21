@@ -146,7 +146,7 @@ async function sendSoapRequest(
   if (!statusMatch) {
     throw new Error('Invalid HTTP response: no status code found');
   }
-  const statusCode = parseInt(statusMatch[1]);
+  const statusCode = parseInt(statusMatch[1], 10);
 
   // Parse headers
   const headers: Record<string, string> = {};
@@ -268,7 +268,7 @@ async function sendWsdlRequest(
   if (!statusMatch) {
     throw new Error('Invalid HTTP response: no status code found');
   }
-  const statusCode = parseInt(statusMatch[1]);
+  const statusCode = parseInt(statusMatch[1], 10);
 
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);

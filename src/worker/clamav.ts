@@ -426,9 +426,9 @@ export async function handleClamAVStats(request: Request): Promise<Response> {
         port,
         stats: statsText,
         parsed: {
-          pools: pools ? parseInt(pools) : undefined,
+          pools: pools ? parseInt(pools, 10) : undefined,
           threads,
-          queueLength: queue ? parseInt(queue) : undefined,
+          queueLength: queue ? parseInt(queue, 10) : undefined,
           memoryUsed: memUsed,
         },
         totalTimeMs: totalTime,

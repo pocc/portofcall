@@ -350,8 +350,7 @@ async function readRTMPMessage(
 ): Promise<RTMPMessage> {
   // Read chunks until a complete message is assembled
   // Track per-CSID state for chunk header continuation (fmt 1/2/3)
-  let csid = 0;
-  let fmt = 0;
+  let csid: number;
   let timestamp = 0;
   let msgLength = 0;
   let typeId = 0;
@@ -359,7 +358,7 @@ async function readRTMPMessage(
 
   // Read basic header (byte 0)
   const bh = await readExact(reader, 1);
-  fmt = (bh[0] >> 6) & 0x3;
+  const fmt = (bh[0] >> 6) & 0x3;
   csid = bh[0] & 0x3F;
 
   if (csid === 0) {
@@ -783,8 +782,8 @@ export async function handleRTMPPublish(request: Request): Promise<Response> {
           serverResponses,
         };
       } catch (error) {
-        try { writer.releaseLock(); } catch (_) { /* ignore */ }
-        try { reader.releaseLock(); } catch (_) { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
         socket.close();
         throw error;
       }
@@ -944,8 +943,8 @@ export async function handleRTMPPlay(request: Request): Promise<Response> {
           serverResponses,
         };
       } catch (error) {
-        try { writer.releaseLock(); } catch (_) { /* ignore */ }
-        try { reader.releaseLock(); } catch (_) { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
         socket.close();
         throw error;
       }

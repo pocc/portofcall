@@ -41,7 +41,7 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
-  if (!/^[a-zA-Z0-9._:\-\[\]]+$/.test(host)) return 'Host contains invalid characters';
+  if (!/^[a-zA-Z0-9._:\-[\]]+$/.test(host)) return 'Host contains invalid characters';
   if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }

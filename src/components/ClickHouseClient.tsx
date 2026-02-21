@@ -47,7 +47,7 @@ export default function ClickHouseClient({ onBack }: ClickHouseClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           user: user || undefined,
           password: password || undefined,
           timeout: 15000,
@@ -112,7 +112,7 @@ export default function ClickHouseClient({ onBack }: ClickHouseClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           query: targetQuery,
           database: database || undefined,
           format,

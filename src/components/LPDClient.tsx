@@ -41,7 +41,7 @@ export default function LPDClient({ onBack }: LPDClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           printer: printer || 'lp',
           timeout: 10000,
         }),
@@ -100,7 +100,7 @@ export default function LPDClient({ onBack }: LPDClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           printer: printer || 'lp',
           timeout: 10000,
         }),

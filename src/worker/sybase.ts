@@ -216,7 +216,6 @@ function buildTDS50Login(username: string, password: string, _database: string, 
 
   // packetsize[6]
   writeFixedField(body, pos, '512   ', 6);
-  pos += 6;
 
   // dummy[8]: zeros (already zero from fill)
 
@@ -293,7 +292,7 @@ function buildTDSPrelogin(): Uint8Array {
   preloginData[offset++] = 0;    // sub-build low
 
   // ENCRYPTION data: 0x00 = ENCRYPT_OFF (no TLS)
-  preloginData[offset++] = 0x00;
+  preloginData[offset] = 0x00;
 
   const totalLen = 8 + preloginData.length;
   const packet = new Uint8Array(totalLen);

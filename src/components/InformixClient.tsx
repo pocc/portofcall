@@ -36,7 +36,7 @@ export default function InformixClient({ onBack }: InformixClientProps) {
       const response = await fetch('/api/informix/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 15000 }),
       });
 
       const data = await response.json() as {

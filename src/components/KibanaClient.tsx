@@ -54,7 +54,7 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
       const resp = await fetch('/api/kibana/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) }),
       });
       const data = await resp.json() as KibanaStatusResult;
       if (data.error) { setStatusError(data.error); }
@@ -74,7 +74,7 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
       const resp = await fetch('/api/kibana/saved-objects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), type: objectType }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), type: objectType }),
       });
       const data = await resp.json() as KibanaSavedObjectsResult;
       if (data.error) { setObjectsError(data.error); }

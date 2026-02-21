@@ -32,7 +32,7 @@ export default function ThriftClient({ onBack }: ThriftClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           method,
           transport,
           timeout: 15000,
@@ -116,7 +116,7 @@ export default function ThriftClient({ onBack }: ThriftClientProps) {
           const parts = arg.trim().split(':');
           if (parts.length >= 3) {
             parsedArgs.push({
-              id: parseInt(parts[0]),
+              id: parseInt(parts[0], 10),
               type: parts[1],
               value: parts.slice(2).join(':'),
             });
@@ -129,7 +129,7 @@ export default function ThriftClient({ onBack }: ThriftClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           method,
           args: parsedArgs,
           transport,

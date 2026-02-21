@@ -499,6 +499,7 @@ export async function handleGitFetch(request: Request): Promise<Response> {
         return {
           success: false,
           error: 'PACK magic bytes not found in server response',
+          // eslint-disable-next-line no-control-regex
           serverResponse: textPreview.replace(/\x00/g, '\\0'),
           wantedRef: resolvedRef,
           sha: wantedSha,
@@ -524,7 +525,7 @@ export async function handleGitFetch(request: Request): Promise<Response> {
 
       // Parse object headers (up to 100 objects or end of data)
       const objects: Array<{ type: string; size: number }> = [];
-      let objOffset = 12;
+      const objOffset = 12;
       const maxObjects = Math.min(objectCount, 100);
 
       for (let i = 0; i < maxObjects && objOffset < packData.length; i++) {

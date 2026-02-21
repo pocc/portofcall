@@ -50,8 +50,8 @@ export default function CephClient({ onBack }: { onBack: () => void }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 6789,
-          timeout: parseInt(timeout) || 10000,
+          port: parseInt(port, 10) || 6789,
+          timeout: parseInt(timeout, 10) || 10000,
         }),
       });
 

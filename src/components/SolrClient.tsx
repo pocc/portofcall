@@ -48,7 +48,7 @@ export default function SolrClient({ onBack }: SolrClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           timeout: 15000,
@@ -124,7 +124,7 @@ export default function SolrClient({ onBack }: SolrClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           core,
           query,
           handler,

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import type { IDisposable } from '@xterm/xterm';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -27,6 +28,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const onDataRef = useRef<IDisposable | null>(null);
 
   // Close WebSocket and clear sensitive state on unmount
   useEffect(() => {
@@ -127,8 +129,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
             setStatus('connected');
             setStatusMsg('');
             term.writeln('\x1b[1;32m✓ Connected\x1b[0m\r\n');
-            // Wire up user input after connection
-            term.onData((data) => {
+            // Wire up user input after connection (dispose previous listener to avoid duplicates)
+            onDataRef.current?.dispose();
+            onDataRef.current = term.onData((data) => {
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(data);
               }

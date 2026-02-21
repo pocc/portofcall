@@ -44,10 +44,10 @@ export async function handleRexecExecute(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '512'),
+        port: parseInt(url.searchParams.get('port') || '512', 10),
         username: url.searchParams.get('username') || 'guest',
         command: url.searchParams.get('command') || '',
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -218,7 +218,7 @@ export async function handleRexecWebSocket(request: Request): Promise<Response> 
   try {
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '512');
+    const port = parseInt(url.searchParams.get('port') || '512', 10);
     const username = url.searchParams.get('username') || 'guest';
     const password = url.searchParams.get('password') || '';
     const command = url.searchParams.get('command') || 'id';

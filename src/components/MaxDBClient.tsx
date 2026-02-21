@@ -41,7 +41,7 @@ export default function MaxDBClient({ onBack }: MaxDBClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           database: database || undefined,
           timeout: 10000,
         }),

@@ -30,7 +30,7 @@ export default function XMPPClient({ onBack }: XMPPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           domain: domain || undefined,
           timeout: 10000,
         }),

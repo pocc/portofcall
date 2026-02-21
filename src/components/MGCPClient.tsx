@@ -54,7 +54,7 @@ export default function MGCPClient({ onBack }: MGCPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           endpoint,
         }),
       });
@@ -131,7 +131,7 @@ export default function MGCPClient({ onBack }: MGCPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           endpoint,
           command,
           params,

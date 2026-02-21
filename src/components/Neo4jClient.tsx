@@ -40,7 +40,7 @@ export default function Neo4jClient({ onBack }: Neo4jClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });

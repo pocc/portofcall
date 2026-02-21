@@ -53,9 +53,9 @@ export default function S7commClient({ onBack }: S7commClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          rack: parseInt(rack),
-          slot: parseInt(slot),
+          port: parseInt(port, 10),
+          rack: parseInt(rack, 10),
+          slot: parseInt(slot, 10),
           timeout: 10000,
         }),
       });

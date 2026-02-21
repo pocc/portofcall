@@ -32,7 +32,7 @@ function parseSMTPResponse(data: string): { code: number; message: string } {
   const lastLine = lines[lines.length - 1];
   const match = lastLine.match(/^(\d{3})\s/);
   return {
-    code: match ? parseInt(match[1]) : 0,
+    code: match ? parseInt(match[1], 10) : 0,
     message: data.trim(),
   };
 }
@@ -128,8 +128,8 @@ export async function handleSubmissionConnect(request: Request): Promise<Respons
     } else {
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '587'),
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
+        port: parseInt(url.searchParams.get('port') || '587', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '30000', 10),
       };
     }
 
@@ -194,8 +194,8 @@ export async function handleSubmissionConnect(request: Request): Promise<Respons
             : 'WARNING: STARTTLS not advertised. RFC 6409 requires STARTTLS on port 587.',
         };
       } catch (error) {
-        try { reader.releaseLock(); } catch (_) { /* ignore */ }
-        try { writer.releaseLock(); } catch (_) { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
         await socket.close();
         throw error;
       }
@@ -401,8 +401,8 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
           serverResponse: sendResult.message,
         };
       } catch (error) {
-        try { reader.releaseLock(); } catch (_) { /* already released */ }
-        try { writer.releaseLock(); } catch (_) { /* already released */ }
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
         await socket.close();
         throw error;
       }

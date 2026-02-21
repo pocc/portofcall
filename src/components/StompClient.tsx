@@ -47,7 +47,7 @@ export default function StompClient({ onBack }: StompClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           vhost: vhost || undefined,
@@ -110,7 +110,7 @@ export default function StompClient({ onBack }: StompClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           vhost: vhost || undefined,

@@ -767,7 +767,7 @@ export async function handleManageSieveGetScript(request: Request): Promise<Resp
       let scriptBytes = 0;
       const sizeMatch = getResponse.match(/^\{(\d+)\}\r\n/);
       if (sizeMatch) {
-        scriptBytes = parseInt(sizeMatch[1]);
+        scriptBytes = parseInt(sizeMatch[1], 10);
         const headerLen = sizeMatch[0].length;
         // Extract exactly scriptBytes worth of UTF-8 bytes.
         // Re-encode the response to get raw bytes, then slice and decode.

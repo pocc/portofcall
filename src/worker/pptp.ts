@@ -446,7 +446,7 @@ function buildOCRQ(callId: number): Uint8Array {
   v.setUint16(off, 64, false);                   off += 2;  // Receive Window Size
   v.setUint16(off, 0, false);                    off += 2;  // Processing Delay
   v.setUint16(off, 0, false);                    off += 2;  // Phone Number Length (0 = no number)
-  v.setUint16(off, 0, false);                    off += 2;  // Reserved
+  v.setUint16(off, 0, false);                                // Reserved
   // Phone Number (64 bytes, zeros) + Subaddress (64 bytes, zeros) — left zeroed by ArrayBuffer
 
   return new Uint8Array(buf);

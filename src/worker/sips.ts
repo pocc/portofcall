@@ -524,7 +524,7 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
             responseText = new TextDecoder().decode(new Uint8Array(chunks.flatMap(c => Array.from(c))));
             for (const line of responseText.split('\r\n')) {
               const m = line.match(/^SIP\/2\.0 (\d+)/);
-              if (m && parseInt(m[1]) >= 200) { finalCode = parseInt(m[1]); break; }
+              if (m && parseInt(m[1], 10) >= 200) { finalCode = parseInt(m[1], 10); break; }
             }
           }
         }

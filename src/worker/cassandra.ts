@@ -329,9 +329,9 @@ export async function handleCassandraConnect(request: Request): Promise<Response
           startupResponse: getOpcodeName(startupResponse.opcode),
         };
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { socket.close(); } catch { /* ignored */ }
       }
     })();
 
@@ -841,9 +841,9 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
           columns, rows, rowCount: rows.length,
         };
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { socket.close(); } catch { /* ignored */ }
       }
     })();
 
@@ -996,9 +996,9 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
           columns, rows, rowCount: rows.length,
         };
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
-        try { socket.close(); } catch {}
+        try { writer.releaseLock(); } catch { /* ignored */ }
+        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { socket.close(); } catch { /* ignored */ }
       }
     })();
 

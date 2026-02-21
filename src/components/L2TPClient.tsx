@@ -39,7 +39,7 @@ export default function L2TPClient({ onBack }: L2TPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           hostname: hostname || undefined,
           timeout: 15000,
         }),

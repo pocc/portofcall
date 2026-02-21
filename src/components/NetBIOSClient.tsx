@@ -40,7 +40,7 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           calledName,
           calledSuffix,
           timeout: 10000,
@@ -101,7 +101,7 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });
@@ -232,7 +232,7 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
             <select
               id="netbios-suffix"
               value={calledSuffix}
-              onChange={(e) => setCalledSuffix(parseInt(e.target.value))}
+              onChange={(e) => setCalledSuffix(parseInt(e.target.value, 10))}
               className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {SUFFIX_OPTIONS.map((opt) => (

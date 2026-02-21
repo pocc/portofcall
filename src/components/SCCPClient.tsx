@@ -50,7 +50,7 @@ export default function SCCPClient({ onBack }: SCCPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
         }),
       });
 
@@ -107,9 +107,9 @@ export default function SCCPClient({ onBack }: SCCPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           deviceName,
-          deviceType: parseInt(deviceType),
+          deviceType: parseInt(deviceType, 10),
         }),
       });
 

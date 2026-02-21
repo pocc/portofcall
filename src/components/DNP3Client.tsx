@@ -39,9 +39,9 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          destination: parseInt(destination),
-          source: parseInt(source),
+          port: parseInt(port, 10),
+          destination: parseInt(destination, 10),
+          source: parseInt(source, 10),
           timeout: 10000,
         }),
       });
@@ -113,10 +113,10 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          destination: parseInt(destination),
-          source: parseInt(source),
-          classNum: parseInt(classNum),
+          port: parseInt(port, 10),
+          destination: parseInt(destination, 10),
+          source: parseInt(source, 10),
+          classNum: parseInt(classNum, 10),
           timeout: 10000,
         }),
       });

@@ -91,7 +91,7 @@ export default function SLPClient({ onBack }: SLPProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 427,
+          port: parseInt(port, 10) || 427,
           scope,
           timeout: 10000,
         }),
@@ -115,7 +115,7 @@ export default function SLPClient({ onBack }: SLPProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 427,
+          port: parseInt(port, 10) || 427,
           serviceType,
           scope,
           predicate: predicate || undefined,
@@ -141,7 +141,7 @@ export default function SLPClient({ onBack }: SLPProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 427,
+          port: parseInt(port, 10) || 427,
           url: serviceUrl,
           scope,
           timeout: 10000,

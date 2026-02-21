@@ -31,7 +31,7 @@ function parseSMTPResponse(data: string): { code: number; message: string } {
   const match = lastLine.match(/^(\d{3})\s/);
 
   return {
-    code: match ? parseInt(match[1]) : 0,
+    code: match ? parseInt(match[1], 10) : 0,
     message: data.trim(),
   };
 }
@@ -95,8 +95,8 @@ export async function handleSMTPConnect(request: Request): Promise<Response> {
     } else {
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '25'),
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
+        port: parseInt(url.searchParams.get('port') || '25', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '30000', 10),
       };
     }
 

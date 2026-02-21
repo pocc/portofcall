@@ -88,7 +88,7 @@ export default function Quake3Client({ onBack }: Quake3ClientProps) {
       const response = await fetch('/api/quake3/status', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), command: 'getstatus', timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), command: 'getstatus', timeout: 10000 }),
       });
 
       const data = await response.json() as {
@@ -131,7 +131,7 @@ export default function Quake3Client({ onBack }: Quake3ClientProps) {
       const response = await fetch('/api/quake3/info', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), command: 'getinfo', timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), command: 'getinfo', timeout: 10000 }),
       });
 
       const data = await response.json() as {

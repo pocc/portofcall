@@ -34,7 +34,7 @@ function parseSMTPResponse(data: string): { code: number; message: string } {
   const match = lastLine.match(/^(\d{3})\s/);
 
   return {
-    code: match ? parseInt(match[1]) : 0,
+    code: match ? parseInt(match[1], 10) : 0,
     message: data.trim(),
   };
 }

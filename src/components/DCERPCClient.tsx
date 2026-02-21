@@ -43,7 +43,7 @@ export default function DCERPCClient({ onBack }: DCERPCClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -106,7 +106,7 @@ export default function DCERPCClient({ onBack }: DCERPCClientProps) {
     try {
       const payload: Record<string, unknown> = {
         host,
-        port: parseInt(port),
+        port: parseInt(port, 10),
         timeout: 10000,
       };
 
@@ -117,7 +117,7 @@ export default function DCERPCClient({ onBack }: DCERPCClientProps) {
           return;
         }
         payload.interfaceUuid = customUuid.trim();
-        payload.interfaceVersion = parseInt(customVersion) || 0;
+        payload.interfaceVersion = parseInt(customVersion, 10) || 0;
       } else {
         payload.interfaceName = target;
       }

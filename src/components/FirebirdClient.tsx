@@ -49,7 +49,7 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: host.trim(),
-          port: parseInt(port),
+          port: parseInt(port, 10),
           database: database.trim(),
         }),
       });
@@ -91,7 +91,7 @@ export default function FirebirdClient({ onBack }: FirebirdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: host.trim(),
-          port: parseInt(port),
+          port: parseInt(port, 10),
           database: database.trim(),
         }),
       });

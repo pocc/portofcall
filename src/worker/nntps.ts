@@ -155,7 +155,7 @@ export async function handleNNTPSConnect(request: Request): Promise<Response> {
 
       // Read welcome banner (200 = posting allowed, 201 = read-only)
       const welcome = await readLine(reader, decoder, buffer, timeoutPromise);
-      const welcomeCode = parseInt(welcome.substring(0, 3));
+      const welcomeCode = parseInt(welcome.substring(0, 3), 10);
 
       if (welcomeCode !== 200 && welcomeCode !== 201) {
         reader.releaseLock();
@@ -364,9 +364,9 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
 
       // Parse: 211 count first last group
       const parts = groupResponse.split(' ');
-      const count = parseInt(parts[1]) || 0;
-      const first = parseInt(parts[2]) || 0;
-      const last = parseInt(parts[3]) || 0;
+      const count = parseInt(parts[1], 10) || 0;
+      const first = parseInt(parts[2], 10) || 0;
+      const last = parseInt(parts[3], 10) || 0;
 
       // Fetch headers for the most recent articles (up to 20)
       const articles: Array<{
@@ -391,12 +391,12 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
             const fields = line.split('\t');
             if (fields.length >= 6) {
               articles.push({
-                number: parseInt(fields[0]) || 0,
+                number: parseInt(fields[0], 10) || 0,
                 subject: fields[1] || '(no subject)',
                 from: fields[2] || '(unknown)',
                 date: fields[3] || '',
                 messageId: fields[4] || '',
-                lines: parseInt(fields[7]) || 0,
+                lines: parseInt(fields[7], 10) || 0,
               });
             }
           }
@@ -759,8 +759,8 @@ export async function handleNNTPSList(request: Request): Promise<Response> {
           const parts = line.split(' ');
           return {
             name: parts[0] || line,
-            last: parts[1] ? parseInt(parts[1]) : undefined,
-            first: parts[2] ? parseInt(parts[2]) : undefined,
+            last: parts[1] ? parseInt(parts[1], 10) : undefined,
+            first: parts[2] ? parseInt(parts[2], 10) : undefined,
             flag: parts[3] || undefined,
           };
         } else if (variant === 'NEWSGROUPS') {

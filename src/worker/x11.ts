@@ -466,7 +466,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       } catch { /* use WM_NAME fallback */ }
 
       // Read QueryTree reply
-      let childWindows: number[] = [];
+      const childWindows: number[] = [];
       try {
         const qtReply = await readX11Reply(reader, 8000);
         if (qtReply[0] === 1 && qtReply.length >= 32) {

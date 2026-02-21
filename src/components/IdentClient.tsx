@@ -44,9 +44,9 @@ export default function IdentClient({ onBack }: IdentClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          serverPort: parseInt(serverPort),
-          clientPort: parseInt(clientPort),
+          port: parseInt(port, 10),
+          serverPort: parseInt(serverPort, 10),
+          clientPort: parseInt(clientPort, 10),
           timeout: 10000,
         }),
       });

@@ -146,7 +146,7 @@ function parseHttpResponse(data: Uint8Array): {
     const statusLine = headerLines[0];
     const httpMatch = statusLine.match(/^HTTP\/[\d.]+\s+(\d+)\s*(.*)/);
     if (httpMatch) {
-      statusCode = parseInt(httpMatch[1]);
+      statusCode = parseInt(httpMatch[1], 10);
       statusText = httpMatch[2] || '';
     }
   }
@@ -166,7 +166,7 @@ function parseHttpResponse(data: Uint8Array): {
   if (headers['Status']) {
     const statusMatch = headers['Status'].match(/(\d+)\s*(.*)/);
     if (statusMatch) {
-      statusCode = parseInt(statusMatch[1]);
+      statusCode = parseInt(statusMatch[1], 10);
       statusText = statusMatch[2] || '';
     }
   }

@@ -350,10 +350,10 @@ export async function handleNRPEQuery(request: Request): Promise<Response> {
         // Ensure locks are released even on error
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
       }
     } catch (error) {
       if (timeoutId !== undefined) {
@@ -555,10 +555,10 @@ export async function handleNRPETLS(request: Request): Promise<Response> {
         // Ensure locks are released even on error
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
       }
     } catch (error) {
       if (timeoutId !== undefined) {
@@ -708,10 +708,10 @@ export async function handleNRPEVersion(request: Request): Promise<Response> {
         // Ensure locks are released even on error
         try {
           writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
       }
     } catch (error) {
       if (timeoutId !== undefined) {

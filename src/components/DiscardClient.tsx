@@ -48,7 +48,7 @@ export default function DiscardClient({ onBack }: DiscardClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           data,
           timeout: 10000,
         }),

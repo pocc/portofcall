@@ -75,7 +75,7 @@ export default function GraphiteClient({ onBack }: GraphiteClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           metrics: validMetrics.map(m => ({
             name: m.name,
             value: parseFloat(m.value),

@@ -46,9 +46,9 @@ export default function Socks5Client({ onBack }: Socks5ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           proxyHost: proxyHost.trim(),
-          proxyPort: parseInt(proxyPort),
+          proxyPort: parseInt(proxyPort, 10),
           destHost: destHost.trim(),
-          destPort: parseInt(destPort),
+          destPort: parseInt(destPort, 10),
           ...(username && { username }),
           ...(password && { password }),
         }),

@@ -483,7 +483,7 @@ function parseFTPListOutput(raw: string): FTPEntry[] {
     .map(line => {
       // Unix long listing: drwxr-xr-x  2 user group 4096 Jan  1 12:00 dirname
       const match = line.match(
-        /^([dlrwxstST\-]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(.+)$/,
+        /^([dlrwxstST-]{10})\s+\d+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+(.+)$/,
       );
       if (match) {
         const [, perms, sizeStr, name] = match;

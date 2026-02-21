@@ -72,7 +72,7 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
       } else {
         options = {
           host: url.searchParams.get('host') || '',
-          port: parseInt(url.searchParams.get('port') || '22'),
+          port: parseInt(url.searchParams.get('port') || '22', 10),
           username: url.searchParams.get('username') || undefined,
         };
       }
@@ -141,7 +141,7 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
     // credentials arrive via the first WebSocket message from the client.
     const url = new URL(request.url);
     const host = url.searchParams.get('host') || '';
-    const port = parseInt(url.searchParams.get('port') || '22');
+    const port = parseInt(url.searchParams.get('port') || '22', 10);
 
     if (!host) {
       return new Response(JSON.stringify({

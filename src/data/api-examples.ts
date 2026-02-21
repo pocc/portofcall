@@ -905,7 +905,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"mail.example.com","port":4190,"username":"user@example.com","password":"secret","timeout":5000}'` },
     { title: 'POST /managesieve/putscript', command: `curl -X POST 'https://portofcall.ross.gg/api/managesieve/putscript' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"mail.example.com","port":4190,"username":"user@example.com","password":"secret","name":"vacation","content":"require \"vacation\"; vacation \"I am away\";","timeout":5000}'` },
+  -d '{"host":"mail.example.com","port":4190,"username":"user@example.com","password":"secret","name":"vacation","content":"require "vacation"; vacation "I am away";","timeout":5000}'` },
     { title: 'POST /managesieve/getscript', command: `curl -X POST 'https://portofcall.ross.gg/api/managesieve/getscript' \
   -H 'Content-Type: application/json' \
   -d '{"host":"mail.example.com","port":4190,"username":"user@example.com","password":"secret","name":"vacation","timeout":5000}'` },
@@ -1114,7 +1114,9 @@ const examples: Record<string, CurlExample[]> = {
     { title: 'POST /neo4j/query-params', command: `curl -X POST 'https://portofcall.ross.gg/api/neo4j/query-params' \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":7687,"username":"neo4j","password":"secret","query":"MATCH (n:Person {name: $name}) RETURN n","params":{"name":"Alice"},"database":"neo4j","timeout":10000}'` },
-    { title: 'GET /neo4j/schema', command: `curl 'https://portofcall.ross.gg/api/neo4j/schema?host=localhost&port=7687&username=neo4j&password=secret'` },
+    { title: 'POST /neo4j/schema', command: `curl -X POST 'https://portofcall.ross.gg/api/neo4j/schema' \
+  -H 'Content-Type: application/json' \
+  -d '{"host":"localhost","port":7687,"username":"neo4j","password":"secret"}'` },
     { title: 'POST /neo4j/create', command: `curl -X POST 'https://portofcall.ross.gg/api/neo4j/create' \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":7687,"username":"neo4j","password":"secret","label":"Person","properties":{"name":"Alice","age":30},"database":"neo4j","timeout":10000}'` },

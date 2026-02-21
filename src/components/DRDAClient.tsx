@@ -73,8 +73,8 @@ export default function DRDAClient({ onBack }: { onBack: () => void }) {
 
     try {
       let body: Record<string, unknown>;
-      const p = parseInt(port) || 50000;
-      const t = parseInt(timeout) || 10000;
+      const p = parseInt(port, 10) || 50000;
+      const t = parseInt(timeout, 10) || 10000;
       const parsedParams = parseParams();
 
       switch (a) {
@@ -88,16 +88,16 @@ export default function DRDAClient({ onBack }: { onBack: () => void }) {
           body = { host, port: p, database, username, password, timeout: t, ssl };
           break;
         case 'query':
-          body = { host, port: p, database, username, password, sql, maxRows: parseInt(maxRows) || 100, timeout: parseInt(timeout) || 30000, ssl, ...(parsedParams ? { params: parsedParams } : {}) };
+          body = { host, port: p, database, username, password, sql, maxRows: parseInt(maxRows, 10) || 100, timeout: parseInt(timeout, 10) || 30000, ssl, ...(parsedParams ? { params: parsedParams } : {}) };
           break;
         case 'execute':
-          body = { host, port: p, database, username, password, sql, timeout: parseInt(timeout) || 30000, ssl, ...(parsedParams ? { params: parsedParams } : {}) };
+          body = { host, port: p, database, username, password, sql, timeout: parseInt(timeout, 10) || 30000, ssl, ...(parsedParams ? { params: parsedParams } : {}) };
           break;
         case 'prepare':
           body = { host, port: p, database, username, password, sql, timeout: t, ssl };
           break;
         case 'call':
-          body = { host, port: p, database, username, password, procedure, maxRows: parseInt(maxRows) || 100, timeout: parseInt(timeout) || 30000, ssl, ...(parsedParams ? { params: parsedParams } : {}) };
+          body = { host, port: p, database, username, password, procedure, maxRows: parseInt(maxRows, 10) || 100, timeout: parseInt(timeout, 10) || 30000, ssl, ...(parsedParams ? { params: parsedParams } : {}) };
           break;
       }
 

@@ -47,7 +47,7 @@ export default function KubernetesClient({ onBack }: KubernetesClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           bearerToken: bearerToken || undefined,
           timeout: 15000,
         }),
@@ -111,7 +111,7 @@ export default function KubernetesClient({ onBack }: KubernetesClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path: targetPath,
           bearerToken: bearerToken || undefined,
           timeout: 15000,

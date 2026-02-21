@@ -40,7 +40,7 @@ export default function TURNClient({ onBack }: TURNClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           timeout: 15000,

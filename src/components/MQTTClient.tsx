@@ -43,7 +43,7 @@ export default function MQTTClient({ onBack }: MQTTClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           clientId: clientId || undefined,
           username: username || undefined,
           password: password || undefined,

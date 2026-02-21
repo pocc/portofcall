@@ -83,8 +83,8 @@ function parseSvnGreeting(raw: string): {
 
   // Parse version numbers
   const versionMatch = trimmed.match(/success\s+\(\s*(\d+)\s+(\d+)/);
-  const minVersion = versionMatch ? parseInt(versionMatch[1]) : undefined;
-  const maxVersion = versionMatch ? parseInt(versionMatch[2]) : undefined;
+  const minVersion = versionMatch ? parseInt(versionMatch[1], 10) : undefined;
+  const maxVersion = versionMatch ? parseInt(versionMatch[2], 10) : undefined;
 
   // Parse capabilities and auth mechanisms from parenthesized groups
   const capabilities: string[] = [];
@@ -304,8 +304,8 @@ function parseSvnServerGreeting(text: string): {
   mechs: string[];
 } {
   const versionMatch = text.match(/success\s+\(\s*(\d+)\s+(\d+)/);
-  const minVer = versionMatch ? parseInt(versionMatch[1]) : undefined;
-  const maxVer = versionMatch ? parseInt(versionMatch[2]) : undefined;
+  const minVer = versionMatch ? parseInt(versionMatch[1], 10) : undefined;
+  const maxVer = versionMatch ? parseInt(versionMatch[2], 10) : undefined;
 
   // Extract parenthesized token groups (not nested)
   const groupRegex = /\(\s*([^()]*?)\s*\)/g;
@@ -523,7 +523,7 @@ export async function handleSVNList(request: Request): Promise<Response> {
       const countedStringRegex = /(\d+):([^\s]+)/g;
       let em;
       while ((em = countedStringRegex.exec(listResponse)) !== null) {
-        const length = parseInt(em[1]);
+        const length = parseInt(em[1], 10);
         const startIdx = em.index + em[1].length + 1; // position after "length:"
         const entry = listResponse.substring(startIdx, startIdx + length);
 

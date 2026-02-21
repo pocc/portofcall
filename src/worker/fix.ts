@@ -99,7 +99,7 @@ function parseFIXMessage(raw: string): Map<number, string> {
   for (const part of parts) {
     const eq = part.indexOf('=');
     if (eq > 0) {
-      const tag = parseInt(part.substring(0, eq));
+      const tag = parseInt(part.substring(0, eq), 10);
       const val = part.substring(eq + 1);
       if (!isNaN(tag)) {
         fields.set(tag, val);
@@ -193,6 +193,7 @@ async function readResponse(
     const chunkText = new TextDecoder().decode(result.value);
     const boundary = tail + chunkText;
     tail = boundary.slice(-10);
+    // eslint-disable-next-line no-control-regex
     if (/10=\d{3}\x01/.test(boundary)) break;
   }
 
@@ -334,12 +335,13 @@ export async function handleFIXProbe(request: Request): Promise<Response> {
           msgTypeRaw: msgType || null,
           senderCompID: responseSender || null,
           targetCompID: responseTarget || null,
-          heartBtInt: heartBtInt ? parseInt(heartBtInt) : null,
+          heartBtInt: heartBtInt ? parseInt(heartBtInt, 10) : null,
           rejectText: rejectText || null,
           isLogonAccepted: msgType === 'A',
           isLogout: msgType === '5',
           isReject: msgType === '3' || msgType === 'j',
           fields: fieldDump,
+          // eslint-disable-next-line no-control-regex
           rawResponse: rawResponse.replace(/\x01/g, '|'),
           protocol: 'FIX',
           message: msgType === 'A'
@@ -476,6 +478,7 @@ async function readFIXUntilMsgType(
     buffer += new TextDecoder().decode(result.value);
 
     // Extract complete FIX messages (each ends with 10=xxx<SOH>)
+    // eslint-disable-next-line no-control-regex
     const msgRegex = /8=FIX[^\x01]*(?:\x01[^\x01=]+=[^\x01]*)*\x0110=\d{3}\x01/g;
     let match: RegExpExecArray | null;
     let lastMatchEnd = 0;
@@ -645,6 +648,7 @@ export async function handleFIXOrder(request: Request): Promise<Response> {
             success: false,
             error: `Logon not acknowledged. Server responded with MsgType=${logonMsgType || 'none'}: ${logonParsed.get(58) || 'no message'}`,
             logonAck: false,
+            // eslint-disable-next-line no-control-regex
             rawLogon: logonRaw.replace(/\x01/g, '|'),
           }),
           { headers: { 'Content-Type': 'application/json' } }
@@ -746,6 +750,7 @@ export async function handleFIXOrder(request: Request): Promise<Response> {
           execTypeRaw: execType || null,
           text: rejectText || null,
           execFields: execFieldDump.length > 0 ? execFieldDump : null,
+          // eslint-disable-next-line no-control-regex
           rawExecReport: execRaw ? execRaw.replace(/\x01/g, '|') : null,
           message: execMsgType === '8'
             ? `ExecutionReport received: OrdStatus=${ordStatus ? ordStatusName(ordStatus) : 'unknown'} in ${rtt}ms`
@@ -863,6 +868,7 @@ export async function handleFIXHeartbeat(request: Request): Promise<Response> {
           JSON.stringify({
             success: false,
             error: `Logon rejected: ${logonParsed.get(58) || 'no logon acknowledgment'}`,
+            // eslint-disable-next-line no-control-regex
             rawResponse: logonResponse.replace(/\x01/g, '|'),
           }),
           { headers: { 'Content-Type': 'application/json' } }
@@ -915,6 +921,7 @@ export async function handleFIXHeartbeat(request: Request): Promise<Response> {
           testReqID,
           echoedTestReqID: responseTestReqID || null,
           responseMsgType: responseMsgType ? msgTypeName(responseMsgType) : null,
+          // eslint-disable-next-line no-control-regex
           rawResponse: testResponse.replace(/\x01/g, '|'),
           protocol: 'FIX',
           message: responseMsgType === '0'

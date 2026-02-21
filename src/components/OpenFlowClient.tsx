@@ -41,8 +41,8 @@ export default function OpenFlowClient({ onBack }: OpenFlowClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          version: parseInt(version),
+          port: parseInt(port, 10),
+          version: parseInt(version, 10),
           timeout: 10000,
         }),
       });
@@ -135,8 +135,8 @@ export default function OpenFlowClient({ onBack }: OpenFlowClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          version: parseInt(version),
+          port: parseInt(port, 10),
+          version: parseInt(version, 10),
           timeout: 10000,
         }),
       });

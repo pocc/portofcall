@@ -43,7 +43,7 @@ export default function SentinelClient({ onBack }: SentinelClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           password: password || undefined,
           timeout: 10000,
         }),
@@ -81,7 +81,7 @@ export default function SentinelClient({ onBack }: SentinelClientProps) {
             lines.push(`      Address: ${master['ip']}:${master['port']}`);
             lines.push(`      Status:  ${master['flags'] || 'unknown'}`);
             if (master['num-slaves']) lines.push(`      Replicas: ${master['num-slaves']}`);
-            if (master['num-other-sentinels']) lines.push(`      Sentinels: ${parseInt(master['num-other-sentinels']) + 1}`);
+            if (master['num-other-sentinels']) lines.push(`      Sentinels: ${parseInt(master['num-other-sentinels'], 10) + 1}`);
             if (master['quorum']) lines.push(`      Quorum: ${master['quorum']}`);
           });
         } else {
@@ -116,7 +116,7 @@ export default function SentinelClient({ onBack }: SentinelClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           password: password || undefined,
           command: cmdToRun.trim(),
           masterName: masterName.trim() || undefined,

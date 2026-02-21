@@ -638,7 +638,7 @@ function App() {
       case 'graphite':
         return <GraphiteClient onBack={handleBack} />;
       case 'git':
-        return <GitClient onBack={handleBack} />; // eslint-disable-line
+        return <GitClient onBack={handleBack} />;  
       case 'zookeeper':
         return <ZooKeeperClient onBack={handleBack} />;
       case 'amqp':

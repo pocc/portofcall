@@ -12,6 +12,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 /** SOCKS5 authentication methods */
 const AUTH_NONE = 0x00;
@@ -144,6 +145,14 @@ export async function handleSocks5Connect(request: Request): Promise<Response> {
       return new Response(
         JSON.stringify({ success: false, error: 'Valid destination port is required (1-65535)' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // SSRF: block private/internal destination hosts
+    if (isBlockedHost(destHost)) {
+      return new Response(
+        JSON.stringify({ success: false, error: `Connections to private/internal addresses are not allowed: ${destHost}` }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
@@ -357,6 +366,13 @@ export async function handleSocks5Relay(request: Request): Promise<Response> {
       });
     }
 
+    // SSRF: block private/internal destination hosts
+    if (isBlockedHost(destHost)) {
+      return new Response(JSON.stringify({
+        success: false, error: `Connections to private/internal addresses are not allowed: ${destHost}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const cfCheck = await checkIfCloudflare(proxyHost);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -457,7 +473,7 @@ export async function handleSocks5Relay(request: Request): Promise<Response> {
 
         // Parse status line
         const statusMatch = responseText.match(/^HTTP\/[\d.]+ (\d+) ([^\r\n]*)/);
-        const httpStatus = statusMatch ? parseInt(statusMatch[1]) : 0;
+        const httpStatus = statusMatch ? parseInt(statusMatch[1], 10) : 0;
         const httpStatusText = statusMatch ? statusMatch[2] : '';
 
         writer.releaseLock();

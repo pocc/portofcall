@@ -42,7 +42,7 @@ export default function LDAPClient({ onBack }: LDAPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           bindDN: bindDN || undefined,
           password: password || undefined,
           timeout: 10000,

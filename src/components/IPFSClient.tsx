@@ -38,7 +38,7 @@ export default function IPFSClient({ onBack }: IPFSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           protocols: ['/multistream/1.0.0', '/p2p/0.1.0', '/ipfs/0.1.0', '/ipfs/kad/1.0.0'],
           timeout: 10000,
         }),

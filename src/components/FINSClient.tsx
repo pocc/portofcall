@@ -50,8 +50,8 @@ export default function FINSClient({ onBack }: FINSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          clientNode: parseInt(clientNode),
+          port: parseInt(port, 10),
+          clientNode: parseInt(clientNode, 10),
           timeout: 10000,
         }),
       });

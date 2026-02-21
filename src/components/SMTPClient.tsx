@@ -41,7 +41,7 @@ export default function SMTPClient({ onBack }: SMTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -82,7 +82,7 @@ export default function SMTPClient({ onBack }: SMTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           from,

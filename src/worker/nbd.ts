@@ -710,7 +710,7 @@ export async function handleNBDRead(request: Request): Promise<Response> {
       const transmissionFlags = exportView.getUint16(8, false);
 
       // Step 4: Send READ request
-      const handle = BigInt(0x1234567890ABCDEF);
+      const handle = BigInt('0x1234567890ABCDEF');
       const readReq = buildReadRequest(handle, BigInt(offset), readSize);
       await writer.write(readReq);
 
@@ -1067,7 +1067,7 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
       }
 
       // Step 4: Send WRITE request (type=1, NBD_CMD_WRITE)
-      const handle = BigInt(0xABCDEF1234567890);
+      const handle = BigInt('0xABCDEF1234567890');
       const writeReq = buildWriteRequest(handle, BigInt(offset), writeData);
       await writer.write(writeReq);
 

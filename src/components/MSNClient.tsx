@@ -39,7 +39,7 @@ export default function MSNClient({ onBack }: MSNClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           protocolVersion: protocolVersion || 'MSNP18',
           timeout: 15000,
         }),

@@ -70,7 +70,7 @@ export default function DICOMClient({ onBack }: DICOMClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(port), callingAE: callingAE.trim(), calledAE: calledAE.trim(), timeout: 10000,
+          host, port: parseInt(port, 10), callingAE: callingAE.trim(), calledAE: calledAE.trim(), timeout: 10000,
         }),
       });
 
@@ -136,7 +136,7 @@ export default function DICOMClient({ onBack }: DICOMClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(port), callingAE: callingAE.trim(), calledAE: calledAE.trim(), timeout: 15000,
+          host, port: parseInt(port, 10), callingAE: callingAE.trim(), calledAE: calledAE.trim(), timeout: 15000,
         }),
       });
 

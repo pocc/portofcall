@@ -42,7 +42,7 @@ export default function MSRPClient({ onBack }: MSRPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           toPath: toPath || `msrp://${host}:${port}/session;tcp`,
           fromPath: fromPath || 'msrp://portofcall.example.com/client;tcp',
           content,

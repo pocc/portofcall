@@ -34,7 +34,7 @@ export default function NATSClient({ onBack }: NATSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           user: user || undefined,
           pass: pass || undefined,
           token: token || undefined,
@@ -97,7 +97,7 @@ export default function NATSClient({ onBack }: NATSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           user: user || undefined,
           pass: pass || undefined,
           token: token || undefined,

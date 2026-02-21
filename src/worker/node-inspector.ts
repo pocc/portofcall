@@ -102,7 +102,7 @@ async function sendHttpRequest(
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);
@@ -349,7 +349,7 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
 
       // Perform WebSocket handshake with the inspector
       const wsKey = generateWebSocketKey();
-      const handshakeRequest = buildWebSocketHandshake(host, parseInt(port), wsPath, wsKey);
+      const handshakeRequest = buildWebSocketHandshake(host, parseInt(port, 10), wsPath, wsKey);
 
       const writer = inspectorSocket.writable.getWriter();
       await writer.write(new TextEncoder().encode(handshakeRequest));

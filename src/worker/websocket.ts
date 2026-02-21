@@ -91,7 +91,7 @@ function parseHTTPResponse(data: string): {
     throw new Error('Invalid HTTP response');
   }
 
-  const statusCode = parseInt(match[2]);
+  const statusCode = parseInt(match[2], 10);
   const statusText = match[3];
 
   const headers: Record<string, string> = {};

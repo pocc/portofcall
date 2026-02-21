@@ -50,7 +50,7 @@ function parseLMTPResponse(data: string): { code: number; message: string } {
   const lastLine = lines[lines.length - 1];
   const match = lastLine.match(/^(\d{3})\s/);
   return {
-    code: match ? parseInt(match[1]) : 0,
+    code: match ? parseInt(match[1], 10) : 0,
     message: trimmed,
   };
 }
@@ -125,7 +125,7 @@ async function readLMTPMultiResponse(
         if (finalMatch) {
           currentResponseLines.push(line);
           results.push({
-            code: parseInt(finalMatch[1]),
+            code: parseInt(finalMatch[1], 10),
             message: currentResponseLines.join('\r\n'),
           });
           currentResponseLines = [];
@@ -172,8 +172,8 @@ export async function handleLMTPConnect(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '24'),
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        port: parseInt(url.searchParams.get('port') || '24', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 

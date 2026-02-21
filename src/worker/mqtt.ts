@@ -487,7 +487,7 @@ export async function handleMQTTSession(request: Request): Promise<Response> {
 
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
-  const port = parseInt(url.searchParams.get('port') || '1883');
+  const port = parseInt(url.searchParams.get('port') || '1883', 10);
   const clientId = url.searchParams.get('clientId') || `poc-${cryptoRandomHex(8)}`;
   const username = url.searchParams.get('username') || undefined;
   const password = url.searchParams.get('password') || undefined;

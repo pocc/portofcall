@@ -34,7 +34,7 @@ function ipv4ToInt(ip: string): number {
 function isBlockedIPv4(ip: string): boolean {
   const ipInt = ipv4ToInt(ip) >>> 0;
   return BLOCKED_IPV4_CIDRS.some(
-    ({ addr, mask }) => (ipInt & (mask >>> 0)) === (addr >>> 0),
+    ({ addr, mask }) => ((ipInt & mask) >>> 0) === (addr >>> 0),
   );
 }
 

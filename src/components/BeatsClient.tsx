@@ -42,7 +42,7 @@ export default function BeatsClient({ onBack }: BeatsClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           events: [{ message, tags: [tag], '@timestamp': new Date().toISOString() }],
           windowSize: 10,
           timeout: 10000,

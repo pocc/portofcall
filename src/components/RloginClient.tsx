@@ -43,7 +43,7 @@ export default function RloginClient({ onBack }: RloginClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           localUser,
           remoteUser,
           terminalType,

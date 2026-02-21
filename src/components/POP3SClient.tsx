@@ -40,7 +40,7 @@ export default function POP3SClient({ onBack }: POP3SClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           timeout: 30000,
@@ -110,7 +110,7 @@ export default function POP3SClient({ onBack }: POP3SClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
           password,
           timeout: 30000,

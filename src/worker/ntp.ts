@@ -196,7 +196,7 @@ function parseNTPResponse(buffer: Uint8Array, t1: number, t4: number): Omit<NTPR
   const rootDispersion = readFixedPoint(buffer, 8) * 1000; // Convert to ms
 
   // Reference identifier (4 bytes)
-  let referenceId = '';
+  let referenceId: string;
   if (stratum === 0 || stratum === 1) {
     // ASCII identifier (e.g., "GPS", "ATOM")
     referenceId = String.fromCharCode(buffer[12], buffer[13], buffer[14], buffer[15]).replace(/\0/g, '');

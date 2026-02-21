@@ -74,7 +74,7 @@ export default function RelpClient({ onBack }: RelpClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -133,10 +133,10 @@ export default function RelpClient({ onBack }: RelpClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           message,
-          facility: parseInt(facility),
-          severity: parseInt(severity),
+          facility: parseInt(facility, 10),
+          severity: parseInt(severity, 10),
           hostname,
           appName,
           timeout: 10000,

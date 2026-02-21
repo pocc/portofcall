@@ -200,7 +200,7 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '6697');
+    const port = parseInt(url.searchParams.get('port') || '6697', 10);
     const nickname = url.searchParams.get('nickname');
     const username = url.searchParams.get('username') || nickname || '';
     const realname = url.searchParams.get('realname') || nickname || '';

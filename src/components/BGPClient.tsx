@@ -42,8 +42,8 @@ export default function BGPClient({ onBack }: BGPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          localAS: parseInt(localAS),
+          port: parseInt(port, 10),
+          localAS: parseInt(localAS, 10),
           routerId,
           holdTime: 90,
           timeout: 10000,

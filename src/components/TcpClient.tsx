@@ -173,11 +173,11 @@ export default function TcpClient({ onBack }: TcpClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           data: data || undefined,
           encoding,
-          timeout: parseInt(timeout) || 10000,
-          maxBytes: parseInt(maxBytes) || 4096,
+          timeout: parseInt(timeout, 10) || 10000,
+          maxBytes: parseInt(maxBytes, 10) || 4096,
         }),
       });
 

@@ -101,7 +101,7 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
       const res = await fetch('/api/cifs/negotiate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
       const data = await res.json() as {
         success?: boolean; error?: string;
@@ -143,7 +143,7 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
       const res = await fetch('/api/cifs/auth', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), username, password, domain, timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), username, password, domain, timeout: 15000 }),
       });
       const data = await res.json() as {
         success?: boolean; error?: string;
@@ -181,7 +181,7 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
       const res = await fetch('/api/cifs/ls', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), username, password, domain, share: lsShare, path: lsPath || undefined, timeout: 20000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), username, password, domain, share: lsShare, path: lsPath || undefined, timeout: 20000 }),
       });
       const data = await res.json() as {
         success?: boolean; error?: string;
@@ -223,7 +223,7 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
       const res = await fetch('/api/cifs/read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), username, password, domain, share: readShare, path: readPath, timeout: 20000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), username, password, domain, share: readShare, path: readPath, timeout: 20000 }),
       });
       const data = await res.json() as {
         success?: boolean; error?: string;
@@ -251,7 +251,7 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
       const res = await fetch('/api/cifs/stat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), username, password, domain, share: statShare, path: statPath, timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), username, password, domain, share: statShare, path: statPath, timeout: 15000 }),
       });
       const data = await res.json() as {
         success?: boolean; error?: string;

@@ -167,7 +167,7 @@ async function sendCommand(
       const lastNonEmpty = lines.filter(l => l.length > 0).pop() || '';
 
       if (/^[2345]\d\d /.test(lastNonEmpty)) {
-        const code = parseInt(lastNonEmpty.substring(0, 3));
+        const code = parseInt(lastNonEmpty.substring(0, 3), 10);
         if (code >= 200) {
           break;
         }

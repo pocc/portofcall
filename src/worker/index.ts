@@ -323,11 +323,11 @@ export default {
       const url = new URL(request.url);
 
       // --- Request body size limit (1 MB) ---
-      // Content-Length check is fast and non-destructive. Cloudflare Workers also
-      // enforces platform-level body size limits, so this is defense-in-depth.
+      // Fast-reject via Content-Length header, then enforce actual body size.
       if (url.pathname.startsWith('/api/') && request.method === 'POST') {
+        const MAX_BODY = 1_048_576;
         const contentLength = request.headers.get('Content-Length');
-        if (contentLength && parseInt(contentLength) > 1_048_576) {
+        if (contentLength && parseInt(contentLength, 10) > MAX_BODY) {
           return new Response(JSON.stringify({
             success: false,
             error: 'Request body too large (max 1 MB)',
@@ -336,6 +336,23 @@ export default {
             headers: { 'Content-Type': 'application/json' },
           });
         }
+        // Enforce actual body size (catches chunked/missing Content-Length)
+        const bodyBuffer = await request.arrayBuffer();
+        if (bodyBuffer.byteLength > MAX_BODY) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Request body too large (max 1 MB)',
+          }), {
+            status: 413,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        // Reconstruct with the buffered body so downstream handlers can still read it
+        request = new Request(request.url, {
+          method: request.method,
+          headers: request.headers,
+          body: bodyBuffer,
+        });
       }
 
       // --- Router-level guards (run before any protocol handler) ---
@@ -349,20 +366,28 @@ export default {
       // Extracts host from query params and JSON body to cover all handler conventions.
       if (url.pathname.startsWith('/api/')) {
         const guardBody = await parseGuardBody(request);
-        const targetHost =
-          normalizeHost(url.searchParams.get('host') ?? url.searchParams.get('hostname'))
-          ?? normalizeHost(guardBody?.host)
-          ?? normalizeHost(guardBody?.hostname)
-          ?? normalizeHost(guardBody?.server);
+        // Collect all host-like fields from query params and body
+        const hostsToCheck = [
+          normalizeHost(url.searchParams.get('host') ?? url.searchParams.get('hostname')),
+          normalizeHost(guardBody?.host),
+          normalizeHost(guardBody?.hostname),
+          normalizeHost(guardBody?.server),
+          // Proxy protocol destination hosts (SOCKS4/5, HTTP proxy)
+          normalizeHost(guardBody?.destHost),
+          normalizeHost(guardBody?.targetHost),
+          normalizeHost(guardBody?.proxyHost),
+        ].filter((h): h is string => h !== null);
 
-        if (targetHost && isBlockedHost(targetHost)) {
-          return new Response(JSON.stringify({
-            success: false,
-            error: `Connections to private/internal addresses are not allowed: ${targetHost}`,
-          }), {
-            status: 403,
-            headers: { 'Content-Type': 'application/json' },
-          });
+        for (const h of hostsToCheck) {
+          if (isBlockedHost(h)) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: `Connections to private/internal addresses are not allowed: ${h}`,
+            }), {
+              status: 403,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
         }
       }
 
@@ -3987,8 +4012,8 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           status: result.success ? 200 : 500,
         });
-      } catch (error: any) {
-        return new Response(JSON.stringify({ success: false, error: error.message }), {
+      } catch (error: unknown) {
+        return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -4004,8 +4029,8 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           status: result.success ? 200 : 500,
         });
-      } catch (error: any) {
-        return new Response(JSON.stringify({ success: false, error: error.message }), {
+      } catch (error: unknown) {
+        return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' },
         });
@@ -4021,8 +4046,8 @@ export default {
           headers: { 'Content-Type': 'application/json' },
           status: result.success ? 200 : 500,
         });
-      } catch (error: any) {
-        return new Response(JSON.stringify({ success: false, error: error.message }), {
+      } catch (error: unknown) {
+        return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : String(error) }), {
           status: 500,
           headers: { 'Content-Type': 'application/json' },
         });

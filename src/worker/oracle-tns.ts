@@ -649,6 +649,7 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
               const responseText = new TextDecoder('utf-8', { fatal: false })
                 .decode(dataResult.value.slice(10));
               responseDbVersion = extractOracleVersion(responseText) ?? undefined;
+              // eslint-disable-next-line no-control-regex
               const instMatch = responseText.match(/INSTANCE_NAME[=\x00]([A-Za-z0-9_]+)/i);
               if (instMatch) instanceName = instMatch[1];
             }
@@ -981,6 +982,7 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           if (!queryResult.done && queryResult.value && queryResult.value.length > 10) {
             const qRespText = new TextDecoder('utf-8', { fatal: false })
               .decode(queryResult.value.slice(10));
+            // eslint-disable-next-line no-control-regex
             result.queryResult = qRespText.replace(/\x00/g, '').trim().slice(0, 512);
             result.phase = 'query';
             result.success = true;

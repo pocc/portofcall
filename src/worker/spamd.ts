@@ -130,7 +130,7 @@ async function readSpamdResponse(
         const headers = text.substring(0, headerEnd);
         const contentLengthMatch = headers.match(/Content-length:\s*(\d+)/i);
         if (contentLengthMatch) {
-          const contentLength = parseInt(contentLengthMatch[1]);
+          const contentLength = parseInt(contentLengthMatch[1], 10);
           // Calculate body bytes: total bytes minus header section (including \r\n\r\n)
           const headerBytes = new TextEncoder().encode(text.substring(0, headerEnd + 4)).length;
           const bodyReceived = totalBytes - headerBytes;
@@ -165,7 +165,7 @@ function parseResponseLine(line: string): { version: string; code: number; messa
   if (!match) return null;
   return {
     version: match[1],
-    code: parseInt(match[2]),
+    code: parseInt(match[2], 10),
     message: match[3].trim(),
   };
 }
@@ -189,7 +189,7 @@ function parseSpamHeader(headers: string): { isSpam: boolean; score: number; thr
  * Sends PING and expects PONG response
  */
 export async function handleSpamdPing(request: Request): Promise<Response> {
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect> | null;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
@@ -301,13 +301,19 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
         });
 
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch {
+          // expected
+        }
+        try { reader.releaseLock(); } catch {
+          // expected
+        }
       }
 
     } finally {
       if (socket) {
-        try { socket.close(); } catch {}
+        try { socket.close(); } catch {
+          // expected
+        }
       }
     }
 
@@ -329,7 +335,7 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
  * Sends the email content and receives spam analysis results
  */
 export async function handleSpamdCheck(request: Request): Promise<Response> {
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect> | null;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
@@ -496,13 +502,19 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
         });
 
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch {
+          // expected
+        }
+        try { reader.releaseLock(); } catch {
+          // expected
+        }
       }
 
     } finally {
       if (socket) {
-        try { socket.close(); } catch {}
+        try { socket.close(); } catch {
+          // expected
+        }
       }
     }
 
@@ -546,7 +558,7 @@ interface SpamdTellResponse {
  * Uses the SPAMD TELL command to update Bayes database
  */
 export async function handleSpamdTell(request: Request): Promise<Response> {
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect> | null;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
   try {
@@ -710,13 +722,19 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
         });
 
       } finally {
-        try { writer.releaseLock(); } catch {}
-        try { reader.releaseLock(); } catch {}
+        try { writer.releaseLock(); } catch {
+          // expected
+        }
+        try { reader.releaseLock(); } catch {
+          // expected
+        }
       }
 
     } finally {
       if (socket) {
-        try { socket.close(); } catch {}
+        try { socket.close(); } catch {
+          // expected
+        }
       }
     }
 

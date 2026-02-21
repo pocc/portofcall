@@ -263,7 +263,6 @@ function buildCoAPRequest(
     const delta = COAP_OPTION.CONTENT_FORMAT - previousOptionNumber;
     const value = new Uint8Array([contentFormat]);
     parts.push(encodeOption(delta, value));
-    previousOptionNumber = COAP_OPTION.CONTENT_FORMAT;
   }
 
   // Payload
@@ -535,7 +534,7 @@ export async function handleCoAPDiscover(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '5683');
+    const port = parseInt(url.searchParams.get('port') || '5683', 10);
 
     if (!host) {
       return new Response(JSON.stringify({

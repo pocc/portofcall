@@ -337,6 +337,7 @@ export async function handleZabbixAgent(request: Request): Promise<Response> {
     }
 
     // Validate key format — prevent injection
+    // eslint-disable-next-line no-control-regex
     if (key.length > 255 || /[\x00-\x1f]/.test(key)) {
       return new Response(JSON.stringify({
         success: false,
@@ -531,8 +532,8 @@ export async function handleZabbixDiscovery(request: Request): Promise<Response>
       } catch {
         // Non-JSON or unexpected response — continue to sender step
       }
-    } catch (err) {
-      try { socket1.close(); } catch {}
+    } catch {
+      try { socket1.close(); } catch { /* ignored */ }
       // Non-fatal — still attempt sender step
       activeChecks = [];
     }
@@ -580,7 +581,7 @@ export async function handleZabbixDiscovery(request: Request): Promise<Response>
         senderResponse = senderDecoded.payload;
       }
     } catch (err) {
-      try { socket2.close(); } catch {}
+      try { socket2.close(); } catch { /* ignored */ }
       senderResponse = err instanceof Error ? `sender error: ${err.message}` : 'sender error';
     }
 

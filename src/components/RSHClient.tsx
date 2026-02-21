@@ -43,7 +43,7 @@ export default function RSHClient({ onBack }: RSHClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           localUser: localUser || 'guest',
           remoteUser: remoteUser || 'guest',
           command: command || 'id',

@@ -39,7 +39,7 @@ export default function UUCPClient({ onBack }: UUCPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           systemName: systemName || 'probe',
           timeout: 10000,
         }),

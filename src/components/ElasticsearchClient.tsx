@@ -45,7 +45,7 @@ export default function ElasticsearchClient({ onBack }: ElasticsearchClientProps
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
         }),
@@ -131,7 +131,7 @@ export default function ElasticsearchClient({ onBack }: ElasticsearchClientProps
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           method,
           path,
           body: queryBody || undefined,

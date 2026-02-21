@@ -365,8 +365,8 @@ export async function handleFastCGIProbe(request: Request): Promise<Response> {
           port,
           protocolVersion: FCGI_VERSION_1,
           serverValues,
-          maxConns: serverValues['FCGI_MAX_CONNS'] ? parseInt(serverValues['FCGI_MAX_CONNS']) : null,
-          maxReqs: serverValues['FCGI_MAX_REQS'] ? parseInt(serverValues['FCGI_MAX_REQS']) : null,
+          maxConns: serverValues['FCGI_MAX_CONNS'] ? parseInt(serverValues['FCGI_MAX_CONNS'], 10) : null,
+          maxReqs: serverValues['FCGI_MAX_REQS'] ? parseInt(serverValues['FCGI_MAX_REQS'], 10) : null,
           multiplexing: serverValues['FCGI_MPXS_CONNS'] === '1',
           records,
           connectTimeMs: connectTime,
@@ -563,7 +563,7 @@ export async function handleFastCGIRequest(request: Request): Promise<Response> 
         }
 
         // Parse HTTP headers from stdout
-        let headers: Record<string, string> = {};
+        const headers: Record<string, string> = {};
         let body = stdout;
 
         const headerEnd = stdout.indexOf('\r\n\r\n');

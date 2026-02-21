@@ -102,7 +102,7 @@ export const validationRules = {
 
   port: (message = 'Port must be between 1 and 65535'): ValidationRule => ({
     test: (value: string) => {
-      const num = parseInt(value);
+      const num = parseInt(value, 10);
       return !isNaN(num) && num >= 1 && num <= 65535;
     },
     message,
@@ -118,13 +118,13 @@ export const validationRules = {
   }),
 
   number: (message = 'Must be a valid number'): ValidationRule => ({
-    test: (value: string) => !isNaN(parseInt(value)),
+    test: (value: string) => !isNaN(parseInt(value, 10)),
     message,
   }),
 
   range: (min: number, max: number, message?: string): ValidationRule => ({
     test: (value: string) => {
-      const num = parseInt(value);
+      const num = parseInt(value, 10);
       return !isNaN(num) && num >= min && num <= max;
     },
     message: message || `Must be between ${min} and ${max}`,

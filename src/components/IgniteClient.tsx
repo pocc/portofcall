@@ -29,7 +29,7 @@ export default function IgniteClient({ onBack }: IgniteClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -82,7 +82,7 @@ export default function IgniteClient({ onBack }: IgniteClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });

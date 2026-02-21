@@ -56,7 +56,8 @@ export default function IRCClient({ onBack }: IRCClientProps) {
     setMessages((prev) => {
       const updated = new Map(prev);
       const channelMsgs = updated.get(channel) || [];
-      updated.set(channel, [...channelMsgs, msg]);
+      const next = [...channelMsgs, msg];
+      updated.set(channel, next.length > 500 ? next.slice(-500) : next);
       return updated;
     });
   }, []);

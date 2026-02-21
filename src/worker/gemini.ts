@@ -68,7 +68,7 @@ function parseGeminiUrl(url: string): { host: string; port: number; path: string
   let port = 1965;
   const colonIndex = host.indexOf(':');
   if (colonIndex !== -1) {
-    port = parseInt(host.substring(colonIndex + 1));
+    port = parseInt(host.substring(colonIndex + 1), 10);
     host = host.substring(0, colonIndex);
   }
 
@@ -171,7 +171,7 @@ export async function handleGeminiFetch(request: Request): Promise<Response> {
       } catch (error) {
         // Connection closed or error
         if (chunks.length === 0 && error instanceof Error && error.message !== 'Connection timeout') {
-          throw new Error('No response from server');
+          throw new Error('No response from server', { cause: error });
         } else if (error instanceof Error && error.message === 'Connection timeout') {
           throw error;
         }
@@ -207,7 +207,7 @@ export async function handleGeminiFetch(request: Request): Promise<Response> {
       const statusStr = headerLine.substring(0, spaceIndex);
       const meta = headerLine.substring(spaceIndex + 1);
 
-      const status = parseInt(statusStr);
+      const status = parseInt(statusStr, 10);
       if (isNaN(status)) {
         throw new Error('Invalid status code');
       }

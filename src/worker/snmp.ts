@@ -871,7 +871,6 @@ function parseSNMPv3Discovery(data: Uint8Array): {
 
   // Security parameters (OCTET STRING wrapping a SEQUENCE)
   const secParamsOctet = parseBER(message.value, offset);
-  offset = secParamsOctet.nextOffset;
 
   // Parse USM security parameters
   const usmSeq = parseBER(secParamsOctet.value, 0);
@@ -1104,7 +1103,7 @@ export async function handleSNMPv3Get(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    let varbinds: Array<{ oid: string; type: string; value: string | number }> = [];
+    const varbinds: Array<{ oid: string; type: string; value: string | number }> = [];
 
     try {
       await Promise.race([socket2.opened, timeoutPromise2]);

@@ -85,7 +85,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
       const resp = await fetch('/api/loki/health', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) }),
       });
       const data = await resp.json() as LokiHealthResult;
       if (data.error) { setHealthError(data.error); }
@@ -105,7 +105,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
       const resp = await fetch('/api/loki/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), query, limit: parseInt(queryLimit) }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), query, limit: parseInt(queryLimit, 10) }),
       });
       const data = await resp.json() as LokiQueryResult;
       if (data.error) { setQueryError(data.error); }
@@ -125,7 +125,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
       const resp = await fetch('/api/loki/metrics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) }),
       });
       const data = await resp.json() as LokiMetricsResult;
       if (data.error) { setMetricsError(data.error); }
@@ -338,7 +338,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
                         {entry.values && entry.values.slice(0, 5).map(([ts, line], j) => (
                           <div key={j} className={isRetro ? 'text-green-400 pl-2' : 'text-slate-300 text-sm pl-2'}>
                             <span className={isRetro ? 'text-green-700' : 'text-slate-500 text-xs'}>
-                              {new Date(parseInt(ts) / 1000000).toISOString().substring(11, 23)}
+                              {new Date(parseInt(ts, 10) / 1000000).toISOString().substring(11, 23)}
                             </span>
                             {' '}{line.substring(0, 200)}
                           </div>

@@ -62,7 +62,7 @@ export default function H323Client({ onBack }: H323ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           callingNumber: callingNumber.trim() || '1000',
           calledNumber: calledNumber.trim() || '2000',
           timeout: 10000,

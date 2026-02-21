@@ -29,7 +29,10 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
       error: '❌ ',
       success: '✅ ',
     }[type];
-    setOutput(prev => [...prev, `${prefix}${text}`]);
+    setOutput(prev => {
+      const next = [...prev, `${prefix}${text}`];
+      return next.length > 500 ? next.slice(-500) : next;
+    });
   };
 
   const handleConnect = async () => {
@@ -58,7 +61,7 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username,
         }),
       });

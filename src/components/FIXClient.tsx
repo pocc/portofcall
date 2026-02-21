@@ -43,7 +43,7 @@ export default function FIXClient({ onBack }: FIXClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           senderCompID,
           targetCompID,
           fixVersion,
@@ -133,7 +133,7 @@ export default function FIXClient({ onBack }: FIXClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           senderCompID,
           targetCompID,
           fixVersion,

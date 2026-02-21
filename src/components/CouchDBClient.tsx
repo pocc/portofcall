@@ -45,7 +45,7 @@ export default function CouchDBClient({ onBack }: CouchDBClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           timeout: 15000,
@@ -106,7 +106,7 @@ export default function CouchDBClient({ onBack }: CouchDBClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path: targetPath,
           method: 'GET',
           username: username || undefined,

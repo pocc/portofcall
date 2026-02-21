@@ -928,7 +928,7 @@ async function readIprotoResponse(
   // read). For fixint (byte 0 <= 0x7F) only byte 0 is the size prefix;
   // bytes 1-4 are the first 4 bytes of the message payload.
   const sizeBytes = await readExact(reader, 5, timeoutPromise);
-  let msgLen = 0;
+  let msgLen: number;
 
   if (sizeBytes[0] === 0xCE) {
     // 5-byte uint32: no over-read

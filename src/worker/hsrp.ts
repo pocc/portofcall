@@ -420,7 +420,7 @@ function buildHSRPv2Hello(
   dv.setUint32(22, 10000, false);
 
   // Virtual IP address: 4 bytes at offset 26
-  const ipParts = virtualIP.split('.').map(p => parseInt(p) || 0);
+  const ipParts = virtualIP.split('.').map(p => parseInt(p, 10) || 0);
   tlv[26] = ipParts[0];
   tlv[27] = ipParts[1];
   tlv[28] = ipParts[2];

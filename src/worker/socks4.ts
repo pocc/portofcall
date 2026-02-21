@@ -18,6 +18,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { isBlockedHost } from './host-validator';
 
 interface Socks4Request {
   proxyHost: string;
@@ -63,10 +64,10 @@ function hostnameToIP(hostname: string): Uint8Array {
   const ipMatch = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (ipMatch) {
     return new Uint8Array([
-      parseInt(ipMatch[1]),
-      parseInt(ipMatch[2]),
-      parseInt(ipMatch[3]),
-      parseInt(ipMatch[4]),
+      parseInt(ipMatch[1], 10),
+      parseInt(ipMatch[2], 10),
+      parseInt(ipMatch[3], 10),
+      parseInt(ipMatch[4], 10),
     ]);
   }
 
@@ -125,7 +126,7 @@ function buildSocks4Request(
   if (hostnameBytes) {
     packet.set(hostnameBytes, offset);
     offset += hostnameBytes.length;
-    packet[offset++] = 0x00; // NULL terminator for hostname
+    packet[offset] = 0x00; // NULL terminator for hostname
   }
 
   return packet;
@@ -221,6 +222,17 @@ export async function handleSocks4Connect(request: Request): Promise<Response> {
         error: 'Proxy port must be between 1 and 65535',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF: block private/internal destination hosts
+    if (isBlockedHost(destHost)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${destHost}`,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -349,7 +361,7 @@ function buildSocks4ConnectRequest(
   if (hostnameBytes) {
     packet.set(hostnameBytes, offset);
     offset += hostnameBytes.length;
-    packet[offset++] = 0x00; // null terminator for hostname
+    packet[offset] = 0x00; // null terminator for hostname
   }
 
   return packet;
@@ -435,6 +447,14 @@ export async function handleSOCKS4Connect(request: Request): Promise<Response> {
         success: false,
         error: 'Proxy port must be between 1 and 65535',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // SSRF: block private/internal destination hosts
+    if (isBlockedHost(targetHost)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${targetHost}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();

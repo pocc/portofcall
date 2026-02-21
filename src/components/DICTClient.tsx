@@ -50,7 +50,7 @@ export default function DICTClient({ onBack }: DICTClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: host || 'dict.org',
-          port: parseInt(port),
+          port: parseInt(port, 10),
           word,
           database,
           timeout: 15000,
@@ -115,7 +115,7 @@ export default function DICTClient({ onBack }: DICTClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: host || 'dict.org',
-          port: parseInt(port),
+          port: parseInt(port, 10),
           word,
           database,
           strategy,
@@ -177,7 +177,7 @@ export default function DICTClient({ onBack }: DICTClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: host || 'dict.org',
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });

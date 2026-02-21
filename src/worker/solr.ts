@@ -139,7 +139,7 @@ async function sendHttpRequest(
 
     const statusLine = headerSection.split('\r\n')[0];
     const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-    const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
     const respHeaders: Record<string, string> = {};
     const headerLines = headerSection.split('\r\n').slice(1);
@@ -432,6 +432,7 @@ export async function handleSolrQuery(request: Request): Promise<Response> {
     queryParams.set('wt', 'json');
     for (const [key, value] of Object.entries(params)) {
       // Validate param keys and values don't contain control characters
+      // eslint-disable-next-line no-control-regex
       if (/[\x00-\x1F\x7F]/.test(key) || /[\x00-\x1F\x7F]/.test(value)) {
         return new Response(
           JSON.stringify({ success: false, error: 'Parameter keys or values contain invalid control characters' }),

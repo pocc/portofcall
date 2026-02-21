@@ -31,7 +31,7 @@ export default function EPPClient({ onBack }: EPPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });
@@ -41,7 +41,7 @@ export default function EPPClient({ onBack }: EPPClientProps) {
         error?: string;
         message?: string;
         code?: number;
-        data?: any;
+        data?: Record<string, unknown>;
       };
 
       if (response.ok && data.success) {
@@ -89,7 +89,7 @@ ${data.data?.serverResponse || 'N/A'}`);
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           clid,
           pw: password,
           timeout: 15000,
@@ -101,7 +101,7 @@ ${data.data?.serverResponse || 'N/A'}`);
         error?: string;
         message?: string;
         code?: number;
-        data?: any;
+        data?: Record<string, unknown>;
       };
 
       if (response.ok && data.success) {
@@ -152,7 +152,7 @@ ${data.data?.loginResponse || 'N/A'}`);
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           clid,
           pw: password,
           domain,
@@ -165,7 +165,7 @@ ${data.data?.loginResponse || 'N/A'}`);
         error?: string;
         message?: string;
         code?: number;
-        data?: any;
+        data?: Record<string, unknown>;
       };
 
       if (response.ok && data.success) {

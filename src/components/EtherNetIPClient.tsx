@@ -122,7 +122,7 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
       const res = await fetch('/api/ethernetip/identity', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await res.json() as {
@@ -209,7 +209,7 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
       const res = await fetch('/api/ethernetip/cip-read', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000, classId, instanceId, attributeId }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000, classId, instanceId, attributeId }),
       });
 
       const data = await res.json() as {
@@ -291,7 +291,7 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
       const res = await fetch('/api/ethernetip/get-attribute-all', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000, classId, instanceId }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000, classId, instanceId }),
       });
 
       const data = await res.json() as {
@@ -355,7 +355,7 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host, port: parseInt(port), timeout: 10000,
+          host, port: parseInt(port, 10), timeout: 10000,
           classId, instanceId, attributeId, data: bytes,
         }),
       });
@@ -401,7 +401,7 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
       const res = await fetch('/api/ethernetip/list-services', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await res.json() as {

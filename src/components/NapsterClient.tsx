@@ -43,7 +43,7 @@ export default function NapsterClient({ onBack }: NapsterClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
           timeout: 15000,
@@ -94,7 +94,7 @@ export default function NapsterClient({ onBack }: NapsterClientProps) {
       const response = await fetch('/api/napster/stats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 15000 }),
       });
 
       const data = await response.json() as {

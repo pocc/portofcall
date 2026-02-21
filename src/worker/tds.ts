@@ -132,7 +132,7 @@ async function readTDSMessage(
   buf: { data: Uint8Array }
 ): Promise<{ type: number; payload: Uint8Array }> {
   const chunks: Uint8Array[] = [];
-  let messageType = 0;
+  let messageType: number;
 
   while (true) {
     const pkt = await readTDSPacket(reader, buf);
@@ -230,7 +230,7 @@ function buildPreLoginPacket(): Uint8Array {
   packet[7] = 0;
 
   let optOffset  = 8;
-  let dataOffset = optionListLen;
+  const dataOffset = optionListLen;
 
   packet[optOffset] = PL_OPTION_VERSION;
   view.setUint16(optOffset + 1, dataOffset, false);
@@ -504,7 +504,7 @@ function buildLogin7Packet(
   view.setUint16(pos, 0, true); pos += 2;
 
   // SSPILong (4LE)
-  view.setUint32(pos, 0, true); pos += 4;
+  view.setUint32(pos, 0, true);
 
   // === Data section ===
   payload.set(hostNameBytes,   hostNameOff);

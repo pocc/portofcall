@@ -77,7 +77,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 49,
+          port: parseInt(port, 10) || 49,
           secret: secret || undefined,
           timeout: 10000,
         }),
@@ -109,7 +109,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 49,
+          port: parseInt(port, 10) || 49,
           secret: secret || undefined,
           username,
           password,

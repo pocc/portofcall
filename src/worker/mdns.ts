@@ -182,7 +182,6 @@ function decodeDNSName(data: Buffer, offset: number): { name: string; newOffset:
     if (length === 0) {
       // End of name
       if (!jumped) finalOffset = currentOffset + 1;
-      currentOffset++;
       break;
     }
 
@@ -350,7 +349,7 @@ function parseResourceRecord(data: Buffer, offset: number): {
   if (nameEnd + 10 + rdlength > data.length) return null;
 
   const rdataOffset = nameEnd + 10;
-  let recordData: string | object = '';
+  let recordData: string | object;
 
   // Parse based on record type
   if (rtype === RecordType.A && rdlength === 4) {

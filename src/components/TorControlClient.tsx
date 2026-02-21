@@ -29,7 +29,7 @@ export default function TorControlClient({ onBack }: TorControlClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -107,7 +107,7 @@ export default function TorControlClient({ onBack }: TorControlClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           password: password || undefined,
           keys,
           timeout: 10000,

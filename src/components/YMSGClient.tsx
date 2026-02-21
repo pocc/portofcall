@@ -39,8 +39,8 @@ export default function YMSGClient({ onBack }: YMSGClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          version: parseInt(version) || 16,
+          port: parseInt(port, 10),
+          version: parseInt(version, 10) || 16,
           timeout: 15000,
         }),
       });

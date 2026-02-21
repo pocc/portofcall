@@ -131,7 +131,7 @@ async function readAvailable(
     if (done || !value) return new Uint8Array(0);
     chunks.push(value);
     totalLen += value.length;
-  } catch (err) {
+  } catch {
     if (firstTimeoutHandle !== null) clearTimeout(firstTimeoutHandle);
     return new Uint8Array(0);
   }

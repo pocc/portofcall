@@ -68,7 +68,7 @@ export default function FluentdClient({ onBack }: FluentdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           tag,
           timeout: 10000,
         }),
@@ -141,7 +141,7 @@ export default function FluentdClient({ onBack }: FluentdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           tag,
           record,
           timeout: 10000,

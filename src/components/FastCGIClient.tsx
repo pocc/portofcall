@@ -76,7 +76,7 @@ export default function FastCGIClient({ onBack }: FastCGIProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 9000,
+          port: parseInt(port, 10) || 9000,
           timeout: 10000,
         }),
       });
@@ -99,7 +99,7 @@ export default function FastCGIClient({ onBack }: FastCGIProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 9000,
+          port: parseInt(port, 10) || 9000,
           scriptFilename,
           requestUri,
           timeout: 15000,

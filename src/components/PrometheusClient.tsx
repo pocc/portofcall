@@ -82,7 +82,7 @@ export default function PrometheusClient({ onBack }: PrometheusProps) {
       const response = await fetch('/api/prometheus/health', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) || 9090, timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) || 9090, timeout: 15000 }),
       });
       setHealthResult(await response.json());
     } catch (err) {
@@ -101,7 +101,7 @@ export default function PrometheusClient({ onBack }: PrometheusProps) {
       const response = await fetch('/api/prometheus/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) || 9090, query, timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) || 9090, query, timeout: 15000 }),
       });
       setQueryResult(await response.json());
     } catch (err) {
@@ -120,7 +120,7 @@ export default function PrometheusClient({ onBack }: PrometheusProps) {
       const response = await fetch('/api/prometheus/metrics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) || 9090, timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) || 9090, timeout: 15000 }),
       });
       setMetricsResult(await response.json());
     } catch (err) {

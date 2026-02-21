@@ -106,7 +106,7 @@ async function httpRequest(
 
     // Parse status line
     const statusMatch = headerSection.match(/^HTTP\/[\d.]+ (\d+)/);
-    const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
     // Parse headers
     const headers: Record<string, string> = {};

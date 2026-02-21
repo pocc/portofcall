@@ -551,7 +551,7 @@ export async function handleRTSPSession(request: Request): Promise<Response> {
         let describeResp: RtspResponse | null = null;
         let sdpBody = '';
         if (optionsResp.statusCode >= 200 && optionsResp.statusCode < 400) {
-          let descReq = `Accept: application/sdp\r\n`;
+          const descReq = `Accept: application/sdp\r\n`;
           describeResp = await sendRequest('DESCRIBE', rtspUrl, descReq);
           steps.push(`DESCRIBE: ${describeResp.statusCode} ${describeResp.statusText}`);
           sdpBody = describeResp.body || '';

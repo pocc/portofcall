@@ -61,7 +61,7 @@ export default function GangliaClient({ onBack }: GangliaClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });
@@ -134,7 +134,7 @@ export default function GangliaClient({ onBack }: GangliaClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 5000,
         }),
       });

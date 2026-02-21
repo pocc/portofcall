@@ -231,7 +231,7 @@ export default function NodeInspectorClient({ onBack }: NodeInspectorClientProps
               <input
                 type="number"
                 value={port}
-                onChange={(e) => setPort(parseInt(e.target.value))}
+                onChange={(e) => setPort(parseInt(e.target.value, 10))}
                 className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 min={1}
                 max={65535}

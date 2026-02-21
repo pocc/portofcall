@@ -433,9 +433,9 @@ export async function handlePortmapperProbe(request: Request): Promise<Response>
 
     } finally {
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
-      try { if (writer) writer.releaseLock(); } catch {}
-      try { if (reader) reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { if (writer) writer.releaseLock(); } catch { /* ignored */ }
+      try { if (reader) reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
     }
 
   } catch (error) {
@@ -538,9 +538,9 @@ export async function handlePortmapperDump(request: Request): Promise<Response> 
 
     } finally {
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
-      try { if (writer) writer.releaseLock(); } catch {}
-      try { if (reader) reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { if (writer) writer.releaseLock(); } catch { /* ignored */ }
+      try { if (reader) reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
     }
 
   } catch (error) {
@@ -670,9 +670,9 @@ export async function handlePortmapperGetPort(request: Request): Promise<Respons
 
     } finally {
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
-      try { if (writer) writer.releaseLock(); } catch {}
-      try { if (reader) reader.releaseLock(); } catch {}
-      try { socket.close(); } catch {}
+      try { if (writer) writer.releaseLock(); } catch { /* ignored */ }
+      try { if (reader) reader.releaseLock(); } catch { /* ignored */ }
+      try { socket.close(); } catch { /* ignored */ }
     }
 
   } catch (error) {

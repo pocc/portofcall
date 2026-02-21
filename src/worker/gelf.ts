@@ -40,39 +40,41 @@ export interface GelfMessage {
 }
 
 /** Validate a GELF message has required fields */
-function validateGelfMessage(msg: any): msg is GelfMessage {
+function validateGelfMessage(msg: unknown): msg is GelfMessage {
   if (!msg || typeof msg !== 'object') {
     return false;
   }
 
+  const obj = msg as Record<string, unknown>;
+
   // Required fields
-  if (msg.version !== '1.1') {
+  if (obj.version !== '1.1') {
     return false;
   }
 
-  if (typeof msg.host !== 'string' || msg.host.length === 0 || msg.host.length > 255) {
+  if (typeof obj.host !== 'string' || obj.host.length === 0 || obj.host.length > 255) {
     return false;
   }
 
-  if (typeof msg.short_message !== 'string' || msg.short_message.length === 0) {
+  if (typeof obj.short_message !== 'string' || obj.short_message.length === 0) {
     return false;
   }
 
   // Optional fields validation
-  if (msg.full_message !== undefined && typeof msg.full_message !== 'string') {
+  if (obj.full_message !== undefined && typeof obj.full_message !== 'string') {
     return false;
   }
 
-  if (msg.timestamp !== undefined && (typeof msg.timestamp !== 'number' || !isFinite(msg.timestamp))) {
+  if (obj.timestamp !== undefined && (typeof obj.timestamp !== 'number' || !isFinite(obj.timestamp))) {
     return false;
   }
 
-  if (msg.level !== undefined && (typeof msg.level !== 'number' || msg.level < 0 || msg.level > 7)) {
+  if (obj.level !== undefined && (typeof obj.level !== 'number' || obj.level < 0 || obj.level > 7)) {
     return false;
   }
 
   // Validate custom fields start with underscore
-  for (const key of Object.keys(msg)) {
+  for (const key of Object.keys(obj)) {
     if (!['version', 'host', 'short_message', 'full_message', 'timestamp', 'level', 'facility', 'line', 'file'].includes(key)) {
       if (!key.startsWith('_')) {
         return false; // Custom fields must start with _

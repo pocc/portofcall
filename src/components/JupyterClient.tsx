@@ -46,7 +46,7 @@ export default function JupyterClient({ onBack }: JupyterClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           token: token || undefined,
         }),
       });
@@ -147,7 +147,7 @@ export default function JupyterClient({ onBack }: JupyterClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           token: token || undefined,
           method,
           path,

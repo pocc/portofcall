@@ -263,13 +263,12 @@ function parseSpiceLinkReply(data: Uint8Array): SpiceLinkReplyParsed {
   const capsHeaderOffset = 166;
   let numCommonCaps = 0;
   let numChannelCaps = 0;
-  let capsOffset = 0;
   const capabilities: string[] = [];
 
   if (data.length >= bodyOffset + capsHeaderOffset + 12) {
     numCommonCaps = bv.getUint32(capsHeaderOffset, true);
     numChannelCaps = bv.getUint32(capsHeaderOffset + 4, true);
-    capsOffset = bv.getUint32(capsHeaderOffset + 8, true);
+    const capsOffset = bv.getUint32(capsHeaderOffset + 8, true);
 
     // Parse common capabilities (each is a uint32 bitmask)
     const capsDataOffset = capsHeaderOffset + capsOffset;
@@ -278,7 +277,7 @@ function parseSpiceLinkReply(data: Uint8Array): SpiceLinkReplyParsed {
       if (data.length >= bodyOffset + capOffset + 4) {
         const capBits = bv.getUint32(capOffset, true);
         for (const [bit, name] of Object.entries(SPICE_COMMON_CAPS)) {
-          if (capBits & (1 << parseInt(bit))) {
+          if (capBits & (1 << parseInt(bit, 10))) {
             capabilities.push(name);
           }
         }

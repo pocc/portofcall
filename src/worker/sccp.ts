@@ -619,7 +619,7 @@ export async function handleSCCPLineState(request: Request): Promise<Response> {
     await writer.write(buildRegister(deviceName, 8 /* Cisco 7960 */));
 
     // --- Step 2: Wait for RegisterAck (0x0081) or timeout ---
-    let buf = await readWithTimeout(reader, 3000);
+    const buf = await readWithTimeout(reader, 3000);
     let registered = false;
     let capabilitiesRequested = false;
 

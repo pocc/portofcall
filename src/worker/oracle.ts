@@ -353,10 +353,10 @@ export async function handleOracleConnect(request: Request): Promise<Response> {
     } else {
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '1521'),
+        port: parseInt(url.searchParams.get('port') || '1521', 10),
         serviceName: url.searchParams.get('serviceName') || undefined,
         sid: url.searchParams.get('sid') || undefined,
-        timeout: parseInt(url.searchParams.get('timeout') || '30000'),
+        timeout: parseInt(url.searchParams.get('timeout') || '30000', 10),
       };
     }
 
@@ -733,6 +733,7 @@ function buildOracleServicesResult(
     });
   }
 
+  // eslint-disable-next-line no-control-regex
   const rawResponsePreview = responseText.slice(0, 2048).replace(/\x00/g, '');
 
   return {

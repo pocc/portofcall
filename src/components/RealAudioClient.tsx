@@ -39,7 +39,7 @@ export default function RealAudioClient({ onBack }: RealAudioClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           streamPath: streamPath || '/',
           timeout: 15000,
         }),

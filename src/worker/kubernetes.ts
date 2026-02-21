@@ -237,9 +237,9 @@ function detectKubernetes(
   if (server.includes('kube-apiserver')) return true;
   if (body.trim().toLowerCase() === 'ok') return true;
   const wwwAuth = headers['www-authenticate'] || '';
-  if (wwwAuth.includes('Bearer realm=\"kubernetes')) return true;
+  if (wwwAuth.includes('Bearer realm="kubernetes')) return true;
   // Status objects and version objects carry apiVersion
-  if (body.includes('\"apiVersion\"') && body.includes('\"kind\"')) return true;
+  if (body.includes('"apiVersion"') && body.includes('"kind"')) return true;
   return false;
 }
 

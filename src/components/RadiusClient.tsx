@@ -85,7 +85,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 1812,
+          port: parseInt(port, 10) || 1812,
           secret: secret || 'testing123',
           timeout: 10000,
         }),
@@ -117,7 +117,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port) || 1812,
+          port: parseInt(port, 10) || 1812,
           secret: secret || 'testing123',
           username,
           password,

@@ -429,7 +429,7 @@ export async function handleTURNAllocate(request: Request): Promise<Response> {
       }
 
       // Build Allocate Request
-      let allocateRequest = buildTURNMessage(
+      const allocateRequest = buildTURNMessage(
         TURNMessageType.AllocateRequest,
         transactionId,
         attributes
@@ -860,8 +860,8 @@ export async function handleTURNPermission(request: Request): Promise<Response> 
         // XOR port with high 16 bits of magic cookie (use port 0 for permission)
         peerAddrBuf.writeUInt16BE(0 ^ (magicCookie >> 16), 2);
         // XOR each octet with magic cookie bytes
-        const peerIpInt = (parseInt(peerParts[0]) << 24) | (parseInt(peerParts[1]) << 16) |
-                          (parseInt(peerParts[2]) << 8) | parseInt(peerParts[3]);
+        const peerIpInt = (parseInt(peerParts[0], 10) << 24) | (parseInt(peerParts[1], 10) << 16) |
+                          (parseInt(peerParts[2], 10) << 8) | parseInt(peerParts[3], 10);
         peerAddrBuf.writeUInt32BE((peerIpInt ^ magicCookie) >>> 0, 4);
 
         const txId3 = Buffer.allocUnsafe(12);

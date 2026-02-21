@@ -437,7 +437,7 @@ export async function handleRMIInvoke(request: Request): Promise<Response> {
         port: null,
         objId: null,
       };
-      let lookupResponseHex = '';
+      let lookupResponseHex: string;
 
       try {
         // JRMI handshake

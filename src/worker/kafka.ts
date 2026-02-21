@@ -1134,7 +1134,7 @@ function buildFetchRequest(
   view.setInt32(off, 1); off += 4;                 // partitions array len = 1
   view.setInt32(off, partition); off += 4;         // partition
   view.setBigInt64(off, fetchOffset); off += 8;    // fetch_offset
-  view.setInt32(off, maxBytes); off += 4;          // partition_max_bytes
+  view.setInt32(off, maxBytes);                     // partition_max_bytes
 
   return buildKafkaRequest(1, 4, correlationId, clientId, payload);
 }
@@ -1517,7 +1517,7 @@ function buildListOffsetsRequest(
   payload.set(topicBytes, off); off += topicBytes.length;
   view.setInt32(off, 1); off += 4;                 // partitions array len = 1
   view.setInt32(off, partition); off += 4;         // partition index
-  view.setBigInt64(off, timestamp); off += 8;      // timestamp sentinel
+  view.setBigInt64(off, timestamp);                 // timestamp sentinel
   return buildKafkaRequest(2, 1, correlationId, clientId, payload);
 }
 
@@ -1554,7 +1554,7 @@ function parseListOffsetsResponse(view: DataView): {
       partition = view.getInt32(off); off += 4;
       errorCode = view.getInt16(off); off += 2;
       if (off + 8 <= view.byteLength) { timestamp = view.getBigInt64(off); off += 8; }
-      if (off + 8 <= view.byteLength) { offset = view.getBigInt64(off); off += 8; }
+      if (off + 8 <= view.byteLength) { offset = view.getBigInt64(off); }
     }
   }
 

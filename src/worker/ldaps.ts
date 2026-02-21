@@ -463,7 +463,6 @@ function parseLDAPSearchResults(data: Uint8Array): {
         offset++;
         const msgLen = parseLength(data, offset); offset += msgLen.bytesRead;
         if (msgLen.length > 0) message = new TextDecoder().decode(data.slice(offset, offset + msgLen.length));
-        offset += msgLen.length;
       }
       break;
     } else {

@@ -190,7 +190,7 @@ enum YMSGService {
   GameMsg = 0x2A,
   AuthReq = 0x4B,
   AuthResp = 0x54,
-  List = 0x84,
+  List = 0x55,
   AddBuddy = 0x83,
   RemBuddy = 0x84,
 }
@@ -447,7 +447,7 @@ export async function handleYMSGVersionDetect(request: Request): Promise<Respons
       const data = await response.json() as YMSGResponse;
 
       if (data.success) {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+         
         const { success: _success, host: _host, port: _port, ...rest } = data;
         return new Response(JSON.stringify({
           success: true,

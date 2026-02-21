@@ -45,7 +45,7 @@ export default function HL7Client({ onBack }: HL7ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -93,7 +93,7 @@ export default function HL7Client({ onBack }: HL7ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           messageType,
           sendingApplication: sendingApp,
           sendingFacility: sendingFac,

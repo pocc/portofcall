@@ -48,7 +48,7 @@ export default function OracleClient({ onBack }: OracleClientProps) {
     try {
       const requestBody: Record<string, unknown> = {
         host,
-        port: parseInt(port),
+        port: parseInt(port, 10),
         timeout: 10000,
       };
 

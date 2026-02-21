@@ -36,7 +36,7 @@ export default function EthereumClient({ onBack }: EthereumClientProps) {
       const response = await fetch('/api/ethereum/probe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 15000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 15000 }),
       });
 
       const data = await response.json() as {

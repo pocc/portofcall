@@ -280,7 +280,7 @@ function ipv4ToPTRName(ip: string): string {
 function ipv6ToPTRName(ip: string): string {
   // Handle :: compression by inserting the appropriate number of zero groups
   const halves = ip.split('::');
-  let left  = halves[0] ? halves[0].split(':').filter(g => g) : [];
+  const left  = halves[0] ? halves[0].split(':').filter(g => g) : [];
   const right = halves.length > 1 && halves[1] ? halves[1].split(':').filter(g => g) : [];
   const missing = 8 - left.length - right.length;
   const zeros = Array(Math.max(0, missing)).fill('0');

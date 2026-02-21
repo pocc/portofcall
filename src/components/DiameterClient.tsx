@@ -31,7 +31,7 @@ export default function DiameterClient({ onBack }: DiameterClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           originHost,
           originRealm,
           timeout: 15000,
@@ -95,7 +95,7 @@ export default function DiameterClient({ onBack }: DiameterClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           originHost,
           originRealm,
           timeout: 15000,

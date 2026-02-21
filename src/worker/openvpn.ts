@@ -323,7 +323,7 @@ function buildTLSClientHello(): Uint8Array {
   helloBody[pos++] = 0x00; helloBody[pos++] = ciphers.length; // cipher_suites length
   helloBody.set(ciphers, pos); pos += ciphers.length;
   helloBody[pos++] = 0x01; // compression methods length = 1
-  helloBody[pos++] = 0x00; // null compression
+  helloBody[pos] = 0x00; // null compression
 
   // Handshake header: type=ClientHello(1) + length(3)
   const hsLen = helloBody.length;

@@ -41,7 +41,7 @@ export default function CoAPClient({ onBack }: CoAPClientProps) {
       const response = await fetch('/api/coap/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await response.json() as {
@@ -84,7 +84,7 @@ export default function CoAPClient({ onBack }: CoAPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           method,
           path,
           payload: payload || undefined,

@@ -206,7 +206,7 @@ function validateRCONInput(host: string, port: number, password: string): string
  */
 export async function handleRCONConnect(request: Request): Promise<Response> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect>;
 
   try {
     const body = (await request.json()) as RCONConnectRequest;
@@ -294,10 +294,10 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
         // Clean up locks and socket
         try {
           if (writer.desiredSize !== null) writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         socket.close();
       }
     } catch (error) {
@@ -330,7 +330,7 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
  */
 export async function handleRCONCommand(request: Request): Promise<Response> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  let socket: ReturnType<typeof connect> | null = null;
+  let socket: ReturnType<typeof connect>;
 
   try {
     const body = (await request.json()) as RCONCommandRequest;
@@ -480,10 +480,10 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
         // Clean up locks and socket
         try {
           if (writer.desiredSize !== null) writer.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         try {
           reader.releaseLock();
-        } catch {}
+        } catch { /* ignored */ }
         socket.close();
       }
     } catch (error) {

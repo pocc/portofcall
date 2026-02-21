@@ -395,7 +395,7 @@ function parseCP56Time2a(data: Uint8Array, offset: number): string | null {
 function parseQualityFlags(quality: number): string[] {
   const flags: string[] = [];
   for (const [bit, name] of Object.entries(QUALITY_BITS)) {
-    if (quality & parseInt(bit)) {
+    if (quality & parseInt(bit, 10)) {
       flags.push(name);
     }
   }

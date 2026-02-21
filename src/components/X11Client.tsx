@@ -63,7 +63,7 @@ export default function X11Client({ onBack }: X11ClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          display: parseInt(display) || 0,
+          display: parseInt(display, 10) || 0,
           authName: authName.trim() || undefined,
           authData: authData.trim() || undefined,
           timeout: 10000,

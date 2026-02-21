@@ -46,7 +46,7 @@ export default function EtcdClient({ onBack }: EtcdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           username: username || undefined,
           password: password || undefined,
         }),
@@ -112,11 +112,11 @@ export default function EtcdClient({ onBack }: EtcdClientProps) {
           }
           if (status.leader) output += `Leader: ${status.leader}\n`;
           if (status.dbSize) {
-            const dbSizeMB = (parseInt(status.dbSize) / (1024 * 1024)).toFixed(2);
+            const dbSizeMB = (parseInt(status.dbSize, 10) / (1024 * 1024)).toFixed(2);
             output += `DB Size: ${dbSizeMB} MB\n`;
           }
           if (status.dbSizeInUse) {
-            const inUseMB = (parseInt(status.dbSizeInUse) / (1024 * 1024)).toFixed(2);
+            const inUseMB = (parseInt(status.dbSizeInUse, 10) / (1024 * 1024)).toFixed(2);
             output += `DB In Use: ${inUseMB} MB\n`;
           }
           if (status.version) output += `Version: ${status.version}\n`;
@@ -147,7 +147,7 @@ export default function EtcdClient({ onBack }: EtcdClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path,
           body: queryBody || undefined,
           username: username || undefined,

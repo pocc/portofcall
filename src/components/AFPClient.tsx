@@ -92,7 +92,7 @@ export default function AFPClient({ onBack }: AFPClientProps) {
   function getCredentials() {
     return {
       host,
-      port: parseInt(port),
+      port: parseInt(port, 10),
       username: uam === 'No User Authent' ? '' : username,
       password: uam === 'No User Authent' ? '' : password,
       uam,
@@ -112,7 +112,7 @@ export default function AFPClient({ onBack }: AFPClientProps) {
       const resp = await fetch('/api/afp/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port), timeout: 10000 }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
       const data = await resp.json() as {
         success?: boolean; error?: string; host?: string; port?: number;
@@ -269,8 +269,6 @@ export default function AFPClient({ onBack }: AFPClientProps) {
       } else {
         throw new Error(data.error ?? 'Operation failed');
       }
-    } catch (err) {
-      throw err;
     } finally {
       setOpLoading(false);
     }

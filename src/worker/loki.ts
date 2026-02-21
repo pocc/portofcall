@@ -505,7 +505,7 @@ export async function handleLokiRangeQuery(request: Request): Promise<Response> 
       stream: s.stream,
       entryCount: s.values?.length ?? 0,
       entries: s.values?.slice(0, 10).map(([ts, line]) => ({
-        timestamp: new Date(parseInt(ts) / 1e6).toISOString(),
+        timestamp: new Date(parseInt(ts, 10) / 1e6).toISOString(),
         line,
       })),
     }));

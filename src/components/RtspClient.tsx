@@ -43,7 +43,7 @@ export default function RtspClient({ onBack }: RtspClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path: path || '/',
           username: username || undefined,
           password: password || undefined,
@@ -103,7 +103,7 @@ export default function RtspClient({ onBack }: RtspClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           path: path || '/',
           username: username || undefined,
           password: password || undefined,

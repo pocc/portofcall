@@ -76,7 +76,7 @@ async function sendHttpRequest(
   try {
     await writer.write(encoder.encode(request));
   } finally {
-    try { writer.releaseLock(); } catch {}
+    try { writer.releaseLock(); } catch { /* ignored */ }
   }
 
   const reader = socket.readable.getReader();
@@ -93,8 +93,8 @@ async function sendHttpRequest(
       }
     }
   } finally {
-    try { reader.releaseLock(); } catch {}
-    try { socket.close(); } catch {}
+    try { reader.releaseLock(); } catch { /* ignored */ }
+    try { socket.close(); } catch { /* ignored */ }
   }
 
   const headerEnd = response.indexOf('\r\n\r\n');
@@ -107,7 +107,7 @@ async function sendHttpRequest(
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);
@@ -351,8 +351,8 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
   // Handle the WebSocket tunnel asynchronously
   (async () => {
     let cdpSocket: Socket | null = null;
-    let cdpWriter: WritableStreamDefaultWriter | null = null;
-    let cdpReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    let cdpWriter: WritableStreamDefaultWriter | null;
+    let cdpReader: ReadableStreamDefaultReader<Uint8Array> | null;
 
     try {
       // Connect to Chrome's CDP port
@@ -367,7 +367,7 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
 
       // Perform WebSocket handshake with Chrome
       const wsKey = generateWebSocketKey();
-      const handshakeRequest = buildWebSocketHandshake(host, parseInt(port), wsPath, wsKey);
+      const handshakeRequest = buildWebSocketHandshake(host, parseInt(port, 10), wsPath, wsKey);
 
       cdpWriter = cdpSocket.writable.getWriter();
       await cdpWriter.write(new TextEncoder().encode(handshakeRequest));
@@ -410,7 +410,7 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
           try {
             await writer.write(frame);
           } finally {
-            try { writer.releaseLock(); } catch {}
+            try { writer.releaseLock(); } catch { /* ignored */ }
           }
         } catch (error) {
           console.error('Error forwarding to CDP:', error);
@@ -449,7 +449,7 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
                 try {
                   await writer.write(pongFrame);
                 } finally {
-                  try { writer.releaseLock(); } catch {}
+                  try { writer.releaseLock(); } catch { /* ignored */ }
                 }
               }
             }
@@ -458,7 +458,7 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
           console.error('Error reading from CDP:', error);
           server.close(1011, 'CDP read error');
         } finally {
-          try { reader.releaseLock(); } catch {}
+          try { reader.releaseLock(); } catch { /* ignored */ }
         }
       })();
 

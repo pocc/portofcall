@@ -39,7 +39,7 @@ export default function NFSClient({ onBack }: NFSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 15000,
         }),
       });
@@ -109,8 +109,8 @@ export default function NFSClient({ onBack }: NFSClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          mountPort: mountPort ? parseInt(mountPort) : undefined,
+          port: parseInt(port, 10),
+          mountPort: mountPort ? parseInt(mountPort, 10) : undefined,
           timeout: 15000,
         }),
       });

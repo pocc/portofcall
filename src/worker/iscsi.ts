@@ -611,8 +611,7 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
 
         // Check if server chose CHAP
         let chapUsed = false;
-        let sessionId: string | undefined;
-        let tsih: number | undefined;
+        // sessionId and tsih are assigned after login succeeds (below)
 
         if (useChap && loginResp.kvPairs['AuthMethod'] === 'CHAP') {
           // ------------------------------------------------------------------
@@ -643,9 +642,8 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
           const chapIdByte = parseInt(chapI, 10) & 0xff;
 
           // Decode CHAP_C (challenge): may be "0x..." hex or plain base64
-          let challengeBytes: Uint8Array;
           const chapCStr = chapC.startsWith('0x') ? chapC.slice(2) : chapC;
-          challengeBytes = new Uint8Array(chapCStr.length / 2);
+          const challengeBytes = new Uint8Array(chapCStr.length / 2);
           for (let i = 0; i < challengeBytes.length; i++) {
             challengeBytes[i] = parseInt(chapCStr.slice(i * 2, i * 2 + 2), 16);
           }
@@ -693,10 +691,10 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
         }
 
         // Extract session info
-        tsih = loginResp.tsih;
+        const tsih = loginResp.tsih;
         // ISID is in BHS bytes 8-13 (6 bytes); format as hex
         const isid = Array.from(responseData.slice(8, 14)).map(b => b.toString(16).padStart(2, '0')).join('');
-        sessionId = isid;
+        const sessionId = isid;
 
         // ------------------------------------------------------------------
         // Step 3: Send Text Request for SendTargets if targetName requested

@@ -761,7 +761,7 @@ async function sendHttpRequest(
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
 
   const respHeaders: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);
@@ -936,7 +936,7 @@ export async function handleClickHouseNative(request: Request): Promise<Response
 
       // Parse server response packet type
       const [packetType, ptLen] = decodeVarUInt(helloResponse, 0);
-      let offset = ptLen;
+      const offset = ptLen;
 
       if (packetType === ServerPacketType.Exception) {
         // Server rejected us

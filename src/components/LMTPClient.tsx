@@ -45,7 +45,7 @@ export default function LMTPClient({ onBack }: LMTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           timeout: 10000,
         }),
       });
@@ -96,7 +96,7 @@ export default function LMTPClient({ onBack }: LMTPClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           from,
           to: recipients,
           subject,

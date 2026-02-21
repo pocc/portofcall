@@ -168,7 +168,7 @@ export async function handleEchoWebSocket(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
-    const port = parseInt(url.searchParams.get('port') || '7');
+    const port = parseInt(url.searchParams.get('port') || '7', 10);
 
     if (!host) {
       return new Response('Host parameter required', { status: 400 });

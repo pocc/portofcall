@@ -64,7 +64,7 @@ function isIpv4InRange(ip: string, cidr: string): boolean {
  * Expand an IPv6 address to 8 groups of 16-bit integers.
  */
 function expandIPv6ToGroups(ip: string): number[] {
-  let addr = ip.toLowerCase().replace(/\s/g, '');
+  const addr = ip.toLowerCase().replace(/\s/g, '');
 
   // Expand :: shorthand
   const halves = addr.split('::');

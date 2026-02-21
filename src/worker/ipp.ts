@@ -425,7 +425,7 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
           const headerText = new TextDecoder('ascii').decode(headerBytes);
           const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
           if (contentLengthMatch) {
-            const contentLength = parseInt(contentLengthMatch[1]);
+            const contentLength = parseInt(contentLengthMatch[1], 10);
             const bodyStartByte = headerEndIdx + 4;
             if (totalLength >= bodyStartByte + contentLength) break;
           } else {
@@ -654,7 +654,7 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
           const headerText = new TextDecoder('ascii').decode(headerBytes);
           const contentLengthMatch = headerText.match(/Content-Length:\s*(\d+)/i);
           if (contentLengthMatch) {
-            const contentLength = parseInt(contentLengthMatch[1]);
+            const contentLength = parseInt(contentLengthMatch[1], 10);
             if (totalLength >= headerEndIdx + 4 + contentLength) break;
           } else if (chunks.length > 3) break;
         }
@@ -690,7 +690,7 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
           const jobIdAttr = parsed.attributes.find(a => a.name === 'job-id');
           if (jobIdAttr) {
             const jobIdVal = Array.isArray(jobIdAttr.value) ? jobIdAttr.value[0] : jobIdAttr.value;
-            jobId = parseInt(jobIdVal);
+            jobId = parseInt(jobIdVal, 10);
           }
         } catch { /* ignore parse errors */ }
       }

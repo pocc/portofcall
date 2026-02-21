@@ -45,8 +45,8 @@ export default function GaduGaduClient({ onBack }: GaduGaduClientProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
-          port: parseInt(port),
-          uin: parseInt(uin),
+          port: parseInt(port, 10),
+          uin: parseInt(uin, 10),
           password,
           hashType,
           timeout: 15000,

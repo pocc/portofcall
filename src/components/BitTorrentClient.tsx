@@ -38,7 +38,7 @@ export default function BitTorrentClient({ onBack }: BitTorrentClientProps) {
     try {
       const payload: Record<string, unknown> = {
         host,
-        port: parseInt(port),
+        port: parseInt(port, 10),
         timeout: 10000,
       };
 

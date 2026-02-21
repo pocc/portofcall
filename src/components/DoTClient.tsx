@@ -52,7 +52,7 @@ export default function DoTClient({ onBack }: DoTClientProps) {
         body: JSON.stringify({
           domain,
           server,
-          port: parseInt(port),
+          port: parseInt(port, 10),
           type: recordType,
           timeout: 10000,
         }),

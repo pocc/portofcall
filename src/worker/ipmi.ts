@@ -132,8 +132,8 @@ export async function handleIPMIConnect(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '623'),
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        port: parseInt(url.searchParams.get('port') || '623', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -205,9 +205,9 @@ export async function handleIPMIConnect(request: Request): Promise<Response> {
       } catch (err) {
         // If we connected (socket.opened succeeded) but got no response, report partial success
         // Clean up locks and socket - may already be released/closed
-        try { writer.releaseLock(); } catch (_) { /* ignore */ }
-        try { reader.releaseLock(); } catch (_) { /* ignore */ }
-        try { await socket.close(); } catch (_) { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
         return {
           success: true,
           host,

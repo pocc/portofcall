@@ -288,6 +288,7 @@ interface StompFrame {
 
 function parseStompFrame(raw: string): StompFrame {
   // Strip trailing NULL byte, leading heartbeat newlines, and normalise \r\n to \n
+  // eslint-disable-next-line no-control-regex
   const cleaned = raw.replace(/\x00$/, '').replace(/\r\n/g, '\n').replace(/^\n+/, '');
   const lines = cleaned.split('\n');
   const command = lines[0] ?? '';

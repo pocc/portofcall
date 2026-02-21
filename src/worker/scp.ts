@@ -112,8 +112,8 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
       const url = new URL(request.url);
       options = {
         host: url.searchParams.get('host') || '',
-        port: parseInt(url.searchParams.get('port') || '22'),
-        timeout: parseInt(url.searchParams.get('timeout') || '10000'),
+        port: parseInt(url.searchParams.get('port') || '22', 10),
+        timeout: parseInt(url.searchParams.get('timeout') || '10000', 10),
       };
     }
 
@@ -178,7 +178,7 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
           message: 'SSH server reachable — SCP is available. Use /api/scp/list or /api/scp/get with credentials.',
         };
       } catch (err) {
-        try { await socket.close(); } catch (_) { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
         throw err;
       }
     })();
@@ -268,10 +268,10 @@ function parseLsOutput(raw: string): Array<{
     if (name === '.' || name === '..') continue;
     entries.push({
       permissions: perms,
-      links: parseInt(links),
+      links: parseInt(links, 10),
       owner,
       group,
-      size: parseInt(size),
+      size: parseInt(size, 10),
       date: date.trim(),
       name: name.trim(),
       type: (perms[0] === 'd' ? 'directory' : perms[0] === 'l' ? 'symlink' : perms[0] === '-' ? 'file' : 'other') as 'file' | 'directory' | 'symlink' | 'other',
@@ -644,7 +644,7 @@ export async function handleSCPPut(request: Request): Promise<Response> {
       const raw = atob(body.data);
       fileData = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) fileData[i] = raw.charCodeAt(i);
-    } catch (err) {
+    } catch {
       return new Response(JSON.stringify({ success: false, error: 'Invalid base64 data' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });

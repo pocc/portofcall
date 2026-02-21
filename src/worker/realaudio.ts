@@ -651,10 +651,10 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
 
       try {
         if (writer) writer.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       try {
         if (reader) reader.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       socket.close();
 
       return new Response(
@@ -674,10 +674,10 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
     } catch (error) {
       try {
         if (writer) writer.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       try {
         if (reader) reader.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       socket.close();
       throw error;
     }
@@ -906,10 +906,10 @@ export async function handleRealAudioSession(request: Request): Promise<Response
 
       try {
         if (writer) writer.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       try {
         if (reader) reader.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       socket.close();
 
       return new Response(
@@ -930,10 +930,10 @@ export async function handleRealAudioSession(request: Request): Promise<Response
     } catch (error) {
       try {
         if (writer) writer.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       try {
         if (reader) reader.releaseLock();
-      } catch {}
+      } catch { /* ignored */ }
       socket.close();
       throw error;
     }

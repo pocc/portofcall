@@ -63,6 +63,7 @@ function validateGopherInput(host: string, port: number, selector: string): stri
   }
 
   // Selector should not contain control characters except tab (used in search queries)
+  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(selector)) {
     return 'Selector contains invalid control characters';
   }
@@ -97,7 +98,7 @@ function parseGopherMenu(content: string): GopherItem[] {
         display: parts[0],
         selector: parts[1],
         host: parts[2],
-        port: parseInt(parts[3].replace(/\r$/, '')) || 70,
+        port: parseInt(parts[3].replace(/\r$/, ''), 10) || 70,
       });
     } else if (type === 'i') {
       // Info text lines may have fewer fields

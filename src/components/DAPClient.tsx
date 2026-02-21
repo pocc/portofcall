@@ -75,7 +75,7 @@ export default function DAPClient({ onBack }: DAPClientProps) {
       const response = await fetch('/api/dap/health', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host, port: parseInt(port) }),
+        body: JSON.stringify({ host, port: parseInt(port, 10) }),
       });
 
       const data = await response.json() as {

@@ -24,10 +24,10 @@ const BLOCKED_IPV4_CIDRS: Array<{ addr: number; mask: number }> = [
 function ipv4ToInt(ip: string): number {
   const parts = ip.split('.');
   return (
-    ((parseInt(parts[0]) << 24) >>> 0) +
-    (parseInt(parts[1]) << 16) +
-    (parseInt(parts[2]) << 8) +
-    parseInt(parts[3])
+    (parseInt(parts[0]) * 16777216 +   // 256^3
+     parseInt(parts[1]) * 65536 +       // 256^2
+     parseInt(parts[2]) * 256 +         // 256^1
+     parseInt(parts[3])) >>> 0
   );
 }
 
@@ -38,22 +38,63 @@ function isBlockedIPv4(ip: string): boolean {
   );
 }
 
-function isBlockedIPv6(ip: string): boolean {
-  const lower = ip.toLowerCase().replace(/\s/g, '');
-  if (
-    lower === '::1' ||
-    lower === '::' ||
-    lower.startsWith('fc') ||   // fc00::/7 ULA (fc00::–fdff::)
-    lower.startsWith('fd') ||   // fc00::/7 ULA
-    lower.startsWith('fe80')    // fe80::/10 link-local
-  ) {
-    return true;
+/**
+ * Expand an IPv6 address to its full 8-group form for reliable matching.
+ * Handles :: shorthand and mixed IPv4-mapped notation.
+ */
+function expandIPv6(ip: string): string {
+  let addr = ip.toLowerCase().replace(/\s/g, '');
+
+  // Handle IPv4-mapped/compatible suffix (e.g. ::ffff:127.0.0.1 → ::ffff:7f00:0001)
+  const v4Suffix = addr.match(/:(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4Suffix) {
+    const a = parseInt(v4Suffix[1]), b = parseInt(v4Suffix[2]);
+    const c = parseInt(v4Suffix[3]), d = parseInt(v4Suffix[4]);
+    const hi = ((a << 8) | b).toString(16);
+    const lo = ((c << 8) | d).toString(16);
+    addr = addr.replace(v4Suffix[0], `:${hi}:${lo}`);
   }
 
-  // IPv4-mapped IPv6 (::ffff:x.x.x.x) — extract the IPv4 part and validate
-  const v4MappedMatch = lower.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-  if (v4MappedMatch) {
-    return isBlockedIPv4(v4MappedMatch[1]);
+  // Expand :: shorthand
+  const halves = addr.split('::');
+  if (halves.length === 2) {
+    const left = halves[0] ? halves[0].split(':') : [];
+    const right = halves[1] ? halves[1].split(':') : [];
+    const fill = 8 - left.length - right.length;
+    const mid = Array(fill).fill('0');
+    addr = [...left, ...mid, ...right].join(':');
+  }
+
+  // Pad each group to 4 hex digits
+  return addr.split(':').map(g => g.padStart(4, '0')).join(':');
+}
+
+function isBlockedIPv6(ip: string): boolean {
+  const expanded = expandIPv6(ip);
+  const groups = expanded.split(':');
+  const first = parseInt(groups[0], 16);
+
+  // ::1 (loopback)
+  if (expanded === '0000:0000:0000:0000:0000:0000:0000:0001') return true;
+  // :: (unspecified)
+  if (expanded === '0000:0000:0000:0000:0000:0000:0000:0000') return true;
+  // fc00::/7 ULA (fc00::–fdff::)
+  if ((first & 0xfe00) === 0xfc00) return true;
+  // fe80::/10 link-local
+  if ((first & 0xffc0) === 0xfe80) return true;
+
+  // IPv4-mapped (::ffff:x.x.x.x) and IPv4-compatible (::x.x.x.x)
+  // Check if first 5 groups are zero and 6th is ffff (mapped) or all zeros (compatible)
+  const first5Zero = groups.slice(0, 5).every(g => g === '0000');
+  if (first5Zero) {
+    const sixth = groups[5];
+    if (sixth === 'ffff' || sixth === '0000') {
+      // Extract embedded IPv4 from last two groups
+      const hi = parseInt(groups[6], 16);
+      const lo = parseInt(groups[7], 16);
+      const embeddedIPv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+      return isBlockedIPv4(embeddedIPv4);
+    }
   }
 
   return false;

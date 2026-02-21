@@ -32,7 +32,7 @@ describe('JSON-RPC 2.0 Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 8545,
         }),
       });
@@ -85,7 +85,7 @@ describe('JSON-RPC 2.0 Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '10.255.255.1',
+          host: 'test-host.invalid',
           port: 8545,
           method: 'eth_blockNumber',
           timeout: 2000,
@@ -135,7 +135,7 @@ describe('JSON-RPC 2.0 Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 8545,
         }),
       });
@@ -151,7 +151,7 @@ describe('JSON-RPC 2.0 Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 8545,
           calls: [],
         }),

@@ -1129,16 +1129,13 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
     return new Response('WebSocket upgrade required', { status: 426 });
   }
 
+  // Only non-sensitive params from URL; credentials arrive via first WS message
   const url = new URL(request.url);
   const host = url.searchParams.get('host') ?? '';
   const port = parseInt(url.searchParams.get('port') ?? '22');
-  const username = url.searchParams.get('username') ?? '';
-  const authMethod = (url.searchParams.get('authMethod') ?? 'password') as 'password' | 'privateKey';
-  const password = url.searchParams.get('password') ?? undefined;
-  const privateKey = url.searchParams.get('privateKey') ?? undefined;
 
-  if (!host || !username) {
-    return new Response(JSON.stringify({ error: 'host and username are required' }), {
+  if (!host) {
+    return new Response(JSON.stringify({ error: 'host is required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -1148,30 +1145,62 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
   const [client, server] = Object.values(pair);
   server.accept();
 
-  // Check for Cloudflare proxy before attempting TCP
-  (async () => {
-    try {
-      const cfCheck = await checkIfCloudflare(host);
-      if (cfCheck.isCloudflare && cfCheck.ip) {
-        server.send(JSON.stringify({ type: 'error', message: getCloudflareErrorMessage(host, cfCheck.ip) }));
-        server.close(1011, 'Cloudflare proxy');
-        return;
-      }
+  // Wait for the first message containing credentials, then start the SSH session
+  server.addEventListener('message', function onCredentials(event: MessageEvent) {
+    server.removeEventListener('message', onCredentials);
 
-      server.send(JSON.stringify({ type: 'info', message: `Connecting to ${username}@${host}:${port}…` }));
-
-      const socket = connect(`${host}:${port}`);
-      await socket.opened;
-
-      await runSSHSession(socket, server, { host, port, username, authMethod, password, privateKey });
-    } catch (err) {
+    (async () => {
       try {
-        server.send(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }));
-      } catch { /* ignore */ }
-    } finally {
-      try { server.close(1000, 'done'); } catch { /* ignore */ }
-    }
-  })();
+        const creds = JSON.parse(typeof event.data === 'string' ? event.data : dec.decode(new Uint8Array(event.data as ArrayBuffer))) as {
+          username: string;
+          authMethod?: 'password' | 'privateKey';
+          password?: string;
+          privateKey?: string;
+          passphrase?: string;
+        };
+
+        if (!creds.username || typeof creds.username !== 'string') {
+          server.send(JSON.stringify({ type: 'error', message: 'username is required' }));
+          server.close(1008, 'missing username');
+          return;
+        }
+        if (creds.authMethod && creds.authMethod !== 'password' && creds.authMethod !== 'privateKey') {
+          server.send(JSON.stringify({ type: 'error', message: 'Invalid authMethod: must be "password" or "privateKey"' }));
+          server.close(1008, 'invalid authMethod');
+          return;
+        }
+
+        const cfCheck = await checkIfCloudflare(host);
+        if (cfCheck.isCloudflare && cfCheck.ip) {
+          server.send(JSON.stringify({ type: 'error', message: getCloudflareErrorMessage(host, cfCheck.ip) }));
+          server.close(1011, 'Cloudflare proxy');
+          return;
+        }
+
+        const authMethod = creds.authMethod ?? (creds.privateKey ? 'privateKey' : 'password');
+        server.send(JSON.stringify({ type: 'info', message: `Connecting to ${creds.username}@${host}:${port}…` }));
+
+        const socket = connect(`${host}:${port}`);
+        await socket.opened;
+
+        await runSSHSession(socket, server, {
+          host,
+          port,
+          username: creds.username,
+          authMethod,
+          password: creds.password,
+          privateKey: creds.privateKey,
+          passphrase: creds.passphrase,
+        });
+      } catch (err) {
+        try {
+          server.send(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }));
+        } catch { /* ignore */ }
+      } finally {
+        try { server.close(1000, 'done'); } catch { /* ignore */ }
+      }
+    })();
+  });
 
   return new Response(null, { status: 101, webSocket: client });
 }

@@ -46,7 +46,7 @@ describe('RabbitMQ Management API Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: -1,
           username: 'guest',
           password: 'guest',
@@ -122,7 +122,7 @@ describe('RabbitMQ Management API Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
           username: 'guest',
           password: 'guest',
@@ -141,7 +141,7 @@ describe('RabbitMQ Management API Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 15672,
           username: 'guest',
           password: 'guest',

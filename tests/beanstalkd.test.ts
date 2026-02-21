@@ -51,7 +51,7 @@ describe('Beanstalkd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -103,7 +103,7 @@ describe('Beanstalkd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 11300,
           command: '',
         }),
@@ -121,7 +121,7 @@ describe('Beanstalkd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 11300,
           command: 'delete 123',
         }),

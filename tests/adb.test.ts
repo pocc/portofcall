@@ -11,7 +11,7 @@ const ADB_BASE = `${API_BASE}/adb`;
 // Note: ADB server must be running locally on port 5037 for these tests
 // Run: adb start-server
 const ADB_CONFIG = {
-  host: 'localhost',
+  host: 'test-host.invalid',
   port: 5037,
   timeout: 10000,
 };
@@ -85,7 +85,7 @@ describe('ADB Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
           command: 'host:version',
         }),
@@ -234,7 +234,7 @@ describe('ADB Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 0,
           command: 'echo test',
         }),
@@ -277,7 +277,7 @@ describe('ADB Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 5037,
           timeout: 100, // Very short timeout
         }),

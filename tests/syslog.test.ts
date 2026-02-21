@@ -121,7 +121,7 @@ describe('Syslog Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         severity: 6,
         message: '',
         timeout: 5000,
@@ -140,7 +140,7 @@ describe('Syslog Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         severity: 99, // Invalid
         message: 'Test message',
         timeout: 5000,
@@ -159,7 +159,7 @@ describe('Syslog Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         severity: 6,
         facility: 99, // Invalid
         message: 'Test message',
@@ -179,7 +179,7 @@ describe('Syslog Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 99999,
         severity: 6,
         message: 'Test message',

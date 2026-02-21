@@ -45,6 +45,10 @@ test-results/
 
 # Temp files
 *.tmp
+*.bak
+*.bak2
+*.bak3
+*.backup
 .cache/
 
 # One-time use scripts

@@ -19,7 +19,7 @@ describe('Icecast Streaming Server - Status Probe', () => {
     const response = await fetch(`${API_BASE}/icecast/status`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 99999 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 99999 }),
     });
 
     const data = await response.json() as { success: boolean; error: string };
@@ -82,7 +82,7 @@ describe('Icecast Streaming Server - Admin Stats', () => {
     const response = await fetch(`${API_BASE}/icecast/admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 8000 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 8000 }),
     });
 
     const data = await response.json() as { success: boolean; error: string };

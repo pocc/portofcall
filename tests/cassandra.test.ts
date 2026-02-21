@@ -35,7 +35,7 @@ describe('Cassandra CQL Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });

@@ -28,7 +28,7 @@ describe('SPICE Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 5900,
           timeout: 5000,
         }),
@@ -38,7 +38,7 @@ describe('SPICE Protocol Integration Tests', () => {
 
       const data = await response.json();
       expect(data).toHaveProperty('success');
-      expect(data).toHaveProperty('host', 'localhost');
+      expect(data).toHaveProperty('host', 'test-host.invalid');
       expect(data).toHaveProperty('port', 5900);
 
       // If connection succeeds, verify protocol info
@@ -130,7 +130,7 @@ describe('SPICE Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -175,7 +175,7 @@ describe('SPICE Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 5900,
           timeout: 5000,
         }),
@@ -247,7 +247,7 @@ describe('SPICE Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 5900,
           timeout: 1, // 1ms - should timeout
         }),

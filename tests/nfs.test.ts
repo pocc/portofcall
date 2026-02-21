@@ -11,7 +11,7 @@ const NFS_BASE = `${API_BASE}/nfs`;
 // Note: NFS server must be running and accessible for these tests
 // Default NFS port is 2049
 const NFS_CONFIG = {
-  host: 'localhost',
+  host: 'test-host.invalid',
   port: 2049,
   timeout: 10000,
 };
@@ -78,7 +78,7 @@ describe('NFS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -1140,7 +1140,7 @@ describe('NFS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           timeout: 3000,
         }),
       });

@@ -46,7 +46,7 @@ describe('GPSD Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 999999,
         }),
       });
@@ -161,7 +161,7 @@ describe('GPSD Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 
@@ -176,7 +176,7 @@ describe('GPSD Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           command: 'INVALID_COMMAND',
         }),
       });

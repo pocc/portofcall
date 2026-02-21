@@ -18,7 +18,7 @@ import { describe, it, expect } from 'vitest';
 const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
 
 describe('TFTP Protocol Integration Tests', () => {
-  const TFTP_HOST = process.env.TFTP_HOST || 'localhost';
+  const TFTP_HOST = process.env.TFTP_HOST || 'test-host.invalid';
   const TFTP_PORT = parseInt(process.env.TFTP_PORT || '69', 10);
 
   it('should connect to TFTP server', async () => {

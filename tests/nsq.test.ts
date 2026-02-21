@@ -46,7 +46,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -94,7 +94,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           message: 'hello',
         }),
       });
@@ -109,7 +109,7 @@ describe('NSQ TCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           topic: 'invalid topic!@#$',
           message: 'hello',
         }),

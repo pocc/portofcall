@@ -45,14 +45,14 @@ describe('AFP /api/afp/connect', () => {
   });
 
   it('should reject invalid port 0', async () => {
-    const { response, data } = await post('/afp/connect', { host: 'server.local', port: 0 });
+    const { response, data } = await post('/afp/connect', { host: 'test-host.invalid', port: 0 });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
     expect(data.error).toBe('Port must be between 1 and 65535');
   });
 
   it('should reject port above 65535', async () => {
-    const { response, data } = await post('/afp/connect', { host: 'server.local', port: 99999 });
+    const { response, data } = await post('/afp/connect', { host: 'test-host.invalid', port: 99999 });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
     expect(data.error).toBe('Port must be between 1 and 65535');
@@ -104,7 +104,7 @@ describe('AFP /api/afp/login', () => {
 
   it('should reject invalid port', async () => {
     const { response, data } = await post('/afp/login', {
-      host: 'server.local', port: 0, uam: 'No User Authent',
+      host: 'test-host.invalid', port: 0, uam: 'No User Authent',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -141,7 +141,7 @@ describe('AFP /api/afp/login', () => {
 describe('AFP /api/afp/list-dir', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/list-dir', {
-      host: 'server.local', port: 548, uam: 'No User Authent',
+      host: 'test-host.invalid', port: 548, uam: 'No User Authent',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -172,7 +172,7 @@ describe('AFP /api/afp/list-dir', () => {
 describe('AFP /api/afp/get-info', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/get-info', {
-      host: 'server.local', port: 548, name: 'file.txt',
+      host: 'test-host.invalid', port: 548, name: 'file.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -181,7 +181,7 @@ describe('AFP /api/afp/get-info', () => {
 
   it('should reject missing name', async () => {
     const { response, data } = await post('/afp/get-info', {
-      host: 'server.local', port: 548, volumeName: 'Data',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -194,7 +194,7 @@ describe('AFP /api/afp/get-info', () => {
 describe('AFP /api/afp/create-dir', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/create-dir', {
-      host: 'server.local', port: 548, name: 'NewFolder',
+      host: 'test-host.invalid', port: 548, name: 'NewFolder',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -203,7 +203,7 @@ describe('AFP /api/afp/create-dir', () => {
 
   it('should reject missing name', async () => {
     const { response, data } = await post('/afp/create-dir', {
-      host: 'server.local', port: 548, volumeName: 'Data',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -225,7 +225,7 @@ describe('AFP /api/afp/create-dir', () => {
 describe('AFP /api/afp/create-file', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/create-file', {
-      host: 'server.local', port: 548, name: 'file.txt',
+      host: 'test-host.invalid', port: 548, name: 'file.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -234,7 +234,7 @@ describe('AFP /api/afp/create-file', () => {
 
   it('should reject missing name', async () => {
     const { response, data } = await post('/afp/create-file', {
-      host: 'server.local', port: 548, volumeName: 'Data',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -247,7 +247,7 @@ describe('AFP /api/afp/create-file', () => {
 describe('AFP /api/afp/delete', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/delete', {
-      host: 'server.local', port: 548, name: 'file.txt',
+      host: 'test-host.invalid', port: 548, name: 'file.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -256,7 +256,7 @@ describe('AFP /api/afp/delete', () => {
 
   it('should reject missing name', async () => {
     const { response, data } = await post('/afp/delete', {
-      host: 'server.local', port: 548, volumeName: 'Data',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -278,7 +278,7 @@ describe('AFP /api/afp/delete', () => {
 describe('AFP /api/afp/rename', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/rename', {
-      host: 'server.local', port: 548, oldName: 'a.txt', newName: 'b.txt',
+      host: 'test-host.invalid', port: 548, oldName: 'a.txt', newName: 'b.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -287,7 +287,7 @@ describe('AFP /api/afp/rename', () => {
 
   it('should reject missing oldName', async () => {
     const { response, data } = await post('/afp/rename', {
-      host: 'server.local', port: 548, volumeName: 'Data', newName: 'b.txt',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data', newName: 'b.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -296,7 +296,7 @@ describe('AFP /api/afp/rename', () => {
 
   it('should reject missing newName', async () => {
     const { response, data } = await post('/afp/rename', {
-      host: 'server.local', port: 548, volumeName: 'Data', oldName: 'a.txt',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data', oldName: 'a.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -318,7 +318,7 @@ describe('AFP /api/afp/rename', () => {
 describe('AFP /api/afp/read-file', () => {
   it('should reject missing volumeName', async () => {
     const { response, data } = await post('/afp/read-file', {
-      host: 'server.local', port: 548, name: 'file.txt',
+      host: 'test-host.invalid', port: 548, name: 'file.txt',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
@@ -327,7 +327,7 @@ describe('AFP /api/afp/read-file', () => {
 
   it('should reject missing name', async () => {
     const { response, data } = await post('/afp/read-file', {
-      host: 'server.local', port: 548, volumeName: 'Data',
+      host: 'test-host.invalid', port: 548, volumeName: 'Data',
     });
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);

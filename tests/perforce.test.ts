@@ -11,7 +11,7 @@ const PERFORCE_BASE = `${API_BASE}/perforce`;
 // Note: Perforce server must be running for these tests
 // Default Perforce port is 1666
 const PERFORCE_CONFIG = {
-  host: 'localhost',
+  host: 'test-host.invalid',
   port: 1666,
   timeout: 10000,
 };
@@ -85,7 +85,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -101,7 +101,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 0,
         }),
       });
@@ -157,7 +157,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           timeout: 3000,
         }),
       });
@@ -214,7 +214,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -581,7 +581,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 80, // HTTP server, not Perforce
           timeout: 3000,
         }),
@@ -635,7 +635,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 19999, // Unlikely to be open
           timeout: 3000,
         }),
@@ -651,7 +651,7 @@ describe('Perforce Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 22, // SSH server, not Perforce
           timeout: 3000,
         }),

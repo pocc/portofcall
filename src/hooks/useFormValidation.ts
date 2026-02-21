@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef } from 'react';
 
 interface ValidationRule {
   test: (value: string) => boolean;
@@ -12,9 +12,13 @@ interface FieldValidation {
 export function useFormValidation(validations: FieldValidation) {
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
 
+  // Use a ref so callbacks are stable even when validations object is recreated
+  const validationsRef = useRef(validations);
+  validationsRef.current = validations;
+
   const validate = useCallback(
     (fieldName: string, value: string): boolean => {
-      const rules = validations[fieldName];
+      const rules = validationsRef.current[fieldName];
       if (!rules) return true;
 
       for (const rule of rules) {
@@ -31,7 +35,7 @@ export function useFormValidation(validations: FieldValidation) {
       });
       return true;
     },
-    [validations]
+    []
   );
 
   const validateAll = useCallback(
@@ -40,7 +44,7 @@ export function useFormValidation(validations: FieldValidation) {
       const newErrors: { [key: string]: string } = {};
 
       for (const [fieldName, value] of Object.entries(values)) {
-        const rules = validations[fieldName];
+        const rules = validationsRef.current[fieldName];
         if (!rules) continue;
 
         for (const rule of rules) {
@@ -55,7 +59,7 @@ export function useFormValidation(validations: FieldValidation) {
       setErrors(newErrors);
       return isValid;
     },
-    [validations]
+    []
   );
 
   const clearErrors = useCallback(() => {

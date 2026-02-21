@@ -28,7 +28,7 @@ describe('Jabber Component Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 999999,
         }),
       });
@@ -75,7 +75,7 @@ describe('Jabber Component Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 
@@ -108,7 +108,7 @@ describe('Jabber Component Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 
@@ -122,7 +122,7 @@ describe('Jabber Component Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           componentDomain: 'component.localhost',
           secret: 'test-secret',
         }),
@@ -155,7 +155,7 @@ describe('Jabber Component Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 

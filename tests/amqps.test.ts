@@ -47,7 +47,7 @@ describe('AMQPS Integration', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: -1,
         }),
       });

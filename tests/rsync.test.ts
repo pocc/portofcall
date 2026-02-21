@@ -85,7 +85,7 @@ describe('Rsync Daemon Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 99999,
         timeout: 5000,
       }),
@@ -103,7 +103,7 @@ describe('Rsync Daemon Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 873,
         timeout: 5000,
       }),

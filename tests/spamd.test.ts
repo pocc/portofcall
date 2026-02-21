@@ -58,7 +58,7 @@ describe('SpamAssassin spamd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -222,7 +222,7 @@ describe('SpamAssassin spamd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 
@@ -237,7 +237,7 @@ describe('SpamAssassin spamd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 0,
           message: testMessage,
         }),
@@ -254,7 +254,7 @@ describe('SpamAssassin spamd Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 783,
           message: testMessage,
           command: 'INVALID',

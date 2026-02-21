@@ -58,7 +58,7 @@ describe('X11 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           display: 100,
           timeout: 5000,
         }),
@@ -76,7 +76,7 @@ describe('X11 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
           timeout: 5000,
         }),
@@ -132,7 +132,7 @@ describe('X11 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           display: 0,
           authName: 'MIT-MAGIC-COOKIE-1',
           authData: 'not-valid-hex!',

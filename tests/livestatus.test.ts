@@ -168,7 +168,7 @@ describe('Livestatus Protocol Integration Tests', () => {
       const response = await fetch(`${API_BASE}/livestatus/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: 'localhost' }),
+        body: JSON.stringify({ host: 'test-host.invalid' }),
       });
       expect(response.status).toBe(400);
       const data = await response.json();
@@ -293,7 +293,7 @@ describe('Livestatus Protocol Integration Tests', () => {
       const response = await fetch(`${API_BASE}/livestatus/command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: 'localhost' }),
+        body: JSON.stringify({ host: 'test-host.invalid' }),
       });
       expect(response.status).toBe(400);
       const data = await response.json();

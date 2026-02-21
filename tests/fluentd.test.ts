@@ -19,7 +19,7 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
     const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 99999 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 99999 }),
     });
 
     const data = await response.json() as { success: boolean; error: string };
@@ -31,7 +31,7 @@ describe('Fluentd Forward Protocol - Server Probe', () => {
     const response = await fetch(`${API_BASE}/fluentd/connect`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 24224, tag: 'invalid tag with spaces!' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 24224, tag: 'invalid tag with spaces!' }),
     });
 
     const data = await response.json() as { success: boolean; error: string };
@@ -96,7 +96,7 @@ describe('Fluentd Forward Protocol - Send Log Entry', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 24224,
         tag: 'invalid tag format!',
       }),
@@ -154,7 +154,7 @@ describe('Fluentd Forward Protocol - MessagePack Encoding', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         tag: longTag,
       }),
     });

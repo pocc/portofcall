@@ -39,7 +39,7 @@ describe('S7comm Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 99999,
         rack: 0,
         slot: 2,
@@ -75,7 +75,7 @@ describe('S7comm Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 102,
         rack: 8,
         slot: 2,
@@ -94,7 +94,7 @@ describe('S7comm Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 102,
         rack: 0,
         slot: 32,

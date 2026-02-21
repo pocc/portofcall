@@ -10,7 +10,7 @@ const FTP_BASE = `${API_BASE}/ftp`;
 
 // Test server credentials (local docker vsftpd server)
 const FTP_CONFIG = {
-  host: 'localhost',
+  host: 'test-host.invalid',
   port: 21,
   username: 'testuser',
   password: 'testpass123',

@@ -192,7 +192,7 @@ describe('Node Inspector Protocol Integration Tests', () => {
     });
 
     it('should return 400 when neither path nor sessionId is provided', async () => {
-      const response = await fetch(`${API_BASE}/node-inspector/tunnel?host=localhost&port=9229`);
+      const response = await fetch(`${API_BASE}/node-inspector/tunnel?host=test-host.invalid&port=9229`);
       // Without WebSocket upgrade headers, index.ts returns 426 before the handler checks path
       expect([400, 426]).toContain(response.status);
     });

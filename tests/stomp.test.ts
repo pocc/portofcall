@@ -84,7 +84,7 @@ describe('STOMP Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 99999,
         timeout: 5000,
       }),
@@ -120,7 +120,7 @@ describe('STOMP Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 61613,
         destination: '',
         body: 'test',
@@ -140,7 +140,7 @@ describe('STOMP Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 61613,
         destination: 'no-leading-slash',
         body: 'test',

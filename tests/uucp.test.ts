@@ -11,7 +11,7 @@ const UUCP_BASE = `${API_BASE}/uucp`;
 // Note: UUCP server must be running for these tests
 // Default UUCP port is 540
 const UUCP_CONFIG = {
-  host: 'localhost',
+  host: 'test-host.invalid',
   port: 540,
   systemName: 'testnode',
   timeout: 10000,
@@ -108,7 +108,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -124,7 +124,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 0,
         }),
       });
@@ -180,7 +180,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           timeout: 3000,
         }),
       });
@@ -231,7 +231,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
         }),
       });
@@ -247,7 +247,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 540,
           timeout: 500,
         }),
@@ -264,7 +264,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 540,
           timeout: 400000,
         }),
@@ -368,7 +368,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           timeout: 3000,
         }),
       });
@@ -429,7 +429,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 80, // HTTP server, not UUCP
           timeout: 3000,
         }),
@@ -532,7 +532,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 19999, // Unlikely to be open
           timeout: 3000,
         }),
@@ -549,7 +549,7 @@ describe('UUCP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 22, // SSH server (won't send UUCP greeting)
           timeout: 3000,
         }),

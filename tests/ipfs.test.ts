@@ -187,7 +187,7 @@ describe('IPFS Protocol Integration Tests', () => {
       const response = await fetch(`${API_BASE}/ipfs/cat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: 'localhost' }),
+        body: JSON.stringify({ host: 'test-host.invalid' }),
       });
       expect(response.status).toBe(400);
       const data = await response.json();
@@ -233,7 +233,7 @@ describe('IPFS Protocol Integration Tests', () => {
       const response = await fetch(`${API_BASE}/ipfs/pin-add`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: 'localhost' }),
+        body: JSON.stringify({ host: 'test-host.invalid' }),
       });
       expect(response.status).toBe(400);
       const data = await response.json();
@@ -315,7 +315,7 @@ describe('IPFS Protocol Integration Tests', () => {
       const response = await fetch(`${API_BASE}/ipfs/pin-rm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: 'localhost' }),
+        body: JSON.stringify({ host: 'test-host.invalid' }),
       });
       expect(response.status).toBe(400);
       const data = await response.json();
@@ -335,7 +335,7 @@ describe('IPFS Protocol Integration Tests', () => {
       const response = await fetch(`${API_BASE}/ipfs/pubsub-pub`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ host: 'localhost', data: 'test' }),
+        body: JSON.stringify({ host: 'test-host.invalid', data: 'test' }),
       });
       expect(response.status).toBe(400);
       const data = await response.json();

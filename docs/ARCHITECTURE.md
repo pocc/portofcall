@@ -181,6 +181,14 @@ All connections pass through `isBlockedHost()` at the router level before any pr
 
 **Known Limitation:** DNS rebinding (a hostname that resolves to a private IP) cannot be fully prevented because `cloudflare:sockets` `connect()` resolves hostnames internally. The hostname blocklist is a partial mitigation.
 
+### Rate Limiting
+
+Rate limiting is implemented at the infrastructure level, not in the Worker code. See `SECURITY.md` and the `docker/` configs for details:
+- **nginx:** Connection rate limits per IP
+- **fail2ban:** Automatic IP blocking on repeated failed auth attempts
+
+Do not add application-level rate limiting to the Worker — it is handled externally.
+
 ### Cloudflare IP Detection
 
 Connections to Cloudflare-proxied IPs are blocked by `cloudflare-detector.ts` to prevent loop-back attacks through the CDN.

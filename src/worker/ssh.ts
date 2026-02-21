@@ -137,26 +137,13 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
       });
     }
 
-    // WebSocket upgrade - create tunnel with SSH options
+    // WebSocket upgrade — only non-sensitive params from URL;
+    // credentials arrive via the first WebSocket message from the client.
     const url = new URL(request.url);
+    const host = url.searchParams.get('host') || '';
+    const port = parseInt(url.searchParams.get('port') || '22');
 
-    // Parse SSH connection options from query parameters
-    const options: SSHConnectionOptions = {
-      host: url.searchParams.get('host') || '',
-      port: parseInt(url.searchParams.get('port') || '22'),
-      username: url.searchParams.get('username') || undefined,
-      password: url.searchParams.get('password') || undefined,
-      privateKey: url.searchParams.get('privateKey') || undefined,
-      passphrase: url.searchParams.get('passphrase') || undefined,
-      authMethod: (url.searchParams.get('authMethod') as SSHAuthMethod) || undefined,
-      timeout: parseInt(url.searchParams.get('timeout') || '30000'),
-      keepaliveInterval: parseInt(url.searchParams.get('keepaliveInterval') || '0'),
-      readyTimeout: parseInt(url.searchParams.get('readyTimeout') || '20000'),
-      strictHostKeyChecking: url.searchParams.get('strictHostKeyChecking') === 'true',
-      debug: url.searchParams.get('debug') === 'true',
-    };
-
-    if (!options.host) {
+    if (!host) {
       return new Response(JSON.stringify({
         error: 'Missing required parameter: host',
       }), {
@@ -166,11 +153,11 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
     }
 
     // Check if the target is behind Cloudflare
-    const cfCheckWs = await checkIfCloudflare(options.host);
+    const cfCheckWs = await checkIfCloudflare(host);
     if (cfCheckWs.isCloudflare && cfCheckWs.ip) {
       return new Response(JSON.stringify({
         success: false,
-        error: getCloudflareErrorMessage(options.host, cfCheckWs.ip),
+        error: getCloudflareErrorMessage(host, cfCheckWs.ip),
         isCloudflare: true,
       }), {
         status: 403,
@@ -186,33 +173,70 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
     server.accept();
 
     // Connect to SSH server
-    const socket = connect(`${options.host}:${options.port}`);
+    const socket = connect(`${host}:${port}`);
     await socket.opened;
 
-    // Send SSH connection options to browser client as first message
-    // The browser-side SSH client (e.g., xterm.js + ssh2) will use these for authentication
-    server.send(JSON.stringify({
-      type: 'ssh-options',
-      options: {
-        host: options.host,
-        port: options.port,
-        username: options.username,
-        password: options.password,
-        privateKey: options.privateKey,
-        passphrase: options.passphrase,
-        authMethod: options.authMethod,
-        timeout: options.timeout,
-        keepaliveInterval: options.keepaliveInterval,
-        readyTimeout: options.readyTimeout,
-        algorithms: options.algorithms,
-        strictHostKeyChecking: options.strictHostKeyChecking,
-        debug: options.debug,
-      },
-    }));
+    // Wait for the first message containing credentials & connection options.
+    // Echo back non-sensitive options only, then start bidirectional piping.
+    let credentialsReceived = false;
+    server.addEventListener('message', function onCredentials(event: MessageEvent) {
+      if (credentialsReceived) return;
 
-    // Pipe data bidirectionally
-    pipeWebSocketToSocket(server, socket);
-    pipeSocketToWebSocket(socket, server);
+      try {
+        const raw = typeof event.data === 'string' ? event.data : new TextDecoder().decode(new Uint8Array(event.data as ArrayBuffer));
+        const msg = JSON.parse(raw) as {
+          type?: string;
+          username?: string;
+          authMethod?: SSHAuthMethod;
+          timeout?: number;
+          keepaliveInterval?: number;
+          readyTimeout?: number;
+          strictHostKeyChecking?: boolean;
+          debug?: boolean;
+        };
+
+        // Only handle the credentials message; after that, let the pipe handle data
+        if (msg.type !== 'ssh-credentials') return;
+
+        // Validate required fields before proceeding
+        if (!msg.username || typeof msg.username !== 'string') {
+          server.send(JSON.stringify({ type: 'error', message: 'Missing required field: username' }));
+          server.close(1008, 'Missing username');
+          return;
+        }
+        const validAuthMethods = ['password', 'publickey', 'privateKey', 'keyboard-interactive', 'hostbased'];
+        if (msg.authMethod && !validAuthMethods.includes(msg.authMethod)) {
+          server.send(JSON.stringify({ type: 'error', message: 'Invalid authMethod' }));
+          server.close(1008, 'Invalid authMethod');
+          return;
+        }
+
+        credentialsReceived = true;
+        server.removeEventListener('message', onCredentials);
+
+        // Confirm connection to the client — no credentials in this message
+        server.send(JSON.stringify({
+          type: 'ssh-options',
+          options: {
+            host,
+            port,
+            username: msg.username,
+            authMethod: msg.authMethod,
+            timeout: msg.timeout ?? 30000,
+            keepaliveInterval: msg.keepaliveInterval ?? 0,
+            readyTimeout: msg.readyTimeout ?? 20000,
+            strictHostKeyChecking: msg.strictHostKeyChecking ?? false,
+            debug: msg.debug ?? false,
+          },
+        }));
+
+        // Now start bidirectional piping
+        pipeWebSocketToSocket(server, socket);
+        pipeSocketToWebSocket(socket, server);
+      } catch {
+        // Not valid JSON — ignore (may be binary data before credentials sent)
+      }
+    });
 
     return new Response(null, {
       status: 101,

@@ -38,7 +38,7 @@ describe('RCON Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 99999,
         password: 'test',
       }),
@@ -74,7 +74,7 @@ describe('RCON Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 25575,
         password: '',
       }),
@@ -92,7 +92,7 @@ describe('RCON Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 25575,
         password: 'a'.repeat(513),
       }),
@@ -110,7 +110,7 @@ describe('RCON Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 25575,
         password: 'test',
         command: '',
@@ -129,7 +129,7 @@ describe('RCON Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 25575,
         password: 'test',
         command: 'a'.repeat(1447),

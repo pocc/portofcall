@@ -6,6 +6,24 @@ This document outlines the security measures, hardening steps, and threat model 
 
 **⚠️ CRITICAL**: The default `docker-compose.yml` configuration is **NOT production-ready**. It contains multiple container escape vectors and privilege escalation risks. **Use `docker-compose.hardened.yml` for any deployment beyond localhost testing.**
 
+## Cloudflare Worker Security
+
+The Worker itself (the production application at portofcall.ross.gg) has these security controls:
+
+- **SSRF Prevention:** `src/worker/host-validator.ts` blocks RFC 1918, loopback, link-local, CGN, metadata IPs, and dangerous hostnames (`.internal`, `.local`, `.localhost`). Enforced at the router level before any protocol handler runs.
+- **Cloudflare IP Detection:** `src/worker/cloudflare-detector.ts` blocks connections to Cloudflare-proxied IPs to prevent loop-back attacks through the CDN.
+- **Rate Limiting:** Handled at the infrastructure level (nginx connection limits, fail2ban).
+- **Security Headers:** `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Strict-Transport-Security` set on all responses via the main fetch handler.
+- **SSH Credential Protection:** SSH passwords, private keys, and passphrases are sent over the WebSocket channel after upgrade (never in URL query parameters). Credentials are not echoed back in server responses.
+
+### Known Limitation: DNS Rebinding
+
+The SSRF host validator checks hostnames and IP addresses as text before calling `connect()`. However, `cloudflare:sockets` resolves hostnames internally — there is no API to inspect the resolved IP after connection. This means a malicious hostname that passes the text check but resolves to a private IP (e.g., `127.0.0.1`) cannot be blocked.
+
+**This is a platform constraint of `cloudflare:sockets`, not a missing feature.** The hostname blocklist (`.internal`, `.local`, `.localhost`, `metadata.google.internal`) is a partial mitigation. A post-connection IP check should be added if Cloudflare ever exposes the resolved address.
+
+---
+
 ## Threat Model
 
 ### Attack Vectors

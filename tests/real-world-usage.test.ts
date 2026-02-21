@@ -1142,7 +1142,7 @@ describe('Syslog — Real-World Usage', () => {
 
   it('should reject severity out of range (0-7)', async () => {
     const { response, data } = await postJson('/syslog/send', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       severity: 99,
       message: 'Test message',
       timeout: 5000,
@@ -1154,7 +1154,7 @@ describe('Syslog — Real-World Usage', () => {
 
   it('should reject facility out of range (0-23)', async () => {
     const { response, data } = await postJson('/syslog/send', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       severity: 6,
       facility: 99,
       message: 'Test message',
@@ -1179,7 +1179,7 @@ describe('Syslog — Real-World Usage', () => {
 
   it('should reject empty message', async () => {
     const { response, data } = await postJson('/syslog/send', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       severity: 6,
       message: '',
       timeout: 5000,
@@ -1777,7 +1777,7 @@ describe('Memcached — Real-World Usage', () => {
 
   it('should reject missing command', async () => {
     const { response, data } = await postJson('/memcached/command', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       command: '',
       timeout: 3000,
     });
@@ -1958,7 +1958,7 @@ describe('MongoDB — Real-World Usage', () => {
 
   it('should reject invalid port on connect', async () => {
     const { response, data } = await postJson('/mongodb/connect', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       port: 99999,
       timeout: 3000,
     });
@@ -1988,7 +1988,7 @@ describe('Graphite — Real-World Usage', () => {
 
   it('should reject missing metrics array', async () => {
     const { response, data } = await postJson('/graphite/send', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       timeout: 3000,
     });
     expect(response.status).toBe(400);
@@ -1997,7 +1997,7 @@ describe('Graphite — Real-World Usage', () => {
 
   it('should reject invalid metric name (spaces)', async () => {
     const { response, data } = await postJson('/graphite/send', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       metrics: [{ name: 'bad metric name', value: 1 }],
       timeout: 3000,
     });
@@ -2007,7 +2007,7 @@ describe('Graphite — Real-World Usage', () => {
 
   it('should reject NaN metric value', async () => {
     const { response, data } = await postJson('/graphite/send', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       metrics: [{ name: 'valid.name', value: NaN }],
       timeout: 3000,
     });
@@ -2152,7 +2152,7 @@ describe('ZooKeeper — Real-World Usage', () => {
 
   it('should reject invalid four-letter word command', async () => {
     const { response, data } = await postJson('/zookeeper/command', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       command: 'xxxx',
       timeout: 3000,
     });
@@ -2162,7 +2162,7 @@ describe('ZooKeeper — Real-World Usage', () => {
 
   it('should reject missing command', async () => {
     const { response, data } = await postJson('/zookeeper/command', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       timeout: 3000,
     });
     expect(response.status).toBe(400);
@@ -2439,7 +2439,7 @@ describe('CHARGEN — Real-World Usage', () => {
 
   it('should reject invalid port', async () => {
     const { response, data } = await postJson('/chargen/stream', {
-      host: 'localhost',
+      host: 'test-host.invalid',
       port: 99999,
       timeout: 3000,
     });

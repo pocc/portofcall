@@ -1,8 +1,55 @@
-import { useState, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense, Component, createRef } from 'react';
+import type { ReactNode, ErrorInfo } from 'react';
 import './App.css';
 import ProtocolSelector from './components/ProtocolSelector';
 import ThemeToggle from './components/ThemeToggle';
 import { useTheme } from './contexts/ThemeContext';
+
+// --- Error Boundary ---
+interface ErrorBoundaryState { hasError: boolean; error?: Error }
+class ErrorBoundary extends Component<{ children: ReactNode; onReset: () => void }, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { hasError: false };
+  private errorRef = createRef<HTMLDivElement>();
+  static getDerivedStateFromError(error: Error) { return { hasError: true, error }; }
+  componentDidCatch(error: Error, info: ErrorInfo) { console.error('ErrorBoundary caught:', error, info); }
+  componentDidUpdate(_: unknown, prevState: ErrorBoundaryState) {
+    if (this.state.hasError && !prevState.hasError) {
+      this.errorRef.current?.focus();
+    }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="max-w-4xl mx-auto" role="alert" ref={this.errorRef} tabIndex={-1}>
+          <div className="bg-slate-800 border border-red-500 rounded-xl p-12 text-center">
+            <h2 className="text-xl font-bold text-red-400 mb-4">Something went wrong</h2>
+            <p className="text-slate-300 mb-6">{this.state.error?.message || 'An unexpected error occurred.'}</p>
+            <button
+              onClick={() => { this.setState({ hasError: false, error: undefined }); this.props.onReset(); }}
+              className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg transition-colors min-h-[44px]"
+            >
+              Go Back to Protocol Selector
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// --- Offline Banner ---
+function useOnlineStatus() {
+  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  useEffect(() => {
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => { window.removeEventListener('online', goOnline); window.removeEventListener('offline', goOffline); };
+  }, []);
+  return online;
+}
 
 // Lazy load all protocol clients for better performance
 const TcpClient = lazy(() => import('./components/TcpClient'));
@@ -482,12 +529,36 @@ function LoadingFallback() {
   );
 }
 
+function getHashProtocol(): Protocol {
+  const hash = window.location.hash.replace('#', '');
+  return hash ? hash as Protocol : null;
+}
+
 function App() {
-  const [selectedProtocol, setSelectedProtocol] = useState<Protocol>(null);
+  const [selectedProtocol, setSelectedProtocol] = useState<Protocol>(getHashProtocol);
   const { theme } = useTheme();
+  const online = useOnlineStatus();
+
+  // Sync hash → state
+  useEffect(() => {
+    const onHashChange = () => setSelectedProtocol(getHashProtocol());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Sync state → hash
+  const selectProtocol = useCallback((p: Protocol) => {
+    if (p) {
+      window.location.hash = p;
+    } else {
+      history.pushState(null, '', window.location.pathname);
+    }
+    setSelectedProtocol(p);
+  }, []);
+
+  const handleBack = useCallback(() => selectProtocol(null), [selectProtocol]);
 
   const renderProtocolClient = () => {
-    const handleBack = () => setSelectedProtocol(null);
 
     switch (selectedProtocol) {
       case 'echo':
@@ -947,16 +1018,28 @@ function App() {
       case 'shadowsocks':
         return <ShadowsocksClient onBack={handleBack} />;
       default:
-        return <ProtocolSelector onSelect={setSelectedProtocol} />;
+        return <ProtocolSelector onSelect={selectProtocol} />;
     }
   };
 
   return (
     <div className={`min-h-screen ${theme === 'retro' ? 'retro-screen retro-boot' : 'bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900'}`}>
-      <ThemeToggle />
-      <div className="container mx-auto px-4 pt-14 pb-8">
-        <Suspense fallback={<LoadingFallback />}>{renderProtocolClient()}</Suspense>
-      </div>
+      <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 bg-blue-600 text-white px-4 py-2 rounded">
+        Skip to content
+      </a>
+      {!online && (
+        <div className="fixed top-0 left-0 right-0 z-50 bg-yellow-600 text-white text-center py-2 text-sm font-medium" role="alert">
+          You appear to be offline. Connections will fail until your network is restored.
+        </div>
+      )}
+      <nav aria-label="Site controls">
+        <ThemeToggle />
+      </nav>
+      <main id="main-content" className="container mx-auto px-4 pt-14 pb-8">
+        <ErrorBoundary onReset={handleBack}>
+          <Suspense fallback={<LoadingFallback />}>{renderProtocolClient()}</Suspense>
+        </ErrorBoundary>
+      </main>
     </div>
   );
 }

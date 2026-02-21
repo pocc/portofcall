@@ -35,7 +35,7 @@ describe('ActiveMQ — input validation', () => {
     const res = await fetch(`${API_BASE}/activemq/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 99999 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 99999 }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -71,7 +71,7 @@ describe('ActiveMQ — input validation', () => {
     const res = await fetch(`${API_BASE}/activemq/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 61613, destination: '', body: 'test' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 61613, destination: '', body: 'test' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -83,7 +83,7 @@ describe('ActiveMQ — input validation', () => {
     const res = await fetch(`${API_BASE}/activemq/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 61613, destination: 'no-prefix', body: 'test' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 61613, destination: 'no-prefix', body: 'test' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -131,7 +131,7 @@ describe('ActiveMQ — input validation', () => {
     const res = await fetch(`${API_BASE}/activemq/subscribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 61613, destination: '' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 61613, destination: '' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -155,7 +155,7 @@ describe('ActiveMQ — input validation', () => {
     const res = await fetch(`${API_BASE}/activemq/admin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 8161, action: 'queueStats' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 8161, action: 'queueStats' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);

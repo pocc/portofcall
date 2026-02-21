@@ -630,7 +630,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                     protocol.status === 'deprecated'
                       ? 'border border-dashed border-slate-500 opacity-60'
                       : 'border border-slate-600'
-                  } rounded-xl p-6 text-left transition-all duration-200 hover:scale-105 hover:shadow-2xl group`
+                  } rounded-xl p-6 text-left transition-all duration-200 hover:scale-105 hover:shadow-2xl focus-visible:scale-105 focus-visible:shadow-2xl focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group`
               }
               aria-label={`Connect to ${protocol.name} on port ${protocol.port}${
                 protocol.status === 'deprecated' ? ' (deprecated)' : ''

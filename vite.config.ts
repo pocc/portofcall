@@ -17,7 +17,15 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    sourcemap: true,
+    sourcemap: false,
+    chunkSizeWarningLimit: 500,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'xterm': ['@xterm/xterm', '@xterm/addon-fit'],
+        },
+      },
+    },
   },
   server: {
     port: 5173,

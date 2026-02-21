@@ -37,7 +37,7 @@ describe('ManageSieve Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 99999,
       }),
     });
@@ -81,7 +81,7 @@ describe('ManageSieve Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 4190,
         username: '',
         password: 'test',
@@ -100,7 +100,7 @@ describe('ManageSieve Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: 'localhost',
+        host: 'test-host.invalid',
         port: 4190,
         username: 'user',
         password: '',

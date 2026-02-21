@@ -26,7 +26,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 999999,
         }),
       });
@@ -71,7 +71,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: -1,
         }),
       });
@@ -102,7 +102,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 0,
         }),
       });
@@ -135,7 +135,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 
@@ -150,7 +150,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 70000,
           screenName: 'test',
           password: 'test',
@@ -169,7 +169,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
         }),
       });
 
@@ -203,7 +203,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           password: 'test',
           targetScreenName: 'target',
           message: 'Hello',
@@ -220,7 +220,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           screenName: 'test',
           targetScreenName: 'target',
           message: 'Hello',
@@ -237,7 +237,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           screenName: 'test',
           password: 'test',
           message: 'Hello',
@@ -254,7 +254,7 @@ describe('OSCAR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           screenName: 'test',
           password: 'test',
           targetScreenName: 'target',

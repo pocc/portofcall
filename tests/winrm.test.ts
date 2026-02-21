@@ -19,7 +19,7 @@ describe('WinRM Protocol - Identify Probe', () => {
     const response = await fetch(`${API_BASE}/winrm/identify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 99999 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 99999 }),
     });
 
     const data = await response.json() as { success: boolean; error: string };
@@ -83,7 +83,7 @@ describe('WinRM Protocol - Auth Probe', () => {
     const response = await fetch(`${API_BASE}/winrm/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 0 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 0 }),
     });
 
     const data = await response.json() as { success: boolean; error: string };

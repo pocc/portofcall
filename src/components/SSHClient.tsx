@@ -28,6 +28,16 @@ export default function SSHClient({ onBack }: SSHClientProps) {
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
+  // Close WebSocket on unmount to prevent leaks
+  useEffect(() => {
+    return () => {
+      if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) {
+        wsRef.current.close(1000, 'component unmount');
+      }
+      wsRef.current = null;
+    };
+  }, []);
+
   // Initialise xterm when component mounts
   useEffect(() => {
     if (!termDivRef.current) return;
@@ -78,14 +88,8 @@ export default function SSHClient({ onBack }: SSHClientProps) {
     setStatus('connecting');
     setStatusMsg('');
 
-    const params = new URLSearchParams({
-      host,
-      port,
-      username,
-      authMethod,
-      ...(authMethod === 'password' ? { password } : { privateKey }),
-      ...(passphrase ? { passphrase } : {}),
-    });
+    // Only non-sensitive params in the URL; credentials sent via WS message
+    const params = new URLSearchParams({ host, port });
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/api/ssh/terminal?${params}`);
@@ -95,6 +99,13 @@ export default function SSHClient({ onBack }: SSHClientProps) {
     const term = termRef.current!;
 
     ws.onopen = () => {
+      // Send credentials as the first message (never in the URL)
+      ws.send(JSON.stringify({
+        username,
+        authMethod,
+        ...(authMethod === 'password' ? { password } : { privateKey }),
+        ...(passphrase ? { passphrase } : {}),
+      }));
       term.writeln('\x1b[90mWebSocket open — performing SSH handshake…\x1b[0m');
     };
 
@@ -273,8 +284,13 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) {
+                          if (file.size > 65536) {
+                            setStatusMsg('Key file too large (max 64 KB)');
+                            return;
+                          }
                           const reader = new FileReader();
                           reader.onload = (ev) => setPrivateKey(ev.target?.result as string);
+                          reader.onerror = () => setStatusMsg('Failed to read key file');
                           reader.readAsText(file);
                         }
                       }}

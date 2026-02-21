@@ -35,7 +35,7 @@ describe('CIFS — input validation', () => {
     const res = await fetch(`${API_BASE}/cifs/negotiate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 0 }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 0 }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -71,7 +71,7 @@ describe('CIFS — input validation', () => {
     const res = await fetch(`${API_BASE}/cifs/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 445, username: '', password: 'pass' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 445, username: '', password: 'pass' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -83,7 +83,7 @@ describe('CIFS — input validation', () => {
     const res = await fetch(`${API_BASE}/cifs/auth`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 445, username: 'user', password: '' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 445, username: 'user', password: '' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -95,7 +95,7 @@ describe('CIFS — input validation', () => {
     const res = await fetch(`${API_BASE}/cifs/ls`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 445, username: 'user', password: 'pass', share: '' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 445, username: 'user', password: 'pass', share: '' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -107,7 +107,7 @@ describe('CIFS — input validation', () => {
     const res = await fetch(`${API_BASE}/cifs/read`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 445, username: 'user', password: 'pass', share: 'C$', path: '' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 445, username: 'user', password: 'pass', share: 'C$', path: '' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);
@@ -119,7 +119,7 @@ describe('CIFS — input validation', () => {
     const res = await fetch(`${API_BASE}/cifs/stat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ host: 'localhost', port: 445, username: 'user', password: 'pass', share: 'C$', path: '' }),
+      body: JSON.stringify({ host: 'test-host.invalid', port: 445, username: 'user', password: 'pass', share: 'C$', path: '' }),
     });
     const data = await res.json() as { success: boolean; error: string };
     expect(res.status).toBe(400);

@@ -127,7 +127,7 @@ describe('Jupyter REST API Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 8888,
           method: 'INVALID',
         }),

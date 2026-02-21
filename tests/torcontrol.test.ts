@@ -11,7 +11,7 @@ const TOR_BASE = `${API_BASE}/torcontrol`;
 // Note: Tor control port must be accessible for these tests
 // Default Tor control port is 9051
 const TOR_CONFIG = {
-  host: 'localhost',
+  host: 'test-host.invalid',
   port: 9051,
   timeout: 10000,
 };

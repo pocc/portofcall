@@ -60,7 +60,7 @@ describe('DICOM Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 99999,
           timeout: 5000,
         }),
@@ -78,7 +78,7 @@ describe('DICOM Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 104,
           callingAE: 'THIS_IS_WAY_TOO_LONG_FOR_AE',
           timeout: 5000,
@@ -97,7 +97,7 @@ describe('DICOM Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 104,
           calledAE: 'BAD\x01AE',
           timeout: 5000,
@@ -172,7 +172,7 @@ describe('DICOM Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 0,
           timeout: 5000,
         }),
@@ -190,7 +190,7 @@ describe('DICOM Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: 'localhost',
+          host: 'test-host.invalid',
           port: 104,
           callingAE: 'EXTREMELY_LONG_AE_TITLE_EXCEEDS_LIMIT',
           timeout: 5000,

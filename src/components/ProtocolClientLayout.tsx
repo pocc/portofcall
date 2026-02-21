@@ -12,7 +12,7 @@ export default function ProtocolClientLayout({ title, onBack, children }: Protoc
       <div className="mb-6 flex items-center gap-4">
         <button
           onClick={onBack}
-          className="text-white hover:text-blue-400 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 rounded px-2 py-1"
+          className="text-white hover:text-blue-400 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 rounded px-3 py-2 min-h-[44px] min-w-[44px] flex items-center"
           aria-label="Go back to protocol selector"
         >
           ← Back

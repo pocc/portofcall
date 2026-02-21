@@ -217,8 +217,10 @@ function decodeMap(data: Uint8Array, startOffset: number, count: number): Decode
 
   for (let i = 0; i < count; i++) {
     const keyResult = decodeMsgpack(data, pos);
+    if (keyResult.bytesRead === 0) break; // Truncated data — stop
     pos += keyResult.bytesRead;
     const valResult = decodeMsgpack(data, pos);
+    if (valResult.bytesRead === 0) break; // Truncated data — stop
     pos += valResult.bytesRead;
     map[String(keyResult.value)] = valResult.value;
   }

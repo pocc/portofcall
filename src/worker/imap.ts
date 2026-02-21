@@ -77,6 +77,13 @@ async function sendIMAPCommand(
 /**
  * Handle IMAP connection test (HTTP mode)
  */
+/**
+ * RFC 3501 quoted-string encoding for IMAP credentials
+ */
+function imapQuote(s: string): string {
+  return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+}
+
 export async function handleIMAPConnect(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
@@ -167,7 +174,7 @@ export async function handleIMAPConnect(request: Request): Promise<Response> {
             reader,
             writer,
             'A001',
-            `LOGIN ${options.username} ${options.password}`,
+            `LOGIN ${imapQuote(options.username!)} ${imapQuote(options.password!)}`,
             10000
           );
 
@@ -313,7 +320,7 @@ export async function handleIMAPList(request: Request): Promise<Response> {
           reader,
           writer,
           'A001',
-          `LOGIN ${options.username} ${options.password}`,
+          `LOGIN ${imapQuote(options.username!)} ${imapQuote(options.password!)}`,
           10000
         );
 
@@ -467,7 +474,7 @@ export async function handleIMAPSelect(request: Request): Promise<Response> {
           reader,
           writer,
           'A001',
-          `LOGIN ${options.username} ${options.password}`,
+          `LOGIN ${imapQuote(options.username!)} ${imapQuote(options.password!)}`,
           10000
         );
 
@@ -614,7 +621,7 @@ export async function handleIMAPSession(request: Request): Promise<Response> {
       }
 
       // LOGIN
-      const loginResp = await sendIMAPCommand(reader, writer, 'A001', `LOGIN ${username} ${password}`, 10000);
+      const loginResp = await sendIMAPCommand(reader, writer, 'A001', `LOGIN ${imapQuote(username)} ${imapQuote(password)}`, 10000);
       if (!loginResp.includes('A001 OK')) {
         server.send(JSON.stringify({ type: 'error', message: 'Authentication failed: ' + loginResp.trim() }));
         server.close();

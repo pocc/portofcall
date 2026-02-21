@@ -976,7 +976,10 @@ export async function handleActiveMQAdmin(request: Request): Promise<Response> {
       );
     }
 
-    const base64Creds = btoa(`${username}:${password}`);
+    const credBytes = new TextEncoder().encode(`${username}:${password}`);
+    let credBinary = '';
+    for (const byte of credBytes) credBinary += String.fromCharCode(byte);
+    const base64Creds = btoa(credBinary);
     const headers: Record<string, string> = {
       'Authorization': `Basic ${base64Creds}`,
       'Content-Type': 'application/json',
@@ -1173,7 +1176,10 @@ export async function handleActiveMQInfo(request: Request): Promise<Response> {
     }
 
     const startTime = Date.now();
-    const creds = btoa(`${username}:${password}`);
+    const cb = new TextEncoder().encode(`${username}:${password}`);
+    let cb2 = '';
+    for (const byte of cb) cb2 += String.fromCharCode(byte);
+    const creds = btoa(cb2);
     const authHeaders = {
       'Authorization': `Basic ${creds}`,
       'Accept': 'application/json',

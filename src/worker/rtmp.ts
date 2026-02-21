@@ -173,6 +173,7 @@ function amf0Decode(data: Uint8Array, offset = 0): AMF0Decoded {
       let pos = offset + 1;
       while (pos + 2 < data.length) {
         // Check for end marker (0x00 0x00 0x09)
+        if (pos + 2 >= data.length) break;
         if (data[pos] === 0x00 && data[pos + 1] === 0x00 && data[pos + 2] === 0x09) {
           pos += 3;
           break;
@@ -198,6 +199,7 @@ function amf0Decode(data: Uint8Array, offset = 0): AMF0Decoded {
       let pos = offset + 5; // skip type + 4-byte count
       while (pos + 2 < data.length) {
         // Check for end marker (0x00 0x00 0x09)
+        if (pos + 2 >= data.length) break;
         if (data[pos] === 0x00 && data[pos + 1] === 0x00 && data[pos + 2] === 0x09) {
           pos += 3;
           break;
@@ -395,6 +397,7 @@ async function readRTMPMessage(
   // fmt === 3: no header, reuse previous values (simplified: use msgLength from previous)
 
   // Accumulate payload across chunks
+  if (msgLength > 16 * 1024 * 1024) throw new Error('RTMP message too large: ' + msgLength);
   const payloadParts: Uint8Array[] = [];
   let payloadRead = 0;
 

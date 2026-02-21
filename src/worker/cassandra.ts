@@ -106,19 +106,24 @@ function parseStringMultimap(data: Uint8Array): Record<string, string[]> {
 
   for (let i = 0; i < count; i++) {
     // Read key
+    if (offset + 2 > data.length) break;
     const keyLen = view.getInt16(offset, false);
     offset += 2;
+    if (offset + keyLen > data.length) break;
     const key = new TextDecoder().decode(data.slice(offset, offset + keyLen));
     offset += keyLen;
 
     // Read value list
+    if (offset + 2 > data.length) break;
     const listLen = view.getInt16(offset, false);
     offset += 2;
     const values: string[] = [];
 
     for (let j = 0; j < listLen; j++) {
+      if (offset + 2 > data.length) break;
       const valLen = view.getInt16(offset, false);
       offset += 2;
+      if (offset + valLen > data.length) break;
       const val = new TextDecoder().decode(data.slice(offset, offset + valLen));
       offset += valLen;
       values.push(val);
@@ -655,11 +660,19 @@ function buildAuthResponseFrame(username: string, password: string): Uint8Array 
   return buildFrame(OPCODE_AUTH_RESPONSE_FRAME, body, 2);
 }
 
+// Per-call stream ID generator (range 1-127, wraps around)
+let _nextStreamId = 1;
+const nextStreamId = (): number => {
+  const id = _nextStreamId;
+  _nextStreamId = (_nextStreamId % 127) + 1;
+  return id;
+};
+
 /**
  * Build a QUERY frame.
  * Body: [query_len 4B][query bytes][consistency 2B=ONE][flags 1B=0x00][page_size 4B=100]
  */
-function buildQueryFrame(cql: string, stream = 3): Uint8Array {
+function buildQueryFrame(cql: string, stream = nextStreamId()): Uint8Array {
   const qBytes = new TextEncoder().encode(cql);
   const body = new Uint8Array(4 + qBytes.length + 7);
   const view = new DataView(body.buffer);
@@ -793,6 +806,8 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
               : getOpcodeName(authResp.opcode);
             throw new Error(`Authentication failed: ${msg}`);
           }
+        } else if (startResp.opcode === OPCODE_AUTH_SUCCESS_RESP) {
+          // Server sent AUTH_SUCCESS directly after STARTUP — consume and proceed
         } else if (startResp.opcode === OPCODE_ERROR) {
           const err = parseError(startResp.body);
           throw new Error(`STARTUP failed: ${err.message} (code ${err.code})`);
@@ -849,7 +864,7 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
 // ============================================================
 
 /** Build a PREPARE frame (opcode 0x09): long-string encoded CQL. */
-function buildPrepareFrame(cql: string, stream = 3): Uint8Array {
+function buildPrepareFrame(cql: string, stream = nextStreamId()): Uint8Array {
   const qBytes = new TextEncoder().encode(cql);
   const body = new Uint8Array(4 + qBytes.length);
   new DataView(body.buffer).setInt32(0, qBytes.length, false);
@@ -875,7 +890,7 @@ function parsePreparedId(body: Uint8Array): Uint8Array | null {
 function buildExecuteFrame(
   preparedId: Uint8Array,
   values: string[],
-  stream = 4,
+  stream = nextStreamId(),
 ): Uint8Array {
   // Header: short_bytes(preparedId) + consistency(2) + flags(1)
   // If values present, flags=0x01, then 2-byte count + [4-byte len + bytes]*
@@ -942,6 +957,8 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
           if (authResp.opcode !== OPCODE_AUTH_SUCCESS_RESP && authResp.opcode !== OPCODE_READY) {
             throw new Error(`Authentication failed: ${authResp.opcode === OPCODE_ERROR ? parseError(authResp.body).message : getOpcodeName(authResp.opcode)}`);
           }
+        } else if (startResp.opcode === OPCODE_AUTH_SUCCESS_RESP) {
+          // Server sent AUTH_SUCCESS directly after STARTUP — consume and proceed
         } else if (startResp.opcode === OPCODE_ERROR) {
           throw new Error(`STARTUP failed: ${parseError(startResp.body).message}`);
         } else if (startResp.opcode !== OPCODE_READY) {

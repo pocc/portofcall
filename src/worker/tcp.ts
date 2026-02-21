@@ -143,6 +143,7 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       );
 
       while (totalBytes < maxBytes) {
+        if (totalBytes >= maxBytes) break;
         const remaining = maxBytes - totalBytes;
         const readResult = await Promise.race([
           reader.read(),

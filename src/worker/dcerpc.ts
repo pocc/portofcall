@@ -255,7 +255,7 @@ async function readPDU(
       ? headerBuf[8] | (headerBuf[9] << 8)
       : (headerBuf[8] << 8) | headerBuf[9];
 
-    if (fragLen < 16 || fragLen > 65536) {
+    if (fragLen < 16 || fragLen > 65535) {
       throw new Error(`Invalid fragment length: ${fragLen}`);
     }
 
@@ -265,6 +265,10 @@ async function readPDU(
       if (done || !value) break;
       chunks.push(value);
       totalBytes += value.length;
+    }
+
+    if (totalBytes < fragLen) {
+      throw new Error(`Incomplete DCERPC PDU: expected ${fragLen} bytes, got ${totalBytes}`);
     }
 
     // Combine all chunks
@@ -340,6 +344,9 @@ function parseBindAck(pdu: Uint8Array): {
 
   // Secondary address (length-prefixed string)
   const secAddrLen = read16(24);
+  if (26 + secAddrLen > pdu.length) {
+    throw new Error('Truncated DCE/RPC BindAck: secondary address exceeds buffer');
+  }
   const secAddrBytes = pdu.slice(26, 26 + secAddrLen);
   // Remove null terminator if present
   const secAddr = new TextDecoder().decode(

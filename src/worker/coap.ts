@@ -787,48 +787,59 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
     let msgId = (initMsg[2] << 8) | initMsg[3];
     await writer.write(initMsg);
 
-    while (blocksReceived < maxBlocks) {
-      // RFC 7959 §2.4: wait for response to the CON request we just sent.
-      const pdu = await readBlockResponse();
+    try {
+      while (blocksReceived < maxBlocks) {
+        // RFC 7959 §2.4: wait for response to the CON request we just sent.
+        const pdu = await readBlockResponse();
 
-      const resp = parseCoAPResponse(pdu);
+        const resp = parseCoAPResponse(pdu);
 
-      // Verify the response carries an expected code before accepting payload.
-      if (resp.code !== COAP_CODE_CONTENT && resp.code !== COAP_CODE_CONTINUE) {
-        // Server returned an error (4.xx / 5.xx) or unexpected code — stop.
-        break;
+        // Verify the response carries an expected code before accepting payload.
+        if (resp.code !== COAP_CODE_CONTENT && resp.code !== COAP_CODE_CONTINUE) {
+          // Server returned an error (4.xx / 5.xx) or unexpected code — stop.
+          break;
+        }
+
+        // Content-Format from first response
+        if (contentFormat === undefined && resp.contentFormat !== undefined) {
+          contentFormat = resp.contentFormat;
+        }
+
+        // Check response for Block2 option in raw options
+        const { block2, rawPayload } = extractBlock2AndPayload(pdu);
+
+        // RFC 7959 §2.4: validate the received block number matches what we requested.
+        // A mismatch indicates a server bug or a response belonging to a different
+        // request — accepting out-of-order blocks would corrupt the assembled payload.
+        if (block2 && block2.num !== nextBlockNum) {
+          throw new Error(
+            `CoAP block sequence error: expected block ${nextBlockNum}, received block ${block2.num}`
+          );
+        }
+
+        if (rawPayload) {
+          payloadChunks.push(rawPayload);
+          totalBytes += rawPayload.length;
+        }
+        blocksReceived++;
+
+        if (!block2 || !block2.more) {
+          // No Block2 option (server returned everything in one go) or M=0 (last block)
+          break;
+        }
+
+        // More blocks to fetch — send next CON request, then loop back to read.
+        nextBlockNum = block2.num + 1;
+        msgId = (msgId + 1) & 0xFFFF;
+        const blockReq = buildCoAPBlockRequest(path, nextBlockNum, block2.szx, msgId);
+        // Send the next block request AFTER receiving the previous response (RFC 7959 §2.4)
+        await writer.write(blockReq);
       }
-
-      // Content-Format from first response
-      if (contentFormat === undefined && resp.contentFormat !== undefined) {
-        contentFormat = resp.contentFormat;
-      }
-
-      // Check response for Block2 option in raw options
-      const { block2, rawPayload } = extractBlock2AndPayload(pdu);
-
-      if (rawPayload) {
-        payloadChunks.push(rawPayload);
-        totalBytes += rawPayload.length;
-      }
-      blocksReceived++;
-
-      if (!block2 || !block2.more) {
-        // No Block2 option (server returned everything in one go) or M=0 (last block)
-        break;
-      }
-
-      // More blocks to fetch — send next CON request, then loop back to read.
-      nextBlockNum = block2.num + 1;
-      msgId = (msgId + 1) & 0xFFFF;
-      const blockReq = buildCoAPBlockRequest(path, nextBlockNum, block2.szx, msgId);
-      // Send the next block request AFTER receiving the previous response (RFC 7959 §2.4)
-      await writer.write(blockReq);
+    } finally {
+      writer.releaseLock();
+      reader.releaseLock();
+      socket.close();
     }
-
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
 
     // Assemble full payload
     const combined = new Uint8Array(totalBytes);
@@ -839,7 +850,9 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
     try {
       payloadStr = new TextDecoder('utf-8', { fatal: true }).decode(combined);
     } catch {
-      payloadStr = btoa(String.fromCharCode(...combined));
+      let binaryStr = '';
+      for (let i = 0; i < combined.length; i++) binaryStr += String.fromCharCode(combined[i]);
+      payloadStr = btoa(binaryStr);
     }
 
     return new Response(JSON.stringify({

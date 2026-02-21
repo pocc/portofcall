@@ -697,11 +697,15 @@ export async function handleCephRestHealth(request: Request): Promise<Response> 
 
     // Auth: basic auth for MGR restful module, or Dashboard API
     if (apiKey && apiSecret) {
-      const creds = btoa(`${apiKey}:${apiSecret}`);
-      headers['Authorization'] = `Basic ${creds}`;
+      const ab = new TextEncoder().encode(`${apiKey}:${apiSecret}`);
+      let ab2 = '';
+      for (const byte of ab) ab2 += String.fromCharCode(byte);
+      headers['Authorization'] = `Basic ${btoa(ab2)}`;
     } else if (username && password) {
-      const creds = btoa(`${username}:${password}`);
-      headers['Authorization'] = `Basic ${creds}`;
+      const ub = new TextEncoder().encode(`${username}:${password}`);
+      let ub2 = '';
+      for (const byte of ub) ub2 += String.fromCharCode(byte);
+      headers['Authorization'] = `Basic ${btoa(ub2)}`;
     }
 
     const scheme = port === 8003 ? 'https' : 'http';
@@ -867,9 +871,15 @@ function mgrAuth(body: {
   const headers: Record<string, string> = { Accept: 'application/json' };
 
   if (body.apiKey && body.apiSecret) {
-    headers['Authorization'] = `Basic ${btoa(`${body.apiKey}:${body.apiSecret}`)}`;
+    const ab = new TextEncoder().encode(`${body.apiKey}:${body.apiSecret}`);
+    let ab2 = '';
+    for (const byte of ab) ab2 += String.fromCharCode(byte);
+    headers['Authorization'] = `Basic ${btoa(ab2)}`;
   } else if (body.username && body.password) {
-    headers['Authorization'] = `Basic ${btoa(`${body.username}:${body.password}`)}`;
+    const ub = new TextEncoder().encode(`${body.username}:${body.password}`);
+    let ub2 = '';
+    for (const byte of ub) ub2 += String.fromCharCode(byte);
+    headers['Authorization'] = `Basic ${btoa(ub2)}`;
   }
 
   return { baseUrl, headers };

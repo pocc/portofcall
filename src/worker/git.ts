@@ -137,12 +137,25 @@ async function readPktLines(
     const lenStr = decoder.decode(lenResult.data);
     const pktLen = parseInt(lenStr, 16);
 
-    // 0000 = flush packet (end of ref advertisement)
+    // 0000 = flush packet (end of ref advertisement / section)
     if (pktLen === 0) {
       break;
     }
 
-    // Sanity check
+    // Git protocol v2 special single-byte packets (RFC 9116 / git-protocol-v2):
+    //   0001 = delimiter packet — marks boundary between request and response
+    //   0002 = response-end packet — marks end of entire multiplexed response
+    if (pktLen === 1) {
+      lines.push('\x01DELIMITER');
+      continue;
+    }
+    if (pktLen === 2) {
+      lines.push('\x01RESPONSE_END');
+      break;
+    }
+
+    // Sanity check: valid data pkt-lines are 4–65524 bytes (4-byte length prefix
+    // + up to 65516 bytes of payload). Values 3 or >65524 are protocol errors.
     if (pktLen < 4 || pktLen > 65520) {
       throw new Error(`Invalid pkt-line length: ${lenStr} (${pktLen})`);
     }

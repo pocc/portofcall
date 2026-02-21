@@ -189,7 +189,7 @@ function decodeChunkedBytes(data: Uint8Array): Uint8Array {
   while (pos < data.length) {
     // Find end of chunk-size line (\r\n)
     let lineEnd = -1;
-    for (let i = pos; i < data.length - 1; i++) {
+    for (let i = pos; i + 1 < data.length; i++) {
       if (data[i] === 13 && data[i + 1] === 10) { // \r\n
         lineEnd = i;
         break;
@@ -612,7 +612,10 @@ async function winrmFetch(
   password: string,
   timeout: number,
 ): Promise<{ statusCode: number; body: string }> {
-  const credentials = btoa(`${username}:${password}`);
+  const credBytes = new TextEncoder().encode(`${username}:${password}`);
+  let credBinary = '';
+  for (const byte of credBytes) credBinary += String.fromCharCode(byte);
+  const credentials = btoa(credBinary);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
 

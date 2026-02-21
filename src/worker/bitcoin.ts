@@ -180,6 +180,10 @@ function parseVersionPayload(data: Uint8Array): {
   const version = view.getInt32(offset, true);
   offset += 4;
 
+  if (version < 70001) {
+    throw new Error(`Unsupported Bitcoin version: ${version} (minimum 70001)`);
+  }
+
   const services = view.getBigUint64(offset, true);
   offset += 8;
 
@@ -397,6 +401,13 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
           // Timeout reading verack — that's ok, handshake still succeeded
         }
 
+        if (!receivedVerack) {
+          writer.releaseLock();
+          reader.releaseLock();
+          socket.close();
+          return { success: false, error: 'VERACK not received within timeout' };
+        }
+
         writer.releaseLock();
         reader.releaseLock();
         socket.close();
@@ -475,8 +486,13 @@ function readVarint(view: DataView, offset: number): { value: number; bytesRead:
   } else if (first === 0xfe) {
     return { value: view.getUint32(offset + 1, true), bytesRead: 5 };
   } else {
-    // 0xff — 8-byte varint; we read only the low 32 bits (enough for mempool counts)
-    return { value: view.getUint32(offset + 1, true), bytesRead: 9 };
+    const lo = view.getUint32(offset + 1, true);
+    const hi = view.getUint32(offset + 5, true);
+    if (hi !== 0) {
+      // Value exceeds 2^32; return max safe integer as sentinel
+      return { value: Number.MAX_SAFE_INTEGER, bytesRead: 9 };
+    }
+    return { value: lo, bytesRead: 9 };
   }
 }
 

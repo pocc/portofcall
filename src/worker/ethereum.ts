@@ -128,9 +128,6 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
-/** Auto-incrementing request ID for JSON-RPC call correlation */
-let nextRpcId = 1;
-
 /**
  * Execute a single Ethereum JSON-RPC call via HTTP POST.
  *
@@ -146,9 +143,9 @@ async function callRPC(
   params: unknown[],
   timeoutMs: number,
 ): Promise<{ result?: unknown; error?: string; errorData?: unknown; latencyMs: number }> {
-  const requestId = nextRpcId++;
+  const id = Math.floor(Math.random() * 2147483647) + 1;
   const url = `http://${host}:${port}/`;
-  const body = JSON.stringify({ jsonrpc: '2.0', method, params, id: requestId });
+  const body = JSON.stringify({ jsonrpc: '2.0', method, params, id });
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -178,9 +175,9 @@ async function callRPC(
       };
     }
 
-    if (json.id !== requestId) {
+    if (String(json.id) !== String(id)) {
       return {
-        error: `JSON-RPC id mismatch: sent ${requestId}, received ${json.id}`,
+        error: `JSON-RPC id mismatch: sent ${id}, received ${json.id}`,
         latencyMs,
       };
     }

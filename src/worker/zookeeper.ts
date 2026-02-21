@@ -589,11 +589,14 @@ export async function handleZooKeeperGet(request: Request): Promise<Response> {
           try {
             nodeData = new TextDecoder('utf-8', { fatal: true }).decode(rawBytes);
           } catch {
-            nodeData = btoa(String.fromCharCode(...rawBytes));
+            let binaryStr = '';
+            for (let i = 0; i < rawBytes.length; i++) binaryStr += String.fromCharCode(rawBytes[i]);
+            nodeData = btoa(binaryStr);
           }
         }
 
         // stat structure (80 bytes): czxid(8)+mzxid(8)+ctime(8)+mtime(8)+version(4)+cversion(4)+aversion(4)+ephemeralOwner(8)+dataLength(4)+numChildren(4)+pzxid(8)
+        if (dataOffset + 80 > data.length) throw new Error('Incomplete ZooKeeper stat structure: expected 80 bytes at offset ' + dataOffset + ', got ' + (data.length - dataOffset));
         const stat = data.slice(dataOffset, dataOffset + 80);
         const sv = new DataView(stat.buffer, stat.byteOffset, stat.byteLength);
 

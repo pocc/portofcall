@@ -162,6 +162,7 @@ function parseMessages(data: Uint8Array): Array<{ messageId: number; name: strin
     const messageLength = view.getUint32(0, true);
     const messageId = view.getUint32(8, true);
 
+    if (messageLength > 65535) break; // SCCP messages have a practical upper bound
     if (messageLength > data.length) break; // Reject impossibly large values
     const totalSize = 4 + messageLength; // length field + payload
 

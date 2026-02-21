@@ -423,7 +423,7 @@ export async function handleTFTPWrite(request: Request): Promise<Response> {
         let blockNum = 1;
         let offset = 0;
 
-        while (offset <= fileData.length) {
+        while (offset < fileData.length) {
           const end = Math.min(offset + TFTP_BLOCK_SIZE, fileData.length);
           const chunk = fileData.slice(offset, end);
           await writer.write(buildDATAPacket(blockNum, chunk));
@@ -461,7 +461,11 @@ export async function handleTFTPWrite(request: Request): Promise<Response> {
           if (chunk.length < TFTP_BLOCK_SIZE) break;
 
           offset += TFTP_BLOCK_SIZE;
-          blockNum++;
+          blockNum = (blockNum + 1) & 0xFFFF;
+          if (blockNum === 0) {
+            errorMessage = 'File too large for TFTP (block number overflow)';
+            break;
+          }
         }
       }
     }

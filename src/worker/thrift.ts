@@ -219,7 +219,7 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
     }
     case T_LIST: {
       const elemType = data[offset++];
-      const size = readI32(data, offset);
+      const size = Math.min(readI32(data, offset), 10000);
       offset += 4;
       const items: string[] = [];
       const displayLimit = 20;
@@ -236,7 +236,7 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
     case T_MAP: {
       const keyType = data[offset++];
       const valType = data[offset++];
-      const size = readI32(data, offset);
+      const size = Math.min(readI32(data, offset), 10000);
       offset += 4;
       const entries: string[] = [];
       const displayLimit = 20;

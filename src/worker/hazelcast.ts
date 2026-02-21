@@ -6,7 +6,7 @@
  *
  * Hazelcast Open Binary Client Protocol v2 (Hazelcast 4.x / 5.x) uses a
  * multi-frame message model. Each frame has a 6-byte header:
- *   [frame_length: int32 LE] [flags: uint16 LE]
+ *   [frame_length: uint32 LE] [flags: uint16 LE]
  *
  * The initial frame of every request/response carries a fixed preamble in
  * its content area (immediately after the 6-byte frame header):
@@ -202,7 +202,7 @@ function readString(data: Uint8Array, offset: number): { value: string; nextOffs
  * Build a Hazelcast initial frame (single-frame message).
  *
  * Wire layout (protocol v2):
- *   [frame_length: int32 LE]      offset 0   (includes the 6-byte header)
+ *   [frame_length: uint32 LE]      offset 0   (includes the 6-byte header)
  *   [flags:        uint16 LE]     offset 4
  *   --- content area (initial-frame preamble) ---
  *   [message_type:  int32 LE]     offset 6
@@ -621,7 +621,7 @@ export async function handleHazelcastMapGet(request: Request): Promise<Response>
       if (sizeResp.length >= MIN_INITIAL_FRAME_SIZE + 4) {
         const sizePayload = framePayload(sizeResp);
         if (sizePayload.length >= 4) {
-          result.size = new DataView(sizePayload.buffer, sizePayload.byteOffset).getInt32(0, true);
+          result.size = new DataView(sizePayload.buffer, sizePayload.byteOffset).getUint32(0, true);
         }
       }
 
@@ -1075,7 +1075,7 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
       const sizeResp = await readFrame(reader, 4000);
       if (sizeResp.length >= MIN_INITIAL_FRAME_SIZE + 4) {
         const sp = framePayload(sizeResp);
-        if (sp.length >= 4) result.sizeBefore = new DataView(sp.buffer, sp.byteOffset).getInt32(0, true);
+        if (sp.length >= 4) result.sizeBefore = new DataView(sp.buffer, sp.byteOffset).getUint32(0, true);
       }
 
       await writer.write(buildQueueOfferFrame(queueName, value, BigInt(offerTimeoutMs), BigInt(3)));
@@ -1090,7 +1090,7 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
       const sizeResp2 = await readFrame(reader, 4000);
       if (sizeResp2.length >= MIN_INITIAL_FRAME_SIZE + 4) {
         const sp2 = framePayload(sizeResp2);
-        if (sp2.length >= 4) result.sizeAfter = new DataView(sp2.buffer, sp2.byteOffset).getInt32(0, true);
+        if (sp2.length >= 4) result.sizeAfter = new DataView(sp2.buffer, sp2.byteOffset).getUint32(0, true);
       }
     } finally {
       reader.releaseLock();

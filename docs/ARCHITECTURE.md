@@ -1,6 +1,6 @@
 # Architecture
 
-Technical architecture of Port of Call, a React + Vite + TypeScript application deployed as a Cloudflare Worker.
+Technical architecture of Port of Call — a browser-to-TCP bridge deployed as a Cloudflare Worker.
 
 ## Stack Overview
 
@@ -10,26 +10,27 @@ Technical architecture of Port of Call, a React + Vite + TypeScript application 
 │  ┌────────────────────────────────────────────┐  │
 │  │  React 19 UI (TypeScript)                  │  │
 │  │  - Vite 7 dev/build                        │  │
+│  │  - 244 protocol clients                    │  │
 │  │  - WebSocket connections                   │  │
 │  └────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
-                      ↕ HTTPS/WebSocket
+                      ↕ HTTPS / WebSocket
 ┌──────────────────────────────────────────────────┐
 │         Cloudflare Worker (Edge)                 │
 │  ┌────────────────────────────────────────────┐  │
-│  │  Worker Runtime                            │  │
+│  │  Worker Runtime (128 MiB isolate)          │  │
 │  │  - Serves static React build               │  │
-│  │  - API endpoints (/api/*)                  │  │
-│  │  - WebSocket upgrades                      │  │
-│  │  - Sockets API connections                 │  │
+│  │  - 244 protocol handler endpoints          │  │
+│  │  - WebSocket upgrades → TCP tunnels        │  │
+│  │  - SSRF host validation                    │  │
+│  │  - Backpressure-aware data plane           │  │
 │  └────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
-                      ↕ TCP (connect API)
+                      ↕ TCP (cloudflare:sockets)
 ┌──────────────────────────────────────────────────┐
 │         Backend Services                         │
-│  - SSH servers (port 22)                         │
-│  - Databases (port 3306, 5432, etc.)             │
-│  - Custom TCP services                           │
+│  - SSH servers, databases, message queues        │
+│  - Any TCP-accessible service (ports 1-65535)    │
 └──────────────────────────────────────────────────┘
 ```
 
@@ -39,380 +40,201 @@ Technical architecture of Port of Call, a React + Vite + TypeScript application 
 portofcall/
 ├── src/
 │   ├── worker/
-│   │   └── index.ts          # Cloudflare Worker entry point
-│   ├── App.tsx               # React root component
-│   ├── App.css               # Component styles
-│   ├── main.tsx              # React entry point
-│   └── index.css             # Global styles
-├── public/
-│   └── anchor.svg            # Favicon (nautical theme)
+│   │   ├── index.ts              # Worker entry: router, pipe functions, TCP ping
+│   │   ├── host-validator.ts     # SSRF prevention (IP/hostname blocklist)
+│   │   ├── cloudflare-detector.ts # Cloudflare IP detection
+│   │   ├── ssh.ts                # SSH protocol (banner, kex, auth)
+│   │   ├── ssh2-impl.ts          # SSH2 client library
+│   │   ├── tcp.ts                # Raw TCP send/receive
+│   │   ├── websocket.ts          # WebSocket probe
+│   │   └── [240+ protocol handlers]
+│   ├── components/               # React UI components (240+ protocol clients)
+│   ├── App.tsx                   # React root
+│   └── main.tsx                  # React entry
 ├── docs/
-│   ├── PROJECT_OVERVIEW.md   # High-level overview
-│   ├── NAMING_HISTORY.md     # Name brainstorming
-│   ├── SOCKETS_API.md        # Sockets API reference
-│   └── ARCHITECTURE.md       # This file
-├── dist/                     # Built React app (generated)
-├── package.json
-├── tsconfig.json             # TypeScript config
-├── vite.config.ts            # Vite build config
-├── wrangler.toml             # Cloudflare Workers config
-└── README.md
+│   ├── ARCHITECTURE.md           # This file
+│   ├── PROTOCOL_REGISTRY.md      # Protocol status and scaling limits
+│   ├── GETTING_STARTED.md        # Quick start guide
+│   ├── PROJECT_OVERVIEW.md       # High-level overview
+│   ├── protocols/                # 319 protocol specification files
+│   ├── reference/                # Technical references (Sockets API, TCP list, etc.)
+│   ├── guides/                   # Implementation and testing guides
+│   └── changelog/                # Bug fixes by protocol + audit pass reports
+├── dist/                         # Built React app
+├── wrangler.toml                 # Cloudflare Workers config
+└── package.json
 ```
 
-## Component Details
+## Data Plane
 
-### 1. React Frontend (Vite + TypeScript)
-
-**Purpose**: User interface for TCP connectivity testing
-
-**Technology**:
-- React 19 (latest)
-- TypeScript (strict mode)
-- Vite 7 (dev server + build)
-- CSS (no framework)
-
-**Build Process**:
-```bash
-npm run build  # TypeScript → JavaScript, bundled to dist/
-```
-
-**Output**: Static assets in `dist/` directory
-
-### 2. Cloudflare Worker
-
-**Purpose**: Edge runtime that serves the app and handles TCP connections
-
-**Entry Point**: `src/worker/index.ts`
-
-**Responsibilities**:
-1. **Static Asset Serving**: Serves built React app from `dist/`
-2. **API Endpoints**: Handles `/api/ping` and `/api/connect`
-3. **WebSocket Upgrades**: Converts HTTP to WebSocket for tunneling
-4. **TCP Connections**: Uses `cloudflare:sockets` to connect to backends
-5. **Data Proxying**: Pipes data between WebSocket and TCP socket
-
-**Configuration**: `wrangler.toml`
-- Enables Sockets API
-- Configures Smart Placement
-- Binds assets from `dist/`
-
-### 3. Sockets API Integration
-
-**Import**:
-```typescript
-import { connect } from 'cloudflare:sockets';
-```
-
-**Connection Flow**:
-1. Browser sends request to `/api/ping` or `/api/connect`
-2. Worker parses host and port from request
-3. Worker calls `connect('host:port')`
-4. TCP three-way handshake occurs
-5. For pings: measure time, close socket, return RTT
-6. For tunnels: pipe WebSocket ↔ TCP bidirectionally
-
-## Data Flow Diagrams
-
-### TCP Ping Flow
-
-```
-Browser                Worker                 Backend
-   │                      │                      │
-   │──POST /api/ping─────→│                      │
-   │  {host, port}        │                      │
-   │                      │──connect(host:port)→│
-   │                      │←──TCP SYN/ACK───────│
-   │                      │  (handshake done)    │
-   │                      │──close()────────────→│
-   │←──{success, rtt}─────│                      │
-```
+The core tunnel connects a browser WebSocket to a backend TCP socket through two pipe functions. These were hardened across audit passes 13-19 (see `docs/changelog/reviews/` for full history).
 
 ### WebSocket Tunnel Flow
 
 ```
-Browser                Worker                 Backend
-   │                      │                      │
-   │──WS Upgrade─────────→│                      │
-   │                      │──connect(host:port)→│
-   │                      │←──TCP Connected─────│
-   │←──WS Accept──────────│                      │
-   │                      │                      │
-   │──WS: data───────────→│──TCP: data─────────→│
-   │                      │                      │
-   │←──WS: response───────│←──TCP: response─────│
-   │                      │                      │
+Browser                  Worker                      Backend
+   │                        │                            │
+   │──WS Upgrade───────────→│                            │
+   │                        │──connect(host:port)───────→│
+   │                        │←──TCP Connected────────────│
+   │←──101 Switching────────│                            │
+   │                        │                            │
+   │──WS msg──────────────→│──writer.write()───────────→│  (serialized via writeChain)
+   │                        │                            │
+   │←──WS msg───────────────│←──reader.read()────────────│  (gated by bufferedAmount)
 ```
 
-## Smart Placement
+### `pipeSocketToWebSocket` — Backend → Browser
 
-### How It Works
+**Source:** `src/worker/index.ts` (function `pipeSocketToWebSocket`)
 
-1. **Initial Request**: User in San Francisco connects
-2. **Edge Start**: Worker runs in SFO datacenter
-3. **Backend Connection**: Worker connects to SSH server in Virginia
-4. **Detection**: Worker detects repeated connections to Virginia
-5. **Migration**: Worker "hot-migrates" to Ashburn datacenter
-6. **Result**: Latency from Worker→SSH drops from 70ms to 2ms
+Reads from the TCP socket and forwards to the WebSocket. Implements two safety mechanisms:
 
-### Configuration
-
-```toml
-[placement]
-mode = "smart"  # Enable automatic migration
+**Backpressure (1 MiB High-Water Mark):**
+```
+while (ws.bufferedAmount > 1 MiB) {
+  yield 50ms               ← Worker pauses reading
+}                           ← TCP receive buffer fills
+                            ← Kernel withholds ACKs
+reader.read()               ← Backend's TCP window closes
+ws.send(chunk)              ← Throughput = client consumption rate
 ```
 
-## Development Workflow
+The Worker never buffers more than ~1.1 MiB per connection (1 MiB HWM + ~64 KB in-flight read). This protects the 128 MiB isolate from OOM on slow clients receiving bulk transfers.
 
-### Local Development
+**Payload Chunking (1 MiB WebSocket Limit):**
 
-```bash
-# Terminal 1: Vite dev server (React hot reload)
-npm run dev
-# Visit: http://localhost:5173
+If a TCP read returns >1 MiB (unlikely but not guaranteed), the payload is split into <=1 MiB slices via zero-copy `subarray()` before sending. Standard chunks (<=64 KB) take a fast path with no overhead.
 
-# Terminal 2: Wrangler dev (Worker emulation)
-npm run worker:dev
-# Visit: http://localhost:8787
-```
+### `pipeWebSocketToSocket` — Browser → Backend
 
-**Note**: In local dev, use Vite server for UI work, Wrangler for Worker testing.
+**Source:** `src/worker/index.ts` (function `pipeWebSocketToSocket`)
 
-### Build for Production
+Receives WebSocket messages and writes to the TCP socket. Implements:
 
-```bash
-# 1. Build React app
-npm run build
-# Output: dist/
+**Promise-Chain Serialization:**
 
-# 2. Deploy to Cloudflare
-npm run worker:deploy
-# Worker serves dist/ via ASSETS binding
-```
+The `message` event handler is synchronous and appends each write to a `writeChain` promise queue. This guarantees strict FIFO ordering of TCP writes regardless of V8 event loop timing.
 
-## Environment Variables
+**Drain-Before-Close:**
 
-### Worker Environment
+The `close` handler chains cleanup off `writeChain` via `.then(cleanup, cleanup)`, ensuring all queued writes flush to TCP before the writer is closed. The two-argument form handles both fulfilled and rejected chain states.
 
-Defined in `wrangler.toml`:
+**Error Bypass:**
 
-```toml
-[env.dev]
-vars = { ENVIRONMENT = "development" }
+The `error` handler calls `writer.close()` directly (not chained) for immediate teardown — queued writes are moot when the WebSocket is dead.
 
-[env.production]
-vars = { ENVIRONMENT = "production" }
-```
+### TCP Ping
 
-Access in Worker:
-```typescript
-export interface Env {
-  ENVIRONMENT: string;
-  ASSETS: Fetcher;  // Static asset binding
-}
-```
+**Source:** `src/worker/index.ts` (function `handleTcpPing`)
+
+Measures TCP handshake RTT using `performance.now()` (monotonic, sub-millisecond). Results are rounded to 2 decimal places. Reported RTT includes ~0.5-5ms of Worker scheduling overhead, which is inherent to the execution model.
+
+### Scaling Limits
+
+| Metric | Value |
+|--------|-------|
+| Memory per bulk-transfer connection | ~1.1 MiB (worst case) |
+| Memory per interactive connection | ~67 KB (typical) |
+| Max concurrent bulk transfers | ~102 (in 128 MiB isolate) |
+| Max concurrent interactive sessions | ~1,700 |
+| Worker CPU time limit | 30s per request (Paid plan) |
+| WebSocket message size limit | 1 MiB |
+| Backpressure drain interval | 50ms |
+| TCP connect timeout | 10s |
+
+## Security
+
+### SSRF Prevention
+
+**Source:** `src/worker/host-validator.ts`
+
+All connections pass through `isBlockedHost()` at the router level before any protocol handler runs.
+
+**Blocked IPv4 Ranges:**
+
+| CIDR | Purpose |
+|------|---------|
+| `127.0.0.0/8` | Loopback |
+| `10.0.0.0/8` | RFC 1918 private |
+| `172.16.0.0/12` | RFC 1918 private |
+| `192.168.0.0/16` | RFC 1918 private |
+| `169.254.0.0/16` | Link-local (includes AWS/GCP/Azure metadata at `169.254.169.254`) |
+| `100.64.0.0/10` | CGN / shared address space |
+| `192.0.0.0/29` | IANA special |
+| `0.0.0.0/32` | Unspecified |
+| `255.255.255.255/32` | Broadcast |
+
+**Blocked IPv6:**
+
+| Range | Purpose |
+|-------|---------|
+| `::1` | Loopback |
+| `::` | Unspecified |
+| `fc00::/7` (fc, fd prefixes) | Unique Local Address (ULA) |
+| `fe80::/10` | Link-local |
+| `::ffff:x.x.x.x` | IPv4-mapped — extracted and checked against IPv4 blocklist |
+
+**Blocked Hostnames:**
+
+`localhost`, `*.internal`, `*.local`, `*.localhost`
+
+**Known Limitation:** DNS rebinding (a hostname that resolves to a private IP) cannot be fully prevented because `cloudflare:sockets` `connect()` resolves hostnames internally. The hostname blocklist is a partial mitigation.
+
+### Cloudflare IP Detection
+
+Connections to Cloudflare-proxied IPs are blocked by `cloudflare-detector.ts` to prevent loop-back attacks through the CDN.
+
+### Resource Lifecycle
+
+All stream readers and writers are released in `finally` blocks. Socket connections are closed in all exit paths (success, error, close). The SSH banner reader in `ssh.ts` releases the reader lock in a `finally` block with a nested `try/catch` to handle the "already released" edge case.
 
 ## API Endpoints
 
 ### POST /api/ping
 
-**Purpose**: TCP connectivity test
-
-**Request**:
-```json
-{
-  "host": "example.com",
-  "port": 22
-}
-```
-
-**Response (Success)**:
-```json
-{
-  "success": true,
-  "host": "example.com",
-  "port": 22,
-  "rtt": 42,
-  "message": "TCP Ping Success: 42ms"
-}
-```
-
-**Response (Failure)**:
-```json
-{
-  "success": false,
-  "error": "Connection refused"
-}
-```
+TCP connectivity test. Returns `{ success, host, port, rtt, message }`.
 
 ### POST /api/connect
 
-**Purpose**: WebSocket-to-TCP tunnel establishment
+WebSocket-to-TCP tunnel. Returns `101 Switching Protocols`. Data flows bidirectionally as binary/text WebSocket messages.
 
-**Request**: WebSocket upgrade with host/port in body
+### Protocol Handlers
 
-**Response**: 101 Switching Protocols (WebSocket established)
-
-**Data Flow**: Bidirectional binary/text streaming
-
-## Security Considerations
-
-### 1. CORS
-
-Worker should implement CORS headers for API endpoints:
-
-```typescript
-headers: {
-  'Access-Control-Allow-Origin': '*',  // Or specific origin
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
-}
-```
-
-### 2. Rate Limiting
-
-Prevent abuse of socket connections:
-
-```typescript
-// TODO: Implement rate limiting
-// - Per IP address
-// - Per host:port combination
-// - Global connection count
-```
-
-### 3. Allowlists
-
-Consider restricting connectable hosts:
-
-```typescript
-const ALLOWED_HOSTS = ['example.com', 'trusted-server.net'];
-if (!ALLOWED_HOSTS.includes(host)) {
-  return new Response('Host not allowed', { status: 403 });
-}
-```
-
-### 4. Input Validation
-
-Always validate and sanitize:
-
-```typescript
-if (!host || !port || port < 1 || port > 65535) {
-  return new Response('Invalid input', { status: 400 });
-}
-```
+244 protocol-specific endpoints (e.g., `/api/ssh/connect`, `/api/redis/send`, `/api/mysql/query`). Each validates input, connects to the target, and returns protocol-specific responses.
 
 ## Deployment
 
-### Cloudflare Workers Deployment
+```bash
+npm run build       # TypeScript + Vite → dist/
+npx wrangler deploy # Deploy Worker + static assets
+```
+
+### Smart Placement
+
+```toml
+[placement]
+mode = "smart"
+```
+
+The Worker automatically migrates to the datacenter closest to the backend, reducing Worker→backend latency from ~70ms to ~2ms for repeated connections.
+
+## Development
 
 ```bash
-wrangler deploy
+npm run dev          # Vite dev server (React hot reload)
+npx wrangler dev     # Worker dev server (API endpoints)
+npm run build        # Validate TypeScript + build
 ```
 
-**What happens**:
-1. Code in `src/worker/index.ts` is bundled
-2. Assets in `dist/` are uploaded
-3. Worker is deployed to Cloudflare's global network
-4. Available at `portofcall.workers.dev` (or custom domain)
+## Certification Status
 
-### Custom Domain
+The data plane was certified as "Industrial Grade" after 19 audit passes (February 2026):
 
-In `wrangler.toml`:
-```toml
-routes = [
-  { pattern = "portofcall.example.com", custom_domain = true }
-]
-```
+- **Backpressure:** `bufferedAmount` gating prevents OOM on slow clients
+- **Chunking:** Zero-copy `subarray()` prevents `RangeError` on oversized payloads
+- **Serialization:** Promise-chain FIFO prevents out-of-order TCP writes
+- **Resource safety:** All reader/writer locks released in `finally` blocks
+- **SSRF:** Comprehensive IPv4/IPv6/hostname blocklist with IPv4-mapped IPv6 delegation
 
-## Performance Characteristics
-
-### Latency Breakdown
-
-For a user in NYC connecting to SSH server in London:
-
-| Segment | Latency | Notes |
-|---------|---------|-------|
-| User → Edge | ~10ms | Cloudflare's global network |
-| Edge → Backend | ~70ms | Smart Placement can reduce this |
-| TCP Handshake | ~3ms | Three-way handshake |
-| **Total** | **~83ms** | For initial connection |
-
-### With Smart Placement
-
-After migration:
-
-| Segment | Latency | Notes |
-|---------|---------|-------|
-| User → Edge | ~10ms | Still in NYC |
-| Edge → Backend | ~5ms | Worker moved to London |
-| **Total** | **~15ms** | 5.5x improvement |
-
-## Scaling
-
-Cloudflare Workers automatically scale:
-
-- **Requests**: Handle millions of requests/day
-- **Connections**: Limited by Worker CPU time (50ms per request)
-- **Concurrency**: Workers are isolated but stateless
-- **Global**: Deployed to 300+ locations worldwide
-
-## Future Architecture Enhancements
-
-### 1. Durable Objects (Session State)
-
-```typescript
-export class SSHSession {
-  constructor(state: DurableObjectState) {}
-
-  async fetch(request: Request) {
-    // Persistent SSH session state
-  }
-}
-```
-
-### 2. R2 Storage (Logs/Recordings)
-
-```typescript
-await env.BUCKET.put(`sessions/${id}.log`, data);
-```
-
-### 3. Queue (Background Processing)
-
-```typescript
-await env.QUEUE.send({ type: 'connection-log', host, port });
-```
-
-### 4. Analytics Engine (Metrics)
-
-```typescript
-env.ANALYTICS.writeDataPoint({
-  blobs: [host],
-  doubles: [rtt],
-  indexes: [port],
-});
-```
-
-## Testing Strategy
-
-### Unit Tests
-- Utility functions
-- Data parsing/validation
-- Error handling
-
-### Integration Tests
-- API endpoints
-- WebSocket connections
-- Socket API mocking
-
-### End-to-End Tests
-- Full browser → Worker → backend flow
-- Real TCP connections (test servers)
-- Performance/latency measurements
-
-## Monitoring
-
-Recommended metrics to track:
-
-- **Connection Success Rate**: % of successful `connect()` calls
-- **Average RTT**: Mean TCP handshake time
-- **Error Rates**: By error type (timeout, refused, etc.)
-- **Geographic Distribution**: Where users/workers are
-- **Top Destinations**: Most-connected hosts/ports
+Full audit trail: `docs/changelog/reviews/PROTOCOL_REVIEW_*_PASS.md` (Passes 3-19)

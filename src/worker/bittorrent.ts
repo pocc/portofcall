@@ -280,6 +280,20 @@ export async function handleBitTorrentHandshake(request: Request): Promise<Respo
         const respInfoHash = responseData.slice(28, 48);
         const respPeerId = responseData.slice(48, 68);
 
+        // Validate info_hash matches what we sent
+        for (let i = 0; i < 20; i++) {
+          if (respInfoHash[i] !== infoHashBytes[i]) {
+            return {
+              success: false,
+              host,
+              port,
+              rtt,
+              error: `BitTorrent info_hash mismatch: peer sent different hash`,
+              isBitTorrent: false,
+            };
+          }
+        }
+
         const extensions = parseExtensions(reserved);
         const clientInfo = decodePeerId(respPeerId);
 

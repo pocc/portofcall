@@ -201,6 +201,9 @@ export async function handleRelpConnect(request: Request): Promise<Response> {
 
         // Parse the open response
         const parsed = parseRelpResponse(responseRaw);
+        if (parsed.txnr !== 1) {
+          throw new Error(`RELP txnr mismatch: sent 1, got ${parsed.txnr}`);
+        }
 
         // Extract server capabilities from response data
         const capabilities: Record<string, string> = {};
@@ -341,6 +344,9 @@ export async function handleRelpSend(request: Request): Promise<Response> {
 
         const openResponse = await readRelpResponse(reader, 5000);
         const openParsed = parseRelpResponse(openResponse);
+        if (openParsed.txnr !== 1) {
+          throw new Error(`RELP txnr mismatch: sent 1, got ${openParsed.txnr}`);
+        }
 
         if (openParsed.statusCode !== 200) {
           throw new Error(`RELP open rejected: ${openParsed.statusCode} ${openParsed.statusMessage || ''}`);
@@ -357,6 +363,9 @@ export async function handleRelpSend(request: Request): Promise<Response> {
 
         const syslogResponse = await readRelpResponse(reader, 5000);
         const syslogParsed = parseRelpResponse(syslogResponse);
+        if (syslogParsed.txnr !== 2) {
+          throw new Error(`RELP txnr mismatch: sent 2, got ${syslogParsed.txnr}`);
+        }
 
         // Step 3: Close session
         const closeFrame = buildRelpFrame(3, 'close', '');

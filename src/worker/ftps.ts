@@ -295,7 +295,12 @@ export class FTPSSession {
     }
     const [, h1, h2, h3, h4, p1, p2] = match;
     const host = `${h1}.${h2}.${h3}.${h4}`;
-    const port = parseInt(p1, 10) * 256 + parseInt(p2, 10);
+    const p1Num = parseInt(p1, 10);
+    const p2Num = parseInt(p2, 10);
+    if (isNaN(p1Num) || isNaN(p2Num) || p1Num < 0 || p1Num > 255 || p2Num < 0 || p2Num > 255) {
+      throw new Error('Invalid PASV response: port octets out of range');
+    }
+    const port = p1Num * 256 + p2Num;
     return { host, port };
   }
 

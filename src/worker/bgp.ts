@@ -605,8 +605,9 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
         let keepaliveCount = 0;
         let updateCount = 0;
         const collectDeadline = Date.now() + collectMs;
+        let peerNotification: { errorCode?: number; errorSubCode?: number; errorMessage?: string } | null = null;
 
-        while (Date.now() < collectDeadline &&
+        outer: while (Date.now() < collectDeadline &&
                (routes.length + withdrawnRoutes.length) < maxRoutes) {
           const timeLeft = Math.max(collectDeadline - Date.now(), 0);
           const timer = new Promise<{ value: undefined; done: true }>(res =>
@@ -640,7 +641,12 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
                 if (withdrawnRoutes.length < maxRoutes) withdrawnRoutes.push(w);
               }
             } else if (parsed.type === MSG_NOTIFICATION) {
-              break;
+              peerNotification = {
+                errorCode: parsed.errorCode,
+                errorSubCode: parsed.errorSubcode,
+                errorMessage: parsed.errorName ?? 'BGP NOTIFICATION received',
+              };
+              break outer;
             }
           }
           buffer = buffer.slice(off);
@@ -649,7 +655,7 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
         reader.releaseLock(); writer.releaseLock(); socket.close();
 
         return {
-          success: true,
+          success: peerNotification === null,
           latencyMs: Date.now() - startTime,
           peerOpen: {
             peerAS:       peerOpen.peerAS,
@@ -662,6 +668,7 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
           withdrawnRoutes,
           routeCount:     routes.length,
           withdrawnCount: withdrawnRoutes.length,
+          notification: peerNotification ?? undefined,
         };
       } catch (err) {
         try { reader.releaseLock(); } catch { /* ignore */ }

@@ -246,6 +246,11 @@ function decodeASN1(data: Uint8Array, offset: number): ASN1Element | null {
 
   // Length
   let length = data[pos++];
+  if (length === 0x80) {
+    // BER indefinite length — scan for end-of-contents marker (0x00 0x00)
+    // Not used in valid DER-encoded Kerberos messages; treat as a parse error.
+    throw new Error('BER indefinite length encoding not supported in Kerberos response');
+  }
   if (length & 0x80) {
     const numBytes = length & 0x7F;
     length = 0;

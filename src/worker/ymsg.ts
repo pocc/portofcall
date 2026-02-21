@@ -132,6 +132,21 @@ function md5Hex(input: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Concatenate multiple Uint8Arrays into a single Uint8Array.
+ */
+function concatBytes(...arrays: Uint8Array[]): Uint8Array {
+  let totalLen = 0;
+  for (const arr of arrays) totalLen += arr.length;
+  const result = new Uint8Array(totalLen);
+  let offset = 0;
+  for (const arr of arrays) {
+    result.set(arr, offset);
+    offset += arr.length;
+  }
+  return result;
+}
+
 interface YMSGRequest {
   host: string;
   port?: number;
@@ -190,29 +205,33 @@ function buildYMSGHeader(
   service: number,
   status: number,
   sessionId: number
-): Buffer {
-  const header = Buffer.allocUnsafe(20);
+): Uint8Array {
+  const header = new Uint8Array(20);
+  const view = new DataView(header.buffer);
 
   // Magic "YMSG"
-  header.write('YMSG', 0, 'ascii');
+  header[0] = 0x59; // Y
+  header[1] = 0x4D; // M
+  header[2] = 0x53; // S
+  header[3] = 0x47; // G
 
   // Version (big-endian uint16)
-  header.writeUInt16BE(version, 4);
+  view.setUint16(4, version, false);
 
   // Vendor ID (big-endian uint16)
-  header.writeUInt16BE(vendorId, 6);
+  view.setUint16(6, vendorId, false);
 
   // Payload Length (big-endian uint16)
-  header.writeUInt16BE(payloadLength, 8);
+  view.setUint16(8, payloadLength, false);
 
   // Service Code (big-endian uint16)
-  header.writeUInt16BE(service, 10);
+  view.setUint16(10, service, false);
 
   // Status (big-endian uint32)
-  header.writeUInt32BE(status, 12);
+  view.setUint32(12, status, false);
 
   // Session ID (big-endian uint32)
-  header.writeUInt32BE(sessionId, 16);
+  view.setUint32(16, sessionId, false);
 
   return header;
 }
@@ -220,7 +239,7 @@ function buildYMSGHeader(
 /**
  * Build YMSG ping packet
  */
-function buildYMSGPing(version: number = 16): Buffer {
+function buildYMSGPing(version: number = 16): Uint8Array {
   // Ping has no payload, just header
   return buildYMSGHeader(
     version,    // Version
@@ -235,7 +254,7 @@ function buildYMSGPing(version: number = 16): Buffer {
 /**
  * Parse YMSG packet header
  */
-function parseYMSGHeader(data: Buffer): {
+function parseYMSGHeader(data: Uint8Array): {
   magic: string;
   version: number;
   vendorId: number;
@@ -248,20 +267,21 @@ function parseYMSGHeader(data: Buffer): {
     return null;
   }
 
-  const magic = data.toString('ascii', 0, 4);
-
-  if (magic !== 'YMSG') {
+  // Check YMSG magic
+  if (data[0] !== 0x59 || data[1] !== 0x4D || data[2] !== 0x53 || data[3] !== 0x47) {
     return null;
   }
 
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+
   return {
-    magic,
-    version: data.readUInt16BE(4),
-    vendorId: data.readUInt16BE(6),
-    payloadLength: data.readUInt16BE(8),
-    service: data.readUInt16BE(10),
-    status: data.readUInt32BE(12),
-    sessionId: data.readUInt32BE(16),
+    magic: 'YMSG',
+    version: view.getUint16(4, false),
+    vendorId: view.getUint16(6, false),
+    payloadLength: view.getUint16(8, false),
+    service: view.getUint16(10, false),
+    status: view.getUint32(12, false),
+    sessionId: view.getUint32(16, false),
   };
 }
 
@@ -338,7 +358,7 @@ export async function handleYMSGProbe(request: Request): Promise<Response> {
         });
       }
 
-      const parsed = parseYMSGHeader(Buffer.from(value));
+      const parsed = parseYMSGHeader(value);
 
       if (!parsed) {
         reader.releaseLock();
@@ -463,28 +483,42 @@ export async function handleYMSGVersionDetect(request: Request): Promise<Respons
   }
 }
 
-// YMSG key-value separator bytes
-const KV_SEP = '\xc0\x80';
+// YMSG key-value separator bytes (0xC0, 0x80)
+const KV_SEP_BYTES = new Uint8Array([0xC0, 0x80]);
 
 /**
  * Build a YMSG key-value payload.
  */
-function buildYMSGKV(pairs: [number, string][]): Buffer {
-  const parts: string[] = [];
+function buildYMSGKV(pairs: [number, string][]): Uint8Array {
+  const encoder = new TextEncoder();
+  const segments: Uint8Array[] = [];
   for (const [k, v] of pairs) {
-    parts.push(k.toString(), KV_SEP, v, KV_SEP);
+    segments.push(encoder.encode(k.toString()));
+    segments.push(KV_SEP_BYTES);
+    segments.push(encoder.encode(v));
+    segments.push(KV_SEP_BYTES);
   }
-  return Buffer.from(parts.join(''), 'binary');
+  return concatBytes(...segments);
 }
 
 /**
  * Parse YMSG key-value payload into a Map.
  */
-function parseYMSGKV(payload: Buffer): Map<number, string> {
+function parseYMSGKV(payload: Uint8Array): Map<number, string> {
   const result = new Map<number, string>();
-  const sep = '\xc0\x80';
-  const text = payload.toString('binary');
-  const parts = text.split(sep);
+  // Split on 0xC0 0x80 separator
+  const parts: string[] = [];
+  let start = 0;
+  for (let i = 0; i < payload.length - 1; i++) {
+    if (payload[i] === 0xC0 && payload[i + 1] === 0x80) {
+      parts.push(new TextDecoder().decode(payload.subarray(start, i)));
+      start = i + 2;
+      i++; // skip second byte of separator
+    }
+  }
+  if (start < payload.length) {
+    parts.push(new TextDecoder().decode(payload.subarray(start)));
+  }
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const key = parseInt(parts[i], 10);
     if (!isNaN(key)) result.set(key, parts[i + 1]);
@@ -522,11 +556,11 @@ export async function handleYMSGAuth(request: Request): Promise<Response> {
       // Build AuthReq: service 0x4B, key 0 = Yahoo! ID, key 1 = "1"
       const payload = buildYMSGKV([[0, username], [1, '1']]);
       const header = buildYMSGHeader(version, 0, payload.length, YMSGService.AuthReq, 0, 0);
-      await writer.write(Buffer.concat([header, payload]));
+      await writer.write(concatBytes(header, payload));
       writer.releaseLock();
 
       // Read response
-      const chunks: Buffer[] = [];
+      const chunks: Uint8Array[] = [];
       let total = 0;
       const deadline = Date.now() + 5000;
       while (Date.now() < deadline && total < 1024) {
@@ -536,14 +570,14 @@ export async function handleYMSGAuth(request: Request): Promise<Response> {
             setTimeout(() => rej(new Error('timeout')), deadline - Date.now())),
         ]).catch(() => ({ value: undefined as undefined, done: true as const }));
         if (done || !value) break;
-        chunks.push(Buffer.from(value));
+        chunks.push(value);
         total += value.length;
         if (total >= 20) break; // enough for header + some payload
       }
       reader.releaseLock();
       socket.close();
 
-      const respBuf = Buffer.concat(chunks);
+      const respBuf = concatBytes(...chunks);
       const respHdr = respBuf.length >= 20 ? parseYMSGHeader(respBuf) : null;
       let challenge: string | undefined;
       let authFields: Record<number, string> | undefined;
@@ -583,7 +617,7 @@ export async function handleYMSGAuth(request: Request): Promise<Response> {
  * Complete YMSG v16 login with MD5 challenge-response authentication.
  *
  * Full auth flow:
- *   1. Send AuthReq (service 0x4B) with Yahoo ID → get challenge seed (key 94)
+ *   1. Send AuthReq (service 0x4B) with Yahoo ID -> get challenge seed (key 94)
  *   2. Compute: p = MD5(password) hexdigest
  *              y_hash = MD5(seed + p) hexdigest   (key 94 in response)
  *              c_hash = MD5(y_hash + seed) hexdigest (key 96 in response)
@@ -618,10 +652,10 @@ export async function handleYMSGLogin(request: Request): Promise<Response> {
       // Step 1: Send AuthReq (service 0x4B)
       const authReqPayload = buildYMSGKV([[0, username], [1, '1']]);
       const authReqHeader = buildYMSGHeader(version, 0, authReqPayload.length, YMSGService.AuthReq, 0, 0);
-      await writer.write(Buffer.concat([authReqHeader, authReqPayload]));
+      await writer.write(concatBytes(authReqHeader, authReqPayload));
 
       // Read challenge response
-      const chunks: Buffer[] = [];
+      const chunks: Uint8Array[] = [];
       let totalRead = 0;
       const challengeDeadline = Date.now() + 5000;
       while (Date.now() < challengeDeadline && totalRead < 2048) {
@@ -631,12 +665,12 @@ export async function handleYMSGLogin(request: Request): Promise<Response> {
             setTimeout(() => rej(new Error('timeout')), challengeDeadline - Date.now())),
         ]).catch(() => ({ value: undefined as undefined, done: true as const }));
         if (done || !value) break;
-        chunks.push(Buffer.from(value));
+        chunks.push(value);
         totalRead += value.length;
         if (totalRead >= 20) break;
       }
 
-      const challengeBuf = Buffer.concat(chunks);
+      const challengeBuf = concatBytes(...chunks);
       const challengeHdr = challengeBuf.length >= 20 ? parseYMSGHeader(challengeBuf) : null;
       if (!challengeHdr) throw new Error('No valid YMSG auth challenge received');
 
@@ -666,10 +700,10 @@ export async function handleYMSGLogin(request: Request): Promise<Response> {
         [135, version.toString()], // client version
       ]);
       const authRespHeader = buildYMSGHeader(version, 0, authRespPayload.length, YMSGService.AuthResp, 0, sessionId);
-      await writer.write(Buffer.concat([authRespHeader, authRespPayload]));
+      await writer.write(concatBytes(authRespHeader, authRespPayload));
 
       // Step 4: Read login result
-      const resultChunks: Buffer[] = [];
+      const resultChunks: Uint8Array[] = [];
       let resultTotal = 0;
       const resultDeadline = Date.now() + 6000;
       while (Date.now() < resultDeadline && resultTotal < 4096) {
@@ -679,7 +713,7 @@ export async function handleYMSGLogin(request: Request): Promise<Response> {
             setTimeout(() => rej(new Error('timeout')), resultDeadline - Date.now())),
         ]).catch(() => ({ value: undefined as undefined, done: true as const }));
         if (done || !value) break;
-        resultChunks.push(Buffer.from(value));
+        resultChunks.push(value);
         resultTotal += value.length;
         if (resultTotal >= 20) break;
       }
@@ -688,7 +722,7 @@ export async function handleYMSGLogin(request: Request): Promise<Response> {
       reader.releaseLock();
       socket.close();
 
-      const resultBuf = Buffer.concat(resultChunks);
+      const resultBuf = concatBytes(...resultChunks);
       const resultHdr = resultBuf.length >= 20 ? parseYMSGHeader(resultBuf) : null;
       let loginSuccess = false;
       let errorCode: number | undefined;

@@ -81,7 +81,8 @@ async function sendHttpGet(
 
   const statusLine = headerSection.split('\r\n')[0];
   const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+  if (!statusMatch) throw new Error('Invalid HTTP response: no status line');
+  const statusCode = parseInt(statusMatch[1]);
 
   const headers: Record<string, string> = {};
   const headerLines = headerSection.split('\r\n').slice(1);

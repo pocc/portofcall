@@ -41,11 +41,15 @@ async function readUntilComplete(
 
   const readPromise = (async () => {
     let buffer = '';
+    const MAX_RESP_BUFFER = 512 * 1024; // 512 KB
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += new TextDecoder().decode(value);
+      if (buffer.length > MAX_RESP_BUFFER) {
+        throw new Error('RESP response too large (> 512 KB)');
+      }
       // Stop accumulating once we have a complete top-level RESP value
       if (isCompleteRESP(buffer)) break;
     }
@@ -98,7 +102,8 @@ function isCompleteRESP(buf: string): boolean {
  * Returns [serialisedValue, endPosition].
  * Throws if the buffer does not yet contain a complete value.
  */
-function parseRESPValue(buf: string, pos: number): [string, number] {
+function parseRESPValue(buf: string, pos: number, depth = 0): [string, number] {
+  if (depth > 10) throw new Error('incomplete'); // Prevent deeply nested RESP abuse
   if (pos >= buf.length) throw new Error('incomplete');
   const type = buf[pos];
   const crlf = buf.indexOf('\r\n', pos);
@@ -123,7 +128,7 @@ function parseRESPValue(buf: string, pos: number): [string, number] {
     if (count <= 0) return [buf.slice(pos, afterLine), afterLine];
     let cur = afterLine;
     for (let i = 0; i < count; i++) {
-      const [, next] = parseRESPValue(buf, cur);
+      const [, next] = parseRESPValue(buf, cur, depth + 1);
       cur = next;
     }
     return [buf.slice(pos, cur), cur];

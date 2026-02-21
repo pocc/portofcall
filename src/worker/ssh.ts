@@ -109,8 +109,13 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
       // Read SSH banner
       const reader = socket.readable.getReader();
-      const { value } = await reader.read();
-      const banner = new TextDecoder().decode(value);
+      let banner = '';
+      try {
+        const { value } = await reader.read();
+        banner = new TextDecoder().decode(value);
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+      }
 
       await socket.close();
 
@@ -441,7 +446,9 @@ export async function handleSSHDisconnect(_request: Request): Promise<Response> 
 }
 
 /**
- * Pipe WebSocket messages to TCP socket
+ * Pipe WebSocket messages to TCP socket.
+ * Registers event listeners (returns synchronously). Handles cleanup of
+ * the writer lock and TCP socket on close or error.
  */
 function pipeWebSocketToSocket(ws: WebSocket, socket: Socket): void {
   const writer = socket.writable.getWriter();
@@ -453,19 +460,28 @@ function pipeWebSocketToSocket(ws: WebSocket, socket: Socket): void {
       } else if (event.data instanceof ArrayBuffer) {
         await writer.write(new Uint8Array(event.data));
       }
-    } catch (error) {
-      console.error('Error writing to socket:', error);
-      ws.close();
+    } catch {
+      try { writer.releaseLock(); } catch { /* already released */ }
+      try { await socket.close(); } catch { /* already closed */ }
+      try { ws.close(); } catch { /* already closed */ }
     }
   });
 
   ws.addEventListener('close', () => {
     writer.close().catch(() => {});
+    socket.close().catch(() => {});
+  });
+
+  ws.addEventListener('error', () => {
+    writer.close().catch(() => {});
+    socket.close().catch(() => {});
   });
 }
 
 /**
- * Pipe TCP socket data to WebSocket
+ * Pipe TCP socket data to WebSocket.
+ * Runs a reader loop (async, fire-and-forget). Releases the reader lock
+ * and closes both sides in all exit paths via finally.
  */
 async function pipeSocketToWebSocket(socket: Socket, ws: WebSocket): Promise<void> {
   const reader = socket.readable.getReader();
@@ -475,15 +491,17 @@ async function pipeSocketToWebSocket(socket: Socket, ws: WebSocket): Promise<voi
       const { done, value } = await reader.read();
 
       if (done) {
-        ws.close();
         break;
       }
 
       ws.send(value);
     }
-  } catch (error) {
-    console.error('Error reading from socket:', error);
-    ws.close();
+  } catch {
+    // Socket read error or WebSocket send error — fall through to cleanup
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+    try { ws.close(); } catch { /* already closed */ }
+    try { await socket.close(); } catch { /* already closed */ }
   }
 }
 

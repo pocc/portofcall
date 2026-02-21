@@ -513,6 +513,7 @@ export async function handleFastCGIRequest(request: Request): Promise<Response> 
         let stderr = '';
         let endStatus = -1;
         let protocolStatus = -1;
+        let endRequestReceived = false;
         const responseRecords: Array<{
           type: string;
           contentLength: number;
@@ -535,9 +536,30 @@ export async function handleFastCGIRequest(request: Request): Promise<Response> 
           } else if (record.type === FCGI_END_REQUEST && record.contentLength >= 8) {
             endStatus = (record.content[0] << 24) | (record.content[1] << 16) | (record.content[2] << 8) | record.content[3];
             protocolStatus = record.content[4];
+            endRequestReceived = true;
           }
 
           offset += record.totalLength;
+        }
+
+        // FastCGI spec allows FCGI_STDERR records to arrive after FCGI_END_REQUEST
+        // due to OS-level buffering. If we received END_REQUEST, do a short drain
+        // read to collect any trailing STDERR that was buffered in-flight.
+        if (endRequestReceived) {
+          const trailingData = await readAllRecords(reader, 500);
+          let trailingOffset = 0;
+          while (trailingOffset < trailingData.length) {
+            const record = parseRecord(trailingData.slice(trailingOffset));
+            if (!record) break;
+            if (record.type === FCGI_STDERR && record.contentLength > 0) {
+              stderr += new TextDecoder().decode(record.content);
+              responseRecords.push({
+                type: RECORD_TYPE_NAMES[record.type] || `UNKNOWN(${record.type})`,
+                contentLength: record.contentLength,
+              });
+            }
+            trailingOffset += record.totalLength;
+          }
         }
 
         // Parse HTTP headers from stdout

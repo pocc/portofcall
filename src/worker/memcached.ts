@@ -225,6 +225,9 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
           const flags = parts[2];
           const exptime = parts[3];
           const casUnique = parts[4];
+          if (!/^\d+$/.test(String(casUnique))) {
+            throw new Error('CAS token must be a numeric value');
+          }
           const dataValue = parts.slice(5).join(' ');
           const dataBytes = encoder.encode(dataValue);
           const header = `cas ${key} ${flags} ${exptime} ${casUnique} ${dataBytes.length}\r\n`;
@@ -356,6 +359,13 @@ export async function handleMemcachedSession(request: Request): Promise<Response
               const flags = parts[2];
               const exptime = parts[3];
               const casUnique = parts[4];
+              if (!/^\d+$/.test(String(casUnique))) {
+                server.send(JSON.stringify({
+                  type: 'error',
+                  message: 'CAS token must be a numeric value',
+                }));
+                return;
+              }
               const dataValue = parts.slice(5).join(' ');
               const dataBytes = encoder.encode(dataValue);
               const header = `cas ${key} ${flags} ${exptime} ${casUnique} ${dataBytes.length}\r\n`;

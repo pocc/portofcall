@@ -139,8 +139,11 @@ export async function handleGeminiFetch(request: Request): Promise<Response> {
       // Send Gemini request: URL + \r\n
       const requestLine = geminiUrl + '\r\n';
       const requestBytes = new TextEncoder().encode(requestLine);
-      await writer.write(requestBytes);
-      writer.releaseLock();
+      try {
+        await writer.write(requestBytes);
+      } finally {
+        writer.releaseLock();
+      }
 
       // Read response
       const chunks: Uint8Array[] = [];
@@ -157,13 +160,12 @@ export async function handleGeminiFetch(request: Request): Promise<Response> {
           if (done) break;
 
           if (value) {
-            chunks.push(value);
-            totalBytes += value.length;
-
-            // Prevent excessive data
-            if (totalBytes > maxResponseSize) {
+            // Prevent excessive data (check before accumulating)
+            if (totalBytes + value.length > maxResponseSize) {
               throw new Error('Response too large (max 5MB)');
             }
+            chunks.push(value);
+            totalBytes += value.length;
           }
         }
       } catch (error) {

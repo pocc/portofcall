@@ -402,6 +402,10 @@ async function performStartTLS(
   // Re-open XML stream over the now-encrypted channel
   const featuresXml = await openXMPPStream(newWriter, newReader, domain);
 
+  if (!featuresXml.includes('urn:ietf:params:xml:ns:xmpp-sasl') && !featuresXml.includes('<mechanisms')) {
+    throw new Error('Server did not advertise SASL mechanisms after STARTTLS');
+  }
+
   return { reader: newReader, writer: newWriter, featuresXml };
 }
 
@@ -472,8 +476,11 @@ export async function handleXMPPLogin(request: Request): Promise<Response> {
         }
 
         // SASL PLAIN: base64(\0username\0password)
-        // Note: btoa output is base64-safe (A-Z, a-z, 0-9, +, /, =) but we escape for defense-in-depth
-        const authStr = btoa(`\0${username}\0${password}`);
+        // Use TextEncoder for UTF-8 support (btoa alone fails on non-Latin chars)
+        const saslBytes = new TextEncoder().encode(`\0${username}\0${password}`);
+        let saslBinary = '';
+        for (let i = 0; i < saslBytes.length; i++) saslBinary += String.fromCharCode(saslBytes[i]);
+        const authStr = btoa(saslBinary);
         await writer.write(encoder.encode(
           `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${escapeXml(authStr)}</auth>`,
         ));
@@ -604,7 +611,10 @@ export async function handleXMPPRoster(request: Request): Promise<Response> {
           return { success: false, host, port, phases, error: 'SASL PLAIN not available' };
         }
 
-        const authStr = btoa(`\0${username}\0${password}`);
+        const saslAuthBytes = new TextEncoder().encode(`\0${username}\0${password}`);
+        let saslAuthBinary = '';
+        for (let i = 0; i < saslAuthBytes.length; i++) saslAuthBinary += String.fromCharCode(saslAuthBytes[i]);
+        const authStr = btoa(saslAuthBinary);
         await writer.write(encoder.encode(
           `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${escapeXml(authStr)}</auth>`,
         ));
@@ -752,7 +762,10 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
           return { success: false, host, port, phases, error: 'SASL PLAIN not available' };
         }
 
-        const authStr = btoa(`\0${username}\0${password}`);
+        const saslAuthBytes = new TextEncoder().encode(`\0${username}\0${password}`);
+        let saslAuthBinary = '';
+        for (let i = 0; i < saslAuthBytes.length; i++) saslAuthBinary += String.fromCharCode(saslAuthBytes[i]);
+        const authStr = btoa(saslAuthBinary);
         await writer.write(encoder.encode(
           `<auth xmlns='urn:ietf:params:xml:ns:xmpp-sasl' mechanism='PLAIN'>${escapeXml(authStr)}</auth>`,
         ));

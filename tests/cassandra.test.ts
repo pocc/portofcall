@@ -113,5 +113,30 @@ describe('Cassandra CQL Protocol Integration Tests', () => {
       // Should fail within a reasonable time (timeout + overhead)
       expect(elapsed).toBeLessThan(15000);
     });
+    it('should handle authentication before queries', async () => {
+      // Cassandra performs SASL auth (AUTHENTICATE → AUTH_RESPONSE) before
+      // accepting CQL queries. Verify the API handles credentials gracefully
+      // when the host is unreachable.
+      const response = await fetch(`${API_BASE}/cassandra/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: '192.0.2.1', // TEST-NET-1, RFC 5737 — guaranteed unreachable
+          port: 9042,
+          query: 'SELECT * FROM system.local',
+          username: 'cassandra',
+          password: 'cassandra',
+          timeout: 3000,
+        }),
+      });
+
+      const data = await response.json() as {
+        success: boolean;
+        error: string;
+      };
+      expect(data).toBeDefined();
+      expect(data.success).toBe(false); // unreachable host
+      expect(data.error).toBeDefined();
+    });
   });
 });

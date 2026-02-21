@@ -64,7 +64,8 @@ async function sendSMTPCommand(
   command: string,
   timeoutMs: number
 ): Promise<{ code: number; message: string }> {
-  await writer.write(new TextEncoder().encode(command + '\r\n'));
+  const safeCommand = command.replace(/[\r\n]/g, '');
+  await writer.write(new TextEncoder().encode(safeCommand + '\r\n'));
   const response = await readSMTPResponse(reader, timeoutMs);
   return parseSMTPResponse(response);
 }

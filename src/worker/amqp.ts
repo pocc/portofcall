@@ -271,6 +271,16 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         pos += 2;
         break;
       }
+      case 'x': { // byte array (4-byte big-endian length prefix)
+        if (pos + 4 > data.length) throw new Error('AMQP field table truncated (type x length)');
+        const arrLen = new DataView(data.buffer, data.byteOffset + pos).getUint32(0, false);
+        pos += 4;
+        if (pos + arrLen > data.length) throw new Error('AMQP field table truncated (type x data)');
+        // Store as hex string representation of the byte array
+        table[nameResult.value] = `<bytes:${arrLen}>`;
+        pos += arrLen;
+        break;
+      }
       default: {
         // Unknown type: bail out of table parsing rather than misaligning the
         // read cursor by advancing only 1 byte (which would corrupt all

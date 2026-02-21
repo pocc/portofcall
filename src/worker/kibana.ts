@@ -319,7 +319,10 @@ async function sendHttpWithAuth(
   if (apiKey) {
     req += `Authorization: ApiKey ${apiKey}\r\n`;
   } else if (username && password) {
-    req += `Authorization: Basic ${btoa(`${username}:${password}`)}\r\n`;
+    const authBytes = new TextEncoder().encode(`${username}:${password}`);
+    let authBinary = '';
+    for (const byte of authBytes) authBinary += String.fromCharCode(byte);
+    req += `Authorization: Basic ${btoa(authBinary)}\r\n`;
   }
 
   if (body) {

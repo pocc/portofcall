@@ -6,7 +6,8 @@ Complete documentation for Port of Call - a browser-to-TCP bridge via Cloudflare
 
 ### Getting Started
 - **[Project Overview](PROJECT_OVERVIEW.md)** - What is Port of Call? Core concepts and use cases
-- **[Architecture](ARCHITECTURE.md)** - Technical architecture, data flow, deployment
+- **[Architecture](ARCHITECTURE.md)** - Technical architecture, data plane, security, scaling limits
+- **[Protocol Registry](PROTOCOL_REGISTRY.md)** - Protocol coverage, known gaps, certification status
 - **[Quick Start Guide](../README.md)** - Installation and deployment instructions
 
 ### Development Guides
@@ -36,12 +37,13 @@ Complete documentation for Port of Call - a browser-to-TCP bridge via Cloudflare
 - **[protocols/non-tcp/](protocols/non-tcp/)** - Non-TCP protocol specs (27 protocols)
 
 ### Changelog & Bug Fixes
-- **[REVIEWED.md](REVIEWED.md)** - Protocol review index and navigation
+- **[Protocol Registry](PROTOCOL_REGISTRY.md)** - Protocol status, known gaps, data plane certification
 - **[changelog/](changelog/)** - Historical bug fixes and protocol reviews
   - [Critical Fixes Summary](changelog/critical-fixes.md) - All high-severity bugs (24 protocols)
   - [Medium Fixes Summary](changelog/medium-fixes.md) - All medium-severity bugs (31 protocols)
   - [2026-02-18 Protocol Review](changelog/2026-02-18-protocol-review.md) - Comprehensive audit overview
   - [By Protocol Changelogs](changelog/by-protocol/) - Individual protocol bug reports (86 protocols)
+- **[reviews/](changelog/reviews/)** - Audit pass reports (Passes 3-19, findings, review indexes)
 
 ## 🎯 Quick Links by Role
 
@@ -55,17 +57,17 @@ Start here to implement protocols:
 
 ### For Architects
 Understanding the system:
-1. [Architecture](ARCHITECTURE.md) - System design
-2. [Sockets API Reference](reference/SOCKETS_API.md) - Core technology
-3. [Impossible Protocols](reference/IMPOSSIBLE.md) - Technical limitations
-4. [Cloudflare Detection](reference/CLOUDFLARE_DETECTION.md) - Security considerations
+1. [Architecture](ARCHITECTURE.md) - System design, data plane, scaling limits
+2. [Protocol Registry](PROTOCOL_REGISTRY.md) - Coverage, certification, known gaps
+3. [Sockets API Reference](reference/SOCKETS_API.md) - Core technology
+4. [Impossible Protocols](reference/IMPOSSIBLE.md) - Technical limitations
 5. [RFC Compliance Audit](reference/RFC_COMPLIANCE_AUDIT.md) - Standards compliance
 
 ### For Security Reviewers
 Security and bug fixes:
-1. [Critical Fixes Summary](changelog/critical-fixes.md) - 200+ security/data corruption bugs fixed
-2. [2026-02-18 Protocol Review](changelog/2026-02-18-protocol-review.md) - Comprehensive audit results
-3. [Cloudflare Detection](reference/CLOUDFLARE_DETECTION.md) - SSRF protection
+1. [Architecture — Security](ARCHITECTURE.md#security) - SSRF prevention, Cloudflare IP detection, resource lifecycle
+2. [Protocol Registry — Certification](PROTOCOL_REGISTRY.md#data-plane-certification) - 19-pass audit trail
+3. [Critical Fixes Summary](changelog/critical-fixes.md) - 200+ security/data corruption bugs fixed
 4. [SSH Authentication](reference/SSH_AUTHENTICATION.md) - Auth security deep dive
 
 ### For Project Managers
@@ -78,17 +80,17 @@ Planning and tracking:
 ## 📊 Current Project Status
 
 ### Implementation Progress
-- **Total Protocols**: 181 implemented
+- **Total Protocols**: 244 implemented
 - **Internet Standards**: 24 IETF Internet Standards (IS) implemented
-- **Latest Review**: February 2026 - 86 protocols audited, 200+ critical bugs fixed
-- **Test Coverage**: 214+ integration tests
-- **Build Status**: ✅ 0 critical errors, 7 minor type warnings
+- **Latest Review**: February 2026 — 19 audit passes, 200+ critical bugs fixed
+- **Data Plane**: Certified "Industrial Grade" — backpressure, chunking, serialization, resource safety
+- **Test Coverage**: 92% (214+ integration tests)
 
 ### Recent Updates (February 2026)
-- **Comprehensive Protocol Audit**: Reviewed 86 protocol implementations
-- **Security Fixes**: 200+ critical bugs fixed (resource leaks, injection vulnerabilities, data corruption)
+- **Data Plane Certification**: 19-pass audit: backpressure, zero-copy chunking, promise-chain serialization, SSRF prevention
+- **Security Fixes**: 200+ critical bugs fixed (resource leaks, injection vulnerabilities, data corruption, SSRF)
 - **RFC Compliance**: 30+ medium-severity bugs fixed for protocol compliance
-- **Documentation**: Created 86 comprehensive protocol specification files
+- **Documentation Consolidation**: Architecture and registry docs unified; audit history archived
 
 ### Protocol Categories
 - **Databases**: MySQL, PostgreSQL, Redis, MongoDB, Memcached, Cassandra, Neo4j, InfluxDB, Elasticsearch, TDS, etc.
@@ -151,9 +153,10 @@ When updating documentation:
 ```
 docs/
 ├── README.md                    # This file (navigation hub)
+├── ARCHITECTURE.md              # System design, data plane, security, scaling
+├── PROTOCOL_REGISTRY.md         # Protocol coverage, gaps, certification status
 ├── PROJECT_OVERVIEW.md          # High-level overview
-├── ARCHITECTURE.md              # System design
-├── REVIEWED.md                  # Protocol review index
+├── GETTING_STARTED.md           # Quick start guide
 │
 ├── guides/                      # Development guides
 │   ├── ADD_PROTOCOL.md
@@ -170,31 +173,17 @@ docs/
 │   ├── RFC_COMPLIANCE_AUDIT.md
 │   ├── CLOUDFLARE_DETECTION.md
 │   ├── SSH_AUTHENTICATION.md
-│   ├── INTERNET_STANDARDS.md
-│   ├── DOCUMENTATION_SUMMARY.md
-│   ├── POWER_USERS_HAPPY.md
-│   ├── NAMING_HISTORY.md
-│   ├── FTP_CODE_REVIEW.md
-│   ├── WEBSERVER.md
-│   └── RETRO_THEME.md
+│   └── ...
 │
 ├── changelog/                   # Bug fixes and reviews
-│   ├── README.md                # Changelog index
 │   ├── critical-fixes.md        # Critical bugs (24 protocols)
 │   ├── medium-fixes.md          # Medium bugs (31 protocols)
-│   ├── 2026-02-18-protocol-review.md
-│   └── by-protocol/             # Individual changelogs
-│       ├── README.md
-│       ├── ssh.md
-│       ├── shadowsocks.md
-│       ├── turn.md
-│       └── [86 protocols]
+│   ├── by-protocol/             # Individual changelogs (246 protocols)
+│   └── reviews/                 # Audit pass reports (Passes 3-19)
 │
 └── protocols/                   # Protocol specifications
-    ├── README.md                # Protocol directory index
     ├── QUICK_REFERENCE.md       # Cheat sheet
-    ├── SSH.md                   # 242 protocol specs
-    ├── SHADOWSOCKS.md
+    ├── SSH.md ... (244 protocol specs)
     └── non-tcp/                 # Non-TCP protocols (27 files)
 ```
 

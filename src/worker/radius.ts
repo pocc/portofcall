@@ -574,6 +574,22 @@ export async function handleRadiusProbe(request: Request): Promise<Response> {
 
         const response = parsePacket(fullPacket);
 
+        // Validate response authenticator per RFC 2865 §3:
+        // MD5(Code + ID + Length + RequestAuth + ResponseAttributes + Secret)
+        {
+          const verifyPacket = new Uint8Array(fullPacket);
+          verifyPacket.set(authenticator, 4); // replace response auth with request auth
+          const hashInput = new Uint8Array(verifyPacket.length + secretBytes.length);
+          hashInput.set(verifyPacket);
+          hashInput.set(secretBytes, verifyPacket.length);
+          const expectedAuth = md5(hashInput);
+          const actualAuth = fullPacket.slice(4, 20);
+          const authValid = expectedAuth.every((b, i) => b === actualAuth[i]);
+          if (!authValid) {
+            throw new Error('RADIUS response authenticator validation failed');
+          }
+        }
+
         const totalTime = Date.now() - startTime;
 
         writer.releaseLock();
@@ -753,6 +769,22 @@ export async function handleRadiusAuth(request: Request): Promise<Response> {
         }
 
         const response = parsePacket(fullPacket);
+
+        // Validate response authenticator per RFC 2865 §3:
+        // MD5(Code + ID + Length + RequestAuth + ResponseAttributes + Secret)
+        {
+          const verifyPacket = new Uint8Array(fullPacket);
+          verifyPacket.set(authenticator, 4); // replace response auth with request auth
+          const hashInput = new Uint8Array(verifyPacket.length + secretBytes.length);
+          hashInput.set(verifyPacket);
+          hashInput.set(secretBytes, verifyPacket.length);
+          const expectedAuth = md5(hashInput);
+          const actualAuth = fullPacket.slice(4, 20);
+          const authValid = expectedAuth.every((b, i) => b === actualAuth[i]);
+          if (!authValid) {
+            throw new Error('RADIUS response authenticator validation failed');
+          }
+        }
 
         const totalTime = Date.now() - startTime;
 

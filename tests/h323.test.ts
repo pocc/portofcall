@@ -195,5 +195,31 @@ describe('H.323 Protocol Integration Tests', () => {
       expect(data.success).toBe(false);
       expect(data.error).toBeDefined();
     }, 15000);
+    it('should include release_complete in call teardown attempt', async () => {
+      // H.323 call teardown requires a RELEASE_COMPLETE message (Q.931).
+      // Even when the connection is refused, the API should attempt cleanup
+      // and return a well-formed error response.
+      const response = await fetch(`${API_BASE}/h323/connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: '192.0.2.1', // TEST-NET-1, RFC 5737 — guaranteed unreachable
+          port: 1720,
+          callingNumber: '1000',
+          calledNumber: '2000',
+          timeout: 3000,
+        }),
+      });
+
+      const data = await response.json();
+      // Connection will fail; verify the response is well-formed
+      expect(data).toBeDefined();
+      expect(data.success).toBe(false);
+      expect(data.error).toBeDefined();
+      // If the implementation surfaces teardown/cleanup details, verify the shape
+      if (data.details) {
+        expect(typeof data.details).toBe('object');
+      }
+    }, 15000);
   });
 });

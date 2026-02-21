@@ -221,7 +221,7 @@ export async function handleIRCConnect(request: Request): Promise<Response> {
               // Auto-respond to PING during registration
               if (msg.command === 'PING') {
                 const pongWriter = socket.writable.getWriter();
-                await pongWriter.write(encoder.encode(`PONG ${msg.params[0] || ''}\r\n`));
+                await pongWriter.write(encoder.encode(`PONG :${msg.params[0] || ''}\r\n`));
                 pongWriter.releaseLock();
               }
 
@@ -534,7 +534,7 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
               if (msg.command === 'PING') {
                 const pongWriter = socket.writable.getWriter();
                 await pongWriter.write(
-                  encoder.encode(`PONG ${msg.params[0] || ''}\r\n`)
+                  encoder.encode(`PONG :${msg.params[0] || ''}\r\n`)
                 );
                 pongWriter.releaseLock();
               }
@@ -584,7 +584,10 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
               // SASL PLAIN authentication
               if (msg.command === 'AUTHENTICATE' && msg.params[0] === '+' && saslState === 'authenticate') {
                 // base64(user\0user\0pass) — account name = login name
-                const creds = btoa(`${saslUsername}\0${saslUsername}\0${saslPassword}`);
+                const saslBytes = new TextEncoder().encode(`${saslUsername}\0${saslUsername}\0${saslPassword}`);
+                let saslBin = '';
+                for (let i = 0; i < saslBytes.length; i++) saslBin += String.fromCharCode(saslBytes[i]);
+                const creds = btoa(saslBin);
                 const w = socket.writable.getWriter();
                 await w.write(encoder.encode(`AUTHENTICATE ${creds}\r\n`));
                 w.releaseLock();

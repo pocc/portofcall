@@ -260,7 +260,7 @@ describe('SCP Protocol Integration Tests', () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host: SCP_CONFIG.host,
-          remotePath: '/readme.txt',
+          path: '/readme.txt',
         }),
       });
 

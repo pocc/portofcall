@@ -1141,7 +1141,9 @@ export async function handleNFSRead(request: Request): Promise<Response> {
       dataStr = new TextDecoder('utf-8', { fatal: true }).decode(fileData);
       encoding = 'utf-8';
     } catch {
-      dataStr = btoa(String.fromCharCode(...fileData));
+      let binaryStr = '';
+      for (let i = 0; i < fileData.length; i++) binaryStr += String.fromCharCode(fileData[i]);
+      dataStr = btoa(binaryStr);
       encoding = 'base64';
     }
 

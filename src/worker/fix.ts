@@ -33,7 +33,17 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 const SOH = '\x01'; // FIX field delimiter
 
 /**
- * Calculate FIX checksum (sum of all bytes mod 256, zero-padded to 3 digits)
+ * Calculate FIX checksum (sum of all bytes mod 256, zero-padded to 3 digits).
+ *
+ * Per the FIX specification (FIX.4.x and FIXT.1.1) the checksum is computed
+ * over ALL bytes starting from the first byte of BeginString (tag 8) up to
+ * but NOT including the CheckSum field itself (tag 10=NNN\x01).  This means
+ * BeginString (8=) and BodyLength (9=) ARE included in the checksum — the
+ * FIX spec does NOT exclude them.  The caller in buildFIXMessage passes the
+ * full "8=...9=...body" string (preChecksum) which is correct.
+ *
+ * Note: RFC 4612 describes FIX-over-UDP and defers to the FIX spec for
+ * checksum semantics; there is no RFC 4612 provision that excludes tags 8/9.
  */
 function fixChecksum(data: string): string {
   let sum = 0;

@@ -362,7 +362,7 @@ export async function handleTURNAllocate(request: Request): Promise<Response> {
       port = 3478,
       timeout = 15000,
       username,
-      password,
+      password: _password, // destructured for API symmetry; not used in unauthenticated probe
       requestedTransport = 17, // UDP
     } = body;
 
@@ -435,15 +435,12 @@ export async function handleTURNAllocate(request: Request): Promise<Response> {
         attributes
       );
 
-      // RFC 5766 §15.4 — add MESSAGE-INTEGRITY when credentials are present.
-      // Key = MD5(username:realm:password); realm is not known until the server
-      // responds with a 401, so for this unauthenticated probe we use the
-      // password directly as the HMAC key (short-term credential model).
-      if (username && password) {
-        const encoder = new TextEncoder();
-        const hmacKey = md5(encoder.encode(`${username}::${password}`));
-        allocateRequest = await appendMessageIntegrity(allocateRequest, hmacKey);
-      }
+      // RFC 5766 §15.4 — the initial Allocate Request is sent WITHOUT
+      // MESSAGE-INTEGRITY (unauthenticated probe).  The server will reject it
+      // with a 401 Unauthorized response that includes the realm and nonce
+      // needed to derive the long-term credential key
+      // MD5(username:realm:password).  The authenticated second request
+      // (built below after parsing the 401) carries the correct HMAC-SHA1.
 
       // Send Allocate Request
       const writer = socket.writable.getWriter();

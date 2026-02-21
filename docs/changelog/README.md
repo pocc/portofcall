@@ -7,6 +7,7 @@ This directory contains the historical record of all protocol reviews, bugs foun
 - [Critical Fixes Summary](critical-fixes.md) - All high-severity bugs by protocol
 - [Medium Fixes Summary](medium-fixes.md) - All medium-severity bugs by protocol
 - [2026-02-18 Protocol Review Project](2026-02-18-protocol-review.md) - Overview of batch review process
+- [Audit Pass Reports](reviews/) - All 17 review pass documents (Passes 3-19)
 
 ## By Protocol
 

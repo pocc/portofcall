@@ -122,6 +122,7 @@ function parseResponse(data: Uint8Array): {
 
   // ACK array
   const ackCount = payload[9] || 0;
+  if (10 + ackCount * 4 + (ackCount > 0 ? 8 : 0) + 4 > payload.length) return null;
 
   let offset = 10 + (ackCount * 4); // Skip ACK packet IDs
 

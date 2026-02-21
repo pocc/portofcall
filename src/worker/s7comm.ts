@@ -342,6 +342,7 @@ function parseSZLResponse(data: Uint8Array): {
   // Find the SZL data portion
   // After S7 header at offset 7, message type should be 0x07 (Userdata) response
   const s7Offset = 7;
+  if (data.length < s7Offset + 8) return result;
   if (data[s7Offset] !== 0x32) return result;
 
   // Get parameter length and data length
@@ -424,6 +425,9 @@ function buildS7ReadDB(dbNumber: number, startByte: number, byteCount: number): 
   const cotpData = new Uint8Array([0x02, 0xF0, 0x80]);
 
   // Item address: Area=0x84 (DB), Transport size=0x02 (BYTE), Length, DB number, Start address in bits
+  if (startByte > 0x1FFFFF) {
+    throw new Error('S7comm: start byte offset exceeds maximum addressable range (2MB)');
+  }
   const startBit = startByte * 8;
   const s7 = new Uint8Array([
     0x32, 0x01,       // Protocol ID + Job
@@ -458,6 +462,9 @@ function buildS7ReadDB(dbNumber: number, startByte: number, byteCount: number): 
 function buildS7WriteDB(dbNumber: number, startByte: number, data: Uint8Array): Uint8Array {
   const cotpData = new Uint8Array([0x02, 0xF0, 0x80]);
   const byteCount = data.length;
+  if (startByte > 0x1FFFFF) {
+    throw new Error('S7comm: start byte offset exceeds maximum addressable range (2MB)');
+  }
   const startBit = startByte * 8;
   const bitCount = byteCount * 8;
   const padded = byteCount % 2 === 1 ? byteCount + 1 : byteCount;
@@ -735,7 +742,7 @@ export async function handleS7ReadDB(request: Request): Promise<Response> {
 
         // Parse S7 ReadVar response: skip TPKT(4)+COTP(3)+S7Header(10)+ReturnCode(1)+TSize(1)+DataLen(2) = 21 bytes
         let dataBytes: Uint8Array | null = null;
-        if (readResp.length > 21 && readResp[7] === 0x32 && readResp[8] === 0x03) {
+        if (readResp.length >= 25 && readResp[7] === 0x32 && readResp[8] === 0x03) {
           // Ack_Data, check return code at offset 21
           const returnCode = readResp[21];
           if (returnCode === 0xFF) {

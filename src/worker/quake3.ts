@@ -278,13 +278,46 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
         );
       }
 
-      // Strip the 4-byte OOB header, decode the rest
-      const payloadBytes = responseData.slice(4);
-      const payload = new TextDecoder('utf-8', { fatal: false }).decode(payloadBytes);
-      const lines = payload.split('\n');
+      // Split the raw response on the 4-byte OOB separator (\xFF\xFF\xFF\xFF) to handle
+      // servers that send multiple OOB packets in a single TCP stream.
+      const decoder = new TextDecoder('utf-8', { fatal: false });
 
-      // First line: response type (e.g. "statusResponse" or "infoResponse")
-      const responseType = lines[0].trim();
+      // Find all OOB packet boundaries in responseData
+      const packets: string[] = [];
+      let searchStart = 0;
+      while (searchStart < responseData.length) {
+        // Expect an OOB marker here
+        let markerEnd = searchStart;
+        if (
+          responseData[markerEnd] === 0xFF && responseData[markerEnd + 1] === 0xFF &&
+          responseData[markerEnd + 2] === 0xFF && responseData[markerEnd + 3] === 0xFF
+        ) {
+          markerEnd += 4;
+        } else {
+          break; // No marker — stop
+        }
+
+        // Find the next OOB marker
+        let nextMarker = responseData.length;
+        for (let i = markerEnd; i <= responseData.length - 4; i++) {
+          if (
+            responseData[i] === 0xFF && responseData[i + 1] === 0xFF &&
+            responseData[i + 2] === 0xFF && responseData[i + 3] === 0xFF
+          ) {
+            nextMarker = i;
+            break;
+          }
+        }
+
+        const packetPayload = decoder.decode(responseData.slice(markerEnd, nextMarker));
+        packets.push(packetPayload);
+        searchStart = nextMarker;
+      }
+
+      if (packets.length === 0) {
+        // Fallback: treat the whole buffer (minus first 4 bytes) as one packet
+        packets.push(decoder.decode(responseData.slice(4)));
+      }
 
       const result: Quake3StatusResponse = {
         success: true,
@@ -294,88 +327,107 @@ export async function handleQuake3Status(request: Request): Promise<Response> {
         command,
       };
 
-      if (responseType === 'statusResponse' && lines.length > 1) {
-        // Validate response type matches command
-        if (command !== 'getstatus') {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              host,
-              port,
-              tcpLatency,
-              command,
-              error: `Server sent statusResponse but command was ${command}`,
-            } satisfies Quake3StatusResponse),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-          );
-        }
+      // Accumulate data across all packets
+      const allPlayers: Quake3Player[] = [];
+      let firstServerVars: Record<string, string> | undefined;
+      let firstResponseType: string | undefined;
 
-        // Line 1: key\value pairs
-        const kvString = lines[1] || '';
-        const serverVars = parseQ3KeyValues(kvString);
-        result.serverVars = serverVars;
-        result.mapName = serverVars.mapname || serverVars.map || undefined;
-        result.gameName = serverVars.gamename || serverVars.game || undefined;
+      for (const packetText of packets) {
+        const lines = packetText.split('\n');
+        const responseType = lines[0].trim();
 
-        // Safely parse integers with validation
-        const maxClientsStr = serverVars.sv_maxclients;
-        if (maxClientsStr) {
-          const parsed = parseInt(maxClientsStr, 10);
-          if (!isNaN(parsed) && parsed >= 0) {
-            result.maxPlayers = parsed;
+        if (!firstResponseType) firstResponseType = responseType;
+
+        if (responseType === 'statusResponse' && lines.length > 1) {
+          // Validate response type matches command
+          if (command !== 'getstatus') {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                host,
+                port,
+                tcpLatency,
+                command,
+                error: `Server sent statusResponse but command was ${command}`,
+              } satisfies Quake3StatusResponse),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
           }
-        }
 
-        // Remaining lines: player entries
-        const players: Quake3Player[] = [];
-        for (let i = 2; i < lines.length; i++) {
-          const line = lines[i].trim();
-          if (!line) continue;
-          const player = parseQ3Player(line);
-          if (player) players.push(player);
-        }
-        result.players = players;
-        result.playerCount = players.length;
-      } else if (responseType === 'infoResponse' && lines.length > 1) {
-        // Validate response type matches command
-        if (command !== 'getinfo') {
-          return new Response(
-            JSON.stringify({
-              success: false,
-              host,
-              port,
-              tcpLatency,
-              command,
-              error: `Server sent infoResponse but command was ${command}`,
-            } satisfies Quake3StatusResponse),
-            { status: 200, headers: { 'Content-Type': 'application/json' } },
-          );
-        }
+          // Line 1: key\value pairs (only capture from the first block)
+          if (!firstServerVars) {
+            const kvString = lines[1] || '';
+            firstServerVars = parseQ3KeyValues(kvString);
+            result.serverVars = firstServerVars;
+            result.mapName = firstServerVars.mapname || firstServerVars.map || undefined;
+            result.gameName = firstServerVars.gamename || firstServerVars.game || undefined;
 
-        const kvString = lines[1] || '';
-        const serverVars = parseQ3KeyValues(kvString);
-        result.serverVars = serverVars;
-        result.mapName = serverVars.mapname || undefined;
-        result.gameName = serverVars.gamename || undefined;
-
-        // Safely parse integers with validation
-        const clientsStr = serverVars.clients;
-        if (clientsStr) {
-          const parsed = parseInt(clientsStr, 10);
-          if (!isNaN(parsed) && parsed >= 0) {
-            result.playerCount = parsed;
+            // Safely parse integers with validation
+            const maxClientsStr = firstServerVars.sv_maxclients;
+            if (maxClientsStr) {
+              const parsed = parseInt(maxClientsStr, 10);
+              if (!isNaN(parsed) && parsed >= 0) {
+                result.maxPlayers = parsed;
+              }
+            }
           }
-        }
 
-        const maxClientsStr = serverVars.sv_maxclients;
-        if (maxClientsStr) {
-          const parsed = parseInt(maxClientsStr, 10);
-          if (!isNaN(parsed) && parsed >= 0) {
-            result.maxPlayers = parsed;
+          // Remaining lines in this packet: player entries (accumulate across all packets)
+          for (let i = 2; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            const player = parseQ3Player(line);
+            if (player) allPlayers.push(player);
           }
+        } else if (responseType === 'infoResponse' && lines.length > 1) {
+          // Validate response type matches command
+          if (command !== 'getinfo') {
+            return new Response(
+              JSON.stringify({
+                success: false,
+                host,
+                port,
+                tcpLatency,
+                command,
+                error: `Server sent infoResponse but command was ${command}`,
+              } satisfies Quake3StatusResponse),
+              { status: 200, headers: { 'Content-Type': 'application/json' } },
+            );
+          }
+
+          if (!firstServerVars) {
+            const kvString = lines[1] || '';
+            firstServerVars = parseQ3KeyValues(kvString);
+            result.serverVars = firstServerVars;
+            result.mapName = firstServerVars.mapname || undefined;
+            result.gameName = firstServerVars.gamename || undefined;
+
+            // Safely parse integers with validation
+            const clientsStr = firstServerVars.clients;
+            if (clientsStr) {
+              const parsed = parseInt(clientsStr, 10);
+              if (!isNaN(parsed) && parsed >= 0) {
+                result.playerCount = parsed;
+              }
+            }
+
+            const maxClientsStr = firstServerVars.sv_maxclients;
+            if (maxClientsStr) {
+              const parsed = parseInt(maxClientsStr, 10);
+              if (!isNaN(parsed) && parsed >= 0) {
+                result.maxPlayers = parsed;
+              }
+            }
+          }
+        } else if (!firstServerVars) {
+          result.serverVars = { rawResponse: packetText.slice(0, 500) };
         }
-      } else {
-        result.serverVars = { rawResponse: payload.slice(0, 500) };
+      }
+
+      // Apply accumulated players for statusResponse
+      if (firstResponseType === 'statusResponse') {
+        result.players = allPlayers;
+        result.playerCount = allPlayers.length;
       }
 
       return new Response(

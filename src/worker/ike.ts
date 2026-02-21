@@ -167,7 +167,7 @@ function buildISAKMPHeader(
   messageId: number,
   length: number
 ): Buffer {
-  const header = Buffer.allocUnsafe(28);
+  const header = Buffer.alloc(28, 0);
 
   initiatorCookie.copy(header, 0);
   responderCookie.copy(header, 8);
@@ -193,7 +193,7 @@ function buildSAPayload(nextPayload: number): Buffer {
   const proposal = buildProposalPayload(PayloadType.None);
   const payloadLength = 12 + proposal.length;
 
-  const sa = Buffer.allocUnsafe(12);
+  const sa = Buffer.alloc(12, 0);
   sa.writeUInt8(nextPayload, 0);
   sa.writeUInt8(0, 1); // Reserved
   sa.writeUInt16BE(payloadLength, 2);
@@ -220,7 +220,7 @@ function buildProposalPayload(nextPayload: number): Buffer {
   const transform = buildTransformPayload(PayloadType.None);
   const payloadLength = 8 + transform.length;
 
-  const proposal = Buffer.allocUnsafe(8);
+  const proposal = Buffer.alloc(8, 0);
   proposal.writeUInt8(nextPayload, 0);
   proposal.writeUInt8(0, 1);
   proposal.writeUInt16BE(payloadLength, 2);
@@ -264,7 +264,7 @@ function buildTransformPayload(nextPayload: number): Buffer {
   const attrData = Buffer.concat(attributes);
   const payloadLength = 8 + attrData.length;
 
-  const transform = Buffer.allocUnsafe(8);
+  const transform = Buffer.alloc(8, 0);
   transform.writeUInt8(nextPayload, 0);
   transform.writeUInt8(0, 1);
   transform.writeUInt16BE(payloadLength, 2);
@@ -715,7 +715,7 @@ function buildIKEv2Transform(
 ): Buffer {
   const attrLen = attributes ? attributes.length : 0;
   const totalLen = 8 + attrLen;
-  const buf = Buffer.allocUnsafe(totalLen);
+  const buf = Buffer.alloc(totalLen, 0);
 
   buf.writeUInt8(isLast ? 0 : 3, 0);       // 0=last, 3=more transforms
   buf.writeUInt8(0, 1);                      // Reserved
@@ -734,7 +734,7 @@ function buildIKEv2Transform(
  * TV format: bit15=1 (TV), bits14-0=type, value(2)
  */
 function buildIKEv2TVAttribute(attrType: number, value: number): Buffer {
-  const buf = Buffer.allocUnsafe(4);
+  const buf = Buffer.alloc(4, 0);
   buf.writeUInt16BE(0x8000 | attrType, 0);
   buf.writeUInt16BE(value, 2);
   return buf;
@@ -762,7 +762,7 @@ function buildIKEv2SAPayload(nextPayloadAfterSA: number): Buffer {
 
   // Proposal sub-structure:
   // Last(1) Reserved(1) Length(2) ProposalNum(1) ProtocolID(1) SPISize(1) NumTransforms(1)
-  const proposalBody = Buffer.allocUnsafe(8);
+  const proposalBody = Buffer.alloc(8, 0);
   proposalBody.writeUInt8(0, 0);                       // Last proposal
   proposalBody.writeUInt8(0, 1);                       // Reserved
   proposalBody.writeUInt16BE(8 + transforms.length, 2);// Length
@@ -774,7 +774,7 @@ function buildIKEv2SAPayload(nextPayloadAfterSA: number): Buffer {
   const proposal = Buffer.concat([proposalBody, transforms]);
 
   // SA payload header: NextPayload(1) CRITICAL(1) Length(2)
-  const saHdr = Buffer.allocUnsafe(4);
+  const saHdr = Buffer.alloc(4, 0);
   saHdr.writeUInt8(nextPayloadAfterSA, 0);
   saHdr.writeUInt8(0, 1);                              // not critical
   saHdr.writeUInt16BE(4 + proposal.length, 2);
@@ -789,7 +789,7 @@ function buildIKEv2SAPayload(nextPayloadAfterSA: number): Buffer {
 function buildIKEv2KEPayload(nextPayload: number): Buffer {
   const dhPublicKeyLen = 256; // 2048 bits / 8
   // KE payload header: NextPayload(1) CRITICAL(1) Length(2) DHGroup(2) RESERVED(2)
-  const hdr = Buffer.allocUnsafe(8);
+  const hdr = Buffer.alloc(8, 0);
   hdr.writeUInt8(nextPayload, 0);
   hdr.writeUInt8(0, 1);
   hdr.writeUInt16BE(8 + dhPublicKeyLen, 2);
@@ -804,7 +804,7 @@ function buildIKEv2KEPayload(nextPayload: number): Buffer {
  * Build an IKEv2 Nonce payload (Nr).
  */
 function buildIKEv2NoncePayload(nextPayload: number, nonce: Buffer): Buffer {
-  const hdr = Buffer.allocUnsafe(4);
+  const hdr = Buffer.alloc(4, 0);
   hdr.writeUInt8(nextPayload, 0);
   hdr.writeUInt8(0, 1);
   hdr.writeUInt16BE(4 + nonce.length, 2);
@@ -827,7 +827,7 @@ function buildIKEv2SAInit(initiatorSPI: Buffer, nonce: Buffer): Buffer {
   const payloads = Buffer.concat([saPl, kePl, noncePl]);
   const totalLength = 28 + payloads.length;
 
-  const header = Buffer.allocUnsafe(28);
+  const header = Buffer.alloc(28, 0);
   initiatorSPI.copy(header, 0);                         // Initiator SPI (8 bytes)
   Buffer.alloc(8, 0).copy(header, 8);                   // Responder SPI = 0
   header.writeUInt8(IKEv2Payload.SA, 16);               // First payload = SA
@@ -864,8 +864,10 @@ function parseIKEv2Response(data: Buffer): {
   const payloads: Array<{ type: number; data: Buffer }> = [];
   let offset = 28;
   let currentType = data.readUInt8(16);
+  let iterations = 0;
 
   while (currentType !== IKEv2Payload.None && offset + 4 <= Math.min(data.length, totalLength)) {
+    if (++iterations > 256) throw new Error('IKEv2 payload chain too long (possible loop)');
     const nextType = data.readUInt8(offset);
     const payloadLen = data.readUInt16BE(offset + 2);
     if (payloadLen < 4 || offset + payloadLen > data.length) break;

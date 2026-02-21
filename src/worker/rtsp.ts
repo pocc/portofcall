@@ -86,8 +86,10 @@ function parseRtspResponse(raw: string): RtspResponse {
  * Build a Basic auth header value
  */
 function buildBasicAuth(username: string, password: string): string {
-  const encoded = btoa(`${username}:${password}`);
-  return `Basic ${encoded}`;
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `Basic ${btoa(binary)}`;
 }
 
 /**

@@ -260,6 +260,7 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
 
   // Parse Information Elements
   while (offset < data.length) {
+    if (offset + 1 > data.length) break; // Need at least the IE id byte
     const ieId = data[offset++];
 
     // Single-octet IEs (bit 7 = 1 for some codeset 0 IEs)
@@ -269,9 +270,9 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
       if (ieId >= 0xb0 && ieId <= 0xbf) continue; // Repeat indicator
     }
 
-    if (offset >= data.length) break;
+    if (offset + 1 > data.length) break; // Need at least the length byte
     const ieLength = data[offset++];
-    if (offset + ieLength > data.length) break;
+    if (offset + ieLength > data.length) break; // Need enough bytes for the body
 
     const ieData = data.slice(offset, offset + ieLength);
     offset += ieLength;
@@ -538,7 +539,7 @@ export async function handleH323Register(request: Request): Promise<Response> {
 
         if (!parsed) {
           return {
-            success: true,
+            success: false,
             messageType: responseData[0] ?? 0,
             messageTypeName: 'UNPARSEABLE',
             h225Version: 'Unknown',

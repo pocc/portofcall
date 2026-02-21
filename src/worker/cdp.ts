@@ -134,6 +134,7 @@ async function sendHttpRequest(
 function decodeChunked(data: string): string {
   let result = '';
   let remaining = data;
+  let lastChunkSize = -1;
 
   while (remaining.length > 0) {
     const lineEnd = remaining.indexOf('\r\n');
@@ -141,17 +142,25 @@ function decodeChunked(data: string): string {
 
     const sizeStr = remaining.substring(0, lineEnd).trim();
     const chunkSize = parseInt(sizeStr, 16);
+    lastChunkSize = isNaN(chunkSize) ? -1 : chunkSize;
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
     const chunkStart = lineEnd + 2;
     const chunkEnd = chunkStart + chunkSize;
     if (chunkEnd > remaining.length) {
       result += remaining.substring(chunkStart);
+      lastChunkSize = -1; // truncated — terminator not reached
       break;
     }
 
     result += remaining.substring(chunkStart, chunkEnd);
     remaining = remaining.substring(chunkEnd + 2);
+  }
+
+  // RFC 7230 §4.1: a chunked response MUST be terminated by a zero-length chunk.
+  // If the last processed chunk size was not 0, the response was truncated.
+  if (lastChunkSize !== 0) {
+    console.warn('Incomplete chunked response: missing zero-length terminator chunk');
   }
 
   return result;

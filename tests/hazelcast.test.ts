@@ -83,14 +83,14 @@ describe('Hazelcast Protocol - Probe', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        host: '1.1.1.1', // Cloudflare DNS (will be rejected due to Cloudflare detector)
-        port: 53,
+        host: '192.0.2.1', // TEST-NET-1, RFC 5737 — guaranteed unreachable
+        port: 5701,
         timeout: 2000,
       }),
     });
 
     const data = await response.json() as { success: boolean; isCloudflare?: boolean };
-    // Should either detect Cloudflare or fail to connect
+    // TEST-NET-1 is guaranteed unreachable — connection must fail
     expect(data.success).toBe(false);
   }, 10000);
 });

@@ -899,6 +899,7 @@ function parseColumnValue(
     return { value: null, nextOffset: offset + len };
   }
   if (type === TYPE_BITN) {
+    if (offset >= data.length) return { value: null, nextOffset: offset };
     const len = data[offset++];
     if (len === 0) return { value: null, nextOffset: offset };
     return { value: data[offset], nextOffset: offset + 1 };
@@ -943,6 +944,7 @@ function parseColumnValue(
     if (tpLen === 0) return { value: null, nextOffset: offset };
     offset += tpLen + 8; // skip text pointer + timestamp
     const dataLen = readU32LE(data, offset); offset += 4;
+    if (offset + dataLen > data.length) return { value: null, nextOffset: data.length };
     if (type === TYPE_NTEXT) {
       return { value: decodeUtf16LE(data, offset, dataLen), nextOffset: offset + dataLen };
     }

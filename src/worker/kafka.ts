@@ -299,6 +299,9 @@ function parseApiVersionsResponse(view: DataView): {
   if (errorCode === 0 && offset + 4 <= view.byteLength) {
     const arrayLen = view.getInt32(offset);
     offset += 4;
+    if (arrayLen < 0 || arrayLen > 10000) {
+      throw new Error(`Invalid Kafka array length: ${arrayLen}`);
+    }
 
     for (let i = 0; i < arrayLen && offset + 6 <= view.byteLength; i++) {
       const apiKey = view.getInt16(offset);
@@ -348,6 +351,9 @@ function parseMetadataResponse(view: DataView): {
   // Brokers array
   const brokerCount = view.getInt32(offset);
   offset += 4;
+  if (brokerCount < 0 || brokerCount > 10000) {
+    throw new Error(`Invalid Kafka array length: ${brokerCount}`);
+  }
 
   const brokers: Array<{ nodeId: number; host: string; port: number }> = [];
   for (let i = 0; i < brokerCount && offset + 4 <= view.byteLength; i++) {
@@ -368,6 +374,9 @@ function parseMetadataResponse(view: DataView): {
   // Topics array
   const topicCount = view.getInt32(offset);
   offset += 4;
+  if (topicCount < 0 || topicCount > 10000) {
+    throw new Error(`Invalid Kafka array length: ${topicCount}`);
+  }
 
   const topics: Array<{
     errorCode: number;
@@ -395,6 +404,9 @@ function parseMetadataResponse(view: DataView): {
     // Partitions
     const partitionCount = view.getInt32(offset);
     offset += 4;
+    if (partitionCount < 0 || partitionCount > 10000) {
+      throw new Error(`Invalid Kafka array length: ${partitionCount}`);
+    }
 
     const partitions: Array<{
       errorCode: number;
@@ -417,6 +429,9 @@ function parseMetadataResponse(view: DataView): {
       // Replicas
       const replicaCount = view.getInt32(offset);
       offset += 4;
+      if (replicaCount < 0 || replicaCount > 10000) {
+        throw new Error(`Invalid Kafka array length: ${replicaCount}`);
+      }
       const replicas: number[] = [];
       for (let r = 0; r < replicaCount && offset + 4 <= view.byteLength; r++) {
         replicas.push(view.getInt32(offset));
@@ -426,6 +441,9 @@ function parseMetadataResponse(view: DataView): {
       // ISR
       const isrCount = view.getInt32(offset);
       offset += 4;
+      if (isrCount < 0 || isrCount > 10000) {
+        throw new Error(`Invalid Kafka array length: ${isrCount}`);
+      }
       const isr: number[] = [];
       for (let r = 0; r < isrCount && offset + 4 <= view.byteLength; r++) {
         isr.push(view.getInt32(offset));

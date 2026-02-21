@@ -115,7 +115,8 @@ function decodeDomainName(data: Uint8Array, offset: number): { name: string; byt
   let bytesRead = 0;
   const decoder = new TextDecoder();
 
-  while (pos < data.length) {
+  let safetyCounter = 0;
+  while (pos < data.length && safetyCounter++ < 128) {
     const len = data[pos];
     if (len === 0) {
       if (!jumped) bytesRead = pos - offset + 1;

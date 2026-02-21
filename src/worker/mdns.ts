@@ -144,15 +144,15 @@ function encodeDNSName(name: string): Buffer {
   for (const label of labels) {
     if (label.length === 0) continue;
 
-    // RFC 1035 Section 2.3.1: Labels must be 63 octets or less
-    if (label.length > 63) {
-      throw new Error(`DNS label too long: ${label.length} bytes (max 63)`);
+    // RFC 1035 Section 2.3.1: Labels must be 63 octets or less (byte length, not char count)
+    const labelBytes = Buffer.from(label, 'utf8');
+    if (labelBytes.length > 63) {
+      throw new Error(`DNS label too long: ${labelBytes.length} bytes (max 63)`);
     }
 
-    const labelBuffer = Buffer.allocUnsafe(1 + label.length);
-    labelBuffer.writeUInt8(label.length, 0);
-    // RFC 1035 uses ASCII, but modern DNS supports UTF-8 for internationalized names
-    labelBuffer.write(label, 1, 'utf8');
+    const labelBuffer = Buffer.allocUnsafe(1 + labelBytes.length);
+    labelBuffer.writeUInt8(labelBytes.length, 0);
+    labelBytes.copy(labelBuffer, 1);
     buffers.push(labelBuffer);
   }
 

@@ -281,11 +281,22 @@ function mpSkipValue(data: Uint8Array, offset: number): number {
   // uint64 / int64 / float64
   if (b === 0xCF || b === 0xD3 || b === 0xCB) return offset + 9;
   // str8 / bin8
-  if (b === 0xD9 || b === 0xC4) return offset + 2 + data[offset + 1];
+  if (b === 0xD9 || b === 0xC4) {
+    if (offset + 2 > data.length) return data.length;
+    return offset + 2 + data[offset + 1];
+  }
   // str16 / bin16
-  if (b === 0xDA || b === 0xC5) return offset + 3 + ((data[offset + 1] << 8) | data[offset + 2]);
+  if (b === 0xDA || b === 0xC5) {
+    if (offset + 3 > data.length) return data.length;
+    return offset + 3 + ((data[offset + 1] << 8) | data[offset + 2]);
+  }
   // str32 / bin32
-  if (b === 0xDB || b === 0xC6) return offset + 5 + new DataView(data.buffer, data.byteOffset + offset + 1).getUint32(0, false);
+  if (b === 0xDB || b === 0xC6) {
+    if (offset + 5 > data.length) return data.length; // Can't read length prefix
+    const len = new DataView(data.buffer, data.byteOffset + offset + 1).getUint32(0, false);
+    if (offset + 5 + len > data.length) return data.length; // Would go out of bounds
+    return offset + 5 + len;
+  }
   // array16
   if (b === 0xDC) {
     const len = (data[offset + 1] << 8) | data[offset + 2];
@@ -922,6 +933,7 @@ async function readIprotoResponse(
   if (sizeBytes[0] === 0xCE) {
     // 5-byte uint32: no over-read
     msgLen = new DataView(sizeBytes.buffer, sizeBytes.byteOffset + 1).getUint32(0, false);
+    if (msgLen > 1_048_576) throw new Error('IPROTO payload too large: ' + msgLen + ' bytes');
     const payload = await readExact(reader, msgLen, timeoutPromise);
     const full = new Uint8Array(5 + msgLen);
     full.set(sizeBytes, 0);

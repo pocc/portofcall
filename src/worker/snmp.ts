@@ -154,11 +154,13 @@ function encodeOID(oid: string): Uint8Array {
       // Encode as variable-length quantity
       const encoded: number[] = [];
       encoded.unshift(value & 0x7f);
-      value >>= 7;
+      value = (value >>> 7);
 
+      let iterations = 0;
       while (value > 0) {
-        encoded.unshift((value & 0x7f) | 0x80);
-        value >>= 7;
+        if (++iterations > 32) throw new Error('OID component too large');
+        encoded.unshift((value & 0x7F) | (encoded.length > 0 ? 0x80 : 0));
+        value = (value >>> 7);
       }
 
       bytes.push(...encoded);

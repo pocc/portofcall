@@ -165,8 +165,10 @@ function parseFrameHeader(data: Uint8Array): {
     headerLength = 4;
   } else if (payloadLength === 127) {
     if (data.length < 10) return null;
-    // Only handle up to 32-bit lengths
-    payloadLength = (data[6] << 24) | (data[7] << 16) | (data[8] << 8) | data[9];
+    const hi = (data[2] << 24) | (data[3] << 16) | (data[4] << 8) | data[5];
+    const lo = (data[6] << 24) | (data[7] << 16) | (data[8] << 8) | data[9];
+    if (hi !== 0) throw new Error('WebSocket frame payload exceeds 4GB');
+    payloadLength = lo >>> 0;
     headerLength = 10;
   }
 

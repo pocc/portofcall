@@ -93,7 +93,7 @@ function buildHSRPHello(
   holdTime: number = 10,
   authentication: string = 'cisco'
 ): Buffer {
-  const packet = Buffer.allocUnsafe(20);
+  const packet = Buffer.alloc(20, 0);
 
   // Version (0 = HSRPv1)
   packet.writeUInt8(0, 0);

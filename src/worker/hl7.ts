@@ -27,6 +27,8 @@ const START_OF_BLOCK = 0x0B; // <VT> Vertical Tab
 const END_OF_BLOCK = 0x1C;   // <FS> File Separator
 const CARRIAGE_RETURN = 0x0D; // <CR>
 
+const MAX_MLLP_FRAME = 1 * 1024 * 1024; // 1 MB
+
 interface HL7ConnectRequest {
   host: string;
   port?: number;
@@ -455,6 +457,9 @@ export async function handleHL7Send(request: Request): Promise<Response> {
           if (done) break;
           chunks.push(value);
           totalLength += value.length;
+          if (totalLength > MAX_MLLP_FRAME) {
+            throw new Error('MLLP frame exceeds 1 MB limit');
+          }
 
           // Check for end-of-block marker in accumulated data
           for (let i = 0; i < value.length; i++) {
@@ -615,6 +620,9 @@ export async function handleHL7Query(request: Request): Promise<Response> {
           if (done) break;
           chunks.push(value);
           totalLength += value.length;
+          if (totalLength > MAX_MLLP_FRAME) {
+            throw new Error('MLLP frame exceeds 1 MB limit');
+          }
 
           for (let i = 0; i < value.length; i++) {
             if (value[i] === END_OF_BLOCK) {
@@ -781,6 +789,9 @@ export async function handleHL7ADT_A08(request: Request): Promise<Response> {
           if (done) break;
           chunks.push(value);
           totalLength += value.length;
+          if (totalLength > MAX_MLLP_FRAME) {
+            throw new Error('MLLP frame exceeds 1 MB limit');
+          }
 
           for (let i = 0; i < value.length; i++) {
             if (value[i] === END_OF_BLOCK) {

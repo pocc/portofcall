@@ -98,6 +98,13 @@ const DEFAULT_PORT = 5060;
 const MAX_RESPONSE_SIZE = 100000; // 100KB
 const MIN_TIMEOUT = 1000;
 const MAX_TIMEOUT = 300000; // 5 minutes
+/**
+ * Strip carriage return and newline characters from a user-supplied string
+ * before embedding it in a SIP header to prevent header injection attacks.
+ */
+function stripCRLF(value: string): string {
+  return value.replace(/[\r\n]/g, ' ');
+}
 
 /**
  * Generate a random Call-ID for SIP transactions
@@ -327,12 +334,13 @@ export async function handleSipOptions(request: Request): Promise<Response> {
     const fromTag = generateTag();
 
     // Build SIP OPTIONS request
+    const safeUri = stripCRLF(uri);
     const sipRequest = [
-      `OPTIONS ${uri} SIP/2.0`,
+      `OPTIONS ${safeUri} SIP/2.0`,
       `Via: SIP/2.0/TCP ${host}:${port};branch=${branch};rport`,
       `Max-Forwards: 70`,
       `From: <sip:probe@portofcall.workers.dev>;tag=${fromTag}`,
-      `To: <${uri}>`,
+      `To: <${safeUri}>`,
       `Contact: <sip:probe@portofcall.workers.dev>`,
       `Call-ID: ${callId}`,
       `CSeq: 1 OPTIONS`,
@@ -489,8 +497,8 @@ export async function handleSipInvite(request: Request): Promise<Response> {
     }
 
     const sipDomain = host;
-    const fromUser = body.from || 'probe';
-    const toUser = body.to || 'probe';
+    const fromUser = stripCRLF(body.from || 'probe');
+    const toUser = stripCRLF(body.to || 'probe');
     const fromUri = `sip:${fromUser}@${sipDomain}`;
     const toUri = `sip:${toUser}@${sipDomain}`;
     const callId = generateCallId(host);
@@ -893,15 +901,18 @@ export async function handleSipRegister(request: Request): Promise<Response> {
     const fromTag = generateTag();
 
     // Build SIP REGISTER request
+    const safeUri = stripCRLF(uri);
+    const safeUsername = stripCRLF(username);
+    const safeSipDomain = stripCRLF(sipDomain);
     const sipRequest = [
-      `REGISTER ${uri} SIP/2.0`,
+      `REGISTER ${safeUri} SIP/2.0`,
       `Via: SIP/2.0/TCP ${host}:${port};branch=${branch};rport`,
       `Max-Forwards: 70`,
-      `From: <sip:${username}@${sipDomain}>;tag=${fromTag}`,
-      `To: <sip:${username}@${sipDomain}>`,
+      `From: <sip:${safeUsername}@${safeSipDomain}>;tag=${fromTag}`,
+      `To: <sip:${safeUsername}@${safeSipDomain}>`,
       `Call-ID: ${callId}`,
       `CSeq: 1 REGISTER`,
-      `Contact: <sip:${username}@portofcall.workers.dev>`,
+      `Contact: <sip:${safeUsername}@portofcall.workers.dev>`,
       `Expires: 0`,
       `User-Agent: PortOfCall/1.0`,
       `Content-Length: 0`,

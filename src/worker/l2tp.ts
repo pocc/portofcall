@@ -116,15 +116,16 @@ function buildL2TPMessage(
     // Vendor ID (2 bytes) - 0 for IETF
     // Attribute Type (2 bytes)
     // Value (variable)
-    const avpLength = 6 + avp.value.length;
+    const bodyLen = Math.min(avp.value.length, 1017);
+    const avpLength = 6 + bodyLen;
     const avpHeader = Buffer.allocUnsafe(6);
 
-    // Set M (mandatory) bit and length (10 bits)
+    // Set M (mandatory) bit and length (10 bits, max 1023 = 6 header + 1017 body)
     avpHeader.writeUInt16BE(0x8000 | avpLength, 0); // M=1, H=0, length
     avpHeader.writeUInt16BE(0, 2); // Vendor ID = 0 (IETF)
     avpHeader.writeUInt16BE(avp.type, 4); // Attribute Type
 
-    const avpBuffer = Buffer.concat([avpHeader, avp.value]);
+    const avpBuffer = Buffer.concat([avpHeader, avp.value.subarray(0, bodyLen)]);
     avpBuffers.push(avpBuffer);
     avpTotalLength += avpBuffer.length;
   }

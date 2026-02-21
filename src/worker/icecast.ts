@@ -50,8 +50,10 @@ async function httpRequest(
     let request = `GET ${path} HTTP/1.1\r\nHost: ${host}:${port}\r\nAccept: application/json, text/xml, */*\r\nConnection: close\r\nUser-Agent: PortOfCall/1.0\r\n`;
 
     if (auth) {
-      const credentials = btoa(`${auth.username}:${auth.password}`);
-      request += `Authorization: Basic ${credentials}\r\n`;
+      const credBytes = new TextEncoder().encode(`${auth.username}:${auth.password}`);
+      let credBinary = '';
+      for (const byte of credBytes) credBinary += String.fromCharCode(byte);
+      request += `Authorization: Basic ${btoa(credBinary)}\r\n`;
     }
 
     request += '\r\n';

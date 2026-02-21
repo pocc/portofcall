@@ -1259,6 +1259,13 @@ export async function handleLDAPPagedSearch(request: Request): Promise<Response>
     let cookieBytes = new Uint8Array(0);
     if (cookieHex) {
       const hex = cookieHex.replace(/\s/g, '');
+      const isValidHex = /^[0-9a-fA-F]+$/.test(hex);
+      if (!isValidHex) {
+        return new Response(
+          JSON.stringify({ success: false, error: 'Invalid paged search cookie' }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
       const pairs = hex.match(/.{1,2}/g);
       cookieBytes = new Uint8Array(
         pairs ? pairs.map((b) => parseInt(b, 16)) : [],

@@ -244,7 +244,7 @@ async function openEPPSession(config: EPPConfig, objURIs?: string[]): Promise<{
   socket: ReturnType<typeof connect>;
   greeting: string;
 }> {
-  const socket = connect({ hostname: config.host, port: config.port });
+  const socket = connect(`${config.host}:${config.port}`, { secureTransport: 'on', allowHalfOpen: false });
   try {
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -302,10 +302,7 @@ async function closeEPPSession(
  * presence instead of parsing a result code.
  */
 export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
-  const socket = connect({
-    hostname: config.host,
-    port: config.port,
-  });
+  const socket = connect(`${config.host}:${config.port}`, { secureTransport: 'on', allowHalfOpen: false });
 
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();

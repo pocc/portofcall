@@ -199,7 +199,10 @@ function decodeChunked(data: string): string {
  */
 function buildAuthHeader(username?: string, password?: string): string | undefined {
   if (username) {
-    return `Basic ${btoa(`${username}:${password ?? ''}`)}`;
+    const bytes = new TextEncoder().encode(`${username}:${password ?? ''}`);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return `Basic ${btoa(binary)}`;
   }
   return undefined;
 }

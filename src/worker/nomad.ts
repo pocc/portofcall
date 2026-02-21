@@ -28,8 +28,8 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /**
- * Base64 encode a string (Cloudflare Workers compatible).
- * btoa() is not available in Workers runtime.
+ * Base64 encode a string with proper UTF-8 support.
+ * btoa() alone fails on non-ASCII characters (code points > 255).
  */
 function base64Encode(str: string): string {
   const bytes = encoder.encode(str);

@@ -83,12 +83,20 @@ async function readPOP3MultiLine(
       }
     }
 
-    // RFC 1939 §3: reverse dot-stuffing
-    // Lines starting with ".." become "." and the lone "." line marks end
+    // RFC 1939 §3: reverse dot-stuffing.
+    // 1. Split on CRLF.
+    // 2. Remove trailing empty string produced by the final CRLF.
+    // 3. Remove the terminator line (exactly '.') — it MUST be the last line.
+    // 4. Un-stuff: any line beginning with '.' had an extra '.' prepended by
+    //    the server; strip the first character.  This correctly converts '..'
+    //    content lines to '.' and leaves all other lines untouched.
     const lines = response.split('\r\n');
-    const destuffed = lines
-      .filter(line => line !== '.') // Remove terminator
-      .map(line => line.startsWith('..') ? line.slice(1) : line); // Undo stuffing
+    // Remove trailing empty element from the final \r\n
+    if (lines[lines.length - 1] === '') lines.pop();
+    // Remove the terminator line '.'
+    if (lines[lines.length - 1] === '.') lines.pop();
+    // Un-stuff: remove the leading '.' from any dot-stuffed line
+    const destuffed = lines.map(line => line.startsWith('.') ? line.slice(1) : line);
     return destuffed.join('\r\n');
   })();
 
@@ -498,6 +506,7 @@ export async function handlePOP3Retrieve(request: Request): Promise<Response> {
 
         // Parse message (remove +OK line and terminating .\r\n)
         const lines = messageResp.split('\r\n');
+        if (lines.length < 3) throw new Error('Invalid POP3 response: too few lines');
         const messageLines = lines.slice(1, -2); // Remove +OK and .
         const message = messageLines.join('\r\n');
 
@@ -727,8 +736,9 @@ export async function handlePOP3Top(request: Request): Promise<Response> {
         const topResp = await readPOP3MultiLine(reader, 30000);
         if (!topResp.startsWith('+OK')) throw new Error(`TOP command failed: ${topResp.trim()}`);
         const respLines = topResp.split('\r\n');
+        if (respLines.length < 3) throw new Error('Invalid POP3 response: too few lines');
         const contentLines = respLines.slice(1, -2);
-        const content = contentLines.join('\r\n');
+        const content = contentLines.map(line => line.startsWith('..') ? line.slice(1) : line).join('\r\n');
         await sendPOP3Command(reader, writer, 'QUIT', 5000);
         await socket.close();
         return { success: true, msgnum, lines, content };

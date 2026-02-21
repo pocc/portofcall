@@ -104,6 +104,7 @@ async function sendHttpRequest(
       response += decoder.decode(value, { stream: true });
     }
   }
+  response += decoder.decode(new Uint8Array(0)); // Flush remaining multi-byte sequences
 
   reader.releaseLock();
   socket.close();
@@ -148,6 +149,7 @@ async function sendHttpRequest(
 function decodeChunked(data: string): string {
   let result = '';
   let remaining = data;
+  let lastChunkSize = -1;
 
   while (remaining.length > 0) {
     const lineEnd = remaining.indexOf('\r\n');
@@ -155,17 +157,25 @@ function decodeChunked(data: string): string {
 
     const sizeStr = remaining.substring(0, lineEnd).trim();
     const chunkSize = parseInt(sizeStr, 16);
+    lastChunkSize = isNaN(chunkSize) ? -1 : chunkSize;
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
     const chunkStart = lineEnd + 2;
     const chunkEnd = chunkStart + chunkSize;
     if (chunkEnd > remaining.length) {
       result += remaining.substring(chunkStart);
+      lastChunkSize = -1; // truncated — terminator not reached
       break;
     }
 
     result += remaining.substring(chunkStart, chunkEnd);
     remaining = remaining.substring(chunkEnd + 2);
+  }
+
+  // RFC 7230 §4.1: a chunked response MUST be terminated by a zero-length chunk.
+  // If the last processed chunk size was not 0, the response was truncated.
+  if (lastChunkSize !== 0) {
+    console.warn('Incomplete chunked response: missing zero-length terminator chunk');
   }
 
   return result;
@@ -684,11 +694,12 @@ function parseDockerLogs(data: Uint8Array): { stdout: string[]; stderr: string[]
   while (offset + 8 <= data.length) {
     const streamType = data[offset];
     // bytes 1-3 are padding zeros
-    const size =
-      (data[offset + 4] << 24) |
+    const size = (
+      ((data[offset + 4] << 24) |
       (data[offset + 5] << 16) |
       (data[offset + 6] << 8) |
-      data[offset + 7];
+      data[offset + 7]) >>> 0
+    );
 
     offset += 8;
     if (size < 0 || offset + size > data.length) break;
@@ -867,6 +878,7 @@ function decodeChunkedBytes(data: Uint8Array): Uint8Array {
   const decoder = new TextDecoder();
   const chunks: Uint8Array[] = [];
   let offset = 0;
+  let lastChunkSize = -1;
 
   while (offset < data.length) {
     // Find end of chunk size line
@@ -878,15 +890,23 @@ function decodeChunkedBytes(data: Uint8Array): Uint8Array {
 
     const sizeStr = decoder.decode(data.slice(offset, lineEnd)).trim();
     const chunkSize = parseInt(sizeStr, 16);
+    lastChunkSize = isNaN(chunkSize) ? -1 : chunkSize;
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
     offset = lineEnd + 2;
     if (offset + chunkSize > data.length) {
       chunks.push(data.slice(offset));
+      lastChunkSize = -1; // truncated — terminator not reached
       break;
     }
     chunks.push(data.slice(offset, offset + chunkSize));
     offset += chunkSize + 2; // skip trailing \r\n
+  }
+
+  // RFC 7230 §4.1: a chunked response MUST be terminated by a zero-length chunk.
+  // If the last processed chunk size was not 0, the response was truncated.
+  if (lastChunkSize !== 0) {
+    console.warn('Incomplete chunked response: missing zero-length terminator chunk');
   }
 
   const totalLen = chunks.reduce((sum, c) => sum + c.length, 0);

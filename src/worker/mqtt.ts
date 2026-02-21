@@ -24,6 +24,14 @@ export interface MQTTConnectionOptions {
   keepAlive?: number;
 }
 
+// ─── Crypto helpers ──────────────────────────────────────────────────────────
+
+/** Generate a cryptographically random hex string of the given byte length */
+function cryptoRandomHex(byteLen: number): string {
+  const randomBytes = crypto.getRandomValues(new Uint8Array(byteLen));
+  return Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // ─── Wire-level helpers ───────────────────────────────────────────────────────
 
 /**
@@ -198,6 +206,7 @@ function parseMQTTPacket(data: Uint8Array): MQTTPacket | null {
   } else if (type === 3) {
     // PUBLISH: topic (2-byte len), optional messageId (QoS>0), payload
     const qos = (flags >> 1) & 0x03;
+    if (qos === 3) throw new Error('Invalid QoS value 3 (reserved by MQTT spec)');
     const retain = !!(flags & 0x01);
     const dup = !!(flags & 0x08);
     let pos = 0;
@@ -327,7 +336,7 @@ export async function handleMQTTConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 1883;
     const timeoutMs = options.timeout || 10000;
-    const clientId = options.clientId || `portofcall-${Math.random().toString(36).slice(2, 9)}`;
+    const clientId = options.clientId || `poc-${cryptoRandomHex(8)}`;
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -395,7 +404,7 @@ export async function handleMQTTPublish(request: Request): Promise<Response> {
     const port = body.port || 1883;
     const timeoutMs = body.timeout || 10000;
     const qos = Math.min(body.qos ?? 0, 1); // we support QoS 0 and 1
-    const clientId = body.clientId || `portofcall-pub-${Math.random().toString(36).slice(2, 7)}`;
+    const clientId = body.clientId || `poc-pub-${cryptoRandomHex(8)}`;
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -490,7 +499,7 @@ export async function handleMQTTSession(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
   const port = parseInt(url.searchParams.get('port') || '1883');
-  const clientId = url.searchParams.get('clientId') || `portofcall-${Math.random().toString(36).slice(2, 9)}`;
+  const clientId = url.searchParams.get('clientId') || `poc-${cryptoRandomHex(8)}`;
   const username = url.searchParams.get('username') || undefined;
   const password = url.searchParams.get('password') || undefined;
   const willTopic = url.searchParams.get('willTopic') || undefined;

@@ -441,7 +441,7 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
                   const hasSasl = availCaps.some(c => c === 'sasl' || c.startsWith('sasl='));
                   if (saslUsername && saslPassword && hasSasl) {
                     const w = socket.writable.getWriter();
-                    await w.write(encoder.encode('CAP REQ sasl\r\n'));
+                    await w.write(encoder.encode('CAP REQ :sasl\r\n'));
                     w.releaseLock();
                     saslState = 'cap_req';
                   } else {
@@ -475,7 +475,10 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
 
               // SASL PLAIN authentication
               if (msg.command === 'AUTHENTICATE' && msg.params[0] === '+' && saslState === 'authenticate') {
-                const creds = btoa(`${saslUsername}\0${saslUsername}\0${saslPassword}`);
+                const saslBytes = new TextEncoder().encode(`${saslUsername}\0${saslUsername}\0${saslPassword}`);
+                let saslBin = '';
+                for (let i = 0; i < saslBytes.length; i++) saslBin += String.fromCharCode(saslBytes[i]);
+                const creds = btoa(saslBin);
                 const w = socket.writable.getWriter();
                 await w.write(encoder.encode(`AUTHENTICATE ${creds}\r\n`));
                 w.releaseLock();

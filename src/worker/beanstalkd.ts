@@ -545,6 +545,7 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
           success: inserted,
           host, port, tube, rtt, jobId,
           status: putResp.split('\r\n')[0] || putResp,
+          ...(buried && { needsKick: true }),
           message: inserted
             ? `Job ${jobId} inserted into tube '${tube}'`
             : buried

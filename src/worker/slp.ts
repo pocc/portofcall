@@ -109,6 +109,9 @@ function writeString(buf: number[], str: string): void {
  */
 function finalizeMessage(buf: number[]): Uint8Array {
   const length = buf.length;
+  if (length > 0xFFFFFF) {
+    throw new Error('SLP message exceeds maximum length (16MB)');
+  }
   buf[2] = (length >> 16) & 0xff;
   buf[3] = (length >> 8) & 0xff;
   buf[4] = length & 0xff;

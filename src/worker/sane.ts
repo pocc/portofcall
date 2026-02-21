@@ -136,6 +136,9 @@ function decodeVersion(versionCode: number): string {
 
 /** SANE_NET_INIT (opcode 0): word(0) + word(version_code) + string(username) */
 function buildInitRequest(username: string): Uint8Array {
+  if (!/^[a-zA-Z0-9._-]*$/.test(username)) {
+    throw new Error('Invalid username');
+  }
   const opcode = encodeWord(0);
   const version = encodeWord((1 << 24) | (0 << 16) | 3); // SANE v1.0.3
   const usernameStr = encodeString(username);
@@ -153,14 +156,8 @@ function buildGetDevicesRequest(): Uint8Array {
 
 /** SANE_NET_OPEN (opcode 2): word(2) + string(deviceName) */
 function buildOpenRequest(deviceName: string): Uint8Array {
-  // Validate device name to prevent path traversal and injection
-  if (deviceName.length > 255) {
-    throw new Error('Device name too long (max 255 characters)');
-  }
-  if (deviceName.includes('\0') || deviceName.includes('..')) {
-    throw new Error('Invalid device name (contains null bytes or path traversal)');
-  }
-  if (deviceName === '.' || deviceName.startsWith('/') || deviceName.includes('\\') || deviceName.includes('./')) {
+  // Strict whitelist: only alphanumerics, dots, underscores, and hyphens
+  if (!/^[a-zA-Z0-9._-]+$/.test(deviceName)) {
     throw new Error('Invalid device name');
   }
   const opcode = encodeWord(2);

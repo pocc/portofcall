@@ -153,8 +153,8 @@ function decodeBSON(data: Uint8Array, startOffset: number = 0, depth: number = 0
       case BSON_DATETIME: {
         const lo = new DataView(data.buffer, data.byteOffset + startOffset + offset).getUint32(0, true);
         const hi = new DataView(data.buffer, data.byteOffset + startOffset + offset).getInt32(4, true);
-        const ms = hi * 0x100000000 + lo;
-        result[key] = new Date(ms).toISOString();
+        const combined = BigInt(hi) * BigInt(0x100000000) + BigInt(lo);
+        result[key] = new Date(Number(combined)).toISOString();
         offset += 8;
         break;
       }
@@ -171,14 +171,16 @@ function decodeBSON(data: Uint8Array, startOffset: number = 0, depth: number = 0
         // Timestamp is 8 bytes (increment + timestamp)
         const increment = new DataView(data.buffer, data.byteOffset + startOffset + offset).getUint32(0, true);
         const timestamp = new DataView(data.buffer, data.byteOffset + startOffset + offset).getUint32(4, true);
-        result[key] = { timestamp, increment };
+        const combined64 = BigInt(timestamp) * BigInt(0x100000000) + BigInt(increment);
+        result[key] = { timestamp, increment, combined: combined64.toString() };
         offset += 8;
         break;
       }
       case BSON_INT64: {
         const lo64 = new DataView(data.buffer, data.byteOffset + startOffset + offset).getUint32(0, true);
         const hi64 = new DataView(data.buffer, data.byteOffset + startOffset + offset).getInt32(4, true);
-        result[key] = hi64 * 0x100000000 + lo64;
+        const combined64 = BigInt(hi64) * BigInt(0x100000000) + BigInt(lo64);
+        result[key] = combined64.toString();
         offset += 8;
         break;
       }

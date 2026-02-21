@@ -278,7 +278,7 @@ function processIACData(data: Uint8Array): { text: string; responses: Uint8Array
       i++;
       if (i >= data.length) break;
       const opt = data[i++];
-      const reply = cmd === WILL ? WONT : DONT;
+      const reply = cmd === WILL ? DONT : WONT;
       responses.push(new Uint8Array([IAC, reply, opt]));
 
     } else if (cmd === WONT || cmd === DONT) {

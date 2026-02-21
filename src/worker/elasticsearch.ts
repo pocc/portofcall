@@ -175,7 +175,10 @@ function decodeChunked(data: string): string {
  */
 function buildAuthHeader(username?: string, password?: string): string | undefined {
   if (username && password) {
-    return `Basic ${btoa(`${username}:${password}`)}`;
+    const bytes = new TextEncoder().encode(`${username}:${password}`);
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return `Basic ${btoa(binary)}`;
   }
   return undefined;
 }
@@ -404,7 +407,7 @@ export async function handleElasticsearchHTTPS(request: Request): Promise<Respon
     };
 
     if (username && password) {
-      fetchHeaders['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+      fetchHeaders['Authorization'] = buildAuthHeader(username, password)!;
     }
 
     if (queryBody) {
@@ -530,7 +533,7 @@ export async function handleElasticsearchIndex(request: Request): Promise<Respon
         'User-Agent': 'PortOfCall/1.0',
       };
       if (username && password) {
-        headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+        headers['Authorization'] = buildAuthHeader(username, password)!;
       }
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -632,7 +635,7 @@ export async function handleElasticsearchDelete(request: Request): Promise<Respo
         'User-Agent': 'PortOfCall/1.0',
       };
       if (username && password) {
-        headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+        headers['Authorization'] = buildAuthHeader(username, password)!;
       }
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -738,7 +741,7 @@ export async function handleElasticsearchCreate(request: Request): Promise<Respo
         'User-Agent': 'PortOfCall/1.0',
       };
       if (username && password) {
-        headers['Authorization'] = `Basic ${btoa(`${username}:${password}`)}`;
+        headers['Authorization'] = buildAuthHeader(username, password)!;
       }
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeout);

@@ -216,7 +216,16 @@ export class FTPClient {
       try { await dataSocket.close(); } catch {}
     }
 
-    await this.readResponse(); // 226 Transfer Complete
+    const transferCompleteMs = 10000;
+    const mlsdComplete = await Promise.race([
+      this.readResponse(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('FTP transfer complete response timeout')), transferCompleteMs)
+      ),
+    ]); // 226 Transfer Complete
+    if (!mlsdComplete.startsWith('226')) {
+      throw new Error(`MLSD transfer failed: ${mlsdComplete}`);
+    }
 
     const listing = this.decoder.decode(this.concatenateChunks(chunks));
     return this.parseMlsdResponse(listing);
@@ -264,7 +273,16 @@ export class FTPClient {
       try { await dataSocket.close(); } catch {}
     }
 
-    await this.readResponse(); // 226
+    const transferCompleteMs = 10000;
+    const nlstComplete = await Promise.race([
+      this.readResponse(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('FTP transfer complete response timeout')), transferCompleteMs)
+      ),
+    ]); // 226
+    if (!nlstComplete.startsWith('226')) {
+      throw new Error(`NLST transfer failed: ${nlstComplete}`);
+    }
 
     const listing = this.decoder.decode(this.concatenateChunks(chunks));
     return listing
@@ -301,7 +319,12 @@ export class FTPClient {
 
     const [, h1, h2, h3, h4, p1, p2] = match;
     const host = `${h1}.${h2}.${h3}.${h4}`;
-    const port = parseInt(p1) * 256 + parseInt(p2);
+    const p1Num = parseInt(p1);
+    const p2Num = parseInt(p2);
+    if (isNaN(p1Num) || isNaN(p2Num) || p1Num < 0 || p1Num > 255 || p2Num < 0 || p2Num > 255) {
+      throw new Error('Invalid PASV response: port octets out of range');
+    }
+    const port = p1Num * 256 + p2Num;
 
     return { host, port };
   }
@@ -372,9 +395,15 @@ export class FTPClient {
     }
 
     // CRITICAL: Read the 226 Transfer Complete response
-    const completeResponse = await this.readResponse();
+    const transferCompleteMs = 10000;
+    const completeResponse = await Promise.race([
+      this.readResponse(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('FTP transfer complete response timeout')), transferCompleteMs)
+      ),
+    ]);
     if (!completeResponse.startsWith('226')) {
-      console.warn(`Expected 226 Transfer Complete, got: ${completeResponse}`);
+      throw new Error(`LIST transfer failed: ${completeResponse}`);
     }
 
     // Parse listing
@@ -418,7 +447,13 @@ export class FTPClient {
     }
 
     // Read transfer complete response
-    const completeResponse = await this.readResponse();
+    const transferCompleteMs = 10000;
+    const completeResponse = await Promise.race([
+      this.readResponse(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('FTP transfer complete response timeout')), transferCompleteMs)
+      ),
+    ]);
     if (!completeResponse.startsWith('226')) {
       throw new Error(`Upload failed: ${completeResponse}`);
     }
@@ -471,7 +506,13 @@ export class FTPClient {
     }
 
     // Read transfer complete response
-    const completeResponse = await this.readResponse();
+    const transferCompleteMs = 10000;
+    const completeResponse = await Promise.race([
+      this.readResponse(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('FTP transfer complete response timeout')), transferCompleteMs)
+      ),
+    ]);
     if (!completeResponse.startsWith('226')) {
       throw new Error(`Download incomplete: ${completeResponse}`);
     }
@@ -573,12 +614,15 @@ export class FTPClient {
   }
 
   /**
-   * Close connection
+   * Close connection, releasing reader/writer locks before closing the socket.
+   * Safe to call multiple times or after an error.
    */
   async close(): Promise<void> {
     if (this.controlSocket) {
-      await this.sendCommand('QUIT');
-      await this.controlSocket.close();
+      try { await this.sendCommand('QUIT'); } catch { /* ignore if already closed */ }
+      try { this.writer?.releaseLock(); } catch { /* already released */ }
+      try { this.reader?.releaseLock(); } catch { /* already released */ }
+      try { await this.controlSocket.close(); } catch { /* ignore close errors */ }
       this.controlSocket = null;
       this.reader = null;
       this.writer = null;
@@ -835,18 +879,21 @@ export async function handleFTPConnect(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    const pwd = await client.pwd();
+      const pwd = await client.pwd();
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      message: 'Connected successfully',
-      currentDirectory: pwd,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'Connected successfully',
+        currentDirectory: pwd,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -897,19 +944,22 @@ export async function handleFTPList(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    const files = await client.list(path, useMlsd);
+      const files = await client.list(path, useMlsd);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      path,
-      mode: useMlsd ? 'mlsd' : 'list',
-      files,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        path,
+        mode: useMlsd ? 'mlsd' : 'list',
+        files,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -955,17 +1005,20 @@ export async function handleFTPFeat(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    const features = await client.feat();
+      const features = await client.feat();
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      features,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        features,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1013,18 +1066,21 @@ export async function handleFTPStat(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    const fileStat = await client.stat(remotePath);
+      const fileStat = await client.stat(remotePath);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      path: remotePath,
-      ...fileStat,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        path: remotePath,
+        ...fileStat,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1072,18 +1128,21 @@ export async function handleFTPNlst(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    const names = await client.nlst(path);
+      const names = await client.nlst(path);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      path,
-      names,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        path,
+        names,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1120,20 +1179,21 @@ export async function handleFTPSite(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
+      const response = await client.site(command);
 
-    const response = await client.site(command);
+      // SITE responses: 200 OK, 202 Not implemented, 500 error
+      const success = response.startsWith('200') || response.startsWith('250');
 
-    await client.close();
-
-    // SITE responses: 200 OK, 202 Not implemented, 500 error
-    const success = response.startsWith('200') || response.startsWith('250');
-
-    return new Response(JSON.stringify({
-      success,
-      response,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success,
+        response,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1175,18 +1235,21 @@ export async function handleFTPUpload(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    await client.upload(remotePath, fileData);
+      await client.upload(remotePath, fileData);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      message: `Uploaded ${file.name} to ${remotePath}`,
-      size: fileData.length,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        message: `Uploaded ${file.name} to ${remotePath}`,
+        size: fileData.length,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1233,26 +1296,27 @@ export async function handleFTPDownload(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
+      const fileData = await client.download(remotePath);
 
-    const fileData = await client.download(remotePath);
+      // Extract filename from path
+      const filename = remotePath.split('/').pop() || 'download';
 
-    await client.close();
+      // Create a proper ArrayBuffer for Response
+      const buffer = new ArrayBuffer(fileData.length);
+      const view = new Uint8Array(buffer);
+      view.set(fileData);
 
-    // Extract filename from path
-    const filename = remotePath.split('/').pop() || 'download';
-
-    // Create a proper ArrayBuffer for Response
-    const buffer = new ArrayBuffer(fileData.length);
-    const view = new Uint8Array(buffer);
-    view.set(fileData);
-
-    return new Response(buffer, {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Content-Disposition': `attachment; filename="${filename}"`,
-        'Content-Length': fileData.length.toString(),
-      },
-    });
+      return new Response(buffer, {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Disposition': `attachment; filename="${filename}"`,
+          'Content-Length': fileData.length.toString(),
+        },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1287,17 +1351,20 @@ export async function handleFTPDelete(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    await client.delete(remotePath);
+      await client.delete(remotePath);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      message: `Deleted ${remotePath}`,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        message: `Deleted ${remotePath}`,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1332,17 +1399,20 @@ export async function handleFTPMkdir(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    await client.mkdir(dirPath);
+      await client.mkdir(dirPath);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      message: `Created directory ${dirPath}`,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        message: `Created directory ${dirPath}`,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -1377,17 +1447,20 @@ export async function handleFTPRename(request: Request): Promise<Response> {
 
     const client = new FTPClient({ host, port, username, password });
     await client.connect();
+    try {
 
-    await client.rename(fromPath, toPath);
+      await client.rename(fromPath, toPath);
 
-    await client.close();
 
-    return new Response(JSON.stringify({
-      success: true,
-      message: `Renamed ${fromPath} to ${toPath}`,
-    }), {
-      headers: { 'Content-Type': 'application/json' },
-    });
+      return new Response(JSON.stringify({
+        success: true,
+        message: `Renamed ${fromPath} to ${toPath}`,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,

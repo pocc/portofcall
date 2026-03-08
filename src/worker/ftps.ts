@@ -19,6 +19,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 /**
  * Read a complete FTP response (may be multi-line)
@@ -34,6 +35,11 @@ function parseFTPResponse(text: string): { code: number; message: string; lines:
  * Handle FTPS connection test
  */
 export async function handleFTPSConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -53,7 +59,7 @@ export async function handleFTPSConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -115,94 +121,101 @@ export async function handleFTPSConnect(request: Request): Promise<Response> {
       return responseText.trim();
     };
 
-    // Read welcome banner
-    const bannerText = await Promise.race([readResponse(), timeoutPromise]) as string;
-    const banner = parseFTPResponse(bannerText);
+    const cleanup = () => {
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
+    };
 
-    if (banner.code < 200 || banner.code >= 300) {
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
+    try {
+      // Read welcome banner
+      const bannerText = await Promise.race([readResponse(), timeoutPromise]) as string;
+      const banner = parseFTPResponse(bannerText);
+
+      if (banner.code < 200 || banner.code >= 300) {
+        cleanup();
+        return new Response(JSON.stringify({
+          success: false,
+          error: `FTPS server error: ${bannerText}`,
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Send FEAT to discover features
+      let features: string[] = [];
+      try {
+        await writer.write(encoder.encode('FEAT\r\n'));
+        const featRaw = await Promise.race([readResponse(), timeoutPromise]) as string;
+        const featParsed = parseFTPResponse(featRaw);
+        if (featParsed.code === 211) {
+          // Extract feature lines (lines between 211- and 211 End)
+          features = featParsed.lines
+            .slice(1) // skip first "211-" line
+            .filter(l => !l.startsWith('211 '))
+            .map(l => l.trim());
+        }
+      } catch {
+        // FEAT not supported - that's ok
+      }
+
+      // Send SYST to get system type
+      let systemType = '';
+      try {
+        await writer.write(encoder.encode('SYST\r\n'));
+        const systRaw = await Promise.race([readResponse(), timeoutPromise]) as string;
+        const systParsed = parseFTPResponse(systRaw);
+        if (systParsed.code === 215) {
+          systemType = systParsed.message;
+        }
+      } catch {
+        // SYST not supported
+      }
+
+      // Send QUIT
+      try {
+        await writer.write(encoder.encode('QUIT\r\n'));
+      } catch {
+        // Ignore quit errors
+      }
+
+      const rtt = Date.now() - startTime;
+
+      cleanup();
+
       return new Response(JSON.stringify({
-        success: false,
-        error: `FTPS server error: ${bannerText}`,
+        success: true,
+        host,
+        port,
+        rtt,
+        connectTime,
+        encrypted: true,
+        protocol: 'FTPS (Implicit TLS)',
+        banner: {
+          code: banner.code,
+          message: banner.message,
+          raw: bannerText,
+        },
+        systemType: systemType || undefined,
+        features: features.length > 0 ? features : undefined,
+        tlsFeatures: {
+          authTls: features.some(f => f.toUpperCase().includes('AUTH TLS')),
+          pbsz: features.some(f => f.toUpperCase().includes('PBSZ')),
+          prot: features.some(f => f.toUpperCase().includes('PROT')),
+          utf8: features.some(f => f.toUpperCase().includes('UTF8')),
+          mlst: features.some(f => f.toUpperCase().includes('MLST')),
+          epsv: features.some(f => f.toUpperCase().includes('EPSV')),
+        },
       }), {
-        status: 500,
+        status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
+
+    } catch (err) {
+      cleanup();
+      throw err;
     }
-
-    // Send FEAT to discover features
-    let features: string[] = [];
-    let featRaw = '';
-    try {
-      await writer.write(encoder.encode('FEAT\r\n'));
-      featRaw = await Promise.race([readResponse(), timeoutPromise]) as string;
-      const featParsed = parseFTPResponse(featRaw);
-      if (featParsed.code === 211) {
-        // Extract feature lines (lines between 211- and 211 End)
-        features = featParsed.lines
-          .slice(1) // skip first "211-" line
-          .filter(l => !l.startsWith('211 '))
-          .map(l => l.trim());
-      }
-    } catch {
-      // FEAT not supported - that's ok
-    }
-
-    // Send SYST to get system type
-    let systemType = '';
-    try {
-      await writer.write(encoder.encode('SYST\r\n'));
-      const systRaw = await Promise.race([readResponse(), timeoutPromise]) as string;
-      const systParsed = parseFTPResponse(systRaw);
-      if (systParsed.code === 215) {
-        systemType = systParsed.message;
-      }
-    } catch {
-      // SYST not supported
-    }
-
-    // Send QUIT
-    try {
-      await writer.write(encoder.encode('QUIT\r\n'));
-    } catch {
-      // Ignore quit errors
-    }
-
-    const rtt = Date.now() - startTime;
-
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
-
-    return new Response(JSON.stringify({
-      success: true,
-      host,
-      port,
-      rtt,
-      connectTime,
-      encrypted: true,
-      protocol: 'FTPS (Implicit TLS)',
-      banner: {
-        code: banner.code,
-        message: banner.message,
-        raw: bannerText,
-      },
-      systemType: systemType || undefined,
-      features: features.length > 0 ? features : undefined,
-      tlsFeatures: {
-        authTls: features.some(f => f.toUpperCase().includes('AUTH TLS')),
-        pbsz: features.some(f => f.toUpperCase().includes('PBSZ')),
-        prot: features.some(f => f.toUpperCase().includes('PROT')),
-        utf8: features.some(f => f.toUpperCase().includes('UTF8')),
-        mlst: features.some(f => f.toUpperCase().includes('MLST')),
-        epsv: features.some(f => f.toUpperCase().includes('EPSV')),
-      },
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
 
   } catch (error) {
     return new Response(JSON.stringify({
@@ -236,9 +249,11 @@ export class FTPSSession {
     this.writer = socket.writable.getWriter();
   }
 
-  /** Send an FTP command followed by CRLF. */
+  /** Send an FTP command followed by CRLF.
+   * Strips CR/LF from the command to prevent FTP command injection (H-4). */
   async sendCommand(cmd: string): Promise<void> {
-    await this.writer.write(this.encoder.encode(cmd + '\r\n'));
+    const safeCmd = cmd.replace(/[\r\n]/g, '');
+    await this.writer.write(this.encoder.encode(safeCmd + '\r\n'));
   }
 
   /**
@@ -255,14 +270,13 @@ export class FTPSSession {
     });
 
     const isComplete = (text: string): boolean => {
-      // A single-line response: "NNN <text>\r\n"
-      if (/^\d{3} [^\r\n]*\r?\n/m.test(text)) {
-        // But only if the LAST matching line is a terminal line (not a continuation)
-        const lines = text.split(/\r?\n/).filter(l => l.length > 0);
-        const last = lines[lines.length - 1];
-        return /^\d{3} /.test(last);
-      }
-      return false;
+      // RFC 959: a response is complete when the LAST non-empty line starts with
+      // "NNN " (code + space). Continuation lines start with "NNN-" (code + dash).
+      // Checking only the last line avoids false positives when a multi-line reply's
+      // first line happens to be in terminal format.
+      const lines = text.split(/\r?\n/).filter(l => l.length > 0);
+      if (lines.length === 0) return false;
+      return /^\d{3} /.test(lines[lines.length - 1]);
     };
 
     while (!timedOut) {
@@ -301,6 +315,19 @@ export class FTPSSession {
       throw new Error('Invalid PASV response: port octets out of range');
     }
     const port = p1Num * 256 + p2Num;
+    if (port < 1 || port > 65535) {
+      throw new Error('Invalid PASV response: calculated port out of range');
+    }
+    // SSRF guard: block PASV-redirected connections to internal IPs (H-3)
+    if (isBlockedHost(host)) {
+      throw new Error(`PASV returned blocked address: ${host}`);
+    }
+
+    // Cloudflare detection on PASV-returned address (14D second-hop guard)
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      throw new Error(`PASV returned Cloudflare address: ${host}`);
+    }
     return { host, port };
   }
 
@@ -368,8 +395,13 @@ export async function authenticateFTPSSession(
     throw new Error(`Unexpected banner: ${banner.code} ${banner.message}`);
   }
 
+  // Sanitize credentials — sendCommand strips \r\n but credentials are
+  // embedded as arguments, so strip here as a defense-in-depth measure.
+  const safeUser = username.replace(/[\r\n]/g, '');
+  const safePass = password.replace(/[\r\n]/g, '');
+
   // Send username
-  await session.sendCommand(`USER ${username}`);
+  await session.sendCommand(`USER ${safeUser}`);
   const userResp = await session.readResponse(timeoutMs);
   // 331 = password required, 230 = logged in without password
   if (userResp.code !== 331 && userResp.code !== 230) {
@@ -378,7 +410,7 @@ export async function authenticateFTPSSession(
 
   if (userResp.code === 331) {
     // Send password
-    await session.sendCommand(`PASS ${password}`);
+    await session.sendCommand(`PASS ${safePass}`);
     const passResp = await session.readResponse(timeoutMs);
     if (passResp.code !== 230) {
       throw new Error(`PASS failed: ${passResp.code} ${passResp.message}`);
@@ -402,6 +434,11 @@ export async function authenticateFTPSSession(
  * Authenticates and returns server info (PWD + SYST).
  */
 export async function handleFTPSLogin(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -413,11 +450,26 @@ export async function handleFTPSLogin(request: Request): Promise<Response> {
 
     const { host, port = 990, username, password, timeout = 15000 } = body;
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
         success: false,
         error: 'host, username, and password are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const session = await openFTPSSession(host, port, timeout);
@@ -503,6 +555,11 @@ function parseFTPListOutput(raw: string): FTPEntry[] {
  * Authenticates, enters passive mode, sends LIST, and returns a parsed file list.
  */
 export async function handleFTPSList(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -515,11 +572,26 @@ export async function handleFTPSList(request: Request): Promise<Response> {
 
     const { host, port = 990, username, password, path = '.', timeout = 15000 } = body;
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
         success: false,
         error: 'host, username, and password are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const session = await openFTPSSession(host, port, timeout);
@@ -554,18 +626,34 @@ export async function handleFTPSList(request: Request): Promise<Response> {
         throw new Error(`LIST failed: ${listResp.code} ${listResp.message}`);
       }
 
-      // Read all data from data socket
+      // Read all data from data socket with timeout
       const dataReader = dataSocket.readable.getReader();
       const decoder = new TextDecoder();
       let rawListing = '';
+      const dataDeadline = Date.now() + timeout;
 
-      while (true) {
-        const { done, value } = await dataReader.read();
-        if (done || !value) break;
-        rawListing += decoder.decode(value, { stream: true });
+      try {
+        while (true) {
+          const remaining = dataDeadline - Date.now();
+          if (remaining <= 0) {
+            throw new Error('FTPS LIST data transfer timeout');
+          }
+          const { done, value } = await Promise.race([
+            dataReader.read(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('FTPS LIST data transfer timeout')), remaining)
+            ),
+          ]);
+          if (done || !value) break;
+          rawListing += decoder.decode(value, { stream: true });
+          if (rawListing.length > 5 * 1024 * 1024) {
+            throw new Error('LIST response exceeds 5 MB size limit');
+          }
+        }
+      } finally {
+        try { dataReader.releaseLock(); } catch { /* ignore */ }
+        try { dataSocket.close(); } catch { /* ignore */ }
       }
-      dataReader.releaseLock();
-      dataSocket.close();
 
       // Read the 226 Transfer complete response
       await session.readResponse(timeout);
@@ -599,6 +687,11 @@ export async function handleFTPSList(request: Request): Promise<Response> {
  * Authenticates, downloads the file at `path`, and returns its content base64-encoded.
  */
 export async function handleFTPSDownload(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -611,11 +704,26 @@ export async function handleFTPSDownload(request: Request): Promise<Response> {
 
     const { host, port = 990, username, password, path, timeout = 30000 } = body;
 
-    if (!host || !username || !password || !path) {
+    if (!host || !username || password == null || !path) {
       return new Response(JSON.stringify({
         success: false,
         error: 'host, username, password, and path are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const session = await openFTPSSession(host, port, timeout);
@@ -641,17 +749,36 @@ export async function handleFTPSDownload(request: Request): Promise<Response> {
         throw new Error(`RETR failed: ${retrResp.code} ${retrResp.message}`);
       }
 
-      // Collect raw bytes from data socket
+      // Collect raw bytes from data socket with size limit
       const dataReader = dataSocket.readable.getReader();
       const chunks: Uint8Array[] = [];
+      const maxDownloadBytes = 10 * 1024 * 1024; // 10 MiB hard limit
+      let totalBytes = 0;
+      const downloadDeadline = Date.now() + timeout;
 
-      while (true) {
-        const { done, value } = await dataReader.read();
-        if (done || !value) break;
-        chunks.push(value);
+      try {
+        while (true) {
+          const remaining = downloadDeadline - Date.now();
+          if (remaining <= 0) {
+            throw new Error('FTPS download data transfer timeout');
+          }
+          const { done, value } = await Promise.race([
+            dataReader.read(),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('FTPS download data transfer timeout')), remaining)
+            ),
+          ]);
+          if (done || !value) break;
+          totalBytes += value.byteLength;
+          if (totalBytes > maxDownloadBytes) {
+            throw new Error('FTPS download exceeds maximum allowed size (10 MiB)');
+          }
+          chunks.push(value);
+        }
+      } finally {
+        try { dataReader.releaseLock(); } catch { /* ignore */ }
+        try { dataSocket.close(); } catch { /* ignore */ }
       }
-      dataReader.releaseLock();
-      dataSocket.close();
 
       // Read the 226 Transfer complete response
       await session.readResponse(timeout);
@@ -700,6 +827,11 @@ export async function handleFTPSDownload(request: Request): Promise<Response> {
  * Authenticates and uploads base64-decoded content to `path` on the server.
  */
 export async function handleFTPSUpload(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -713,15 +845,45 @@ export async function handleFTPSUpload(request: Request): Promise<Response> {
 
     const { host, port = 990, username, password, path, content, timeout = 30000 } = body;
 
-    if (!host || !username || !password || !path || !content) {
+    if (!host || !username || password == null || !path || !content) {
       return new Response(JSON.stringify({
         success: false,
         error: 'host, username, password, path, and content are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Decode base64 content to bytes
-    const binary = atob(content);
+    let binary: string;
+    try {
+      binary = atob(content);
+    } catch {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Invalid base64 encoding in content parameter',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const maxUploadBytes = 10 * 1024 * 1024; // 10 MiB hard limit
+    if (binary.length > maxUploadBytes) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Upload exceeds maximum allowed size (10 MiB)',
+      }), { status: 413, headers: { 'Content-Type': 'application/json' } });
+    }
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.charCodeAt(i);
@@ -752,9 +914,13 @@ export async function handleFTPSUpload(request: Request): Promise<Response> {
 
       // Write data to data socket then close it to signal EOF
       const dataWriter = dataSocket.writable.getWriter();
-      await dataWriter.write(bytes);
-      dataWriter.releaseLock();
-      dataSocket.close();
+      try {
+        await dataWriter.write(bytes);
+        await dataWriter.close();
+      } finally {
+        try { dataWriter.releaseLock(); } catch { /* ignore */ }
+        try { await dataSocket.close(); } catch { /* ignore */ }
+      }
 
       // Read the 226 Transfer complete response
       const doneResp = await session.readResponse(timeout);
@@ -784,6 +950,11 @@ export async function handleFTPSUpload(request: Request): Promise<Response> {
 }
 
 export async function handleFTPSDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -795,8 +966,23 @@ export async function handleFTPSDelete(request: Request): Promise<Response> {
       timeout?: number;
     };
     const { host, port = 990, username, password, path, type = 'file', timeout = 10000 } = body;
-    if (!host || !username || !path) {
-      return new Response(JSON.stringify({ success: false, error: 'host, username, path required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!host || !username || password == null || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, password, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const session = await openFTPSSession(host, port, timeout);
@@ -807,7 +993,7 @@ export async function handleFTPSDelete(request: Request): Promise<Response> {
       await session.sendCommand(cmd);
       const resp = await session.readResponse(timeout);
 
-      if (resp.code !== 250 && resp.code !== 257) {
+      if (resp.code !== 250) {
         throw new Error(`Delete failed: ${resp.code} ${resp.message}`);
       }
 
@@ -833,6 +1019,11 @@ export async function handleFTPSDelete(request: Request): Promise<Response> {
 }
 
 export async function handleFTPSMkdir(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -843,8 +1034,23 @@ export async function handleFTPSMkdir(request: Request): Promise<Response> {
       timeout?: number;
     };
     const { host, port = 990, username, password, path, timeout = 10000 } = body;
-    if (!host || !username || !path) {
-      return new Response(JSON.stringify({ success: false, error: 'host, username, path required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!host || !username || password == null || !path) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, password, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const session = await openFTPSSession(host, port, timeout);
@@ -882,6 +1088,11 @@ export async function handleFTPSMkdir(request: Request): Promise<Response> {
 }
 
 export async function handleFTPSRename(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -893,8 +1104,23 @@ export async function handleFTPSRename(request: Request): Promise<Response> {
       timeout?: number;
     };
     const { host, port = 990, username, password, from, to, timeout = 10000 } = body;
-    if (!host || !username || !from || !to) {
-      return new Response(JSON.stringify({ success: false, error: 'host, username, from, to required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (!host || !username || password == null || !from || !to) {
+      return new Response(JSON.stringify({ success: false, error: 'host, username, password, from, and to are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const session = await openFTPSSession(host, port, timeout);

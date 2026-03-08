@@ -48,6 +48,7 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
     // Validate required fields
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -57,6 +58,16 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
 
     const host = options.host;
     const port = options.port || 23;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -82,14 +93,21 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
 
       // Read initial banner/prompt
       const reader = socket.readable.getReader();
-      const readPromise = reader.read();
-      const readTimeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Read timeout')), 5000) // 5s for banner
-      );
 
       try {
-        const { value } = await Promise.race([readPromise, readTimeoutPromise]);
-        const banner = value ? new TextDecoder().decode(value) : '';
+        const decoder = new TextDecoder();
+        let banner = '';
+        const bannerDeadline = Date.now() + 3000;
+        while (Date.now() < bannerDeadline) {
+          const remaining = bannerDeadline - Date.now();
+          const timeoutProm = new Promise<{value: undefined, done: true}>((resolve) =>
+            setTimeout(() => resolve({ value: undefined, done: true }), remaining)
+          );
+          const { value, done } = await Promise.race([reader.read(), timeoutProm]);
+          if (done || !value) break;
+          banner += decoder.decode(value, { stream: true });
+          if (banner.length > 4096) break;
+        }
 
         await socket.close();
 
@@ -158,7 +176,18 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
 
     if (!host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -187,7 +216,10 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
 
     // Connect to Telnet server
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+    ]);
 
     // Send connection info to client
     server.send(JSON.stringify({
@@ -396,6 +428,7 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
 
     if (!body.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -406,6 +439,16 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
     const host = body.host;
     const port = body.port || 23;
     const timeoutMs = body.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -696,7 +739,7 @@ export function parseTelnetIAC(buffer: Uint8Array): { data: Uint8Array; commands
  */
 export async function handleTelnetLogin(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -728,11 +771,27 @@ export async function handleTelnetLogin(request: Request): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (!username || !password) {
+  if (!username || password == null) {
     return new Response(JSON.stringify({ success: false, error: 'username and password are required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const cfCheckLogin = await checkIfCloudflare(host);
+  if (cfCheckLogin.isCloudflare && cfCheckLogin.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheckLogin.ip),
+      isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
   const startTime = Date.now();
@@ -745,13 +804,16 @@ export async function handleTelnetLogin(request: Request): Promise<Response> {
     let i = 0;
     while (i < data.length) {
       if (data[i] === IAC) {
+        if (i + 1 >= data.length) break; // incomplete IAC sequence
         const cmd = data[i + 1];
         if (cmd === DO || cmd === WILL) {
+          if (i + 2 >= data.length) break; // incomplete DO/WILL sequence
           // Respond WONT/DONT to all options to keep it simple
           const reply = cmd === DO ? DONT : WONT;
           responses.push(new Uint8Array([IAC, reply, data[i + 2]]));
           i += 3;
         } else if (cmd === DONT || cmd === WONT) {
+          if (i + 2 >= data.length) break; // incomplete DONT/WONT sequence
           i += 3;
         } else if (cmd === SB) {
           // Skip subnegotiation until IAC SE

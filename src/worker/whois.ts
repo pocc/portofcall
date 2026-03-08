@@ -25,6 +25,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder('utf-8', { fatal: false });
@@ -289,6 +290,11 @@ function extractReferralServer(text: string): string | null {
  * the registrar's WHOIS data, which contains the full registrant details.
  */
 export async function handleWhoisLookup(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       domain?: string;
@@ -315,7 +321,7 @@ export async function handleWhoisLookup(request: Request): Promise<Response> {
     }
 
     // Validate port range if provided
-    if (port !== undefined && (typeof port !== 'number' || port < 1 || port > 65535)) {
+    if (port !== undefined && (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535)) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -341,7 +347,14 @@ export async function handleWhoisLookup(request: Request): Promise<Response> {
 
     if (followReferral) {
       registrarServer = extractReferralServer(registryResponse);
-      if (registrarServer && registrarServer !== server) {
+      if (registrarServer && registrarServer !== server && !isBlockedHost(registrarServer)) {
+        // Cloudflare detection on referral server (14D second-hop guard)
+        const cfCheck = await checkIfCloudflare(registrarServer);
+        if (cfCheck.isCloudflare && cfCheck.ip) {
+          registrarServer = null;
+        }
+      }
+      if (registrarServer && registrarServer !== server && !isBlockedHost(registrarServer)) {
         try {
           const t0 = Date.now();
           registrarResponse = await doWhoisQuery(registrarServer, domain, timeout);
@@ -397,6 +410,11 @@ export async function handleWhoisLookup(request: Request): Promise<Response> {
  * Follows ReferralServer: lines (ARIN includes these for non-ARIN resources).
  */
 export async function handleWhoisIP(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       query?: string;
@@ -457,7 +475,14 @@ export async function handleWhoisIP(request: Request): Promise<Response> {
 
     if (followReferral) {
       referralServer = extractReferralServer(primaryResponse);
-      if (referralServer && referralServer !== server) {
+      if (referralServer && referralServer !== server && !isBlockedHost(referralServer)) {
+        // Cloudflare detection on referral server (14D second-hop guard)
+        const cfCheck = await checkIfCloudflare(referralServer);
+        if (cfCheck.isCloudflare && cfCheck.ip) {
+          referralServer = null;
+        }
+      }
+      if (referralServer && referralServer !== server && !isBlockedHost(referralServer)) {
         try {
           const t0 = Date.now();
           referralResponse = await doWhoisQuery(referralServer, whoisQuery, timeout);

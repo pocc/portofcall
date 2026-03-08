@@ -260,6 +260,7 @@ async function readMessage(
     if (readResult.done) return buffer.length > 0 ? buffer : null;
 
     if (readResult.value) {
+      if (buffer.length + readResult.value.length > 1000000) { return null; }
       const newBuf = new Uint8Array(buffer.length + readResult.value.length);
       newBuf.set(buffer);
       newBuf.set(readResult.value, buffer.length);
@@ -283,7 +284,7 @@ async function readMessage(
  */
 export async function handleOpenFlowProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -309,7 +310,7 @@ export async function handleOpenFlowProbe(request: Request): Promise<Response> {
     const version = body.version || OFP_VERSION_1_3;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -492,7 +493,7 @@ export async function handleOpenFlowProbe(request: Request): Promise<Response> {
  */
 export async function handleOpenFlowEcho(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -518,7 +519,7 @@ export async function handleOpenFlowEcho(request: Request): Promise<Response> {
     const version = body.version || OFP_VERSION_1_3;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -659,7 +660,7 @@ type StatsType = 'flow' | 'port' | 'table' | 'desc';
  */
 export async function handleOpenFlowStats(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -685,7 +686,7 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
     const timeout = body.timeout || 10000;
     const statsType: StatsType = body.statsType || 'desc';
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -936,28 +937,28 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
           const ps = new DataView(statsBody.buffer, statsBody.byteOffset + offset, portSize);
           ports.push({
             portNo: ps.getUint16(0, false), // big-endian
-            rxPackets: Number(ps.getBigUint64(8, false)), // big-endian
-            txPackets: Number(ps.getBigUint64(16, false)),
-            rxBytes: Number(ps.getBigUint64(24, false)),
-            txBytes: Number(ps.getBigUint64(32, false)),
-            rxDropped: Number(ps.getBigUint64(40, false)),
-            txDropped: Number(ps.getBigUint64(48, false)),
-            rxErrors: Number(ps.getBigUint64(56, false)),
-            txErrors: Number(ps.getBigUint64(64, false)),
+            rxPackets: ps.getBigUint64(8, false).toString(),
+            txPackets: ps.getBigUint64(16, false).toString(),
+            rxBytes: ps.getBigUint64(24, false).toString(),
+            txBytes: ps.getBigUint64(32, false).toString(),
+            rxDropped: ps.getBigUint64(40, false).toString(),
+            txDropped: ps.getBigUint64(48, false).toString(),
+            rxErrors: ps.getBigUint64(56, false).toString(),
+            txErrors: ps.getBigUint64(64, false).toString(),
           });
         } else {
           // OF 1.3 port stats: port_no(4) + pad(4) + rx_packets(8) + tx_packets(8) + ...
           const ps = new DataView(statsBody.buffer, statsBody.byteOffset + offset, portSize);
           ports.push({
             portNo: ps.getUint32(0, false), // big-endian
-            rxPackets: Number(ps.getBigUint64(8, false)), // big-endian
-            txPackets: Number(ps.getBigUint64(16, false)),
-            rxBytes: Number(ps.getBigUint64(24, false)),
-            txBytes: Number(ps.getBigUint64(32, false)),
-            rxDropped: Number(ps.getBigUint64(40, false)),
-            txDropped: Number(ps.getBigUint64(48, false)),
-            rxErrors: Number(ps.getBigUint64(56, false)),
-            txErrors: Number(ps.getBigUint64(64, false)),
+            rxPackets: ps.getBigUint64(8, false).toString(),
+            txPackets: ps.getBigUint64(16, false).toString(),
+            rxBytes: ps.getBigUint64(24, false).toString(),
+            txBytes: ps.getBigUint64(32, false).toString(),
+            rxDropped: ps.getBigUint64(40, false).toString(),
+            txDropped: ps.getBigUint64(48, false).toString(),
+            rxErrors: ps.getBigUint64(56, false).toString(),
+            txErrors: ps.getBigUint64(64, false).toString(),
           });
         }
         offset += portSize;
@@ -984,8 +985,8 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
             name: tableName,
             maxEntries: ts.getUint32(40, false), // big-endian
             activeCount: ts.getUint32(44, false),
-            lookups: Number(ts.getBigUint64(48, false)),
-            matched: Number(ts.getBigUint64(56, false)),
+            lookups: ts.getBigUint64(48, false).toString(),
+            matched: ts.getBigUint64(56, false).toString(),
           });
         } else {
           // OF 1.3: table_id(1) + pad(3) + active_count(4) + lookup_count(8) + matched_count(8)
@@ -993,8 +994,8 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
           tables.push({
             tableId: ts.getUint8(0),
             activeCount: ts.getUint32(4, false), // big-endian
-            lookups: Number(ts.getBigUint64(8, false)),
-            matched: Number(ts.getBigUint64(16, false)),
+            lookups: ts.getBigUint64(8, false).toString(),
+            matched: ts.getBigUint64(16, false).toString(),
           });
         }
         offset += tableSize;
@@ -1020,8 +1021,8 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
             idleTimeout: fs.getUint16(60, false),
             hardTimeout: fs.getUint16(62, false),
             cookie: `0x${fs.getUint32(68, false).toString(16).padStart(8, '0')}${fs.getUint32(72, false).toString(16).padStart(8, '0')}`,
-            packetCount: Number(fs.getBigUint64(76, false)),
-            byteCount: Number(fs.getBigUint64(84, false)),
+            packetCount: fs.getBigUint64(76, false).toString(),
+            byteCount: fs.getBigUint64(84, false).toString(),
           });
           offset += flowLen;
         }
@@ -1041,8 +1042,8 @@ export async function handleOpenFlowStats(request: Request): Promise<Response> {
             hardTimeout: fs.getUint16(18, false),
             flags: fs.getUint16(20, false),
             cookie: `0x${fs.getUint32(24, false).toString(16).padStart(8, '0')}${fs.getUint32(28, false).toString(16).padStart(8, '0')}`,
-            packetCount: Number(fs.getBigUint64(32, false)),
-            byteCount: Number(fs.getBigUint64(40, false)),
+            packetCount: fs.getBigUint64(32, false).toString(),
+            byteCount: fs.getBigUint64(40, false).toString(),
           });
           offset += flowLen;
         }

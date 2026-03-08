@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('IMAPS Protocol Integration Tests', () => {
   describe('POST /api/imaps/connect', () => {
@@ -33,14 +33,12 @@ describe('IMAPS Protocol Integration Tests', () => {
       expect(data.success).toBe(false);
     });
 
-    it('should support GET with query params', async () => {
+    it('should reject GET with 405', async () => {
       const response = await fetch(
         `${API_BASE}/imaps/connect?host=nonexistent.invalid&port=993&timeout=5000`
       );
 
-      expect(response.status).toBe(500);
-      const data = await response.json() as { success: boolean };
-      expect(data.success).toBe(false);
+      expect(response.status).toBe(405);
     });
 
     it('should default to port 993', async () => {

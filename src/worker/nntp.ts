@@ -20,6 +20,12 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+
+/** Strip CR/LF to prevent CRLF injection in NNTP article headers. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
 
 interface NNTPConnectRequest {
   host: string;
@@ -57,6 +63,7 @@ async function readLine(
       timeoutPromise,
     ]);
     if (done) throw new Error('Connection closed unexpectedly');
+    if (buffer.data.length + value.length > 10000) { throw new Error('NNTP line too long'); }
     buffer.data += decoder.decode(value, { stream: true });
   }
 
@@ -123,7 +130,7 @@ export async function handleNNTPConnect(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -131,6 +138,15 @@ export async function handleNNTPConnect(request: Request): Promise<Response> {
         }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -242,6 +258,15 @@ export async function handleNNTPGroup(request: Request): Promise<Response> {
     const body = (await request.json()) as NNTPGroupRequest;
     const { host, port = 119, group, timeout = 15000 } = body;
 
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck2.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     if (!host) {
       return new Response(
         JSON.stringify({ success: false, error: 'Host is required' }),
@@ -267,7 +292,7 @@ export async function handleNNTPGroup(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -433,12 +458,12 @@ async function nntpAuth(
   password: string,
   timeoutPromise: Promise<never>,
 ): Promise<void> {
-  await sendCommand(writer, encoder, `AUTHINFO USER ${username}`);
+  await sendCommand(writer, encoder, `AUTHINFO USER ${sanitizeCRLF(username)}`);
   const userResponse = await readLine(reader, decoder, buffer, timeoutPromise);
   if (!userResponse.startsWith('381')) {
     throw new Error(`AUTHINFO USER failed: ${userResponse}`);
   }
-  await sendCommand(writer, encoder, `AUTHINFO PASS ${password}`);
+  await sendCommand(writer, encoder, `AUTHINFO PASS ${sanitizeCRLF(password)}`);
   const passResponse = await readLine(reader, decoder, buffer, timeoutPromise);
   if (!passResponse.startsWith('281')) {
     throw new Error(`AUTHINFO PASS failed: ${passResponse}`);
@@ -452,6 +477,15 @@ export async function handleNNTPArticle(request: Request): Promise<Response> {
   try {
     const body = (await request.json()) as NNTPArticleRequest;
     const { host, port = 119, group, articleNumber, timeout = 15000 } = body;
+
+    const cfCheck3 = await checkIfCloudflare(host);
+    if (cfCheck3.isCloudflare && cfCheck3.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck3.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     if (!host) {
       return new Response(
@@ -488,7 +522,7 @@ export async function handleNNTPArticle(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -672,7 +706,7 @@ export async function handleNNTPList(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -685,6 +719,15 @@ export async function handleNNTPList(request: Request): Promise<Response> {
         JSON.stringify({ success: false, error: `variant must be one of: ${validVariants.join(', ')}` }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    const cfCheck4 = await checkIfCloudflare(host);
+    if (cfCheck4.isCloudflare && cfCheck4.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck4.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -815,11 +858,20 @@ export async function handleNNTPPost(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    const cfCheck5 = await checkIfCloudflare(host);
+    if (cfCheck5.isCloudflare && cfCheck5.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck5.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -879,7 +931,7 @@ export async function handleNNTPPost(request: Request): Promise<Response> {
       const stuffedBody = articleBody.replace(/^\./gm, '..');
 
       // Send article headers + body terminated by "\r\n.\r\n"
-      const article = `From: ${from}\r\nNewsgroups: ${newsgroups}\r\nSubject: ${subject}\r\n\r\n${stuffedBody}\r\n.\r\n`;
+      const article = `From: ${sanitizeCRLF(from)}\r\nNewsgroups: ${sanitizeCRLF(newsgroups)}\r\nSubject: ${sanitizeCRLF(subject)}\r\n\r\n${stuffedBody}\r\n.\r\n`;
       await writer.write(encoder.encode(article));
 
       const articleResponseLine = await readLine(reader, decoder, buffer, timeoutPromise);
@@ -937,18 +989,27 @@ export async function handleNNTPAuth(request: Request): Promise<Response> {
       );
     }
 
-    if (!username || !password) {
+    if (!username || password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'username and password are required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    const cfCheck6 = await checkIfCloudflare(host);
+    if (cfCheck6.isCloudflare && cfCheck6.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck6.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -974,7 +1035,7 @@ export async function handleNNTPAuth(request: Request): Promise<Response> {
       }
 
       // Send AUTHINFO USER
-      await sendCommand(writer, encoder, `AUTHINFO USER ${username}`);
+      await sendCommand(writer, encoder, `AUTHINFO USER ${sanitizeCRLF(username)}`);
       const userResponse = await readLine(reader, decoder, buffer, timeoutPromise);
 
       if (!userResponse.startsWith('381')) {
@@ -988,7 +1049,7 @@ export async function handleNNTPAuth(request: Request): Promise<Response> {
       }
 
       // Send AUTHINFO PASS
-      await sendCommand(writer, encoder, `AUTHINFO PASS ${password}`);
+      await sendCommand(writer, encoder, `AUTHINFO PASS ${sanitizeCRLF(password)}`);
       const passResponse = await readLine(reader, decoder, buffer, timeoutPromise);
       const rtt = Date.now() - startTime;
 

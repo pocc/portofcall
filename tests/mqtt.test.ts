@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('MQTT Protocol Integration Tests', () => {
   describe('MQTT Connect (HTTP)', () => {
@@ -49,8 +49,9 @@ describe('MQTT Protocol Integration Tests', () => {
       });
 
       const response = await fetch(`${API_BASE}/mqtt/connect?${params}`);
+      expect(response.status).toBe(405);
       const data = await response.json();
-      expect(data).toHaveProperty('success');
+      expect(data.error).toContain('POST');
     }, 15000);
 
     it('should handle custom timeout parameter', async () => {

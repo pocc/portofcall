@@ -10,6 +10,11 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
+/** Strip CR/LF to prevent CRLF injection in NNTP article headers. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
+
 interface NNTPSConnectRequest {
   host: string;
   port?: number;
@@ -46,6 +51,7 @@ async function readLine(
       timeoutPromise,
     ]);
     if (done) throw new Error('Connection closed unexpectedly');
+    if (buffer.data.length + value.length > 10000) { throw new Error('NNTP line too long'); }
     buffer.data += decoder.decode(value, { stream: true });
   }
 
@@ -112,7 +118,7 @@ export async function handleNNTPSConnect(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -250,12 +256,12 @@ async function nntpsAuth(
   password: string,
   timeoutPromise: Promise<never>,
 ): Promise<void> {
-  await sendCommand(writer, encoder, `AUTHINFO USER ${username}`);
+  await sendCommand(writer, encoder, `AUTHINFO USER ${sanitizeCRLF(username)}`);
   const userResponse = await readLine(reader, decoder, buffer, timeoutPromise);
   if (!userResponse.startsWith('381')) {
     throw new Error(`AUTHINFO USER failed: ${userResponse}`);
   }
-  await sendCommand(writer, encoder, `AUTHINFO PASS ${password}`);
+  await sendCommand(writer, encoder, `AUTHINFO PASS ${sanitizeCRLF(password)}`);
   const passResponse = await readLine(reader, decoder, buffer, timeoutPromise);
   if (!passResponse.startsWith('281')) {
     throw new Error(`AUTHINFO PASS failed: ${passResponse}`);
@@ -292,7 +298,7 @@ export async function handleNNTPSGroup(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -480,7 +486,7 @@ export async function handleNNTPSArticle(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -676,7 +682,7 @@ export async function handleNNTPSList(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -812,7 +818,7 @@ export async function handleNNTPSPost(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -881,7 +887,7 @@ export async function handleNNTPSPost(request: Request): Promise<Response> {
       // mistake it for the end-of-data marker ".\r\n".
       const stuffedBody = articleBody.replace(/^\./gm, '..');
 
-      const article = `From: ${from}\r\nNewsgroups: ${newsgroups}\r\nSubject: ${subject}\r\n\r\n${stuffedBody}\r\n.\r\n`;
+      const article = `From: ${sanitizeCRLF(from)}\r\nNewsgroups: ${sanitizeCRLF(newsgroups)}\r\nSubject: ${sanitizeCRLF(subject)}\r\n\r\n${stuffedBody}\r\n.\r\n`;
       await writer.write(encoder.encode(article));
 
       const articleResponseLine = await readLine(reader, decoder, buffer, timeoutPromise);
@@ -933,14 +939,14 @@ export async function handleNNTPSAuth(request: Request): Promise<Response> {
       );
     }
 
-    if (!username || !password) {
+    if (!username || password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'username and password are required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -977,7 +983,7 @@ export async function handleNNTPSAuth(request: Request): Promise<Response> {
         throw new Error(`Server rejected connection: ${welcome}`);
       }
 
-      await sendCommand(writer, encoder, `AUTHINFO USER ${username}`);
+      await sendCommand(writer, encoder, `AUTHINFO USER ${sanitizeCRLF(username)}`);
       const userResponse = await readLine(reader, decoder, buffer, timeoutPromise);
 
       if (!userResponse.startsWith('381')) {
@@ -990,7 +996,7 @@ export async function handleNNTPSAuth(request: Request): Promise<Response> {
         );
       }
 
-      await sendCommand(writer, encoder, `AUTHINFO PASS ${password}`);
+      await sendCommand(writer, encoder, `AUTHINFO PASS ${sanitizeCRLF(password)}`);
       const passResponse = await readLine(reader, decoder, buffer, timeoutPromise);
       const rtt = Date.now() - startTime;
 

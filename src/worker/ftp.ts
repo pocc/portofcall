@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 interface FTPConnectionParams {
   host: string;
@@ -69,10 +70,13 @@ export class FTPClient {
   /**
    * Connect and authenticate to FTP server
    */
-  async connect(): Promise<void> {
+  async connect(timeoutMs = 30000): Promise<void> {
     // Connect to control port
     this.controlSocket = connect(`${this.host}:${this.port}`);
-    await this.controlSocket.opened;
+    await Promise.race([
+      this.controlSocket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+    ]);
 
     this.reader = this.controlSocket.readable.getReader();
     this.writer = this.controlSocket.writable.getWriter();
@@ -87,16 +91,19 @@ export class FTPClient {
     await this.sendCommand(`USER ${this.username}`);
     const userResponse = await this.readResponse();
 
-    if (!userResponse.startsWith('331')) {
+    // RFC 959: 230 = already logged in (e.g. anonymous), 331 = need password
+    if (userResponse.startsWith('230')) {
+      // Server accepted user without password (common for anonymous FTP)
+    } else if (userResponse.startsWith('331')) {
+      // Send password
+      await this.sendCommand(`PASS ${this.password}`);
+      const passResponse = await this.readResponse();
+
+      if (!passResponse.startsWith('230')) {
+        throw new Error('Authentication failed: invalid credentials');
+      }
+    } else {
       throw new Error('Username rejected by server');
-    }
-
-    // Send password
-    await this.sendCommand(`PASS ${this.password}`);
-    const passResponse = await this.readResponse();
-
-    if (!passResponse.startsWith('230')) {
-      throw new Error('Authentication failed: invalid credentials');
     }
 
     // Set binary mode
@@ -168,10 +175,9 @@ export class FTPClient {
    * Returns size in bytes and modification time as ISO 8601.
    */
   async stat(remotePath: string): Promise<{ size: number; modified: string }> {
-    const [size, modified] = await Promise.all([
-      this.size(remotePath),
-      this.mdtm(remotePath),
-    ]);
+    // FTP control connections are strictly sequential — commands must not overlap.
+    const size = await this.size(remotePath);
+    const modified = await this.mdtm(remotePath);
     return { size, modified };
   }
 
@@ -211,12 +217,16 @@ export class FTPClient {
 
     try {
       const timeout = 30000;
+      const deadline = Date.now() + timeout;
       while (true) {
-        const readPromise = dataReader.read();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`MLSD data timeout after ${timeout}ms`)), timeout)
-        );
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`MLSD data timeout after ${timeout}ms`);
+        const { done, value } = await Promise.race([
+          dataReader.read(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`MLSD data timeout after ${timeout}ms`)), remaining)
+          ),
+        ]);
         if (done) break;
         chunks.push(value);
       }
@@ -268,12 +278,16 @@ export class FTPClient {
 
     try {
       const timeout = 30000;
+      const deadline = Date.now() + timeout;
       while (true) {
-        const readPromise = dataReader.read();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`NLST data timeout after ${timeout}ms`)), timeout)
-        );
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`NLST data timeout after ${timeout}ms`);
+        const { done, value } = await Promise.race([
+          dataReader.read(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`NLST data timeout after ${timeout}ms`)), remaining)
+          ),
+        ]);
         if (done) break;
         chunks.push(value);
       }
@@ -334,6 +348,20 @@ export class FTPClient {
       throw new Error('Invalid PASV response: port octets out of range');
     }
     const port = p1Num * 256 + p2Num;
+    if (port < 1 || port > 65535) {
+      throw new Error('Invalid PASV response: calculated port out of range');
+    }
+
+    // SSRF guard: block PASV-redirected connections to internal IPs
+    if (isBlockedHost(host)) {
+      throw new Error(`PASV returned blocked address: ${host}`);
+    }
+
+    // Cloudflare detection on PASV-returned address (14D second-hop guard)
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      throw new Error(`PASV returned Cloudflare address: ${host}`);
+    }
 
     return { host, port };
   }
@@ -341,12 +369,13 @@ export class FTPClient {
   /**
    * List directory contents.
    * When useMlsd=true (default false), attempts MLSD first and falls back to LIST.
+   * Returns both the file list and the actual listing mode used (for accurate reporting).
    * Fixed: Data connection must be opened BEFORE sending LIST command
    */
-  async list(path: string = '/', useMlsd = false): Promise<FTPFile[]> {
+  async list(path: string = '/', useMlsd = false): Promise<{ files: FTPFile[]; actualMode: 'mlsd' | 'list' }> {
     if (useMlsd) {
       try {
-        return await this.mlsd(path);
+        return { files: await this.mlsd(path), actualMode: 'mlsd' };
       } catch {
         // Fall through to LIST
       }
@@ -387,14 +416,17 @@ export class FTPClient {
     const chunks: Uint8Array[] = [];
 
     try {
-      const dataTimeout = 30000; // 30 seconds for data transfer
+      const dataTimeout = 30000; // 30 seconds wall-clock for full data transfer
+      const deadline = Date.now() + dataTimeout;
       while (true) {
-        const readPromise = dataReader.read();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Data transfer timeout after ${dataTimeout}ms`)), dataTimeout)
-        );
-
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`Data transfer timeout after ${dataTimeout}ms`);
+        const { done, value } = await Promise.race([
+          dataReader.read(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Data transfer timeout after ${dataTimeout}ms`)), remaining)
+          ),
+        ]);
         if (done) break;
         chunks.push(value);
       }
@@ -417,7 +449,7 @@ export class FTPClient {
 
     // Parse listing
     const listing = this.decoder.decode(this.concatenateChunks(chunks));
-    return this.parseListingResponse(listing);
+    return { files: this.parseListingResponse(listing), actualMode: 'list' };
   }
 
   /**
@@ -496,18 +528,27 @@ export class FTPClient {
     // Read file data from data socket
     const dataReader = dataSocket.readable.getReader();
     const chunks: Uint8Array[] = [];
+    const maxDownloadBytes = 10 * 1024 * 1024; // 10 MiB hard limit
 
     try {
-      const dataTimeout = 60000; // 60 seconds for file download
+      const dataTimeout = 60000; // 60 seconds wall-clock for full file download
+      const deadline = Date.now() + dataTimeout;
+      let totalDownloadBytes = 0;
       while (true) {
-        const readPromise = dataReader.read();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error(`Download timeout after ${dataTimeout}ms`)), dataTimeout)
-        );
-
-        const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error(`Download timeout after ${dataTimeout}ms`);
+        const { done, value } = await Promise.race([
+          dataReader.read(),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`Download timeout after ${dataTimeout}ms`)), remaining)
+          ),
+        ]);
         if (done) break;
         chunks.push(value);
+        totalDownloadBytes += value.length;
+        if (totalDownloadBytes > maxDownloadBytes) {
+          throw new Error('FTP download exceeds maximum allowed size (10 MiB)');
+        }
       }
     } finally {
       try { dataReader.releaseLock(); } catch { /* ignored */ }
@@ -643,7 +684,8 @@ export class FTPClient {
    */
   private async sendCommand(command: string): Promise<void> {
     if (!this.writer) throw new Error('Not connected');
-    await this.writer.write(this.encoder.encode(`${command}\r\n`));
+    const safeCommand = command.replace(/[\r\n]/g, '');
+    await this.writer.write(this.encoder.encode(`${safeCommand}\r\n`));
   }
 
   /**
@@ -654,6 +696,8 @@ export class FTPClient {
 
     let response = '';
     const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    const maxResponseBytes = 65536; // 64 KiB — ample for any FTP control response
 
     while (true) {
       // Add timeout to prevent infinite hanging
@@ -666,6 +710,10 @@ export class FTPClient {
       if (done) break;
 
       chunks.push(value);
+      totalBytes += value.length;
+      if (totalBytes > maxResponseBytes) {
+        throw new Error('FTP response exceeds maximum allowed size');
+      }
       response = this.decoder.decode(this.concatenateChunks(chunks));
 
       // Check if we have a complete response (ends with \r\n)
@@ -711,8 +759,12 @@ export class FTPClient {
 
       // Map MLSD type fact to our type
       const mlsdType = (facts['type'] || '').toLowerCase();
+
+      // Filter out current-dir and parent-dir entries (RFC 3659 cdir/pdir)
+      if (mlsdType === 'cdir' || mlsdType === 'pdir') continue;
+
       let type: FTPFile['type'] = 'file';
-      if (mlsdType === 'dir' || mlsdType === 'cdir' || mlsdType === 'pdir') {
+      if (mlsdType === 'dir') {
         type = 'directory';
       } else if (mlsdType === 'os.unix=symlink' || mlsdType.includes('link')) {
         type = 'link';
@@ -850,16 +902,23 @@ export class FTPClient {
 export async function handleFTPConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
     const { host, port = 21, username, password } = await request.json() as { host: string; port?: number; username: string; password: string };
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -877,11 +936,9 @@ export async function handleFTPConnect(request: Request): Promise<Response> {
     }
 
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       const pwd = await client.pwd();
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -911,18 +968,19 @@ export async function handleFTPConnect(request: Request): Promise<Response> {
 export async function handleFTPList(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as { host?: string; port?: number; username?: string; password?: string; path?: string; mlsd?: boolean };
     const host = body.host || '';
     const port = body.port || 21;
     const username = body.username || '';
-    const password = body.password || '';
+    const password = body.password;
     const path = body.path || '/';
     const useMlsd = body.mlsd ?? false;
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password',
       }), {
         status: 400,
@@ -930,18 +988,31 @@ export async function handleFTPList(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
-      const files = await client.list(path, useMlsd);
-
+      await client.connect();
+      const result = await client.list(path, useMlsd);
 
       return new Response(JSON.stringify({
         success: true,
         path,
-        mode: useMlsd ? 'mlsd' : 'list',
-        files,
+        mode: result.actualMode,
+        files: result.files,
       }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -966,12 +1037,13 @@ export async function handleFTPList(request: Request): Promise<Response> {
 export async function handleFTPFeat(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
     const { host, port = 21, username, password } = await request.json() as { host: string; port?: number; username: string; password: string };
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password',
       }), {
         status: 400,
@@ -979,12 +1051,25 @@ export async function handleFTPFeat(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       const features = await client.feat();
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -1013,12 +1098,13 @@ export async function handleFTPFeat(request: Request): Promise<Response> {
 export async function handleFTPStat(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
     const { host, port = 21, username, password, remotePath } = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
 
-    if (!host || !username || !password || !remotePath) {
+    if (!host || !username || password == null || !remotePath) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, remotePath',
       }), {
         status: 400,
@@ -1026,12 +1112,25 @@ export async function handleFTPStat(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       const fileStat = await client.stat(remotePath);
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -1061,14 +1160,15 @@ export async function handleFTPStat(request: Request): Promise<Response> {
 export async function handleFTPNlst(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as { host: string; port?: number; username: string; password: string; path?: string };
     const { host, port = 21, username, password } = body;
     const path = body.path || '/';
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password',
       }), {
         status: 400,
@@ -1076,12 +1176,25 @@ export async function handleFTPNlst(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       const names = await client.nlst(path);
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -1112,14 +1225,15 @@ export async function handleFTPNlst(request: Request): Promise<Response> {
 export async function handleFTPSite(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
 
     const body = await request.json() as { host: string; port?: number; username: string; password: string; command: string };
     const { host, port = 21, username, password, command } = body;
 
-    if (!host || !username || !password || !command) {
+    if (!host || !username || password == null || !command) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, command',
       }), {
         status: 400,
@@ -1127,9 +1241,33 @@ export async function handleFTPSite(request: Request): Promise<Response> {
       });
     }
 
+    // Allowlist SITE subcommands to prevent SITE EXEC abuse (H-6)
+    const ALLOWED_SITE_CMDS = /^\s*(CHMOD|CHOWN|UMASK|IDLE|HELP)\b/i;
+    if (!ALLOWED_SITE_CMDS.test(command)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only safe SITE subcommands are allowed (CHMOD, CHOWN, UMASK, IDLE, HELP)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
+      await client.connect();
       const response = await client.site(command);
 
       // SITE responses: 200 OK, 202 Not implemented, 500 error
@@ -1161,7 +1299,7 @@ export async function handleFTPSite(request: Request): Promise<Response> {
 export async function handleFTPUpload(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
 
     const formData = await request.formData();
@@ -1172,8 +1310,9 @@ export async function handleFTPUpload(request: Request): Promise<Response> {
     const remotePath = formData.get('remotePath') as string;
     const file = formData.get('file') as File;
 
-    if (!host || !username || !password || !remotePath || !file) {
+    if (!host || !username || password == null || !remotePath || !file) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, remotePath, file',
       }), {
         status: 400,
@@ -1181,14 +1320,47 @@ export async function handleFTPUpload(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck2.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const maxUploadBytes = 10 * 1024 * 1024; // 10 MiB hard limit (matches download limit)
+    if (file.size > maxUploadBytes) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Upload exceeds maximum allowed size (10 MiB)',
+      }), {
+        status: 413,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF guard: the router-level guard only parses JSON bodies, but this
+    // endpoint uses multipart/form-data — so we must check explicitly here.
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const fileData = new Uint8Array(await file.arrayBuffer());
 
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       await client.upload(remotePath, fileData);
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -1217,12 +1389,13 @@ export async function handleFTPUpload(request: Request): Promise<Response> {
 export async function handleFTPDownload(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
     }
     const { host, port = 21, username, password, remotePath } = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
 
-    if (!host || !username || !password || !remotePath) {
+    if (!host || !username || password == null || !remotePath) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, remotePath',
       }), {
         status: 400,
@@ -1230,13 +1403,31 @@ export async function handleFTPDownload(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
+      await client.connect();
       const fileData = await client.download(remotePath);
 
-      // Extract filename from path
-      const filename = remotePath.split('/').pop() || 'download';
+      // Extract filename from path and sanitize for Content-Disposition header.
+      // Strip path separators, control chars, and quotes to prevent header injection.
+      const rawFilename = remotePath.split('/').pop() || 'download';
+      // eslint-disable-next-line no-control-regex
+      const filename = rawFilename.replace(/[\x00-\x1f"\\]/g, '_');
 
       // Create a proper ArrayBuffer for Response
       const buffer = new ArrayBuffer(fileData.length);
@@ -1270,14 +1461,15 @@ export async function handleFTPDownload(request: Request): Promise<Response> {
 export async function handleFTPDelete(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
 
     const body = await request.json() as { host: string; port?: number; username: string; password: string; remotePath: string };
     const { host, port = 21, username, password, remotePath } = body;
 
-    if (!host || !username || !password || !remotePath) {
+    if (!host || !username || password == null || !remotePath) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, remotePath',
       }), {
         status: 400,
@@ -1285,12 +1477,25 @@ export async function handleFTPDelete(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       await client.delete(remotePath);
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -1318,14 +1523,15 @@ export async function handleFTPDelete(request: Request): Promise<Response> {
 export async function handleFTPMkdir(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
 
     const body = await request.json() as { host: string; port?: number; username: string; password: string; dirPath: string };
     const { host, port = 21, username, password, dirPath } = body;
 
-    if (!host || !username || !password || !dirPath) {
+    if (!host || !username || password == null || !dirPath) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, dirPath',
       }), {
         status: 400,
@@ -1333,12 +1539,25 @@ export async function handleFTPMkdir(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       await client.mkdir(dirPath);
-
 
       return new Response(JSON.stringify({
         success: true,
@@ -1361,19 +1580,82 @@ export async function handleFTPMkdir(request: Request): Promise<Response> {
 }
 
 /**
+ * Handle FTP remove directory request
+ */
+export async function handleFTPRmdir(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+    }
+
+    const body = await request.json() as { host: string; port?: number; username: string; password: string; dirPath: string };
+    const { host, port = 21, username, password, dirPath } = body;
+
+    if (!host || !username || password == null || !dirPath) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Missing required parameters: host, username, password, dirPath',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const client = new FTPClient({ host, port, username, password });
+    try {
+      await client.connect();
+      await client.rmdir(dirPath);
+
+      return new Response(JSON.stringify({
+        success: true,
+        message: `Removed directory ${dirPath}`,
+      }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      await client.close();
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Remove directory failed',
+    }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+}
+
+/**
  * Handle FTP rename request
  */
 export async function handleFTPRename(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response('Method not allowed', { status: 405 });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
 
     const body = await request.json() as { host: string; port?: number; username: string; password: string; fromPath: string; toPath: string };
     const { host, port = 21, username, password, fromPath, toPath } = body;
 
-    if (!host || !username || !password || !fromPath || !toPath) {
+    if (!host || !username || password == null || !fromPath || !toPath) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameters: host, username, password, fromPath, toPath',
       }), {
         status: 400,
@@ -1381,12 +1663,25 @@ export async function handleFTPRename(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const client = new FTPClient({ host, port, username, password });
-    await client.connect();
     try {
-
+      await client.connect();
       await client.rename(fromPath, toPath);
-
 
       return new Response(JSON.stringify({
         success: true,

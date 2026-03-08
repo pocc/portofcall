@@ -122,20 +122,27 @@ interface LenEncResult {
 }
 
 function readLengthEncodedInt(data: Uint8Array, offset: number): LenEncResult {
+  if (offset >= data.length) return { value: 0, bytesRead: 1 };
   const first = data[offset];
   if (first < 0xfb) {
     return { value: first, bytesRead: 1 };
   } else if (first === 0xfc) {
+    if (offset + 2 >= data.length) return { value: 0, bytesRead: 3 };
     return { value: data[offset + 1] | (data[offset + 2] << 8), bytesRead: 3 };
   } else if (first === 0xfd) {
+    if (offset + 3 >= data.length) return { value: 0, bytesRead: 4 };
     return {
       value: data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16),
       bytesRead: 4,
     };
   } else if (first === 0xfe) {
-    // 8-byte integer — truncate to 32 bits for JS safety
-    const lo = data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16) | (data[offset + 4] << 24);
-    return { value: lo >>> 0, bytesRead: 9 };
+    if (offset + 8 >= data.length) return { value: 0, bytesRead: 9 };
+    // 8-byte integer — read full 64-bit value safely using Number
+    const lo = (data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16) | (data[offset + 4] << 24)) >>> 0;
+    const hi = (data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16) | (data[offset + 8] << 24)) >>> 0;
+    // Combine: safe up to 2^53 (Number.MAX_SAFE_INTEGER)
+    const value = hi * 0x100000000 + lo;
+    return { value, bytesRead: 9 };
   }
   // 0xfb = NULL (not valid here as an integer)
   return { value: 0, bytesRead: 1 };
@@ -235,11 +242,12 @@ function parseHandshake(payload: Uint8Array): MySQLHandshake {
   pos++; // skip null terminator
 
   // Connection ID (4 bytes LE)
-  const connectionId =
+  const connectionId = (
     payload[pos] |
     (payload[pos + 1] << 8) |
     (payload[pos + 2] << 16) |
-    (payload[pos + 3] << 24);
+    (payload[pos + 3] << 24)
+  ) >>> 0;
   pos += 4;
 
   // Auth-plugin-data part 1 (8 bytes)
@@ -516,7 +524,8 @@ async function readResultSet(
     }
   }
 
-  // Read row packets until EOF
+  // Read row packets until EOF (cap at 10 000 rows to prevent OOM)
+  const MAX_ROWS = 10_000;
   const rows: (string | null)[][] = [];
   while (true) {
     const { payload } = await readPacket(reader, buffer);
@@ -531,6 +540,10 @@ async function readResultSet(
       const errCode = payload[1] | (payload[2] << 8);
       const message = new TextDecoder().decode(payload.slice(9));
       throw new Error(`MySQL error ${errCode}: ${message}`);
+    }
+
+    if (rows.length >= MAX_ROWS) {
+      throw new Error(`Result set exceeds ${MAX_ROWS} row limit — use LIMIT in your query`);
     }
 
     // Parse row: each field is a length-encoded string
@@ -562,10 +575,14 @@ async function mysqlConnect(
   username: string,
   password: string,
   database: string | undefined,
-  query: string | undefined
+  query: string | undefined,
+  timeoutMs = 30000
 ): Promise<ConnectResult> {
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
 
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
@@ -627,6 +644,8 @@ async function mysqlConnect(
 
     // Auth OK (0x00) — proceed
     if (!query) {
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { writer.releaseLock(); } catch { /* ignore */ }
       await socket.close();
       return { handshake };
     }
@@ -641,9 +660,13 @@ async function mysqlConnect(
     // --- Step 5: Read result set ---
     const resultSet = await readResultSet(reader, buffer);
 
+    try { reader.releaseLock(); } catch { /* ignore */ }
+    try { writer.releaseLock(); } catch { /* ignore */ }
     await socket.close();
     return { handshake, resultSet };
   } catch (err) {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+    try { writer.releaseLock(); } catch { /* ignore */ }
     try { await socket.close(); } catch { /* ignore */ }
     throw err;
   }
@@ -662,7 +685,7 @@ async function mysqlConnect(
 export async function handleMySQLConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = (await request.json()) as Partial<MySQLConnectionOptions>;
 
@@ -674,11 +697,17 @@ export async function handleMySQLConnect(request: Request): Promise<Response> {
     }
 
     const host = options.host;
-    const port = options.port || 3306;
-    const timeoutMs = options.timeout || 30000;
+    const port = options.port ?? 3306;
+    const timeoutMs = options.timeout ?? 30000;
     const username = options.username || 'root';
     const password = options.password || '';
     const database = options.database;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Cloudflare check
     const cfCheck = await checkIfCloudflare(host);
@@ -706,6 +735,7 @@ export async function handleMySQLConnect(request: Request): Promise<Response> {
         try {
           const { payload } = await readPacket(reader, buffer);
           const hs = parseHandshake(payload);
+          try { reader.releaseLock(); } catch { /* ignore */ }
           await socket.close();
           return new Response(
             JSON.stringify({
@@ -747,9 +777,10 @@ export async function handleMySQLConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       return await Promise.race([connectionPromise, timeoutPromise]);
@@ -761,6 +792,8 @@ export async function handleMySQLConnect(request: Request): Promise<Response> {
         }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(
@@ -785,7 +818,7 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
   // Check method
   if (request.method !== 'POST') {
     return new Response(JSON.stringify({
-      error: 'Method not allowed'
+      success: false, error: 'Method not allowed'
     }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
@@ -816,12 +849,37 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
     }
 
     const host = options.host;
-    const port = options.port || 3306;
+    const port = options.port ?? 3306;
     const username = options.username || 'root';
     const password = options.password || '';
     const database = options.database;
     const query = options.query;
-    const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Enforce read-only queries — block DDL/DML to prevent data destruction
+    const ALLOWED_MYSQL_PREFIXES = /^\s*(SELECT|SHOW|DESCRIBE|DESC|EXPLAIN|USE)\b/i;
+    if (!ALLOWED_MYSQL_PREFIXES.test(query)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only queries are allowed (SELECT, SHOW, DESCRIBE, EXPLAIN, USE)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Block multi-statement attacks (e.g. "SELECT 1; DROP TABLE users")
+    const queryWithoutStrings = query.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '').replace(/`[^`]*`/g, '');
+    if (queryWithoutStrings.includes(';')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Multi-statement queries are not allowed',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutMs = options.timeout ?? 30000;
 
     const queryPromise: Promise<Response> = (async () => {
       const { handshake, resultSet } = await mysqlConnect(
@@ -851,9 +909,10 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
       );
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Query timeout')), timeoutMs);
+    });
 
     try {
       return await Promise.race([queryPromise, timeoutPromise]);
@@ -862,6 +921,8 @@ export async function handleMySQLQuery(request: Request): Promise<Response> {
         JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -884,7 +945,7 @@ export async function handleMySQLShowDatabases(request: Request): Promise<Respon
   try {
     if (request.method !== 'POST') {
       return new Response(
-        JSON.stringify({ error: 'Method not allowed' }),
+        JSON.stringify({ success: false, error: 'Method not allowed' }),
         { status: 405, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -899,10 +960,16 @@ export async function handleMySQLShowDatabases(request: Request): Promise<Respon
     }
 
     const host = options.host;
-    const port = options.port || 3306;
+    const port = options.port ?? 3306;
     const username = options.username || 'root';
     const password = options.password || '';
-    const timeoutMs = options.timeout || 30000;
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -943,9 +1010,10 @@ export async function handleMySQLShowDatabases(request: Request): Promise<Respon
       );
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Query timeout')), timeoutMs);
+    });
 
     try {
       return await Promise.race([queryPromise, timeoutPromise]);
@@ -954,6 +1022,8 @@ export async function handleMySQLShowDatabases(request: Request): Promise<Respon
         JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(
@@ -976,7 +1046,7 @@ export async function handleMySQLShowTables(request: Request): Promise<Response>
   try {
     if (request.method !== 'POST') {
       return new Response(
-        JSON.stringify({ error: 'Method not allowed' }),
+        JSON.stringify({ success: false, error: 'Method not allowed' }),
         { status: 405, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -998,11 +1068,17 @@ export async function handleMySQLShowTables(request: Request): Promise<Response>
     }
 
     const host = options.host;
-    const port = options.port || 3306;
+    const port = options.port ?? 3306;
     const username = options.username || 'root';
     const password = options.password || '';
     const database = options.database;
-    const timeoutMs = options.timeout || 30000;
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1045,9 +1121,10 @@ export async function handleMySQLShowTables(request: Request): Promise<Response>
       );
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Query timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Query timeout')), timeoutMs);
+    });
 
     try {
       return await Promise.race([queryPromise, timeoutPromise]);
@@ -1056,6 +1133,8 @@ export async function handleMySQLShowTables(request: Request): Promise<Response>
         JSON.stringify({ success: false, error: err instanceof Error ? err.message : 'Query failed' }),
         { status: 500, headers: { 'Content-Type': 'application/json' } }
       );
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(

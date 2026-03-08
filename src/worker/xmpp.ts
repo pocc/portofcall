@@ -166,6 +166,11 @@ function parseStreamFeatures(xml: string): {
  * and reports server capabilities (TLS, SASL mechanisms, etc.)
  */
 export async function handleXMPPConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 5222, domain, timeout = 10000 } = await request.json<{
       host: string;
@@ -175,9 +180,15 @@ export async function handleXMPPConnect(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -416,15 +427,26 @@ async function performStartTLS(
  * Accept JSON: {host, port?, username, password, timeout?}
  */
 export async function handleXMPPLogin(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 5222, username, password, timeout = 15000 } = await request.json() as {
       host: string; port?: number; username: string; password: string; timeout?: number;
     };
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
         success: false, error: 'host, username, and password are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -558,15 +580,26 @@ export async function handleXMPPLogin(request: Request): Promise<Response> {
  * Accept JSON: {host, port?, username, password, timeout?}
  */
 export async function handleXMPPRoster(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 5222, username, password, timeout = 20000 } = await request.json() as {
       host: string; port?: number; username: string; password: string; timeout?: number;
     };
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
         success: false, error: 'host, username, and password are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -700,6 +733,11 @@ export async function handleXMPPRoster(request: Request): Promise<Response> {
  * Accept JSON: {host, port?, username, password, recipient, message?, timeout?}
  */
 export async function handleXMPPMessage(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host, port = 5222, username, password, recipient,
@@ -709,13 +747,19 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
       recipient?: string; message?: string; timeout?: number;
     };
 
-    if (!host || !username || !password) {
+    if (!host || !username || password == null) {
       return new Response(JSON.stringify({
         success: false, error: 'host, username, and password are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
     if (!recipient) {
       return new Response(JSON.stringify({ success: false, error: 'recipient is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }

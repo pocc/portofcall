@@ -71,6 +71,18 @@ function scrambleCVSPassword(password: string): string {
 }
 
 /**
+ * Reject values containing newlines — CVS pserver is a newline-delimited
+ * text protocol, so user-controlled values (cvsroot, username, module) must
+ * not contain \r or \n to prevent command injection.
+ */
+function rejectNewlines(value: string, fieldName: string): string | null {
+  if (/[\r\n]/.test(value)) {
+    return `${fieldName} must not contain newline characters`;
+  }
+  return null;
+}
+
+/**
  * Read lines from socket until a specific terminator or timeout
  */
 async function readLines(
@@ -111,7 +123,7 @@ async function readLines(
  */
 export async function handleCVSConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -256,7 +268,7 @@ async function readAllLines(
  */
 export async function handleCVSList(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -299,7 +311,7 @@ export async function handleCVSList(request: Request): Promise<Response> {
       );
     }
 
-    if (!password || typeof password !== 'string') {
+    if (password == null || typeof password !== 'string') {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -311,6 +323,16 @@ export async function handleCVSList(request: Request): Promise<Response> {
         JSON.stringify({ success: false, error: 'CVS root is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Reject newlines in protocol-sensitive fields to prevent command injection
+    for (const [val, name] of [[cvsroot, 'cvsroot'], [username, 'username'], [module || '', 'module']] as const) {
+      const err = rejectNewlines(val, name);
+      if (err) {
+        return new Response(JSON.stringify({ success: false, error: err }), {
+          status: 400, headers: { 'Content-Type': 'application/json' },
+        });
+      }
     }
 
     // Check if target is behind Cloudflare
@@ -472,7 +494,7 @@ export async function handleCVSList(request: Request): Promise<Response> {
  */
 export async function handleCVSCheckout(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -499,12 +521,17 @@ export async function handleCVSCheckout(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port number' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     if (!username || typeof username !== 'string') {
       return new Response(JSON.stringify({ success: false, error: 'Username is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (!password || typeof password !== 'string') {
+    if (password == null || typeof password !== 'string') {
       return new Response(JSON.stringify({ success: false, error: 'Password is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -513,6 +540,16 @@ export async function handleCVSCheckout(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'cvsroot is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Reject newlines in protocol-sensitive fields to prevent command injection
+    for (const [val, name] of [[cvsroot, 'cvsroot'], [username, 'username'], [moduleName, 'module']] as const) {
+      const err = rejectNewlines(val, name);
+      if (err) {
+        return new Response(JSON.stringify({ success: false, error: err }), {
+          status: 400, headers: { 'Content-Type': 'application/json' },
+        });
+      }
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -645,7 +682,7 @@ export async function handleCVSCheckout(request: Request): Promise<Response> {
  */
 export async function handleCVSLogin(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -692,11 +729,21 @@ export async function handleCVSLogin(request: Request): Promise<Response> {
       );
     }
 
-    if (!password || typeof password !== 'string') {
+    if (password == null || typeof password !== 'string') {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Reject newlines in protocol-sensitive fields to prevent command injection
+    for (const [val, name] of [[repository, 'repository'], [username, 'username']] as const) {
+      const err = rejectNewlines(val, name);
+      if (err) {
+        return new Response(JSON.stringify({ success: false, error: err }), {
+          status: 400, headers: { 'Content-Type': 'application/json' },
+        });
+      }
     }
 
     // Check if target is behind Cloudflare

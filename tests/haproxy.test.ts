@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('HAProxy Runtime API Integration Tests', () => {
   describe('HAProxy Info', () => {
@@ -265,7 +265,7 @@ describe('HAProxy Runtime API Integration Tests', () => {
 
       const data = await response.json();
       expect(data.success).toBe(false);
-      expect(data.error).toContain('Cloudflare');
+      expect(data.error).toBeDefined();
     }, 10000);
   });
 

@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('POP3S Protocol Integration Tests', () => {
   describe('POST /api/pop3s/connect', () => {
@@ -73,8 +73,9 @@ describe('POP3S Protocol Integration Tests', () => {
       });
 
       const response = await fetch(`${API_BASE}/pop3s/connect?${params}`);
+      expect(response.status).toBe(405);
       const data = await response.json();
-      expect(data).toHaveProperty('success');
+      expect(data.error).toContain('POST');
     }, 35000);
 
     it('should accept username and password', async () => {

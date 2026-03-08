@@ -36,13 +36,15 @@ async function readIMAPResponse(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
+      if (response.length > 1048576) { throw new Error('IMAP response too large'); }
 
       // IMAP responses are tagged: "A001 OK" or "* OK" for untagged
       // Look for completion tag
@@ -81,13 +83,17 @@ async function sendIMAPCommand(
  * RFC 3501 quoted-string encoding for IMAP credentials
  */
 function imapQuote(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\x00]/.test(s)) {
+    throw new Error('IMAP string cannot contain CR, LF, or NUL bytes');
+  }
   return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
 }
 
 export async function handleIMAPConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = await request.json() as Partial<IMAPConnectionOptions>;
 
@@ -129,12 +135,13 @@ export async function handleIMAPConnect(request: Request): Promise<Response> {
       try {
         // Read server greeting (* OK)
         const greetingPromise = (async () => {
+          const decoder = new TextDecoder();
           let greeting = '';
           while (true) {
             const { done, value } = await reader.read();
             if (done) break;
 
-            const chunk = new TextDecoder().decode(value);
+            const chunk = decoder.decode(value, { stream: true });
             greeting += chunk;
 
             if (greeting.includes('* OK')) {
@@ -246,7 +253,7 @@ export async function handleIMAPList(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
-        error: 'Method not allowed',
+        success: false, error: 'Method not allowed',
       }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
@@ -292,12 +299,13 @@ export async function handleIMAPList(request: Request): Promise<Response> {
 
       try {
         // Read greeting
+        const greetDecoder = new TextDecoder();
         let greeting = '';
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = new TextDecoder().decode(value);
+          const chunk = greetDecoder.decode(value, { stream: true });
           greeting += chunk;
 
           if (greeting.includes('* OK')) {
@@ -399,7 +407,7 @@ export async function handleIMAPSelect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
-        error: 'Method not allowed',
+        success: false, error: 'Method not allowed',
       }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
@@ -446,12 +454,13 @@ export async function handleIMAPSelect(request: Request): Promise<Response> {
 
       try {
         // Read greeting
+        const greetDecoder = new TextDecoder();
         let greeting = '';
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          const chunk = new TextDecoder().decode(value);
+          const chunk = greetDecoder.decode(value, { stream: true });
           greeting += chunk;
 
           if (greeting.includes('* OK')) {
@@ -477,7 +486,7 @@ export async function handleIMAPSelect(request: Request): Promise<Response> {
           reader,
           writer,
           'A002',
-          `SELECT ${mailbox}`,
+          `SELECT ${imapQuote(mailbox)}`,
           10000
         );
 
@@ -569,11 +578,13 @@ export async function handleIMAPSession(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
   const port = parseInt(url.searchParams.get('port') || '143', 10);
-  const username = url.searchParams.get('username') || '';
-  const password = url.searchParams.get('password') || '';
 
-  if (!host || !username || !password) {
-    return new Response(JSON.stringify({ error: 'Missing host, username, or password' }), { status: 400 });
+  if (!host) {
+    return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
+  }
+
+  if (isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ error: 'Port must be between 1 and 65535' }), { status: 400 });
   }
 
   const cfCheck = await checkIfCloudflare(host);
@@ -587,8 +598,39 @@ export async function handleIMAPSession(request: Request): Promise<Response> {
   const [client, server] = Object.values(pair);
   server.accept();
 
+  // Credentials arrive via first WebSocket message (not URL params)
+  const credentialPromise = new Promise<{ username: string; password: string }>((resolve, reject) => {
+    const authTimer = setTimeout(() => {
+      server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+      server.close(4001, 'Auth timeout');
+      reject(new Error('Auth timeout'));
+    }, 15_000);
+
+    server.addEventListener('message', function onAuth(event) {
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'auth') {
+          clearTimeout(authTimer);
+          server.removeEventListener('message', onAuth);
+          resolve({
+            username: msg.username || '',
+            password: msg.password || '',
+          });
+        }
+      } catch { /* not JSON yet — ignore until auth */ }
+    });
+  });
+
   (async () => {
     try {
+      const { username, password } = await credentialPromise;
+
+      if (!username || password == null) {
+        server.send(JSON.stringify({ type: 'error', message: 'Missing username or password' }));
+        server.close();
+        return;
+      }
+
       const socket = connect(`${host}:${port}`);
       await socket.opened;
 
@@ -596,11 +638,12 @@ export async function handleIMAPSession(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
 
       // Read server greeting
+      const greetDecoder = new TextDecoder();
       let greeting = '';
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        greeting += new TextDecoder().decode(value);
+        greeting += greetDecoder.decode(value, { stream: true });
         if (greeting.includes('* OK')) break;
       }
 
@@ -634,22 +677,29 @@ export async function handleIMAPSession(request: Request): Promise<Response> {
       // Auto-increment tag counter (start from A003 since A001/A002 used above)
       let tagCounter = 3;
 
-      server.addEventListener('message', async (event) => {
-        try {
-          const msg = JSON.parse(event.data as string) as { type: string; command?: string };
-          if (msg.type === 'command' && msg.command) {
-            const tag = `A${String(tagCounter++).padStart(3, '0')}`;
-            const response = await sendIMAPCommand(reader, writer, tag, msg.command.trim(), 30000);
-            server.send(JSON.stringify({
-              type: 'response',
-              tag,
-              response,
-              command: msg.command.trim(),
-            }));
+      // Serialize command handling with a promise chain to prevent interleaving
+      let commandChain = Promise.resolve();
+
+      server.addEventListener('message', (event) => {
+        commandChain = commandChain.then(async () => {
+          try {
+            const msg = JSON.parse(event.data as string) as { type: string; command?: string };
+            if (msg.type === 'command' && msg.command) {
+              const tag = `A${String(tagCounter++).padStart(3, '0')}`;
+              // eslint-disable-next-line no-control-regex
+              const safeCommand = msg.command.trim().replace(/[\r\n\x00]/g, '');
+              const response = await sendIMAPCommand(reader, writer, tag, safeCommand, 30000);
+              server.send(JSON.stringify({
+                type: 'response',
+                tag,
+                response,
+                command: msg.command.trim(),
+              }));
+            }
+          } catch (e) {
+            server.send(JSON.stringify({ type: 'error', message: String(e) }));
           }
-        } catch (e) {
-          server.send(JSON.stringify({ type: 'error', message: String(e) }));
-        }
+        });
       });
 
       server.addEventListener('close', async () => {

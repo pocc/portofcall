@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('9P Protocol Integration Tests', () => {
   // --- Validation Tests ---
@@ -64,6 +64,15 @@ describe('9P Protocol Integration Tests', () => {
     expect(response.status).toBe(400);
     expect(data.success).toBe(false);
     expect(data.error).toContain('invalid characters');
+  });
+
+  it('should reject non-POST methods', async () => {
+    const response = await fetch(`${API_BASE}/9p/connect`, {
+      method: 'GET',
+    });
+
+    expect([405, 500]).toContain(response.status);
+    expect(response.ok).toBe(false);
   });
 
   // --- Connection Tests ---
@@ -143,6 +152,156 @@ describe('9P Protocol Integration Tests', () => {
       expect(data.rootQid.type).toBeDefined();
       expect(data.rootQid.version).toBeDefined();
       expect(data.rootQid.path).toBeDefined();
+    }
+  }, 10000);
+
+  // --- /api/9p/stat Validation Tests ---
+
+  it('stat: should reject empty host', async () => {
+    const response = await fetch(`${API_BASE}/9p/stat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: '', port: 564 }),
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('stat: should reject invalid port', async () => {
+    const response = await fetch(`${API_BASE}/9p/stat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: 'test-host.invalid', port: 0 }),
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Port must be between 1 and 65535');
+  });
+
+  it('stat: should reject non-POST methods', async () => {
+    const response = await fetch(`${API_BASE}/9p/stat`, {
+      method: 'GET',
+    });
+
+    expect(response.ok).toBe(false);
+    expect([405, 500]).toContain(response.status);
+  });
+
+  it('stat: should handle connection to non-existent server', async () => {
+    const response = await fetch(`${API_BASE}/9p/stat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: 'localhost', port: 564, path: 'etc', timeout: 3000 }),
+    });
+
+    const data = await response.json();
+    if (!data.success) {
+      expect(data.error).toBeDefined();
+    }
+  }, 10000);
+
+  // --- /api/9p/read Validation Tests ---
+
+  it('read: should reject empty host', async () => {
+    const response = await fetch(`${API_BASE}/9p/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: '', port: 564, path: 'etc/motd' }),
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('read: should reject missing path', async () => {
+    const response = await fetch(`${API_BASE}/9p/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: 'test-host.invalid', port: 564, path: '' }),
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('path is required');
+  });
+
+  it('read: should reject non-POST methods', async () => {
+    const response = await fetch(`${API_BASE}/9p/read`, {
+      method: 'GET',
+    });
+
+    expect(response.ok).toBe(false);
+    expect([405, 500]).toContain(response.status);
+  });
+
+  it('read: should handle connection to non-existent server', async () => {
+    const response = await fetch(`${API_BASE}/9p/read`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: 'localhost', port: 564, path: 'etc/motd', timeout: 3000 }),
+    });
+
+    const data = await response.json();
+    if (!data.success) {
+      expect(data.error).toBeDefined();
+    }
+  }, 10000);
+
+  // --- /api/9p/ls Validation Tests ---
+
+  it('ls: should reject empty host', async () => {
+    const response = await fetch(`${API_BASE}/9p/ls`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: '', port: 564 }),
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toBe('Host is required');
+  });
+
+  it('ls: should reject host with injection characters', async () => {
+    const response = await fetch(`${API_BASE}/9p/ls`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: 'host$(whoami)', port: 564 }),
+    });
+
+    const data = await response.json();
+    expect(response.status).toBe(400);
+    expect(data.success).toBe(false);
+    expect(data.error).toContain('invalid characters');
+  });
+
+  it('ls: should reject non-POST methods', async () => {
+    const response = await fetch(`${API_BASE}/9p/ls`, {
+      method: 'GET',
+    });
+
+    expect(response.ok).toBe(false);
+    expect([405, 500]).toContain(response.status);
+  });
+
+  it('ls: should handle connection to non-existent server', async () => {
+    const response = await fetch(`${API_BASE}/9p/ls`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ host: 'localhost', port: 564, timeout: 3000 }),
+    });
+
+    const data = await response.json();
+    if (!data.success) {
+      expect(data.error).toBeDefined();
     }
   }, 10000);
 });

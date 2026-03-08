@@ -20,9 +20,10 @@ build/
 .env.*.local
 .dev.vars
 
-# IDE
+# IDE / AI tools
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~

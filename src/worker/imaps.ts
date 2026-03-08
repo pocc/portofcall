@@ -31,6 +31,10 @@ function quoteIMAPString(value: string): string {
   // If it contains NUL or CR or LF, we would need a literal, but for
   // LOGIN args and mailbox names those should never appear. Fall back
   // to quoted-string with escaping for everything else.
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\x00]/.test(value)) {
+    throw new Error('IMAP string cannot contain CR, LF, or NUL bytes');
+  }
   const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `"${escaped}"`;
 }
@@ -75,11 +79,15 @@ async function readIMAPResponse(
     return response;
   })();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('IMAPS read timeout')), timeoutMs)
-  );
-
-  return Promise.race([readPromise, timeoutPromise]);
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('IMAPS read timeout')), timeoutMs);
+  });
+  try {
+    return await Promise.race([readPromise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
 }
 
 /**
@@ -102,7 +110,7 @@ async function sendIMAPCommand(
 export async function handleIMAPSConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = await request.json() as Partial<IMAPSConnectionOptions>;
 
@@ -159,6 +167,7 @@ export async function handleIMAPSConnect(request: Request): Promise<Response> {
 
             const chunk = decoder.decode(value, { stream: true });
             greeting += chunk;
+            if (greeting.length > 8192) { throw new Error('IMAPS greeting too large'); }
 
             if (greeting.includes('\r\n')) {
               break;
@@ -292,7 +301,7 @@ export async function handleIMAPSList(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
-        error: 'Method not allowed',
+        success: false, error: 'Method not allowed',
       }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
@@ -440,7 +449,7 @@ export async function handleIMAPSSelect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
-        error: 'Method not allowed',
+        success: false, error: 'Method not allowed',
       }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
@@ -607,8 +616,12 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
   const username = url.searchParams.get('username') || '';
   const password = url.searchParams.get('password') || '';
 
-  if (!host || !username || !password) {
+  if (!host || !username || password == null) {
     return new Response(JSON.stringify({ error: 'Missing host, username, or password' }), { status: 400 });
+  }
+
+  if (isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ error: 'Port must be between 1 and 65535' }), { status: 400 });
   }
 
   const cfCheck = await checkIfCloudflare(host);

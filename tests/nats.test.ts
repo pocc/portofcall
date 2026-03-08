@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('NATS Protocol Integration Tests', () => {
   describe('NATS Connect (HTTP)', () => {
@@ -75,9 +75,9 @@ describe('NATS Protocol Integration Tests', () => {
       });
 
       const response = await fetch(`${API_BASE}/nats/connect?${params}`);
-      const data = await response.json() as { success?: boolean };
-      expect(data).toHaveProperty('success');
-      expect(data.success).toBe(true);
+      expect(response.status).toBe(405);
+      const data = await response.json();
+      expect(data.error).toContain('POST');
     }, 15000);
 
     it('should handle custom timeout parameter', async () => {

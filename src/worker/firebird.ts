@@ -115,6 +115,8 @@ function readU32(buf: Uint8Array, offset: number): number {
 /**
  * Build Firebird Database Parameter Block (DPB)
  * isc_dpb_version1 [username] [password] [charset]
+ * 
+ * NOTE: This implementation sends the password in cleartext.
  */
 function buildDPB(username: string, password: string): Uint8Array {
   const items: number[] = [isc_dpb_version1];
@@ -397,8 +399,10 @@ async function recvPacket(s: FirebirdSocket, timeoutMs = 8000): Promise<FBRespon
     const msgs: string[] = [];
     let statusError: string | undefined;
 
-     
+    const MAX_STATUS_ARGS = 256;
+    let argCount = 0;
     while (true) {
+      if (++argCount > MAX_STATUS_ARGS) break; // guard against infinite status vector
       const typeBuf = await recvBytes(s, 4, timeoutMs);
       const argType = readU32(typeBuf, 0);
 
@@ -414,6 +418,7 @@ async function recvPacket(s: FirebirdSocket, timeoutMs = 8000): Promise<FBRespon
         // isc_arg_string / isc_arg_interpreted / isc_arg_sql_state: XDR string
         const strLenBuf = await recvBytes(s, 4, timeoutMs);
         const strLen = readU32(strLenBuf, 0);
+        if (strLen > 1_048_576) throw new Error('Status vector string too large');
         const strPad = (4 - (strLen % 4)) % 4;
         if (strLen > 0) {
           const strData = await recvBytes(s, strLen + strPad, timeoutMs);
@@ -470,12 +475,20 @@ async function connectAndAccept(
   timeoutMs: number,
 ): Promise<FirebirdConn> {
   const socket = connect({ hostname: host, port });
-  await Promise.race([
-    socket.opened,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
-    ),
-  ]);
+  let timeoutHandle: any;
+  try {
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) =>
+        timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs),
+      ),
+    ]);
+  } catch (e) {
+    try { socket.close(); } catch { /* socket cleanup */ }
+    throw e;
+  } finally {
+    clearTimeout(timeoutHandle);
+  }
 
   const fs: FirebirdSocket = {
     reader: socket.readable.getReader(),
@@ -516,7 +529,7 @@ interface FirebirdProbeResult {
  * responds with op_accept (2).  No credentials required.
  */
 export async function handleFirebirdProbe(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const { host, port = 3050, database = '/tmp/test.fdb' } = await request.json<{
@@ -528,7 +541,7 @@ export async function handleFirebirdProbe(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (typeof port !== 'number' || port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -552,9 +565,12 @@ export async function handleFirebirdProbe(request: Request): Promise<Response> {
       } satisfies FirebirdProbeResult), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    conn.fs.reader.releaseLock();
-    conn.fs.writer.releaseLock();
-    conn.fs.socket.close();
+    try {
+      conn.fs.reader.releaseLock();
+      conn.fs.writer.releaseLock();
+    } finally {
+      try { conn.fs.socket.close(); } catch { /* socket cleanup */ }
+    }
 
     return new Response(JSON.stringify({
       success: true,
@@ -578,7 +594,7 @@ export async function handleFirebirdProbe(request: Request): Promise<Response> {
  * Sends op_connect → op_attach (with DPB credentials) → parses op_response.
  */
 export async function handleFirebirdAuth(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const { host, port = 3050, database = '/tmp/test.fdb', username = 'SYSDBA', password = 'masterkey' }
@@ -592,7 +608,7 @@ export async function handleFirebirdAuth(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (typeof port !== 'number' || port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -614,9 +630,12 @@ export async function handleFirebirdAuth(request: Request): Promise<Response> {
 
     const authResp = await recvPacket(fs, 8000);
 
-    fs.reader.releaseLock();
-    fs.writer.releaseLock();
-    fs.socket.close();
+    try {
+      fs.reader.releaseLock();
+      fs.writer.releaseLock();
+    } finally {
+      try { fs.socket.close(); } catch { /* socket cleanup */ }
+    }
 
     if (authResp.opcode !== OP_RESPONSE) {
       return new Response(JSON.stringify({
@@ -656,7 +675,7 @@ export async function handleFirebirdAuth(request: Request): Promise<Response> {
  * Default query: SELECT RDB$RELATION_NAME FROM RDB$RELATIONS WHERE RDB$SYSTEM_FLAG=1
  */
 export async function handleFirebirdQuery(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const {
@@ -674,7 +693,7 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (typeof port !== 'number' || port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -696,7 +715,11 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
     await fs.writer.write(buildAttachPacket(database, dpb));
     const attachResp = await recvPacket(fs, 8000);
     if (attachResp.opcode !== OP_RESPONSE || attachResp.statusError) {
-      fs.reader.releaseLock(); fs.writer.releaseLock(); fs.socket.close();
+      try {
+        fs.reader.releaseLock(); fs.writer.releaseLock();
+      } finally {
+        try { fs.socket.close(); } catch { /* socket cleanup */ }
+      }
       return new Response(JSON.stringify({
         success: false,
         error: attachResp.statusError ?? `Attach failed: opcode ${attachResp.opcode}`,
@@ -708,7 +731,11 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
     await fs.writer.write(buildTransactionPacket(dbHandle));
     const trResp = await recvPacket(fs, 8000);
     if (trResp.opcode !== OP_RESPONSE || trResp.statusError) {
-      fs.reader.releaseLock(); fs.writer.releaseLock(); fs.socket.close();
+      try {
+        fs.reader.releaseLock(); fs.writer.releaseLock();
+      } finally {
+        try { fs.socket.close(); } catch { /* socket cleanup */ }
+      }
       return new Response(JSON.stringify({
         success: false,
         error: trResp.statusError ?? `Transaction failed: opcode ${trResp.opcode}`,
@@ -720,7 +747,11 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
     await fs.writer.write(buildAllocateStatement(dbHandle));
     const allocResp = await recvPacket(fs, 8000);
     if (allocResp.opcode !== OP_RESPONSE || allocResp.statusError) {
-      fs.reader.releaseLock(); fs.writer.releaseLock(); fs.socket.close();
+      try {
+        fs.reader.releaseLock(); fs.writer.releaseLock();
+      } finally {
+        try { fs.socket.close(); } catch { /* socket cleanup */ }
+      }
       return new Response(JSON.stringify({
         success: false,
         error: allocResp.statusError ?? 'Statement allocation failed',
@@ -732,7 +763,11 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
     await fs.writer.write(buildPrepareStatement(trHandle, stmtHandle, query));
     const prepResp = await recvPacket(fs, 8000);
     if (prepResp.opcode !== OP_RESPONSE || prepResp.statusError) {
-      fs.reader.releaseLock(); fs.writer.releaseLock(); fs.socket.close();
+      try {
+        fs.reader.releaseLock(); fs.writer.releaseLock();
+      } finally {
+        try { fs.socket.close(); } catch { /* socket cleanup */ }
+      }
       return new Response(JSON.stringify({
         success: false,
         error: prepResp.statusError ?? 'Prepare failed',
@@ -743,7 +778,11 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
     await fs.writer.write(buildExecute(trHandle, stmtHandle));
     const execResp = await recvPacket(fs, 8000);
     if (execResp.opcode !== OP_RESPONSE || execResp.statusError) {
-      fs.reader.releaseLock(); fs.writer.releaseLock(); fs.socket.close();
+      try {
+        fs.reader.releaseLock(); fs.writer.releaseLock();
+      } finally {
+        try { fs.socket.close(); } catch { /* socket cleanup */ }
+      }
       return new Response(JSON.stringify({
         success: false,
         error: execResp.statusError ?? 'Execute failed',
@@ -758,16 +797,21 @@ export async function handleFirebirdQuery(request: Request): Promise<Response> {
     const rows: string[] = [];
     if (fetchResp.data) {
       const text = dec.decode(fetchResp.data);
-      const parts = text.split('\0').map(s => s.trim()).filter(s => s.length > 0);
+      const parts = text.split('\0')
+        .map(s => s.trim())
+        .filter(s => s.length > 0 && /^[\x20-\x7E]+$/.test(s));
       rows.push(...parts);
     }
 
     // ── Cleanup ──
     await fs.writer.write(buildCommit(trHandle));
     await fs.writer.write(buildDetach(dbHandle));
-    fs.reader.releaseLock();
-    fs.writer.releaseLock();
-    fs.socket.close();
+    try {
+      fs.reader.releaseLock();
+      fs.writer.releaseLock();
+    } finally {
+      try { fs.socket.close(); } catch { /* socket cleanup */ }
+    }
 
     return new Response(JSON.stringify({
       success: true,

@@ -39,7 +39,7 @@ function validatePerforceInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   const trimmedHost = host.trim();
   if (!/^[a-zA-Z0-9._-]+$/.test(trimmedHost)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -87,7 +87,7 @@ function buildPerforceMessage(pairs: Record<string, string>): Uint8Array {
  */
 export async function handlePerforceProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -258,7 +258,7 @@ export async function handlePerforceProbe(request: Request): Promise<Response> {
  */
 export async function handlePerforceLogin(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   interface PerforceLoginRequest extends PerforceProbeRequest {
@@ -293,7 +293,7 @@ export async function handlePerforceLogin(request: Request): Promise<Response> {
       );
     }
 
-    if (!password) {
+    if (password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'password is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -477,7 +477,7 @@ export async function handlePerforceLogin(request: Request): Promise<Response> {
  */
 export async function handlePerforceInfo(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -629,7 +629,7 @@ export async function handlePerforceInfo(request: Request): Promise<Response> {
 
 export async function handlePerforceChanges(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   interface PerforceChangesRequest extends PerforceProbeRequest {
@@ -661,7 +661,7 @@ export async function handlePerforceChanges(request: Request): Promise<Response>
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (!password) {
+  if (password == null) {
     return new Response(JSON.stringify({ success: false, error: 'password is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
@@ -803,7 +803,7 @@ export async function handlePerforceChanges(request: Request): Promise<Response>
  */
 export async function handlePerforceDescribe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   interface PerforceDescribeRequest extends PerforceProbeRequest {
@@ -834,7 +834,7 @@ export async function handlePerforceDescribe(request: Request): Promise<Response
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (!password) {
+  if (password == null) {
     return new Response(JSON.stringify({ success: false, error: 'password is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });

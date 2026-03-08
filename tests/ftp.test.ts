@@ -3,9 +3,9 @@
  * Tests all FTP operations against live public FTP servers
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 const FTP_BASE = `${API_BASE}/ftp`;
 
 // Test server credentials (local docker vsftpd server)
@@ -93,7 +93,7 @@ describe('FTP Protocol Integration Tests', () => {
       }
     });
 
-    it('should support GET request with query parameters', async () => {
+    it('should reject GET requests with 405', async () => {
       const params = new URLSearchParams({
         host: FTP_CONFIG.host,
         port: FTP_CONFIG.port.toString(),
@@ -103,10 +103,7 @@ describe('FTP Protocol Integration Tests', () => {
       });
 
       const response = await fetch(`${FTP_BASE}/list?${params}`);
-      const data = await response.json();
-      if (!response.ok) return;
-      expect(data.success).toBe(true);
-      expect(Array.isArray(data.files)).toBe(true);
+      expect(response.status).toBe(405);
     });
   });
 

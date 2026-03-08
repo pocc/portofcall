@@ -18,6 +18,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface EchoRequest {
   host: string;
@@ -40,6 +41,11 @@ interface EchoResponse {
  * Sends a message and verifies it's echoed back correctly
  */
 export async function handleEchoTest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as EchoRequest;
     const { host, port = 7, message, timeout = 10000 } = body;
@@ -65,13 +71,29 @@ export async function handleEchoTest(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535'
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        sent: '',
+        received: '',
+        match: false,
+        rtt: 0,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -100,18 +122,34 @@ export async function handleEchoTest(request: Request): Promise<Response> {
       const messageBytes = new TextEncoder().encode(message);
       await writer.write(messageBytes);
 
-      // Read response
-      const { value: responseBytes } = await Promise.race([
-        reader.read(),
-        timeoutPromise
-      ]);
+      // Read response — accumulate until we have at least messageBytes.length bytes
+      // (single read may return a partial echo if the message spans multiple TCP segments)
+      const chunks: Uint8Array[] = [];
+      let totalReceived = 0;
+      while (totalReceived < messageBytes.length) {
+        const { value: chunk, done } = await Promise.race([
+          reader.read(),
+          timeoutPromise,
+        ]);
+        if (done) break;
+        if (chunk) {
+          chunks.push(chunk);
+          totalReceived += chunk.length;
+        }
+      }
 
-      if (!responseBytes) {
+      if (totalReceived === 0) {
         throw new Error('No response received from server');
       }
 
-      // Decode response
-      const receivedMessage = new TextDecoder().decode(responseBytes);
+      // Combine chunks and decode
+      const combined = new Uint8Array(totalReceived);
+      let offset = 0;
+      for (const chunk of chunks) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const receivedMessage = new TextDecoder().decode(combined);
       const rtt = Date.now() - startTime;
 
       // Clean up
@@ -171,12 +209,32 @@ export async function handleEchoWebSocket(request: Request): Promise<Response> {
     const port = parseInt(url.searchParams.get('port') || '7', 10);
 
     if (!host) {
-      return new Response('Host parameter required', { status: 400 });
+      return new Response(JSON.stringify({ success: false, error: 'Host parameter required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // Upgrade to WebSocket
     const upgradeHeader = request.headers.get('Upgrade');
-    if (upgradeHeader !== 'websocket') {
+    if (upgradeHeader?.toLowerCase() !== 'websocket') {
       return new Response('Expected websocket', { status: 426 });
     }
 
@@ -192,7 +250,10 @@ export async function handleEchoWebSocket(request: Request): Promise<Response> {
     // Set up bidirectional forwarding
     (async () => {
       try {
-        await socket.opened;
+        const connectTimeout = new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('Connection timeout')), 10000)
+        );
+        await Promise.race([socket.opened, connectTimeout]);
 
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
@@ -242,7 +303,7 @@ export async function handleEchoWebSocket(request: Request): Promise<Response> {
 
   } catch (error) {
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
       { status: 500, headers: { 'Content-Type': 'application/json' } }
     );
   }

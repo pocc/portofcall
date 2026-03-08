@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('POP3 Protocol Integration Tests', () => {
   describe('POP3 Connect (HTTP)', () => {
@@ -54,10 +54,9 @@ describe('POP3 Protocol Integration Tests', () => {
       });
 
       const response = await fetch(`${API_BASE}/pop3/connect?${params}`);
-
-      // Should fail to connect but accept the request format
+      expect(response.status).toBe(405);
       const data = await response.json();
-      expect(data).toHaveProperty('success');
+      expect(data.error).toContain('POST');
     }, 15000);
 
     it('should handle custom timeout parameter', async () => {

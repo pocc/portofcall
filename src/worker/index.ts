@@ -20,6 +20,7 @@ import {
   handleFTPDownload,
   handleFTPDelete,
   handleFTPMkdir,
+  handleFTPRmdir,
   handleFTPRename,
 } from './ftp';
 import { handleSSHConnect, handleSSHExecute, handleSSHDisconnect, handleSSHTerminal, handleSSHKeyExchange, handleSSHAuth } from './ssh';
@@ -164,7 +165,7 @@ import { handleSVNConnect, handleSVNList, handleSVNInfo } from './svn';
 import { handleTeamSpeakConnect, handleTeamSpeakCommand, handleTeamSpeakChannel, handleTeamSpeakMessage, handleTeamSpeakKick, handleTeamSpeakBan } from './teamspeak';
 import { handleRadiusProbe, handleRadiusAuth, handleRadiusAccounting } from './radius';
 import { handleRadsecAuth, handleRadsecConnect, handleRadsecAccounting } from './radsec';
-import { handleXmppS2SPing, handleXmppS2SConnect, handleXMPPS2SConnect, handleXMPPS2SDialback } from './xmpp-s2s';
+// xmpp-s2s.ts consolidated into xmpps2s.ts
 import { handleNRPEQuery, handleNRPEVersion, handleNRPETLS } from './nrpe';
 import { handleRloginConnect, handleRloginBanner, handleRloginWebSocket } from './rlogin';
 import { handleS7commConnect, handleS7ReadDB, handleS7WriteDB } from './s7comm';
@@ -247,7 +248,7 @@ import { handleIgniteConnect, handleIgniteProbe, handleIgniteListCaches, handleI
 import { handleFirebirdProbe, handleFirebirdVersion, handleFirebirdAuth, handleFirebirdQuery } from './firebird';
 import { handleCVSConnect, handleCVSLogin, handleCVSList, handleCVSCheckout } from './cvs';
 import { handleAMQPSConnect, handleAMQPSPublish, handleAMQPSConsume } from './amqps';
-import { handleTFTPConnect, handleTFTPRead, handleTFTPWrite, handleTFTPGet, handleTFTPOptions } from './tftp';
+
 import { handleSNMPGet, handleSNMPWalk, handleSNMPv3Get, handleSNMPSet, handleSNMPMultiGet } from './snmp';
 import { handleNTPQuery, handleNTPSync, handleNTPPoll } from './ntp';
 import { handleMsrpSend, handleMsrpConnect, handleMsrpSession } from './msrp';
@@ -261,7 +262,7 @@ import { handleLLMNRQuery, handleLLMNRReverse, handleLLMNRScan } from './llmnr';
 import { handleHSRPProbe, handleHSRPListen, handleHSRPCoup, handleHSRPv2Probe } from './hsrp';
 import { handleVentriloStatus, handleVentriloConnect } from './ventrilo';
 import { handleNapsterConnect, handleNapsterLogin, handleNapsterStats, handleNapsterSearch, handleNapsterBrowse } from './napster';
-import { handleXMPPS2SProbe, handleXMPPS2SFederationTest, handleXMPPS2STlsDialback } from './xmpps2s';
+import { handleXMPPS2SProbe, handleXMPPS2SFederationTest, handleXMPPS2STlsDialback, handleXmppS2SPing } from './xmpps2s';
 import { handleMSNProbe, handleMSNClientVersion, handleMSNLogin, handleMSNMD5Login } from './msn';
 import { handleYMSGProbe, handleYMSGVersionDetect, handleYMSGAuth, handleYMSGLogin } from './ymsg';
 import { handleOSCARProbe, handleOSCARPing, handleOSCARAuth, handleOSCARLogin, handleOSCARSendIM, handleOSCARBuddyList } from './oscar';
@@ -283,7 +284,7 @@ import { handleIPFSProbe, handleIPFSAdd, handleIPFSCat, handleIPFSNodeInfo, hand
 import { handleKubernetesProbe, handleKubernetesQuery, handleKubernetesLogs, handleKubernetesPodList, handleKubernetesApply } from './kubernetes';
 import { handleActiveMQProbe, handleActiveMQConnect, handleActiveMQSend, handleActiveMQSubscribe, handleActiveMQAdmin, handleActiveMQInfo, handleActiveMQQueues, handleActiveMQDurableSubscribe, handleActiveMQDurableUnsubscribe } from './activemq';
 import { handleCIFSNegotiate, handleCIFSAuth, handleCIFSList, handleCIFSRead, handleCIFSStat, handleCIFSWrite } from './cifs';
-import { handleSSDPDiscover, handleSSDPFetch, handleSSDPSearch, handleSSDPSubscribe, handleSSDPAction } from './ssdp';
+
 import { handleDOHQuery } from './doh';
 import { handleIPMIConnect, handleIPMIGetAuthCaps, handleIPMIGetDeviceID } from './ipmi';
 import { handleSCPConnect, handleSCPList, handleSCPGet, handleSCPPut } from './scp';
@@ -293,10 +294,17 @@ import { withRequestTimeoutCleanup } from './timers';
 import { maybeBlockCloudflareTarget, normalizeHost, parseGuardBody } from './router-guards';
 import { addSecurityHeaders, sanitizeErrors } from './response-middleware';
 import { handleTcpPing, handleSocketConnection } from './websocket-pipe';
+import { detectClient } from './content-negotiation';
+import { matchShortRoute, dispatchShortRoute, isKnownProtocolMissingPort } from './cli-routes';
+import { formatResponse } from './formatters';
+import { serveCLIScript } from './cli-script';
+import { serveCurlLandingPage } from './curl-landing';
+import { checkIfCloudflare } from './cloudflare-detector';
 
 export interface Env {
   ENVIRONMENT: string;
   ASSETS: Fetcher;
+  CHECKLIST: KVNamespace;
 }
 
 export default {
@@ -323,7 +331,7 @@ export default {
       const url = new URL(request.url);
 
       // --- Request body size limit (1 MB) ---
-      // Fast-reject via Content-Length header, then enforce actual body size.
+      // Fast-reject via Content-Length header, then stream-check for chunked bodies.
       if (url.pathname.startsWith('/api/') && request.method === 'POST') {
         const MAX_BODY = 1_048_576;
         const contentLength = request.headers.get('Content-Length');
@@ -336,23 +344,40 @@ export default {
             headers: { 'Content-Type': 'application/json' },
           });
         }
-        // Enforce actual body size (catches chunked/missing Content-Length)
-        const bodyBuffer = await request.arrayBuffer();
-        if (bodyBuffer.byteLength > MAX_BODY) {
-          return new Response(JSON.stringify({
-            success: false,
-            error: 'Request body too large (max 1 MB)',
-          }), {
-            status: 413,
-            headers: { 'Content-Type': 'application/json' },
+        // Stream-read body with early bail-out (avoids buffering entire payload for oversized chunked requests)
+        const reader = request.body?.getReader();
+        if (reader) {
+          const chunks: Uint8Array[] = [];
+          let totalBytes = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBytes > MAX_BODY) {
+              reader.cancel();
+              return new Response(JSON.stringify({
+                success: false,
+                error: 'Request body too large (max 1 MB)',
+              }), {
+                status: 413,
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
+            chunks.push(value);
+          }
+          // Reconstruct with the buffered body so downstream handlers can still read it
+          const bodyBuffer = new Uint8Array(totalBytes);
+          let offset = 0;
+          for (const chunk of chunks) {
+            bodyBuffer.set(chunk, offset);
+            offset += chunk.byteLength;
+          }
+          request = new Request(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: bodyBuffer,
           });
         }
-        // Reconstruct with the buffered body so downstream handlers can still read it
-        request = new Request(request.url, {
-          method: request.method,
-          headers: request.headers,
-          body: bodyBuffer,
-        });
       }
 
       // --- Router-level guards (run before any protocol handler) ---
@@ -366,12 +391,17 @@ export default {
       // Extracts host from query params and JSON body to cover all handler conventions.
       if (url.pathname.startsWith('/api/')) {
         const guardBody = await parseGuardBody(request);
-        // Collect all host-like fields from query params and body
+        // Collect all host-like fields from query params and body.
+        // IMPORTANT: If a new protocol uses a different field name for the
+        // connection target, add it here. All 244 current protocols use
+        // body.host or body.server as the connection target.
         const hostsToCheck = [
           normalizeHost(url.searchParams.get('host') ?? url.searchParams.get('hostname')),
           normalizeHost(guardBody?.host),
           normalizeHost(guardBody?.hostname),
           normalizeHost(guardBody?.server),
+          normalizeHost(guardBody?.target),
+          normalizeHost(guardBody?.address),
           // Proxy protocol destination hosts (SOCKS4/5, HTTP proxy)
           normalizeHost(guardBody?.destHost),
           normalizeHost(guardBody?.targetHost),
@@ -391,6 +421,81 @@ export default {
         }
       }
 
+      // --- CLI script route ---
+      if (url.pathname === '/cli') {
+        return serveCLIScript();
+      }
+
+      // --- Short URL routes (curl-friendly) ---
+      const shortRoute = matchShortRoute(url.pathname);
+      if (shortRoute) {
+        // SSRF guard on parsed host
+        if (isBlockedHost(shortRoute.host)) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Connections to private/internal addresses are not allowed: ${shortRoute.host}`,
+          }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Cloudflare guard
+        const cfCheck = await checkIfCloudflare(shortRoute.host);
+        if (cfCheck.isCloudflare && cfCheck.ip) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: `Cannot connect to Cloudflare-protected host: ${shortRoute.host} (${cfCheck.ip})`,
+            isCloudflare: true,
+          }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const clientType = detectClient(request);
+        if (clientType === 'browser') {
+          // Preserve protocol context so the SPA opens the right client
+          return Response.redirect(`/#${shortRoute.protocol}`, 302);
+        }
+
+        const jsonResponse = await dispatchShortRoute(shortRoute, url.searchParams);
+        if (clientType === 'json') {
+          return jsonResponse;
+        }
+
+        // Plain text output for curl
+        const json = await jsonResponse.json();
+        const text = formatResponse(shortRoute.protocol, json, shortRoute.rawTarget, url.host);
+        return new Response(text, {
+          status: jsonResponse.status,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
+      }
+
+    // Known protocol with missing required port — return helpful error instead of SPA HTML
+    const missingPort = isKnownProtocolMissingPort(url.pathname);
+    if (missingPort) {
+      const clientType = detectClient(request);
+      if (clientType === 'browser') {
+        return Response.redirect(`/#${missingPort.protocol}`, 302);
+      }
+      const errorJson = {
+        success: false,
+        error: `Port required for ${missingPort.protocol}. Usage: /${missingPort.protocol}/${missingPort.target}:<port>`,
+      };
+      if (clientType === 'json') {
+        return new Response(JSON.stringify(errorJson), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(
+        `\nPORTOFCALL ${missingPort.protocol} ${missingPort.target}\n\n  ERROR  Port required. Usage: /${missingPort.protocol}/${missingPort.target}:<port>\n`,
+        { status: 400, headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
+      );
+    }
+
     // API endpoint for TCP ping
     if (url.pathname === '/api/ping') {
       return handleTcpPing(request);
@@ -409,7 +514,7 @@ export default {
     if (url.pathname === '/api/echo/connect') {
       // Check for WebSocket upgrade for interactive sessions
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleEchoWebSocket(request);
       }
       return new Response('WebSocket upgrade required', { status: 426 });
@@ -518,7 +623,7 @@ export default {
     // IRC API endpoints
     if (url.pathname === '/api/irc/connect') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleIRCWebSocket(request);
       }
       return handleIRCConnect(request);
@@ -527,7 +632,7 @@ export default {
     // IRCS (IRC over TLS) API endpoints
     if (url.pathname === '/api/ircs/connect') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleIRCSWebSocket(request);
       }
       return handleIRCSConnect(request);
@@ -690,6 +795,10 @@ export default {
       return handleFTPMkdir(request);
     }
 
+    if (url.pathname === '/api/ftp/rmdir') {
+      return handleFTPRmdir(request);
+    }
+
     if (url.pathname === '/api/ftp/rename') {
       return handleFTPRename(request);
     }
@@ -772,7 +881,7 @@ export default {
     if (url.pathname === '/api/telnet/connect') {
       // Check for WebSocket upgrade
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleTelnetWebSocket(request);
       }
       return handleTelnetConnect(request);
@@ -1005,24 +1114,6 @@ export default {
       return handleCIFSWrite(request);
     }
 
-    // SSDP / UPnP API endpoints
-    if (url.pathname === '/api/ssdp/discover') {
-      return handleSSDPDiscover(request);
-    }
-
-    if (url.pathname === '/api/ssdp/fetch') {
-      return handleSSDPFetch(request);
-    }
-
-    if (url.pathname === '/api/ssdp/search') {
-      return handleSSDPSearch(request);
-    }
-    if (url.pathname === '/api/ssdp/subscribe') {
-      return handleSSDPSubscribe(request);
-    }
-    if (url.pathname === '/api/ssdp/action') {
-      return handleSSDPAction(request);
-    }
 
 
     // DoH API endpoints
@@ -1449,6 +1540,7 @@ export default {
       if (request.method === 'GET') return handleConsulKVGet(request);
       if (request.method === 'POST') return handleConsulKVPut(request);
       if (request.method === 'DELETE') return handleConsulKVDelete(request);
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
 
     if (url.pathname === '/api/consul/service/health') {
@@ -1705,7 +1797,7 @@ export default {
 
     if (url.pathname === '/api/cdp/tunnel') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleCDPTunnel(request);
       }
       return new Response('WebSocket upgrade required', { status: 426 });
@@ -1722,7 +1814,7 @@ export default {
 
     if (url.pathname === '/api/node-inspector/tunnel') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleNodeInspectorTunnel(request);
       }
       return new Response('WebSocket upgrade required', { status: 426 });
@@ -1736,7 +1828,7 @@ export default {
 
     if (url.pathname === '/api/dap/tunnel') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleDAPTunnel(request);
       }
       return new Response('WebSocket upgrade required', { status: 426 });
@@ -2283,21 +2375,6 @@ export default {
       return handleRadsecAccounting(request);
     }
 
-    // XMPP S2S API endpoints
-    if (url.pathname === '/api/xmpp-s2s/ping') {
-      return handleXmppS2SPing(request);
-    }
-
-    if (url.pathname === '/api/xmpp-s2s/connect') {
-      return handleXmppS2SConnect(request);
-    }
-    if (url.pathname === '/api/xmpp-s2s/s2s-connect') {
-      return handleXMPPS2SConnect(request);
-    }
-    if (url.pathname === '/api/xmpp-s2s/dialback') {
-      return handleXMPPS2SDialback(request);
-    }
-
     // NRPE API endpoints
     if (url.pathname === '/api/nrpe/query') {
       return handleNRPEQuery(request);
@@ -2314,7 +2391,7 @@ export default {
     // Rlogin API endpoints
     if (url.pathname === '/api/rlogin/connect') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleRloginWebSocket(request);
       }
       return handleRloginConnect(request);
@@ -2529,7 +2606,7 @@ export default {
     // Rexec API endpoints
     if (url.pathname === '/api/rexec/execute') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleRexecWebSocket(request);
       }
       return handleRexecExecute(request);
@@ -2538,7 +2615,7 @@ export default {
     // RSH API endpoints
     if (url.pathname === '/api/rsh/execute') {
       const upgradeHeader = request.headers.get('Upgrade');
-      if (upgradeHeader === 'websocket') {
+      if (upgradeHeader?.toLowerCase() === 'websocket') {
         return handleRshWebSocket(request);
       }
       return handleRshExecute(request);
@@ -3599,26 +3676,6 @@ export default {
       return handleCVSCheckout(request);
     }
 
-    // TFTP API endpoints
-    if (url.pathname === '/api/tftp/connect') {
-      return handleTFTPConnect(request);
-    }
-
-    if (url.pathname === '/api/tftp/read') {
-      return handleTFTPRead(request);
-    }
-
-    if (url.pathname === '/api/tftp/write') {
-      return handleTFTPWrite(request);
-    }
-
-    if (url.pathname === '/api/tftp/get') {
-      return handleTFTPGet(request);
-    }
-
-    if (url.pathname === '/api/tftp/options') {
-      return handleTFTPOptions(request);
-    }
 
     // AMQPS API endpoint
     if (url.pathname === '/api/amqps/connect') {
@@ -3790,6 +3847,9 @@ export default {
     }
     if (url.pathname === '/api/xmpps2s/dialback') {
       return handleXMPPS2STlsDialback(request);
+    }
+    if (url.pathname === '/api/xmpps2s/ping') {
+      return handleXmppS2SPing(request);
     }
 
     // MSN/MSNP API endpoints
@@ -4238,6 +4298,46 @@ export default {
 
     if (url.pathname === '/api/activemq/durable-unsubscribe') {
       return handleActiveMQDurableUnsubscribe(request);
+    }
+
+    // Checklist API endpoints (KV-backed)
+    if (url.pathname === '/api/checklist') {
+      if (request.method === 'GET') {
+        const data = await env.CHECKLIST.get('state', 'json');
+        return new Response(JSON.stringify(data ?? {}), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (request.method === 'POST') {
+        const body = await request.json<{ protocolId: string; item: string; checked: boolean }>();
+        if (!body.protocolId || !body.item || typeof body.checked !== 'boolean') {
+          return new Response(JSON.stringify({ success: false, error: 'Missing protocolId, item, or checked' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        const data = (await env.CHECKLIST.get('state', 'json') as Record<string, Record<string, boolean>>) ?? {};
+        if (!data[body.protocolId]) data[body.protocolId] = {};
+        data[body.protocolId][body.item] = body.checked;
+        await env.CHECKLIST.put('state', JSON.stringify(data));
+        return new Response(JSON.stringify({ ok: true }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Return 404 for unknown API routes instead of falling through to SPA (M-8)
+    if (url.pathname.startsWith('/api/')) {
+      return new Response(JSON.stringify({ success: false, error: 'Not found' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // curl landing page (before SPA fallthrough)
+    if (url.pathname === '/' && detectClient(request) === 'curl') {
+      return serveCurlLandingPage(request.url);
     }
 
     // Serve static assets (built React app)

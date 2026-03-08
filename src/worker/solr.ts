@@ -63,12 +63,9 @@ async function sendHttpRequest(
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
 
-  const timeoutHandle = setTimeout(() => {}, 0);
-  clearTimeout(timeoutHandle);
-
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    const handle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    (timeoutPromise as unknown as { handle: ReturnType<typeof setTimeout> }).handle = handle;
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
@@ -80,14 +77,16 @@ async function sendHttpRequest(
     writer = socket.writable.getWriter();
     const encoder = new TextEncoder();
 
-    let request = `${method} ${path} HTTP/1.1\r\n`;
-    request += `Host: ${host}${port !== 80 && port !== 443 ? `:${port}` : ''}\r\n`;
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}${port !== 80 && port !== 443 ? `:${port}` : ''}\r\n`;
     request += `Accept: application/json\r\n`;
     request += `Connection: close\r\n`;
     request += `User-Agent: PortOfCall/1.0\r\n`;
 
     if (authHeader) {
-      request += `Authorization: ${authHeader}\r\n`;
+      request += `Authorization: ${authHeader.replace(/[\r\n]/g, '')}\r\n`;
     }
 
     if (body) {
@@ -118,7 +117,12 @@ async function sendHttpRequest(
       const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
       if (done) break;
       if (value) {
-        response += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
       }
     }
 
@@ -158,7 +162,7 @@ async function sendHttpRequest(
 
     return { statusCode, headers: respHeaders, body: bodySection };
   } finally {
-    clearTimeout((timeoutPromise as unknown as { handle: ReturnType<typeof setTimeout> }).handle);
+    if (timeoutHandle) clearTimeout(timeoutHandle);
     if (writer) {
       try {
         writer.releaseLock();
@@ -249,7 +253,7 @@ function validateInput(host: string, port: number, core?: string, handler?: stri
   if (!/^[a-zA-Z0-9._-]+$/.test(host)) {
     return 'Host contains invalid characters';
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
   if (core !== undefined) {
@@ -489,6 +493,11 @@ export async function handleSolrQuery(request: Request): Promise<Response> {
  * Sends JSON documents to /solr/{core}/update/json/docs?commit=true
  */
 export async function handleSolrIndex(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; core: string;
@@ -565,6 +574,11 @@ export async function handleSolrIndex(request: Request): Promise<Response> {
  * Deletes documents by query or by ID list.
  */
 export async function handleSolrDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; core: string;

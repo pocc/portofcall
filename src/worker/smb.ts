@@ -86,8 +86,10 @@ function buildSMB2NegotiateRequest(): Uint8Array {
   // Signature (16 bytes at offset 48): 0
 
   // ── Negotiate body ────────────────────────────────────────────────────────
-  // Dialects: 2.0.2, 2.1, 3.0, 3.0.2, 3.1.1
-  const dialects = [0x0202, 0x0210, 0x0300, 0x0302, 0x0311];
+  // Dialects: 2.0.2, 2.1, 3.0, 3.0.2
+  // Note: SMB 3.1.1 (0x0311) requires negotiate contexts (preauth integrity,
+  // encryption caps) which we don't send. Omitting it avoids STATUS_INVALID_PARAMETER.
+  const dialects = [0x0202, 0x0210, 0x0300, 0x0302];
   const dialectCount = dialects.length;
   // StructureSize=36, DialectCount, SecurityMode=1(signing-enabled),
   // Reserved, Capabilities, ClientGuid(16), ClientStartTime/NegotiateContextOffset(8),
@@ -272,7 +274,7 @@ export async function handleSMBConnect(request: Request): Promise<Response> {
     }
 
     if (!options.host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -280,6 +282,10 @@ export async function handleSMBConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port ?? 445;
     const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -356,7 +362,7 @@ export async function handleSMBConnect(request: Request): Promise<Response> {
  *            capabilities, systemTime, latencyMs }
  */
 export async function handleSMBNegotiate(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
@@ -367,7 +373,7 @@ export async function handleSMBNegotiate(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be 1–65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -789,13 +795,16 @@ function buildTreeConnectPacket(
  *   sessionFlags: 0x0001 = guest, 0x0002 = null session, 0x0004 = encrypted
  */
 export async function handleSMBSession(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 445, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, isCloudflare: true,
@@ -904,7 +913,7 @@ export async function handleSMBSession(request: Request): Promise<Response> {
  * Response: { success, sessionId, treeId, share, shareType, shareFlags, maximalAccess, latencyMs }
  */
 export async function handleSMBTreeConnect(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; share?: string; timeout?: number };
     const { host, port = 445, timeout = 10000 } = body;
@@ -912,6 +921,9 @@ export async function handleSMBTreeConnect(request: Request): Promise<Response> 
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, isCloudflare: true,
@@ -1098,7 +1110,7 @@ function filetimeToISO(lo: number, hi: number): string | null {
  *   path: relative path within the share (e.g. 'Windows\\System32\\ntoskrnl.exe')
  */
 export async function handleSMBStat(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; share?: string; path?: string; timeout?: number };
     const { host, port = 445, timeout = 10000 } = body;
@@ -1107,6 +1119,9 @@ export async function handleSMBStat(request: Request): Promise<Response> {
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, isCloudflare: true,

@@ -38,7 +38,6 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const WIREFORMAT_INFO_TYPE = 0x01;
 const BROKER_INFO_TYPE = 0x02;
 const ACTIVEMQ_MAGIC = new TextEncoder().encode('ActiveMQ');
 const NULL_BYTE = '\x00';
@@ -48,7 +47,7 @@ const NULL_BYTE = '\x00';
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._:-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -64,42 +63,6 @@ function normaliseDestination(raw: string): string {
 }
 
 // ─── OpenWire helpers (used by probe) ─────────────────────────────────────────
-
-/**
- * Build a valid OpenWire WireFormatInfo command.
- *
- * OpenWire frame layout (with default size-prefix enabled):
- *   [4-byte frame length (big-endian)]
- *   [1-byte data type]               — 0x01 for WireFormatInfo
- *   [8-byte magic]                   — literal "ActiveMQ" (no length prefix)
- *   [4-byte version (big-endian)]    — protocol version we support
- *   [4-byte marshalledProperties length, or 0xFFFFFFFF for null]
- *   [marshalledProperties bytes ...]
- *
- * Note: WireFormatInfo does NOT include commandId / responseRequired /
- * correlationId — those are part of the BaseCommand marshalling used by
- * other command types but WireFormatInfo has its own special marshalling.
- *
- * We send an empty options map (length 0) which tells the broker we
- * accept its defaults.  The broker will respond with its own
- * WireFormatInfo containing its negotiated settings.
- */
-function buildWireFormatInfo(): Uint8Array {
-  const body = new Uint8Array([
-    WIREFORMAT_INFO_TYPE,             // data type = 0x01
-    // Magic — 8 raw bytes, no length prefix
-    0x41, 0x63, 0x74, 0x69,          // "Acti"
-    0x76, 0x65, 0x4D, 0x51,          // "veMQ"
-    // Version — int32 big-endian (request version 1, broker will negotiate)
-    0x00, 0x00, 0x00, 0x01,
-    // Marshalled properties length = 0 (empty map, accept defaults)
-    0x00, 0x00, 0x00, 0x00,
-  ]);
-  const frame = new Uint8Array(4 + body.length);
-  new DataView(frame.buffer).setUint32(0, body.length, false);
-  frame.set(body, 4);
-  return frame;
-}
 
 function findMagic(data: Uint8Array): number {
   outer: for (let i = 0; i <= data.length - ACTIVEMQ_MAGIC.length; i++) {
@@ -380,9 +343,66 @@ async function withStompSession<T>(
 
     let remainingBuf = connRaw.split(NULL_BYTE).slice(1).join(NULL_BYTE);
 
-    /** Read the next full STOMP frame, pulling more bytes if needed. */
+    /**
+     * Read the next full STOMP frame, pulling more bytes if needed.
+     * Respects the content-length header to correctly handle binary bodies
+     * that may contain embedded NULL bytes.
+     */
     async function readNextFrame(): Promise<StompFrame> {
-      while (!remainingBuf.includes(NULL_BYTE)) {
+      // Keep reading until we can determine frame boundaries
+      while (true) {
+        // Find header/body separator: handle both LF (\n\n) and CRLF (\r\n\r\n) line endings
+        let sepIdx = remainingBuf.indexOf('\n\n');
+        let sepLen = 2;
+        const crlfIdx = remainingBuf.indexOf('\r\n\r\n');
+        if (crlfIdx !== -1 && (sepIdx === -1 || crlfIdx < sepIdx)) {
+          sepIdx = crlfIdx;
+          sepLen = 4;
+        }
+        if (sepIdx !== -1) {
+          // Parse headers to check for content-length
+          const headerSection = remainingBuf.substring(0, sepIdx).replace(/\r\n/g, '\n');
+          const headerLines = headerSection.split('\n');
+          let contentLength = -1;
+          for (let i = 1; i < headerLines.length; i++) {
+            const colon = headerLines[i].indexOf(':');
+            if (colon > 0 && headerLines[i].substring(0, colon).trim() === 'content-length') {
+              contentLength = parseInt(headerLines[i].substring(colon + 1).trim(), 10);
+              break;
+            }
+          }
+
+          if (contentLength >= 0) {
+            // content-length is a byte count; use TextEncoder to find the correct char boundary
+            const bodyStart = sepIdx + sepLen;
+            const bodyPrefix = remainingBuf.substring(bodyStart);
+            const enc2 = new TextEncoder();
+            const encoded = enc2.encode(bodyPrefix);
+            if (encoded.length >= contentLength + 1) {
+              // Decode exactly contentLength bytes to get the body string
+              const bodyStr = new TextDecoder().decode(encoded.slice(0, contentLength));
+              const rawFrame = remainingBuf.substring(0, bodyStart + bodyStr.length);
+              // Advance past the null terminator (next character after the body)
+              remainingBuf = remainingBuf.substring(bodyStart + bodyStr.length + 1);
+              return parseStompFrame(rawFrame);
+            }
+            // Not enough data yet — fall through to read more
+          } else if (remainingBuf.includes(NULL_BYTE)) {
+            // No content-length: terminate on NULL byte
+            const nullIdx = remainingBuf.indexOf(NULL_BYTE);
+            const rawFrame = remainingBuf.substring(0, nullIdx);
+            remainingBuf = remainingBuf.substring(nullIdx + 1);
+            return parseStompFrame(rawFrame);
+          }
+        } else if (remainingBuf.includes(NULL_BYTE)) {
+          // No separator found but we have a NULL — short frame (e.g. heartbeat responses)
+          const nullIdx = remainingBuf.indexOf(NULL_BYTE);
+          const rawFrame = remainingBuf.substring(0, nullIdx);
+          remainingBuf = remainingBuf.substring(nullIdx + 1);
+          return parseStompFrame(rawFrame);
+        }
+
+        // Need more data
         if (Date.now() > deadline) throw new Error('Connection timeout');
         const remaining = deadline - Date.now();
         const t = new Promise<never>((_, reject) =>
@@ -392,6 +412,7 @@ async function withStompSession<T>(
         if (done) break;
         if (value) remainingBuf += dec.decode(value, { stream: true });
       }
+      // Fallback: parse whatever we have
       const nullIdx = remainingBuf.indexOf(NULL_BYTE);
       const rawFrame = nullIdx >= 0 ? remainingBuf.substring(0, nullIdx) : remainingBuf;
       remainingBuf = nullIdx >= 0 ? remainingBuf.substring(nullIdx + 1) : '';
@@ -491,13 +512,14 @@ export async function handleActiveMQProbe(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
       const tcpLatency = Date.now() - startTime;
 
-      const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      await writer.write(buildWireFormatInfo());
+      // Passive probe: ActiveMQ sends its WireFormatInfo immediately on connect.
+      // We just read it — no need to send ours for detection purposes.
+      // This avoids the "Frame size of 1 GB" error that occurs when the broker
+      // rejects our WireFormatInfo frame format.
       const data = await readBytes(reader, 5000, 512);
 
-      writer.releaseLock();
       reader.releaseLock();
       socket.close();
 
@@ -741,7 +763,7 @@ export async function handleActiveMQSend(request: Request): Promise<Response> {
             readNextFrame(),
             new Promise<never>((_, rej) => setTimeout(() => rej(new Error('receipt timeout')), 5000)),
           ]);
-          if (f.command === 'RECEIPT') receiptReceived = true;
+          if (f.command === 'RECEIPT' && f.headers['receipt-id'] === 'send-1') receiptReceived = true;
           if (f.command === 'ERROR') {
             throw new Error(f.body.trim() || f.headers['message'] || 'Broker returned ERROR');
           }
@@ -977,6 +999,34 @@ export async function handleActiveMQAdmin(request: Request): Promise<Response> {
       );
     }
 
+    // Restrict brokerName to safe characters to prevent JMX ObjectName injection
+    if (!/^[A-Za-z0-9_./-]+$/.test(brokerName)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid brokerName — only alphanumeric, hyphen, underscore, and dot characters are allowed' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Restrict queueName to safe characters to prevent JMX ObjectName injection
+    if (queueName && !/^[A-Za-z0-9_.\-/]+$/.test(queueName)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid queueName — only alphanumeric, hyphen, underscore, dot, and forward-slash characters are allowed' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     const credBytes = new TextEncoder().encode(`${username}:${password}`);
     let credBinary = '';
     for (const byte of credBytes) credBinary += String.fromCharCode(byte);
@@ -1173,6 +1223,18 @@ export async function handleActiveMQInfo(request: Request): Promise<Response> {
       return new Response(
         JSON.stringify({ success: false, error: validationError }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
       );
     }
 
@@ -1403,7 +1465,50 @@ export async function handleActiveMQDurableSubscribe(request: Request): Promise<
     }
 
     async function readNextFrame(): Promise<StompFrame> {
-      while (!remainingBuf.includes(NULL_BYTE)) {
+      while (true) {
+        // Handle both LF (\n\n) and CRLF (\r\n\r\n) header separators
+        let sepIdx = remainingBuf.indexOf('\n\n');
+        let sepLen = 2;
+        const crlfIdx = remainingBuf.indexOf('\r\n\r\n');
+        if (crlfIdx !== -1 && (sepIdx === -1 || crlfIdx < sepIdx)) {
+          sepIdx = crlfIdx;
+          sepLen = 4;
+        }
+        if (sepIdx !== -1) {
+          const headerSection = remainingBuf.substring(0, sepIdx).replace(/\r\n/g, '\n');
+          const headerLines = headerSection.split('\n');
+          let contentLength = -1;
+          for (let i = 1; i < headerLines.length; i++) {
+            const colon = headerLines[i].indexOf(':');
+            if (colon > 0 && headerLines[i].substring(0, colon).trim() === 'content-length') {
+              contentLength = parseInt(headerLines[i].substring(colon + 1).trim(), 10);
+              break;
+            }
+          }
+          if (contentLength >= 0) {
+            // content-length is a byte count; use TextEncoder to find the correct char boundary
+            const bodyStart = sepIdx + sepLen;
+            const bodyPrefix = remainingBuf.substring(bodyStart);
+            const enc2 = new TextEncoder();
+            const encoded = enc2.encode(bodyPrefix);
+            if (encoded.length >= contentLength + 1) {
+              const bodyStr = new TextDecoder().decode(encoded.slice(0, contentLength));
+              const rawFrame = remainingBuf.substring(0, bodyStart + bodyStr.length);
+              remainingBuf = remainingBuf.substring(bodyStart + bodyStr.length + 1);
+              return parseStompFrame(rawFrame);
+            }
+          } else if (remainingBuf.includes(NULL_BYTE)) {
+            const nullIdx = remainingBuf.indexOf(NULL_BYTE);
+            const rawFrame = remainingBuf.substring(0, nullIdx);
+            remainingBuf = remainingBuf.substring(nullIdx + 1);
+            return parseStompFrame(rawFrame);
+          }
+        } else if (remainingBuf.includes(NULL_BYTE)) {
+          const nullIdx = remainingBuf.indexOf(NULL_BYTE);
+          const rawFrame = remainingBuf.substring(0, nullIdx);
+          remainingBuf = remainingBuf.substring(nullIdx + 1);
+          return parseStompFrame(rawFrame);
+        }
         if (Date.now() > deadline) throw new Error('Connection timeout');
         const rem = deadline - Date.now();
         const t = new Promise<never>((_, reject) =>
@@ -1413,6 +1518,7 @@ export async function handleActiveMQDurableSubscribe(request: Request): Promise<
         if (done) break;
         if (value) remainingBuf += dec.decode(value, { stream: true });
       }
+      // Fallback: parse whatever we have
       const nullIdx = remainingBuf.indexOf(NULL_BYTE);
       const rawFrame = nullIdx >= 0 ? remainingBuf.substring(0, nullIdx) : remainingBuf;
       remainingBuf = nullIdx >= 0 ? remainingBuf.substring(nullIdx + 1) : '';
@@ -1695,7 +1801,27 @@ export async function handleActiveMQQueues(request: Request): Promise<Response> 
       );
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     const dest = normaliseDestination(destination);
+
+    if (!/^\/(queue|topic|temp-queue|temp-topic)\/.+/.test(dest)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid destination — use /queue/name, /topic/name, queue://name, or topic://name' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     const startTime = Date.now();
 
     // Reuse the withStompSession helper already defined in this file

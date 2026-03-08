@@ -95,6 +95,54 @@ async function readAll(
 }
 
 /**
+ * Send an HTTP request over a raw TCP socket.
+ * Used for HAProxy HTTP stats pages (e.g. stats enable with mode http).
+ */
+async function sendHttpRequest(
+  host: string,
+  port: number,
+  timeout: number,
+  path: string,
+): Promise<{ response: string; rtt: number }> {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
+  }
+
+  const startTime = Date.now();
+  const socket = connect(`${host}:${port}`);
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+  });
+
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
+
+    const writer = socket.writable.getWriter();
+    const reader = socket.readable.getReader();
+
+    const encoder = new TextEncoder();
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    const req = `GET ${safePath} HTTP/1.1\r\nHost: ${safeHost}:${port}\r\nConnection: close\r\nAccept: text/plain, text/csv, */*\r\nUser-Agent: PortOfCall/1.0\r\n\r\n`;
+    await writer.write(encoder.encode(req));
+
+    const response = await readAll(reader, timeoutPromise);
+    const rtt = Date.now() - startTime;
+
+    writer.releaseLock();
+    reader.releaseLock();
+    socket.close();
+
+    return { response, rtt };
+  } catch (error) {
+    socket.close();
+    throw error;
+  }
+}
+
+/**
  * Send a command to the HAProxy Runtime API and return the response.
  */
 async function sendCommand(
@@ -122,8 +170,12 @@ async function sendCommand(
     const reader = socket.readable.getReader();
 
     // Send command (HAProxy expects command + newline)
+    // Strip embedded CR/LF to prevent command injection — HAProxy
+    // processes one command per line, so an embedded newline could
+    // smuggle an additional admin command (e.g. "shutdown sessions").
     const encoder = new TextEncoder();
-    await writer.write(encoder.encode(command.trim() + '\n'));
+    const safeCommand = command.replace(/[\r\n]/g, '').trim();
+    await writer.write(encoder.encode(safeCommand + '\n'));
 
     // Read response
     const response = await readAll(reader, timeoutPromise);
@@ -167,7 +219,7 @@ function parseInfo(raw: string): Record<string, string> {
  */
 export async function handleHAProxyInfo(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -183,13 +235,26 @@ export async function handleHAProxyInfo(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    const { response, rtt } = await sendCommand(host, port, timeout, 'show info');
+    let response: string;
+    let rtt: number;
+    let mode: 'socket' | 'http' = 'socket';
+
+    // Try stats socket first
+    ({ response, rtt } = await sendCommand(host, port, timeout, 'show info'));
+
+    // If the response looks like HTTP (e.g. Docker exposes HTTP stats, not socket),
+    // retry with an HTTP GET request to /stats;csv or /
+    if (!response.trim() || response.startsWith('HTTP/') || response.includes('400 Bad request')) {
+      mode = 'http';
+      // Try /stats (common HAProxy stats URI)
+      ({ response, rtt } = await sendHttpRequest(host, port, timeout, '/stats;csv'));
+    }
 
     if (!response.trim()) {
       return new Response(JSON.stringify({
@@ -199,10 +264,27 @@ export async function handleHAProxyInfo(request: Request): Promise<Response> {
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (mode === 'http') {
+      // Parse HTTP response body
+      const bodyStart = response.indexOf('\r\n\r\n');
+      const httpBody = bodyStart >= 0 ? response.substring(bodyStart + 4) : response;
+      const info = parseInfo(httpBody);
+      // Also try to parse CSV stats if available
+      const isCSV = httpBody.includes('# ') && httpBody.includes(',');
+
+      return new Response(JSON.stringify({
+        success: true, host, port, mode,
+        info: Object.keys(info).length > 0 ? info : undefined,
+        csvStats: isCSV ? httpBody.substring(0, 8192) : undefined,
+        raw: httpBody.substring(0, 4096),
+        rtt,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const info = parseInfo(response);
 
     return new Response(JSON.stringify({
-      success: true, host, port,
+      success: true, host, port, mode,
       info,
       raw: response.substring(0, 4096),
       rtt,
@@ -220,7 +302,7 @@ export async function handleHAProxyInfo(request: Request): Promise<Response> {
  */
 export async function handleHAProxyStat(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -236,7 +318,7 @@ export async function handleHAProxyStat(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -290,7 +372,7 @@ export async function handleHAProxyStat(request: Request): Promise<Response> {
  */
 export async function handleHAProxyCommand(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -312,7 +394,7 @@ export async function handleHAProxyCommand(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -321,7 +403,8 @@ export async function handleHAProxyCommand(request: Request): Promise<Response> 
     // Safety: only allow read-only commands
     // Strip embedded newlines to prevent command injection (HAProxy processes
     // one command per line, so an embedded \n could smuggle a write command)
-    const sanitized = command.trim().replace(/[\r\n]+/g, ' ');
+    // eslint-disable-next-line no-control-regex
+    const sanitized = command.trim().replace(/[\r\n\x00]/g, '');
     const cmd = sanitized.toLowerCase();
     const readOnlyPrefixes = ['show ', 'help', 'quit'];
     const readOnlyExact = ['show', 'help', 'quit'];
@@ -362,7 +445,7 @@ export async function handleHAProxyCommand(request: Request): Promise<Response> 
  * POST /api/haproxy/weight
  */
 export async function handleHAProxySetWeight(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; backend: string; server: string; weight: number; timeout?: number };
     const { host, port = 9999, backend, server, weight, timeout = 10000 } = body;
@@ -370,6 +453,7 @@ export async function handleHAProxySetWeight(request: Request): Promise<Response
     if (!backend) return new Response(JSON.stringify({ success: false, error: 'Backend is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!server) return new Response(JSON.stringify({ success: false, error: 'Server is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (weight === undefined || weight === null) return new Response(JSON.stringify({ success: false, error: 'Weight is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'set server ' + backend + '/' + server + ' weight ' + String(weight);
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -384,7 +468,7 @@ export async function handleHAProxySetWeight(request: Request): Promise<Response
  * POST /api/haproxy/state
  */
 export async function handleHAProxySetState(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; backend: string; server: string; state: string; timeout?: number };
     const { host, port = 9999, backend, server, state, timeout = 10000 } = body;
@@ -394,6 +478,7 @@ export async function handleHAProxySetState(request: Request): Promise<Response>
     if (!state) return new Response(JSON.stringify({ success: false, error: 'State is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const allowedStates = ['ready', 'drain', 'maint'];
     if (!allowedStates.includes(state)) return new Response(JSON.stringify({ success: false, error: 'State must be one of: ready, drain, maint' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'set server ' + backend + '/' + server + ' state ' + state;
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -408,12 +493,18 @@ export async function handleHAProxySetState(request: Request): Promise<Response>
  * POST /api/haproxy/addr
  */
 export async function handleHAProxySetAddr(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; backend: string; server: string; addr: string; svrPort: number; timeout?: number };
     const { host, port = 9999, backend, server, addr, svrPort, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server || !addr || !svrPort) return new Response(JSON.stringify({ success: false, error: 'backend, server, addr, and svrPort are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof svrPort !== 'number' || isNaN(svrPort) || svrPort < 1 || svrPort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'svrPort must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const cmd = 'set server ' + backend + '/' + server + ' addr ' + addr + ' port ' + String(svrPort);
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -428,12 +519,13 @@ export async function handleHAProxySetAddr(request: Request): Promise<Response> 
  * POST /api/haproxy/disable
  */
 export async function handleHAProxyDisableServer(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; backend: string; server: string; timeout?: number };
     const { host, port = 9999, backend, server, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server) return new Response(JSON.stringify({ success: false, error: 'backend and server are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'disable server ' + backend + '/' + server;
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -448,12 +540,13 @@ export async function handleHAProxyDisableServer(request: Request): Promise<Resp
  * POST /api/haproxy/enable
  */
 export async function handleHAProxyEnableServer(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; backend: string; server: string; timeout?: number };
     const { host, port = 9999, backend, server, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server) return new Response(JSON.stringify({ success: false, error: 'backend and server are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cmd = 'enable server ' + backend + '/' + server;
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });

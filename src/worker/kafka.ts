@@ -22,6 +22,17 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
+/** Validate Kafka port number; returns an error Response or null if valid. */
+function validateKafkaPort(port: number): Response | null {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return new Response(
+      JSON.stringify({ success: false, error: `Invalid port: ${port} — must be 1–65535` }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
+  return null;
+}
+
 /** Kafka API Keys */
 const API_KEYS: Record<number, string> = {
   0: 'Produce',
@@ -189,11 +200,9 @@ function buildMetadataRequest(
   const encoder = new TextEncoder();
 
   if (topics === null) {
-    // Null array = request all topics: -1 as int32
-    // Actually for Metadata v0, empty array [] means all topics
-    // Let's send empty array: count = 0
+    // Null array = request all topics: Kafka Metadata v0 uses -1 as the null marker
     const payload = new Uint8Array(4);
-    new DataView(payload.buffer).setInt32(0, 0);
+    new DataView(payload.buffer).setInt32(0, -1);
     return buildKafkaRequest(3, 0, correlationId, clientId, payload);
   }
 
@@ -249,6 +258,10 @@ async function readKafkaResponse(
     if (expectedSize === -1 && totalRead >= 4) {
       const combined = concatenateChunks(chunks, totalRead);
       expectedSize = new DataView(combined.buffer).getInt32(0);
+      // Guard against malicious/corrupt brokers sending absurd sizes (>100 MB)
+      if (expectedSize < 0 || expectedSize > 104_857_600) {
+        throw new Error(`Kafka response size out of bounds: ${expectedSize} bytes`);
+      }
     }
 
     // Check if we have the full response
@@ -466,7 +479,7 @@ function parseMetadataResponse(view: DataView): {
 export async function handleKafkaApiVersions(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -481,6 +494,7 @@ export async function handleKafkaApiVersions(request: Request): Promise<Response
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -729,8 +743,10 @@ function parseProduceResponse(view: DataView): {
 
   for (let i = 0; i < respCount && offset + 2 <= view.byteLength; i++) {
     const nameLen = view.getInt16(offset); offset += 2;
-    topicName = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + offset, nameLen));
-    offset += nameLen;
+    if (nameLen >= 0 && offset + nameLen <= view.byteLength) {
+      topicName = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + offset, nameLen));
+      offset += nameLen;
+    }
 
     const partCount = view.getInt32(offset); offset += 4;
     for (let p = 0; p < partCount && offset + 2 <= view.byteLength; p++) {
@@ -755,7 +771,7 @@ function parseProduceResponse(view: DataView): {
 export async function handleKafkaProduceMessage(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -779,6 +795,7 @@ export async function handleKafkaProduceMessage(request: Request): Promise<Respo
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
     if (!topic) {
       return new Response(
         JSON.stringify({ success: false, error: 'Topic is required' }),
@@ -890,7 +907,7 @@ export async function handleKafkaProduceMessage(request: Request): Promise<Respo
 export async function handleKafkaMetadata(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -905,6 +922,7 @@ export async function handleKafkaMetadata(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -934,6 +952,12 @@ export async function handleKafkaMetadata(request: Request): Promise<Response> {
       try {
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
+
+        // Modern Kafka (KRaft mode) requires ApiVersions as the first request
+        // on a new connection. Send it and discard the response.
+        const apiVersionsReq = buildApiVersionsRequest(1, clientId);
+        await writer.write(apiVersionsReq);
+        await readKafkaResponse(reader, timeout);
 
         // Send Metadata request
         const metadataReq = buildMetadataRequest(2, clientId, topics || null);
@@ -1009,6 +1033,7 @@ function decodeVarint(data: Uint8Array, pos: number): { value: number; bytesRead
     raw |= (b & 0x7F) << shift;
     shift += 7;
     if ((b & 0x80) === 0) break;
+    if (bytesRead >= 5) break; // Zigzag-encoded int32 uses at most 5 bytes; stop to prevent shift overflow
   }
   // Zigzag decode: (raw >>> 1) XOR -(raw & 1)
   const value = (raw >>> 1) ^ -(raw & 1);
@@ -1169,8 +1194,11 @@ function parseFetchResponse(view: DataView): {
 
   for (let t = 0; t < topicCount && off + 2 < view.byteLength; t++) {
     const nameLen = view.getInt16(off); off += 2;
-    const name = dec.decode(new Uint8Array(view.buffer, view.byteOffset + off, nameLen));
-    off += nameLen;
+    let name = '';
+    if (nameLen >= 0 && off + nameLen <= view.byteLength) {
+      name = dec.decode(new Uint8Array(view.buffer, view.byteOffset + off, nameLen));
+      off += nameLen;
+    }
     if (t === 0) topicName = name;
 
     const partCount = view.getInt32(off); off += 4;
@@ -1218,7 +1246,7 @@ function parseFetchResponse(view: DataView): {
 export async function handleKafkaFetch(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1242,6 +1270,7 @@ export async function handleKafkaFetch(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
     if (!topic) {
       return new Response(
         JSON.stringify({ success: false, error: 'Topic is required' }),
@@ -1326,7 +1355,8 @@ export async function handleKafkaFetch(request: Request): Promise<Response> {
 function readKafkaString(view: DataView, offset: number): { value: string; newOffset: number } {
   const len = view.getInt16(offset);
   offset += 2;
-  if (len < 0) return { value: '', newOffset: offset }; // null string
+  if (len === -1) return { value: '', newOffset: offset }; // Kafka null string
+  if (len < 0 || offset + len > view.byteLength) throw new Error(`Kafka: invalid string length ${len}`);
   const bytes = new Uint8Array(view.buffer, view.byteOffset + offset, len);
   return { value: new TextDecoder().decode(bytes), newOffset: offset + len };
 }
@@ -1361,6 +1391,7 @@ function parseListGroupsResponse(view: DataView): {
   const correlationId = view.getInt32(offset); offset += 4;
   const errorCode = view.getInt16(offset);     offset += 2;
   const groupCount = view.getInt32(offset);    offset += 4;
+  if (groupCount < 0 || groupCount > 10000) throw new Error(`Invalid Kafka group array length: ${groupCount}`);
 
   const groups: Array<{ groupId: string; protocolType: string }> = [];
   for (let i = 0; i < groupCount && offset < view.byteLength; i++) {
@@ -1414,8 +1445,13 @@ function parseDescribeGroupsResponse(view: DataView): {
   let off = 0;
   const correlationId = view.getInt32(off); off += 4;
   const groupCount    = view.getInt32(off); off += 4;
+  if (groupCount < 0 || groupCount > 10000) throw new Error(`Invalid Kafka group array length: ${groupCount}`);
 
-  const groups = [];
+  const groups: Array<{
+    errorCode: number; groupId: string; state: string;
+    protocolType: string; protocol: string; memberCount: number;
+    members: Array<{ memberId: string; clientId: string; clientHost: string }>;
+  }> = [];
   for (let g = 0; g < groupCount && off < view.byteLength; g++) {
     const errorCode  = view.getInt16(off); off += 2;
     const gid        = readKafkaString(view, off); off = gid.newOffset;
@@ -1424,7 +1460,7 @@ function parseDescribeGroupsResponse(view: DataView): {
     const proto      = readKafkaString(view, off); off = proto.newOffset;
     const memberCount = view.getInt32(off); off += 4;
 
-    const members = [];
+    const members: Array<{ memberId: string; clientId: string; clientHost: string }> = [];
     for (let m = 0; m < memberCount && off < view.byteLength; m++) {
       const mid  = readKafkaString(view, off); off = mid.newOffset;
       const cid  = readKafkaString(view, off); off = cid.newOffset;
@@ -1456,6 +1492,7 @@ export async function handleKafkaListGroups(request: Request): Promise<Response>
     const body = await request.json() as KafkaRequest;
     const { host, port = 9092, timeout = 15000, clientId = 'portofcall' } = body;
     if (!host) return Response.json({ success: false, error: 'host is required' }, { status: 400 });
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1517,7 +1554,7 @@ function buildListOffsetsRequest(
   payload.set(topicBytes, off); off += topicBytes.length;
   view.setInt32(off, 1); off += 4;                 // partitions array len = 1
   view.setInt32(off, partition); off += 4;         // partition index
-  view.setBigInt64(off, timestamp);                 // timestamp sentinel
+  view.setBigInt64(off, timestamp); // timestamp sentinel
   return buildKafkaRequest(2, 1, correlationId, clientId, payload);
 }
 
@@ -1548,7 +1585,9 @@ function parseListOffsetsResponse(view: DataView): {
 
   if (topicCount > 0 && off + 2 <= view.byteLength) {
     const nameLen = view.getInt16(off); off += 2;
-    topicName = dec.decode(new Uint8Array(view.buffer, view.byteOffset + off, nameLen)); off += nameLen;
+    if (nameLen >= 0 && off + nameLen <= view.byteLength) {
+      topicName = dec.decode(new Uint8Array(view.buffer, view.byteOffset + off, nameLen)); off += nameLen;
+    }
     const partCount = view.getInt32(off); off += 4;
     if (partCount > 0 && off + 4 <= view.byteLength) {
       partition = view.getInt32(off); off += 4;
@@ -1584,6 +1623,7 @@ export async function handleKafkaListOffsets(request: Request): Promise<Response
 
     if (!host) return Response.json({ success: false, error: 'host is required' }, { status: 400 });
     if (!topic) return Response.json({ success: false, error: 'topic is required' }, { status: 400 });
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1648,6 +1688,7 @@ export async function handleKafkaDescribeGroups(request: Request): Promise<Respo
     const { host, port = 9092, timeout = 15000, clientId = 'portofcall', groupIds = [] } = body;
     if (!host) return Response.json({ success: false, error: 'host is required' }, { status: 400 });
     if (groupIds.length === 0) return Response.json({ success: false, error: 'groupIds array is required' }, { status: 400 });
+    { const portErr = validateKafkaPort(port); if (portErr) return portErr; }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {

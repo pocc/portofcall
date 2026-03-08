@@ -48,6 +48,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface VarnishProbeRequest {
   host: string;
@@ -93,10 +94,12 @@ interface VarnishCommandResponse {
  */
 function parseVcliResponse(data: string): { status: number; length: number; body: string; remaining: string } | null {
   // Find the first line: "<status> <length>\n"
-  const newlineIdx = data.indexOf('\n');
+  // Trim leading whitespace/newlines that some Varnish versions prepend
+  const trimmed = data.replace(/^[\r\n\s]+/, '');
+  const newlineIdx = trimmed.indexOf('\n');
   if (newlineIdx === -1) return null;
 
-  const firstLine = data.substring(0, newlineIdx);
+  const firstLine = trimmed.substring(0, newlineIdx).trim();
   const match = firstLine.match(/^(\d+)\s+(\d+)$/);
   if (!match) return null;
 
@@ -108,10 +111,10 @@ function parseVcliResponse(data: string): { status: number; length: number; body
   const bodyEnd = bodyStart + length;
 
   // Check if we have enough data (body + trailing \n)
-  if (data.length < bodyEnd + 1) return null;
+  if (trimmed.length < bodyEnd) return null;
 
-  const body = data.substring(bodyStart, bodyEnd);
-  const remaining = data.substring(bodyEnd + 1); // skip trailing \n
+  const body = trimmed.substring(bodyStart, bodyEnd);
+  const remaining = trimmed.length > bodyEnd + 1 ? trimmed.substring(bodyEnd + 1) : '';
 
   return { status, length, body, remaining };
 }
@@ -182,6 +185,11 @@ async function computeAuthResponse(challenge: string, secret: string): Promise<s
  * Connects and reads the initial banner/challenge response
  */
 export async function handleVarnishProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as VarnishProbeRequest;
     const { host, port = 6082, timeout = 10000 } = body;
@@ -196,7 +204,7 @@ export async function handleVarnishProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -204,6 +212,15 @@ export async function handleVarnishProbe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckProbe = await checkIfCloudflare(host);
+    if (cfCheckProbe.isCloudflare && cfCheckProbe.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckProbe.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -230,11 +247,16 @@ export async function handleVarnishProbe(request: Request): Promise<Response> {
       const parsed = parseVcliResponse(responseText);
 
       if (!parsed) {
+        // Return raw data to help diagnose the issue
         return new Response(JSON.stringify({
           success: false,
-          error: `Unexpected response from server`,
-        }), {
-          status: 500,
+          host,
+          port,
+          error: 'Unexpected response from server — not a valid VCLI banner',
+          raw: responseText.substring(0, 1024),
+          rtt,
+        } satisfies VarnishProbeResponse & { raw: string }), {
+          status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
       }
@@ -283,6 +305,11 @@ export async function handleVarnishProbe(request: Request): Promise<Response> {
  * Optionally authenticates with shared secret, then sends command
  */
 export async function handleVarnishCommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as VarnishCommandRequest;
     const { host, port = 6082, command, secret, timeout = 15000 } = body;
@@ -307,7 +334,7 @@ export async function handleVarnishCommand(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -328,6 +355,15 @@ export async function handleVarnishCommand(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckCmd = await checkIfCloudflare(host);
+    if (cfCheckCmd.isCloudflare && cfCheckCmd.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckCmd.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -549,6 +585,11 @@ async function runVarnishWrite(
  * POST body: { host, port?, secret, expr, timeout? }
  */
 export async function handleVarnishBan(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as VarnishBanRequest;
     const { host, port = 6082, secret, timeout = 15000 } = body;
@@ -574,10 +615,19 @@ export async function handleVarnishBan(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } satisfies VarnishWriteResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckBan = await checkIfCloudflare(host);
+    if (cfCheckBan.isCloudflare && cfCheckBan.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckBan.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cmd = `ban ${expr}`;
@@ -604,6 +654,11 @@ export async function handleVarnishBan(request: Request): Promise<Response> {
  * POST body: { host, port?, secret, name, value, timeout? }
  */
 export async function handleVarnishParam(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as VarnishParamRequest;
     const { host, port = 6082, secret, timeout = 15000 } = body;
@@ -635,10 +690,19 @@ export async function handleVarnishParam(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } satisfies VarnishWriteResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckParam = await checkIfCloudflare(host);
+    if (cfCheckParam.isCloudflare && cfCheckParam.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckParam.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cmd = `param.set ${name} ${value}`;

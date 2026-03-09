@@ -33,12 +33,13 @@ async function readPOP3Response(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
 
       // POP3 responses end with \r\n
@@ -69,13 +70,19 @@ async function readPOP3MultiLine(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let response = '';
+    const MAX_RESPONSE_SIZE = 10_485_760; // 10 MB
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
+
+      if (response.length > MAX_RESPONSE_SIZE) {
+        throw new Error('POP3 response too large (exceeds 10 MB)');
+      }
 
       // Multi-line responses end with \r\n.\r\n
       if (response.includes('\r\n.\r\n')) {
@@ -116,7 +123,8 @@ async function sendPOP3Command(
   command: string,
   timeoutMs: number
 ): Promise<string> {
-  await writer.write(new TextEncoder().encode(command + '\r\n'));
+  const safeCommand = command.replace(/[\r\n]/g, '');
+  await writer.write(new TextEncoder().encode(safeCommand + '\r\n'));
   return await readPOP3Response(reader, timeoutMs);
 }
 
@@ -126,7 +134,7 @@ async function sendPOP3Command(
 export async function handlePOP3Connect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = await request.json() as Partial<POP3ConnectionOptions>;
 
@@ -143,6 +151,12 @@ export async function handlePOP3Connect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 110;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -263,9 +277,7 @@ export async function handlePOP3Connect(request: Request): Promise<Response> {
 export async function handlePOP3List(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({
-        error: 'Method not allowed',
-      }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -286,6 +298,12 @@ export async function handlePOP3List(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 110;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -417,9 +435,7 @@ export async function handlePOP3List(request: Request): Promise<Response> {
 export async function handlePOP3Retrieve(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({
-        error: 'Method not allowed',
-      }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -440,6 +456,12 @@ export async function handlePOP3Retrieve(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 110;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -490,14 +512,17 @@ export async function handlePOP3Retrieve(request: Request): Promise<Response> {
           throw new Error(`Authentication failed: ${passResp}`);
         }
 
-        // Retrieve message (RETR)
-        await writer.write(new TextEncoder().encode(`RETR ${options.messageId}\r\n`));
+        // Retrieve message (RETR) — validate messageId is a safe integer
+        const msgId = Number(options.messageId);
+        if (!Number.isInteger(msgId) || msgId <= 0) {
+          throw new Error('Invalid messageId: must be a positive integer');
+        }
+        await writer.write(new TextEncoder().encode(`RETR ${msgId}\r\n`));
         const messageResp = await readPOP3MultiLine(reader, 30000);
 
-        // Parse message (remove +OK line and terminating .\r\n)
+        // Parse message (remove +OK line; readPOP3MultiLine already strips terminator and un-stuffs dots)
         const lines = messageResp.split('\r\n');
-        if (lines.length < 3) throw new Error('Invalid POP3 response: too few lines');
-        const messageLines = lines.slice(1, -2); // Remove +OK and .
+        const messageLines = lines.slice(1); // Remove +OK line
         const message = messageLines.join('\r\n');
 
         // Send QUIT
@@ -550,7 +575,7 @@ export async function handlePOP3Retrieve(request: Request): Promise<Response> {
 export async function handlePOP3Dele(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -565,6 +590,13 @@ export async function handlePOP3Dele(request: Request): Promise<Response> {
     const port = options.port || 110;
     const timeoutMs = options.timeout || 30000;
     const msgnum = options.msgnum;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -615,7 +647,7 @@ export async function handlePOP3Dele(request: Request): Promise<Response> {
 export async function handlePOP3Uidl(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -629,6 +661,13 @@ export async function handlePOP3Uidl(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 110;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -686,7 +725,7 @@ export async function handlePOP3Uidl(request: Request): Promise<Response> {
 export async function handlePOP3Top(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -700,8 +739,26 @@ export async function handlePOP3Top(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 110;
     const timeoutMs = options.timeout || 30000;
-    const msgnum = options.msgnum;
-    const lines = options.lines ?? 0;
+    const msgnum = Number(options.msgnum);
+    const lines = Number(options.lines ?? 0);
+
+    if (!Number.isInteger(msgnum) || msgnum <= 0) {
+      return new Response(JSON.stringify({ success: false, error: 'msgnum must be a positive integer' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!Number.isInteger(lines) || lines < 0) {
+      return new Response(JSON.stringify({ success: false, error: 'lines must be a non-negative integer' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -726,9 +783,9 @@ export async function handlePOP3Top(request: Request): Promise<Response> {
         const topResp = await readPOP3MultiLine(reader, 30000);
         if (!topResp.startsWith('+OK')) throw new Error(`TOP command failed: ${topResp.trim()}`);
         const respLines = topResp.split('\r\n');
-        if (respLines.length < 3) throw new Error('Invalid POP3 response: too few lines');
-        const contentLines = respLines.slice(1, -2);
-        const content = contentLines.map(line => line.startsWith('..') ? line.slice(1) : line).join('\r\n');
+        // readPOP3MultiLine already strips terminator and un-stuffs dots
+        const contentLines = respLines.slice(1); // Remove +OK line
+        const content = contentLines.join('\r\n');
         await sendPOP3Command(reader, writer, 'QUIT', 5000);
         await socket.close();
         return { success: true, msgnum, lines, content };
@@ -771,6 +828,11 @@ export async function handlePOP3Capa(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
     const cfCheck = await checkIfCloudflare(host);

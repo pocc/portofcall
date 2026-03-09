@@ -30,6 +30,12 @@ export async function handleTcpPing(request: Request): Promise<Response> {
       return new Response('Missing host or port', { status: 400 });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -96,10 +102,20 @@ export async function handleSocketConnection(request: Request): Promise<Response
   }
 
   try {
-    const { host, port } = await request.json<{ host: string; port: number }>();
+    // Parse host/port from query params (WebSocket upgrades cannot have a JSON body)
+    const url = new URL(request.url);
+    const host = url.searchParams.get('host');
+    const portStr = url.searchParams.get('port');
+    const port = portStr ? Number(portStr) : NaN;
 
-    if (!host || !port) {
+    if (!host || !portStr) {
       return new Response('Missing host or port', { status: 400 });
+    }
+
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // Create WebSocket pair
@@ -149,8 +165,13 @@ function pipeWebSocketToSocket(ws: WebSocket, socket: Socket): void {
   let queuedBytes = 0;
   const INBOUND_HIGH_WATER_MARK = 4 * 1024 * 1024; // 4 MiB
 
+  const encoder = new TextEncoder();
   ws.addEventListener('message', (event) => {
-    const size = typeof event.data === 'string' ? event.data.length : (event.data as ArrayBuffer).byteLength;
+    // Encode text once and reuse the buffer for both size tracking and writing
+    const encoded = typeof event.data === 'string'
+      ? encoder.encode(event.data)
+      : new Uint8Array(event.data as ArrayBuffer);
+    const size = encoded.byteLength;
     queuedBytes += size;
 
     // Backpressure: if the write queue is too deep, close the connection
@@ -165,11 +186,7 @@ function pipeWebSocketToSocket(ws: WebSocket, socket: Socket): void {
 
     writeChain = writeChain.then(async () => {
       try {
-        if (typeof event.data === 'string') {
-          await writer.write(new TextEncoder().encode(event.data));
-        } else if (event.data instanceof ArrayBuffer) {
-          await writer.write(new Uint8Array(event.data));
-        }
+        await writer.write(encoded);
         queuedBytes -= size;
       } catch {
         try { writer.releaseLock(); } catch { /* already released */ }
@@ -219,8 +236,11 @@ async function pipeSocketToWebSocket(socket: Socket, ws: WebSocket): Promise<voi
     while (true) {
       // Backpressure: pause reading if WebSocket send buffer is full
       while (ws.bufferedAmount > HIGH_WATER_MARK) {
+        // Break out if WebSocket is closed — buffer will never drain
+        if (ws.readyState >= 2) break; // CLOSING or CLOSED
         await new Promise((r) => setTimeout(r, DRAIN_INTERVAL_MS));
       }
+      if (ws.readyState >= 2) break;
 
       const { done, value } = await reader.read();
 

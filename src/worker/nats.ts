@@ -16,6 +16,11 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
+/** Strip CR/LF to prevent command injection in NATS text protocol. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
+
 /**
  * Read data from socket with timeout
  */
@@ -28,11 +33,12 @@ async function readWithTimeout(
   );
 
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let buffer = '';
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += new TextDecoder().decode(value);
+      buffer += decoder.decode(value, { stream: true });
       if (buffer.includes('\r\n')) {
         return buffer;
       }
@@ -50,7 +56,7 @@ async function readWithTimeout(
 export async function handleNATSConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as {
       host?: string;
@@ -62,9 +68,9 @@ export async function handleNATSConnect(request: Request): Promise<Response> {
     };
     const host = body.host || '';
     const port = body.port || 4222;
-    const user = body.user || undefined;
-    const pass = body.pass || undefined;
-    const token = body.token || undefined;
+    const user = body.user ?? undefined;
+    const pass = body.pass ?? undefined;
+    const token = body.token ?? undefined;
     const timeoutMs = body.timeout || 30000;
 
     if (!host) {
@@ -73,6 +79,12 @@ export async function handleNATSConnect(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -239,6 +251,12 @@ export async function handleNATSPublish(request: Request): Promise<Response> {
     const port = body.port || 4222;
     const timeoutMs = body.timeout || 30000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -288,7 +306,8 @@ export async function handleNATSPublish(request: Request): Promise<Response> {
 
         // Build and send PUB command
         const payloadBytes = new TextEncoder().encode(body.payload || '');
-        const pubCmd = `PUB ${body.subject} ${payloadBytes.length}\r\n`;
+        const safeSubject = sanitizeCRLF(body.subject);
+        const pubCmd = `PUB ${safeSubject} ${payloadBytes.length}\r\n`;
         const pubHeader = new TextEncoder().encode(pubCmd);
         const trailer = new TextEncoder().encode('\r\n');
 
@@ -376,6 +395,12 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -416,7 +441,7 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
 
       // SUB
       const sid = '1';
-      const subCmd = queue_group ? `SUB ${subject} ${queue_group} ${sid}\r\n` : `SUB ${subject} ${sid}\r\n`;
+      const subCmd = queue_group ? `SUB ${sanitizeCRLF(subject)} ${sanitizeCRLF(queue_group)} ${sid}\r\n` : `SUB ${sanitizeCRLF(subject)} ${sid}\r\n`;
       await writer.write(encoder.encode(subCmd));
 
       // Collect messages with deadline
@@ -626,6 +651,12 @@ export async function handleNATSJetStreamInfo(request: Request): Promise<Respons
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -702,6 +733,12 @@ export async function handleNATSJetStreamStream(request: Request): Promise<Respo
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -714,9 +751,9 @@ export async function handleNATSJetStreamStream(request: Request): Promise<Respo
         case 'list':
           return jsRequest('$JS.API.STREAM.LIST', {});
         case 'info':
-          return jsRequest(`$JS.API.STREAM.INFO.${stream}`, {});
+          return jsRequest(`$JS.API.STREAM.INFO.${sanitizeCRLF(stream!)}`, {});
         case 'create':
-          return jsRequest(`$JS.API.STREAM.CREATE.${stream}`, {
+          return jsRequest(`$JS.API.STREAM.CREATE.${sanitizeCRLF(stream!)}`, {
             name: stream,
             subjects,
             retention: retentionPolicy,
@@ -727,7 +764,7 @@ export async function handleNATSJetStreamStream(request: Request): Promise<Respo
             num_replicas: 1,
           });
         case 'delete':
-          return jsRequest(`$JS.API.STREAM.DELETE.${stream}`, {});
+          return jsRequest(`$JS.API.STREAM.DELETE.${sanitizeCRLF(stream!)}`, {});
         default:
           throw new Error(`Unknown action: ${action}. Use list, info, create, or delete.`);
       }
@@ -768,6 +805,12 @@ export async function handleNATSJetStreamPublish(request: Request): Promise<Resp
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -786,21 +829,21 @@ export async function handleNATSJetStreamPublish(request: Request): Promise<Resp
       const payloadBytes = encoder.encode(payload);
       let headerSection = '';
       if (msgId) {
-        headerSection = `NATS/1.0\r\nNats-Msg-Id: ${msgId}\r\n\r\n`;
+        headerSection = `NATS/1.0\r\nNats-Msg-Id: ${sanitizeCRLF(msgId)}\r\n\r\n`;
       }
 
       if (headerSection) {
         // NATS 2.2+ HPUB with headers
         const headerBytes = encoder.encode(headerSection);
         const totalLen = headerBytes.length + payloadBytes.length;
-        const hpub = `HPUB ${subject} ${inbox} ${headerBytes.length} ${totalLen}\r\n`;
+        const hpub = `HPUB ${sanitizeCRLF(subject)} ${inbox} ${headerBytes.length} ${totalLen}\r\n`;
         await writer.write(encoder.encode(hpub));
         await writer.write(headerBytes);
         await writer.write(payloadBytes);
         await writer.write(encoder.encode('\r\n'));
       } else {
         // Standard PUB with reply-to for ack
-        await writer.write(encoder.encode(`PUB ${subject} ${inbox} ${payloadBytes.length}\r\n`));
+        await writer.write(encoder.encode(`PUB ${sanitizeCRLF(subject)} ${inbox} ${payloadBytes.length}\r\n`));
         await writer.write(payloadBytes);
         await writer.write(encoder.encode('\r\n'));
       }
@@ -858,6 +901,12 @@ export async function handleNATSJetStreamPull(request: Request): Promise<Respons
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -882,7 +931,7 @@ export async function handleNATSJetStreamPull(request: Request): Promise<Respons
         };
         if (!filterSubject) delete consumerConfig['filter_subject'];
 
-        await jsRequest(`$JS.API.CONSUMER.CREATE.${stream}`, {
+        await jsRequest(`$JS.API.CONSUMER.CREATE.${sanitizeCRLF(stream)}`, {
           stream_name: stream,
           config: consumerConfig,
         });
@@ -893,13 +942,13 @@ export async function handleNATSJetStreamPull(request: Request): Promise<Respons
       await writer.write(encoder.encode(`SUB ${pullInbox} 1\r\n`));
 
       const payloadBytes = encoder.encode(JSON.stringify({ batch }));
-      await writer.write(encoder.encode(`PUB $JS.API.CONSUMER.MSG.NEXT.${stream}.${consName} ${pullInbox} ${payloadBytes.length}\r\n`));
+      await writer.write(encoder.encode(`PUB $JS.API.CONSUMER.MSG.NEXT.${sanitizeCRLF(stream)}.${sanitizeCRLF(consName)} ${pullInbox} ${payloadBytes.length}\r\n`));
       await writer.write(payloadBytes);
       await writer.write(encoder.encode('\r\n'));
 
       // Read response (actual pulled messages come as MSG on pullInbox)
       // The API response goes back to us; use jsRequest for stream info as fallback
-      const streamInfo = await jsRequest(`$JS.API.STREAM.INFO.${stream}`, {});
+      const streamInfo = await jsRequest(`$JS.API.STREAM.INFO.${sanitizeCRLF(stream)}`, {});
 
       return {
         stream,
@@ -944,6 +993,12 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -982,7 +1037,7 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
 
       // PUB with reply-to
       const payloadBytes = encoder.encode(payload);
-      await writer.write(encoder.encode(`PUB ${subject} ${inboxSubject} ${payloadBytes.length}\r\n`));
+      await writer.write(encoder.encode(`PUB ${sanitizeCRLF(subject)} ${inboxSubject} ${payloadBytes.length}\r\n`));
       await writer.write(payloadBytes);
       await writer.write(encoder.encode('\r\n'));
 

@@ -179,6 +179,11 @@ function parseHttpResponse(data: Uint8Array): {
  * POST /api/uwsgi/probe
  */
 export async function handleUwsgiProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -188,6 +193,7 @@ export async function handleUwsgiProbe(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -198,6 +204,12 @@ export async function handleUwsgiProbe(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 3031;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -315,6 +327,11 @@ export async function handleUwsgiProbe(request: Request): Promise<Response> {
  * POST /api/uwsgi/request
  */
 export async function handleUwsgiRequest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -326,6 +343,7 @@ export async function handleUwsgiRequest(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -335,6 +353,13 @@ export async function handleUwsgiRequest(request: Request): Promise<Response> {
 
     const host = options.host;
     const port = options.port || 3031;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const method = (options.method || 'GET').toUpperCase();
     const path = options.path || '/';
     const timeoutMs = options.timeout || 10000;

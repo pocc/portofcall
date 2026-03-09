@@ -161,6 +161,12 @@ export async function handleOpenVPNHandshake(request: Request): Promise<Response
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -199,6 +205,7 @@ export async function handleOpenVPNHandshake(request: Request): Promise<Response
         while (responseData.length < 16) {
           const { value, done } = await reader.read();
           if (done) break;
+          if (responseData.length + value.length > 4096) break;
           const newData = new Uint8Array(responseData.length + value.length);
           newData.set(responseData);
           newData.set(value, responseData.length);
@@ -209,8 +216,6 @@ export async function handleOpenVPNHandshake(request: Request): Promise<Response
             const expectedLen = (responseData[0] << 8) | responseData[1];
             if (responseData.length >= 2 + expectedLen) break;
           }
-
-          if (responseData.length > 4096) break;
         }
 
         clearTimeout(readTimeout);
@@ -485,6 +490,12 @@ export async function handleOpenVPNTLSHandshake(request: Request): Promise<Respo
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -517,13 +528,13 @@ export async function handleOpenVPNTLSHandshake(request: Request): Promise<Respo
               setTimeout(() => resolve({ value: undefined, done: true }), rem2)),
           ]);
           if (done || !value) break;
+          if (buf.length + value.length > 65536) break;
           const nb = new Uint8Array(buf.length + value.length);
           nb.set(buf); nb.set(value, buf.length); buf = nb;
           if (buf.length >= 2) {
             const expected = (buf[0] << 8) | buf[1];
             if (buf.length >= 2 + expected) return buf;
           }
-          if (buf.length > 65536) break;
         }
         return buf.length > 0 ? buf : null;
       };

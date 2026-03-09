@@ -323,3 +323,8 @@ To verify the fixes work correctly:
 3. Run multiple rapid-fire requests to check for resource leaks
 4. Test timeout path explicitly with unreachable hosts
 5. Verify socket cleanup with `lsof` or similar tools (check for orphaned connections)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

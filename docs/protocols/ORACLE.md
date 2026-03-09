@@ -528,54 +528,54 @@ Neither family supports Oracle Advanced Security (native TLS or native network e
 
 ```bash
 # Basic connect test — SID format
-curl -s -X POST https://portofcall.ross.gg/api/oracle/connect \
+curl -s -X POST https://l4.fyi/api/oracle/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","sid":"XE"}' | jq '{success,packetType,"protocol"}'
 
 # Basic connect test — service name format
-curl -s -X POST https://portofcall.ross.gg/api/oracle/connect \
+curl -s -X POST https://l4.fyi/api/oracle/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","serviceName":"ORCL"}' | jq .
 
 # GET form (quick browser test)
-curl -s 'https://portofcall.ross.gg/api/oracle/connect?host=oracle.example.com&serviceName=ORCL' | jq .
+curl -s 'https://l4.fyi/api/oracle/connect?host=oracle.example.com&serviceName=ORCL' | jq .
 
 # Query listener for all registered services (no credentials needed)
-curl -s -X POST https://portofcall.ross.gg/api/oracle/services \
+curl -s -X POST https://l4.fyi/api/oracle/services \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com"}' | jq '{listenerVersion,services,endpoints,rtt}'
 
 # Detect Oracle TNS listener presence (no service name needed)
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/probe \
+curl -s -X POST https://l4.fyi/api/oracle-tns/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com"}' | jq '{isOracle,oracleVersion,responseType,latencyMs}'
 
 # Full negotiate: TNS version + SDU + service acceptance
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/connect \
+curl -s -X POST https://l4.fyi/api/oracle-tns/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","serviceName":"ORCL"}' \
   | jq '{accepted,tnsVersion,compatibleVersion,sduSize,tduSize,oracleVersion,errorCode}'
 
 # ANO negotiation: service + instance name + DB version
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/query \
+curl -s -X POST https://l4.fyi/api/oracle-tns/query \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","service":"ORCL"}' \
   | jq '{success,tnsVersion,sduSize,serviceName,instanceName,dbVersion}'
 
 # SQL attempt (likely fails at login — returns challenge info)
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/sql \
+curl -s -X POST https://l4.fyi/api/oracle-tns/sql \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","service":"ORCL","username":"scott","password":"tiger"}' \
   | jq '{phase,loginAccepted,dbVersion,errorMessage}'
 
 # Probe without credentials — stops at negotiate phase
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/sql \
+curl -s -X POST https://l4.fyi/api/oracle-tns/sql \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","service":"XE"}' \
   | jq '{phase,tnsVersion,dbVersion,note}'
 
 # Custom port (non-standard listener port)
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/probe \
+curl -s -X POST https://l4.fyi/api/oracle-tns/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"oracle.example.com","port":1522}' | jq .
 ```
@@ -602,7 +602,7 @@ docker logs -f oracle-xe | grep -i "ready"
 
 **Instant probe check:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/oracle-tns/probe \
+curl -s -X POST https://l4.fyi/api/oracle-tns/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"YOUR_LOCAL_IP","port":1521}' | jq .
 ```

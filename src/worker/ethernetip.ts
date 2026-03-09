@@ -375,6 +375,11 @@ function parseListIdentityResponse(data: Uint8Array): {
  * POST /api/ethernetip/identity
  */
 export async function handleEtherNetIPIdentity(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as EtherNetIPRequest;
     const { host, port = 44818, timeout = 10000 } = body;
@@ -389,7 +394,7 @@ export async function handleEtherNetIPIdentity(request: Request): Promise<Respon
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -425,26 +430,8 @@ export async function handleEtherNetIPIdentity(request: Request): Promise<Respon
         const request = buildListIdentityRequest();
         await writer.write(request);
 
-        // Read response - accumulate until we have the full encapsulation frame
-        let buffer = new Uint8Array(0);
-        const maxSize = 4096;
-
-        while (buffer.length < maxSize) {
-          const { value, done } = await reader.read();
-          if (done || !value) break;
-
-          const newBuffer = new Uint8Array(buffer.length + value.length);
-          newBuffer.set(buffer);
-          newBuffer.set(value, buffer.length);
-          buffer = newBuffer;
-
-          // Check if we have a complete encapsulation frame
-          if (buffer.length >= 24) {
-            const frameView = new DataView(buffer.buffer, buffer.byteOffset, buffer.length);
-            const dataLength = frameView.getUint16(2, true);
-            if (buffer.length >= 24 + dataLength) break;
-          }
-        }
+        // Read response using readEIPFrame for proper per-read timeout
+        const buffer = await readEIPFrame(reader, timeout);
 
         writer.releaseLock();
         reader.releaseLock();
@@ -736,6 +723,11 @@ function parseSendRRDataResponse(data: Uint8Array): {
  *   3. Parse CIP response
  */
 export async function handleEtherNetIPCIPRead(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -772,7 +764,7 @@ export async function handleEtherNetIPCIPRead(request: Request): Promise<Respons
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -1047,7 +1039,7 @@ function validateEIPParams(host: unknown, port: number): Response | null {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
@@ -1062,6 +1054,11 @@ function validateEIPParams(host: unknown, port: number): Response | null {
  * POST /api/ethernetip/get-attribute-all
  */
 export async function handleEtherNetIPGetAttributeAll(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -1174,6 +1171,11 @@ export async function handleEtherNetIPGetAttributeAll(request: Request): Promise
  * POST /api/ethernetip/set-attribute
  */
 export async function handleEtherNetIPSetAttribute(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -1295,6 +1297,11 @@ export async function handleEtherNetIPSetAttribute(request: Request): Promise<Re
  * POST /api/ethernetip/list-services
  */
 export async function handleEtherNetIPListServices(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;

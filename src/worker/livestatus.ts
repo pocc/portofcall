@@ -67,7 +67,8 @@ function buildQuery(table: string, columns?: string[], filters?: string[], limit
   }
   if (filters) {
     for (const filter of filters) {
-      query += `Filter: ${filter}\n`;
+      // Strip newlines to prevent LQL injection
+      query += `Filter: ${filter.replace(/[\r\n]/g, '')}\n`;
     }
   }
   if (limit && limit > 0) {
@@ -231,7 +232,7 @@ async function sendQuery(
  */
 export async function handleLivestatusStatus(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -247,7 +248,7 @@ export async function handleLivestatusStatus(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -305,7 +306,7 @@ export async function handleLivestatusStatus(request: Request): Promise<Response
  */
 export async function handleLivestatusHosts(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -321,7 +322,7 @@ export async function handleLivestatusHosts(request: Request): Promise<Response>
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -375,7 +376,7 @@ export async function handleLivestatusHosts(request: Request): Promise<Response>
  */
 export async function handleLivestatusQuery(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -397,7 +398,7 @@ export async function handleLivestatusQuery(request: Request): Promise<Response>
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -477,7 +478,7 @@ export async function handleLivestatusQuery(request: Request): Promise<Response>
  */
 export async function handleLivestatusServices(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -544,7 +545,7 @@ export async function handleLivestatusServices(request: Request): Promise<Respon
  */
 export async function handleLivestatusCommand(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }

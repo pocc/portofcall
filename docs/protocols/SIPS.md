@@ -505,32 +505,32 @@ Both workers generate RFC 3261-compliant transaction identifiers:
 
 ```bash
 # SIP OPTIONS probe
-curl -s -X POST https://portofcall.ross.gg/api/sip/options \
+curl -s -X POST https://l4.fyi/api/sip/options \
   -H 'Content-Type: application/json' \
   -d '{"host":"pbx.example.com"}' | jq .
 
 # SIP REGISTER auth probe
-curl -s -X POST https://portofcall.ross.gg/api/sip/register \
+curl -s -X POST https://l4.fyi/api/sip/register \
   -H 'Content-Type: application/json' \
   -d '{"host":"pbx.example.com","username":"alice","domain":"example.com"}' | jq .
 
 # SIP INVITE session probe
-curl -s -X POST https://portofcall.ross.gg/api/sip/invite \
+curl -s -X POST https://l4.fyi/api/sip/invite \
   -H 'Content-Type: application/json' \
   -d '{"host":"pbx.example.com","from":"alice","to":"bob"}' | jq .
 
 # SIP Digest Authentication
-curl -s -X POST https://portofcall.ross.gg/api/sip/digest-auth \
+curl -s -X POST https://l4.fyi/api/sip/digest-auth \
   -H 'Content-Type: application/json' \
   -d '{"host":"pbx.example.com","username":"alice","password":"secret","domain":"example.com"}' | jq .
 
 # SIPS OPTIONS (TLS) — note: fromUri is required
-curl -s -X POST https://portofcall.ross.gg/api/sips/options \
+curl -s -X POST https://l4.fyi/api/sips/options \
   -H 'Content-Type: application/json' \
   -d '{"host":"sip.example.com","fromUri":"sips:probe@example.com"}' | jq .
 
 # SIPS Digest Auth (TLS)
-curl -s -X POST https://portofcall.ross.gg/api/sips/digest-auth \
+curl -s -X POST https://l4.fyi/api/sips/digest-auth \
   -H 'Content-Type: application/json' \
   -d '{"host":"sip.example.com","username":"alice","password":"secret"}' | jq .
 ```

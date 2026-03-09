@@ -150,19 +150,50 @@ function concat(...arrays: Uint8Array[]): Uint8Array {
 
 // ---- Read Helpers ------------------------------------------------------------
 
-/** Read exactly N bytes from a socket reader */
-async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number): Promise<Uint8Array> {
-  const buffer = new Uint8Array(n);
-  let offset = 0;
-  while (offset < n) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed unexpectedly');
-    const toCopy = Math.min(n - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
-    // If we got more than needed, we lose the extra bytes -- acceptable for a one-shot handshake
+/**
+ * Buffered reader that preserves leftover bytes between sequential reads.
+ * Without buffering, readExact silently discards excess bytes when TCP delivers
+ * more data than a single read requests — causing data corruption when protocol
+ * messages don't align with TCP segment boundaries.
+ */
+class BufferedReader {
+  private leftover = new Uint8Array(0);
+  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
+
+  /** Read exactly N bytes, with an absolute deadline (ms timestamp). */
+  async readExact(n: number, deadline: number): Promise<Uint8Array> {
+    const buffer = new Uint8Array(n);
+    let offset = 0;
+
+    // Consume from leftover first
+    if (this.leftover.length > 0) {
+      const take = Math.min(this.leftover.length, n);
+      buffer.set(this.leftover.subarray(0, take), 0);
+      this.leftover = this.leftover.subarray(take);
+      offset = take;
+    }
+
+    while (offset < n) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Read timeout');
+      const { value, done } = await Promise.race([
+        this.reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Read timeout')), remaining)
+        ),
+      ]);
+      if (done || !value) throw new Error('Connection closed unexpectedly');
+      const toCopy = Math.min(n - offset, value.length);
+      buffer.set(value.subarray(0, toCopy), offset);
+      offset += toCopy;
+
+      // Preserve excess bytes for the next read
+      if (value.length > toCopy) {
+        this.leftover = value.slice(toCopy);
+      }
+    }
+    return buffer;
   }
-  return buffer;
 }
 
 /** Parse an AMQP short string (1-byte length prefix) */
@@ -189,7 +220,8 @@ function readLongString(data: Uint8Array, offset: number): { value: string; byte
  * For genuinely unknown types, bails out of the table rather than advancing by
  * 1 byte, which would corrupt subsequent field reads for multi-byte types.
  */
-function readFieldTable(data: Uint8Array, offset: number): { value: Record<string, string>; bytesRead: number } {
+function readFieldTable(data: Uint8Array, offset: number, depth = 0): { value: Record<string, string>; bytesRead: number } {
+  if (depth > 50) throw new Error('AMQP field table nesting depth exceeded (max 50)');
   const view = new DataView(data.buffer, data.byteOffset + offset, 4);
   const tableLen = view.getUint32(0, false);
   const table: Record<string, string> = {};
@@ -219,7 +251,7 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         break;
       }
       case 'F': { // nested table
-        const nestedResult = readFieldTable(data, pos);
+        const nestedResult = readFieldTable(data, pos, depth + 1);
         table[nameResult.value] = JSON.stringify(nestedResult.value);
         pos += nestedResult.bytesRead;
         break;
@@ -296,20 +328,24 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
 }
 
 /**
- * Read and validate one complete AMQP frame.
+ * Read and validate one complete AMQP frame, with an absolute deadline.
  * Returns { frameType, channel, payload } with the frame-end byte consumed.
  */
-async function readFrame(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<{
+async function readFrame(br: BufferedReader, deadline: number): Promise<{
   frameType: number;
   channel: number;
   payload: Uint8Array;
 }> {
-  const header    = await readExact(reader, 7);
+  const header    = await br.readExact(7, deadline);
   const frameType = header[0];
   const channel   = (header[1] << 8) | header[2];
   const frameSize = new DataView(header.buffer, 3, 4).getUint32(0, false);
-  const payload   = await readExact(reader, frameSize);
-  const end       = await readExact(reader, 1);
+  // Cap at 1 MiB — AMQP 0-9-1 negotiated frame_max is typically 128 KB
+  if (frameSize > 1_048_576) {
+    throw new Error(`AMQP frame too large: ${frameSize} bytes (max 1 MiB)`);
+  }
+  const payload   = await br.readExact(frameSize, deadline);
+  const end       = await br.readExact(1, deadline);
   if (end[0] !== FRAME_END) {
     throw new Error(`Invalid frame-end marker: 0x${end[0].toString(16)}`);
   }
@@ -321,11 +357,12 @@ async function readFrame(reader: ReadableStreamDefaultReader<Uint8Array>): Promi
  * Returns the argument bytes (payload after the 4-byte class+method header).
  */
 async function expectMethod(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   expectedClass: number,
   expectedMethod: number,
+  deadline: number,
 ): Promise<Uint8Array> {
-  const { frameType, payload } = await readFrame(reader);
+  const { frameType, payload } = await readFrame(br, deadline);
   if (frameType !== FRAME_METHOD) {
     throw new Error(`Expected METHOD frame, got type ${frameType}`);
   }
@@ -407,8 +444,7 @@ function buildBasicPublish(exchange: string, routingKey: string): Uint8Array {
     new Uint8Array([0x00, 0x00]),  // reserved1 (uint16)
     encodeShortString(exchange),
     encodeShortString(routingKey),
-    new Uint8Array([0x00]),         // mandatory (boolean)
-    new Uint8Array([0x00]),         // immediate (boolean)
+    new Uint8Array([0x00]),         // bits: mandatory(bit0) | immediate(bit1)
   );
   return buildFrame(FRAME_METHOD, 1, buildMethodPayload(CLASS_BASIC, METHOD_BASIC_PUBLISH, args));
 }
@@ -518,33 +554,40 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
   const {
     host, port, username, password, vhost,
     exchange, routingKey, message: msgText,
+    timeout,
     secureTransport = 'off',
     exchangeType = 'direct',
     durable = false,
   } = params;
+
+  const deadline = Date.now() + timeout;
 
   const connectOptions = secureTransport === 'on'
     ? { secureTransport: 'on' as const, allowHalfOpen: false }
     : { allowHalfOpen: false };
 
   const socket = connect(`${host}:${port}`, connectOptions);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+  ]);
 
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
+  const br = new BufferedReader(reader);
 
   try {
     // Step 1: Send protocol header
     await writer.write(AMQP_PROTOCOL_HEADER);
 
     // Step 2: Receive Connection.Start (ignore version/properties)
-    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+    await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_START, deadline);
 
     // Step 3: Send Connection.StartOk
     await writer.write(buildConnectionStartOk(username, password));
 
     // Step 4: Receive Connection.Tune -- echo back the same values
-    const tuneArgs   = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+    const tuneArgs   = await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_TUNE, deadline);
     const tuneView   = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
     const channelMax = tuneView.getUint16(0, false);
     const frameMax   = tuneView.getUint32(2, false);
@@ -557,18 +600,18 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
     await writer.write(buildConnectionOpen(vhost));
 
     // Step 7: Receive Connection.OpenOk
-    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+    await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK, deadline);
 
     // Step 8: Send Channel.Open on channel 1
     await writer.write(buildChannelOpen());
 
     // Step 9: Receive Channel.OpenOk
-    await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+    await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK, deadline);
 
     // Step 10: Optionally declare exchange (skip for default "")
     if (exchange !== '') {
       await writer.write(buildExchangeDeclare(exchange, exchangeType, durable));
-      await expectMethod(reader, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK);
+      await expectMethod(br, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK, deadline);
     }
 
     // Step 11: Publish message (Basic.Publish + Content Header + Content Body)
@@ -580,14 +623,14 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
     // Step 12: Graceful close
     await writer.write(buildChannelClose());
     try {
-      await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK);
+      await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK, deadline);
     } catch {
       // Server may close immediately; not fatal
     }
 
     await writer.write(buildConnectionClose());
     try {
-      await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK);
+      await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK, deadline);
     } catch {
       // Server may close immediately; not fatal
     }
@@ -619,6 +662,12 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
  */
 export async function handleAMQPConnect(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const { host, port = 5672, timeout = 10000 } = await request.json<{
       host: string;
       port?: number;
@@ -627,7 +676,14 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port: must be 1–65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -646,18 +702,20 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
     }
 
     const connectionPromise = (async () => {
+      const deadline = Date.now() + timeout;
       const socket = connect(`${host}:${port}`);
       await socket.opened;
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
 
       try {
         // Step 1: Send AMQP protocol header
         await writer.write(AMQP_PROTOCOL_HEADER);
 
         // Step 2: Read the response frame header (7 bytes)
-        const frameHeader = await readExact(reader, 7);
+        const frameHeader = await br.readExact(7, deadline);
         const frameType   = frameHeader[0];
         const frameSize   = new DataView(frameHeader.buffer, 3, 4).getUint32(0, false);
 
@@ -665,7 +723,7 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
           // Server may have rejected with its own protocol header (version mismatch)
           if (frameHeader[0] === 0x41 && frameHeader[1] === 0x4d) {
             // "AM" -- server sent back AMQP header with different version
-            const rest           = await readExact(reader, 1);
+            const rest           = await br.readExact(1, deadline);
             const serverMajor    = frameHeader[5];
             const serverMinor    = frameHeader[6];
             const serverRevision = rest[0];
@@ -677,10 +735,13 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
         }
 
         // Step 3: Read the frame payload
-        const payload = await readExact(reader, frameSize);
+        if (frameSize > 1_048_576) {
+          throw new Error(`AMQP frame too large: ${frameSize} bytes (max 1 MiB)`);
+        }
+        const payload = await br.readExact(frameSize, deadline);
 
         // Read frame-end byte
-        const frameEndBuf = await readExact(reader, 1);
+        const frameEndBuf = await br.readExact(1, deadline);
         if (frameEndBuf[0] !== FRAME_END) {
           throw new Error(`Invalid frame-end marker: 0x${frameEndBuf[0].toString(16)}`);
         }
@@ -755,6 +816,12 @@ export async function handleAMQPConnect(request: Request): Promise<Response> {
  */
 export async function handleAMQPPublish(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const body = await request.json<{
       host: string;
       port?: number;
@@ -784,7 +851,14 @@ export async function handleAMQPPublish(request: Request): Promise<Response> {
     } = body;
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port: must be 1–65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -879,10 +953,12 @@ function buildBasicConsume(queue: string): Uint8Array {
 
 /** Read a frame with a timeout; returns null if timeout elapses first. */
 async function readFrameWithTimeout(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutMs: number,
 ): Promise<{ frameType: number; channel: number; payload: Uint8Array } | null> {
-  const framePromise = readFrame(reader);
+  if (timeoutMs <= 0) return null;
+  const frameDeadline = Date.now() + timeoutMs;
+  const framePromise = readFrame(br, frameDeadline);
   const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs));
   return Promise.race([framePromise, timeoutPromise]);
 }
@@ -908,18 +984,24 @@ export async function doAMQPConsume(
     : { allowHalfOpen: false };
 
   const socket = connect(`${host}:${port}`, connectOptions);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
 
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
+  const br = new BufferedReader(reader);
+
+  const deadline = Date.now() + timeoutMs;
 
   try {
     // Full AMQP handshake
     await writer.write(AMQP_PROTOCOL_HEADER);
-    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+    await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_START, deadline);
     await writer.write(buildConnectionStartOk(username, password));
 
-    const tuneArgs   = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+    const tuneArgs   = await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_TUNE, deadline);
     const tuneView   = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
     const channelMax = tuneView.getUint16(0, false);
     const frameMax   = tuneView.getUint32(2, false);
@@ -927,29 +1009,28 @@ export async function doAMQPConsume(
 
     await writer.write(buildConnectionTuneOk(channelMax, frameMax, heartbeat));
     await writer.write(buildConnectionOpen(vhost));
-    await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+    await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK, deadline);
 
     // Open channel 1
     await writer.write(buildChannelOpen());
-    await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+    await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK, deadline);
 
     // Queue.Declare
     await writer.write(buildQueueDeclare(queue));
-    await expectMethod(reader, CLASS_QUEUE, METHOD_QUEUE_DECLARE_OK);
+    await expectMethod(br, CLASS_QUEUE, METHOD_QUEUE_DECLARE_OK, deadline);
 
     // Basic.Consume
     await writer.write(buildBasicConsume(queue));
-    await expectMethod(reader, CLASS_BASIC, METHOD_BASIC_CONSUME_OK);
+    await expectMethod(br, CLASS_BASIC, METHOD_BASIC_CONSUME_OK, deadline);
 
     // Collect Basic.Deliver frames until timeout or maxMessages reached
     const messages: AMQPConsumedMessage[] = [];
-    const deadline = Date.now() + timeoutMs;
 
     while (messages.length < maxMessages) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
 
-      const frame = await readFrameWithTimeout(reader, remaining);
+      const frame = await readFrameWithTimeout(br, remaining);
       if (frame === null) break; // timed out
 
       // Only process METHOD frames
@@ -981,8 +1062,8 @@ export async function doAMQPConsume(
       // routing-key (short string)
       const routingKeyR = readShortString(args, pos);
 
-      // Read Content-Header frame
-      const headerFrame = await readFrame(reader);
+      // Read Content-Header frame (use remaining deadline)
+      const headerFrame = await readFrame(br, deadline);
       if (headerFrame.frameType !== FRAME_HEADER) {
         throw new Error(`Expected Content-Header frame, got type ${headerFrame.frameType}`);
       }
@@ -991,13 +1072,17 @@ export async function doAMQPConsume(
       const hv = new DataView(headerFrame.payload.buffer, headerFrame.payload.byteOffset);
       const bodySizeHi = hv.getUint32(4, false);
       const bodySizeLo = hv.getUint32(8, false);
-      // Combine as a JS number (safe up to 2^53 bytes)
-      const bodySize = bodySizeHi * 0x100000000 + bodySizeLo;
+      // Use BigInt to avoid precision loss, then validate safe integer range
+      const bodyBig = (BigInt(bodySizeHi) << 32n) | BigInt(bodySizeLo);
+      if (bodyBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new Error('AMQP body size exceeds safe integer range');
+      }
+      const bodySize = Number(bodyBig);
 
       // Collect Content-Body frames until we have bodySize bytes
       let collected = new Uint8Array(0);
       while (collected.length < bodySize) {
-        const bodyFrame = await readFrame(reader);
+        const bodyFrame = await readFrame(br, deadline);
         if (bodyFrame.frameType !== FRAME_BODY) {
           throw new Error(`Expected Content-Body frame, got type ${bodyFrame.frameType}`);
         }
@@ -1016,9 +1101,9 @@ export async function doAMQPConsume(
 
     // Graceful close
     await writer.write(buildChannelClose());
-    try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+    try { await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK, deadline); } catch { /* ignore */ }
     await writer.write(buildConnectionClose());
-    try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+    try { await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK, deadline); } catch { /* ignore */ }
 
     return {
       success: true,
@@ -1046,6 +1131,12 @@ export async function doAMQPConsume(
  */
 export async function handleAMQPConsume(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const body = await request.json<{
       host: string;
       port?: number;
@@ -1069,15 +1160,34 @@ export async function handleAMQPConsume(request: Request): Promise<Response> {
     } = body;
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     if (!queue) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: queue' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: queue' }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port: must be 1–65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1117,6 +1227,12 @@ export async function handleAMQPConsume(request: Request): Promise<Response> {
 export async function handleAMQPConfirmPublish(request: Request): Promise<Response> {
   const start = Date.now();
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const body = await request.json<{
       host: string;
       port?: number;
@@ -1146,7 +1262,13 @@ export async function handleAMQPConfirmPublish(request: Request): Promise<Respon
     } = body;
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port: must be 1–65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1159,31 +1281,33 @@ export async function handleAMQPConfirmPublish(request: Request): Promise<Respon
     }
 
     const doIt = async () => {
+      const deadline = Date.now() + timeout;
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       try {
         // Full handshake
         await writer.write(AMQP_PROTOCOL_HEADER);
-        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+        await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_START, deadline);
         await writer.write(buildConnectionStartOk(username, password));
-        const tuneArgs = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+        const tuneArgs = await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_TUNE, deadline);
         const tv = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
         await writer.write(buildConnectionTuneOk(tv.getUint16(0, false), tv.getUint32(2, false), tv.getUint16(6, false)));
         await writer.write(buildConnectionOpen(vhost));
-        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+        await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK, deadline);
         await writer.write(buildChannelOpen());
-        await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+        await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK, deadline);
 
         // Activate publisher confirms
         await writer.write(buildConfirmSelect());
-        await expectMethod(reader, CLASS_CONFIRM, METHOD_CONFIRM_SELECT_OK);
+        await expectMethod(br, CLASS_CONFIRM, METHOD_CONFIRM_SELECT_OK, deadline);
 
         // Optionally declare exchange
         if (exchange !== '') {
           await writer.write(buildExchangeDeclare(exchange, exchangeType, durable));
-          await expectMethod(reader, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK);
+          await expectMethod(br, CLASS_EXCHANGE, METHOD_EXCHANGE_DECLARE_OK, deadline);
         }
 
         // Publish
@@ -1198,7 +1322,7 @@ export async function handleAMQPConfirmPublish(request: Request): Promise<Respon
         let multiple = false;
 
         for (let attempt = 0; attempt < 10; attempt++) {
-          const frame = await readFrame(reader);
+          const frame = await readFrame(br, deadline);
           if (frame.frameType !== FRAME_METHOD) continue;
           const classId  = (frame.payload[0] << 8) | frame.payload[1];
           const methodId = (frame.payload[2] << 8) | frame.payload[3];
@@ -1215,9 +1339,9 @@ export async function handleAMQPConfirmPublish(request: Request): Promise<Respon
 
         // Graceful close
         await writer.write(buildChannelClose());
-        try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+        try { await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK, deadline); } catch { /* ignore */ }
         await writer.write(buildConnectionClose());
-        try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+        try { await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK, deadline); } catch { /* ignore */ }
 
         return {
           success: true,
@@ -1263,6 +1387,12 @@ export async function handleAMQPConfirmPublish(request: Request): Promise<Respon
 export async function handleAMQPBind(request: Request): Promise<Response> {
   const start = Date.now();
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const body = await request.json<{
       host: string;
       port?: number;
@@ -1288,7 +1418,13 @@ export async function handleAMQPBind(request: Request): Promise<Response> {
     } = body;
 
     if (!host || !queue || !exchange) {
-      return new Response(JSON.stringify({ error: 'host, queue, and exchange are required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'host, queue, and exchange are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port: must be 1–65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1301,32 +1437,34 @@ export async function handleAMQPBind(request: Request): Promise<Response> {
     }
 
     const doIt = async () => {
+      const deadline = Date.now() + timeout;
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       try {
         // Full handshake
         await writer.write(AMQP_PROTOCOL_HEADER);
-        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+        await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_START, deadline);
         await writer.write(buildConnectionStartOk(username, password));
-        const tuneArgs = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+        const tuneArgs = await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_TUNE, deadline);
         const tv = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
         await writer.write(buildConnectionTuneOk(tv.getUint16(0, false), tv.getUint32(2, false), tv.getUint16(6, false)));
         await writer.write(buildConnectionOpen(vhost));
-        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+        await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK, deadline);
         await writer.write(buildChannelOpen());
-        await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+        await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK, deadline);
 
         // Queue.Bind
         await writer.write(buildQueueBind(queue, exchange, routingKey));
-        await expectMethod(reader, CLASS_QUEUE, 21 /* Queue.BindOk */);
+        await expectMethod(br, CLASS_QUEUE, 21 /* Queue.BindOk */, deadline);
 
         // Graceful close
         await writer.write(buildChannelClose());
-        try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+        try { await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK, deadline); } catch { /* ignore */ }
         await writer.write(buildConnectionClose());
-        try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+        try { await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK, deadline); } catch { /* ignore */ }
 
         return {
           success: true,
@@ -1370,6 +1508,12 @@ export async function handleAMQPBind(request: Request): Promise<Response> {
 export async function handleAMQPGet(request: Request): Promise<Response> {
   const start = Date.now();
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const body = await request.json<{
       host: string;
       port?: number;
@@ -1393,7 +1537,13 @@ export async function handleAMQPGet(request: Request): Promise<Response> {
     } = body;
 
     if (!host || !queue) {
-      return new Response(JSON.stringify({ error: 'host and queue are required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'host and queue are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid port: must be 1–65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1406,34 +1556,37 @@ export async function handleAMQPGet(request: Request): Promise<Response> {
     }
 
     const doIt = async () => {
+      const deadline = Date.now() + timeout;
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       try {
         // Full handshake
         await writer.write(AMQP_PROTOCOL_HEADER);
-        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_START);
+        await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_START, deadline);
         await writer.write(buildConnectionStartOk(username, password));
-        const tuneArgs = await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_TUNE);
+        const tuneArgs = await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_TUNE, deadline);
         const tv = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
         await writer.write(buildConnectionTuneOk(tv.getUint16(0, false), tv.getUint32(2, false), tv.getUint16(6, false)));
         await writer.write(buildConnectionOpen(vhost));
-        await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK);
+        await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK, deadline);
         await writer.write(buildChannelOpen());
-        await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK);
+        await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_OPEN_OK, deadline);
 
-        // Queue.Declare (passive=true so we don't accidentally create it)
+        // Queue.Declare (will create queue if it doesn't exist)
         await writer.write(buildQueueDeclare(queue));
-        const declareOkArgs = await expectMethod(reader, CLASS_QUEUE, METHOD_QUEUE_DECLARE_OK);
-        const dv = new DataView(declareOkArgs.buffer, declareOkArgs.byteOffset);
-        // Queue.DeclareOk: message-count(uint32) + consumer-count(uint32)
+        const declareOkArgs = await expectMethod(br, CLASS_QUEUE, METHOD_QUEUE_DECLARE_OK, deadline);
+        // Queue.DeclareOk: queue-name(shortstr) + message-count(uint32) + consumer-count(uint32)
+        const qNameR = readShortString(declareOkArgs, 0);
+        const dv = new DataView(declareOkArgs.buffer, declareOkArgs.byteOffset + qNameR.bytesRead);
         const queueMessageCount  = dv.getUint32(0, false);
         const queueConsumerCount = dv.getUint32(4, false);
 
         // Basic.Get
         await writer.write(buildBasicGet(queue, !ack));
-        const getFrame = await readFrame(reader);
+        const getFrame = await readFrame(br, deadline);
         if (getFrame.frameType !== FRAME_METHOD) throw new Error(`Expected METHOD, got frame type ${getFrame.frameType}`);
 
         const classId  = (getFrame.payload[0] << 8) | getFrame.payload[1];
@@ -1459,16 +1612,20 @@ export async function handleAMQPGet(request: Request): Promise<Response> {
           const msgCount = adv.getUint32(pos, false);
 
           // Read content header
-          const headerFrame = await readFrame(reader);
+          const headerFrame = await readFrame(br, deadline);
           const hdv = new DataView(headerFrame.payload.buffer, headerFrame.payload.byteOffset);
           const bodySizeHi = hdv.getUint32(4, false);
           const bodySizeLo = hdv.getUint32(8, false);
-          const bodySize = bodySizeHi * 0x100000000 + bodySizeLo;
+          const bodyBig2 = (BigInt(bodySizeHi) << 32n) | BigInt(bodySizeLo);
+          if (bodyBig2 > BigInt(Number.MAX_SAFE_INTEGER)) {
+            throw new Error('AMQP body size exceeds safe integer range');
+          }
+          const bodySize = Number(bodyBig2);
 
           // Read body
           let collected = new Uint8Array(0);
           while (collected.length < bodySize) {
-            const bodyFrame = await readFrame(reader);
+            const bodyFrame = await readFrame(br, deadline);
             const merged = new Uint8Array(collected.length + bodyFrame.payload.length);
             merged.set(collected);
             merged.set(bodyFrame.payload, collected.length);
@@ -1501,9 +1658,9 @@ export async function handleAMQPGet(request: Request): Promise<Response> {
 
         // Graceful close
         await writer.write(buildChannelClose());
-        try { await expectMethod(reader, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK); } catch { /* ignore */ }
+        try { await expectMethod(br, CLASS_CHANNEL, METHOD_CHANNEL_CLOSE_OK, deadline); } catch { /* ignore */ }
         await writer.write(buildConnectionClose());
-        try { await expectMethod(reader, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK); } catch { /* ignore */ }
+        try { await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_CLOSE_OK, deadline); } catch { /* ignore */ }
 
         return result;
       } finally {

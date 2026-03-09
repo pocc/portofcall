@@ -833,7 +833,8 @@ export class FTPClient {
       if (parts.length < 9) continue;
 
       const permissions = parts[0];
-      const links = parseInt(parts[1], 10) || undefined;
+      const parsed = parseInt(parts[1], 10);
+      const links = !isNaN(parsed) ? parsed : undefined;
       const owner = parts[2];
       const group = parts[3];
       const size = parseInt(parts[4], 10) || 0;

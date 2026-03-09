@@ -284,7 +284,7 @@ function toHex(data: Uint8Array, maxBytes = 64): string {
  */
 export async function handleZMTPProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -308,7 +308,7 @@ export async function handleZMTPProbe(request: Request): Promise<Response> {
     const port = body.port || 5555;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -499,6 +499,11 @@ function parseFrame(data: Uint8Array, offset: number): {
  * POST /api/zmtp/send
  */
 export async function handleZMTPSend(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as {
       host?: string; port?: number; socketType?: string; topic?: string;
@@ -507,6 +512,18 @@ export async function handleZMTPSend(request: Request): Promise<Response> {
     if (!body.host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
     const { host, port = 5555, socketType = 'PUSH', topic = '', message = '', timeout = 10000 } = body;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const cfCheckSend = await checkIfCloudflare(host);
+    if (cfCheckSend.isCloudflare && cfCheckSend.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckSend.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const socket = connect(`${host}:${port}`);
     const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Timeout')), timeout));
     await Promise.race([socket.opened, timeoutPromise]);
@@ -563,6 +580,11 @@ export async function handleZMTPSend(request: Request): Promise<Response> {
  * POST /api/zmtp/recv
  */
 export async function handleZMTPRecv(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as {
       host?: string; port?: number; socketType?: string; topic?: string; timeoutMs?: number;
@@ -570,6 +592,18 @@ export async function handleZMTPRecv(request: Request): Promise<Response> {
     if (!body.host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } });
     const { host, port = 5555, socketType = 'SUB', topic = '', timeoutMs = 2000 } = body;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    const cfCheckRecv = await checkIfCloudflare(host);
+    if (cfCheckRecv.isCloudflare && cfCheckRecv.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckRecv.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const socket = connect(`${host}:${port}`);
     const connTimeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connect timeout')), 10000));
     await Promise.race([socket.opened, connTimeout]);
@@ -617,7 +651,7 @@ export async function handleZMTPRecv(request: Request): Promise<Response> {
  */
 export async function handleZMTPHandshake(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -643,7 +677,7 @@ export async function handleZMTPHandshake(request: Request): Promise<Response> {
     const socketType = body.socketType || 'DEALER';
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }

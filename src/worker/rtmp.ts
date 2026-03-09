@@ -56,6 +56,12 @@ const CSID_CMD       = 3;   // AMF command channel
 const CSID_DATA      = 4;   // Audio/video/data
 
 // RTMP default chunk size (before negotiation)
+// NOTE: This is module-level mutable state. Each handler resets it at the start
+// of a connection. In Cloudflare Workers, concurrent requests within one isolate
+// could race on this value. The fix is to pass chunkSize as a parameter, but
+// that requires refactoring readRTMPMessage and all callers. For now, each handler
+// resets it at connection start, which is safe for the overwhelmingly common
+// single-concurrent-request case. A full fix would use a per-connection context object.
 let remoteChunkSize = 128;
 
 // ─── AMF0 Encoding ────────────────────────────────────────────────────────────
@@ -328,25 +334,43 @@ function buildAMF0Command(name: string, txId: number, ...args: AMF0Value[]): Uin
 
 // ─── Socket I/O Helpers ───────────────────────────────────────────────────────
 
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
-  while (offset < length) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed while reading');
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
+/**
+ * Buffered reader that preserves leftover bytes between sequential reads.
+ * Prevents data loss when TCP delivers more bytes than a single readExact requests.
+ */
+class BufferedReader {
+  private leftover = new Uint8Array(0);
+  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
+
+  async readExact(length: number): Promise<Uint8Array> {
+    const buffer = new Uint8Array(length);
+    let offset = 0;
+
+    if (this.leftover.length > 0) {
+      const take = Math.min(this.leftover.length, length);
+      buffer.set(this.leftover.subarray(0, take), 0);
+      this.leftover = this.leftover.subarray(take);
+      offset = take;
+    }
+
+    while (offset < length) {
+      const { value, done } = await this.reader.read();
+      if (done || !value) throw new Error('Connection closed while reading');
+      const toCopy = Math.min(length - offset, value.length);
+      buffer.set(value.subarray(0, toCopy), offset);
+      offset += toCopy;
+
+      if (value.length > toCopy) {
+        this.leftover = value.slice(toCopy);
+      }
+    }
+    return buffer;
   }
-  return buffer;
 }
 
 /** Read incoming RTMP chunks and reassemble a complete message */
 async function readRTMPMessage(
-  reader: ReadableStreamDefaultReader<Uint8Array>
+  br: BufferedReader
 ): Promise<RTMPMessage> {
   // Read chunks until a complete message is assembled
   // Track per-CSID state for chunk header continuation (fmt 1/2/3)
@@ -357,39 +381,39 @@ async function readRTMPMessage(
   let streamId = 0;
 
   // Read basic header (byte 0)
-  const bh = await readExact(reader, 1);
+  const bh = await br.readExact(1);
   const fmt = (bh[0] >> 6) & 0x3;
   csid = bh[0] & 0x3F;
 
   if (csid === 0) {
     // 2-byte basic header
-    const bh2 = await readExact(reader, 1);
+    const bh2 = await br.readExact(1);
     csid = bh2[0] + 64;
   } else if (csid === 1) {
     // 3-byte basic header
-    const bh3 = await readExact(reader, 2);
+    const bh3 = await br.readExact(2);
     csid = (bh3[1] * 256 + bh3[0]) + 64;
   }
 
   // Read message header based on fmt
   if (fmt === 0) {
-    const mh = await readExact(reader, 11);
+    const mh = await br.readExact(11);
     const mhv = new DataView(mh.buffer);
     timestamp = (mhv.getUint8(0) << 16) | (mhv.getUint8(1) << 8) | mhv.getUint8(2);
     msgLength = (mhv.getUint8(3) << 16) | (mhv.getUint8(4) << 8) | mhv.getUint8(5);
     typeId = mhv.getUint8(6);
     streamId = mhv.getUint32(7, true);
     if (timestamp === 0xFFFFFF) {
-      await readExact(reader, 4); // extended timestamp (skip)
+      await br.readExact(4); // extended timestamp (skip)
     }
   } else if (fmt === 1) {
-    const mh = await readExact(reader, 7);
+    const mh = await br.readExact(7);
     const mhv = new DataView(mh.buffer);
     timestamp = (mhv.getUint8(0) << 16) | (mhv.getUint8(1) << 8) | mhv.getUint8(2);
     msgLength = (mhv.getUint8(3) << 16) | (mhv.getUint8(4) << 8) | mhv.getUint8(5);
     typeId = mhv.getUint8(6);
   } else if (fmt === 2) {
-    const mh = await readExact(reader, 3);
+    const mh = await br.readExact(3);
     const mhv = new DataView(mh.buffer);
     timestamp = (mhv.getUint8(0) << 16) | (mhv.getUint8(1) << 8) | mhv.getUint8(2);
   }
@@ -402,13 +426,13 @@ async function readRTMPMessage(
 
   while (payloadRead < msgLength) {
     const toRead = Math.min(remoteChunkSize, msgLength - payloadRead);
-    const chunk = await readExact(reader, toRead);
+    const chunk = await br.readExact(toRead);
     payloadParts.push(chunk);
     payloadRead += toRead;
 
     if (payloadRead < msgLength) {
       // Read continuation chunk header (fmt=3, 1 byte basic header)
-      const contBh = await readExact(reader, 1);
+      const contBh = await br.readExact(1);
       const contFmt = (contBh[0] >> 6) & 0x3;
       // For fmt=3, no additional header bytes
       if (contFmt !== 3) {
@@ -446,7 +470,7 @@ function parseAMF0Response(payload: Uint8Array, typeId: number = MSG_AMF0_CMD): 
  * Returns reader/writer and the server's _result to the connect command
  */
 async function rtmpHandshakeAndConnect(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   writer: WritableStreamDefaultWriter<Uint8Array>,
   host: string,
   port: number,
@@ -464,12 +488,12 @@ async function rtmpHandshakeAndConnect(
   }
   await writer.write(c0c1);
 
-  const s0 = await readExact(reader, 1);
+  const s0 = await br.readExact(1);
   if (s0[0] !== RTMP_VERSION) {
     throw new Error(`Unexpected RTMP version: ${s0[0]}`);
   }
-  const s1 = await readExact(reader, HANDSHAKE_SIZE);
-  const s2 = await readExact(reader, HANDSHAKE_SIZE);
+  const s1 = await br.readExact(HANDSHAKE_SIZE);
+  const s2 = await br.readExact(HANDSHAKE_SIZE);
   void s2; // S2 is an echo of C1 -- we don't verify here
 
   // Send C2 (echo of S1)
@@ -502,7 +526,7 @@ async function rtmpHandshakeAndConnect(
 
   // ── Read server responses until we get _result for txId=1 ──
   for (let i = 0; i < 20; i++) {
-    const msg = await readRTMPMessage(reader);
+    const msg = await readRTMPMessage(br);
 
     if (msg.typeId === MSG_SET_CHUNK_SIZE) {
       const view = new DataView(msg.payload.buffer);
@@ -530,7 +554,7 @@ async function rtmpHandshakeAndConnect(
 
 /** Send createStream and return the stream ID */
 async function rtmpCreateStream(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   writer: WritableStreamDefaultWriter<Uint8Array>,
   txId: number
 ): Promise<number> {
@@ -540,7 +564,7 @@ async function rtmpCreateStream(
   }));
 
   for (let i = 0; i < 20; i++) {
-    const msg = await readRTMPMessage(reader);
+    const msg = await readRTMPMessage(br);
     if (msg.typeId === MSG_SET_CHUNK_SIZE) {
       const view = new DataView(msg.payload.buffer);
       remoteChunkSize = view.getUint32(0, false) & 0x7FFFFFFF;
@@ -569,6 +593,9 @@ async function rtmpCreateStream(
 
 export async function handleRTMPConnect(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -584,7 +611,7 @@ export async function handleRTMPConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -611,10 +638,11 @@ export async function handleRTMPConnect(request: Request): Promise<Response> {
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
-        const { connectResult } = await rtmpHandshakeAndConnect(reader, writer, host, port, app);
+        const { connectResult } = await rtmpHandshakeAndConnect(br, writer, host, port, app);
         const rtt = Date.now() - startTime;
 
         writer.releaseLock();
@@ -656,6 +684,9 @@ export async function handleRTMPConnect(request: Request): Promise<Response> {
 
 export async function handleRTMPPublish(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -672,6 +703,10 @@ export async function handleRTMPPublish(request: Request): Promise<Response> {
         success: false,
         error: 'Missing required parameters: host, streamKey',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -693,14 +728,15 @@ export async function handleRTMPPublish(request: Request): Promise<Response> {
       await socket.opened;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
         // Step 1: Handshake + connect
-        const { connectResult } = await rtmpHandshakeAndConnect(reader, writer, host, port, app);
+        const { connectResult } = await rtmpHandshakeAndConnect(br, writer, host, port, app);
 
         // Step 2: createStream
-        const streamId = await rtmpCreateStream(reader, writer, 2);
+        const streamId = await rtmpCreateStream(br, writer, 2);
 
         // Step 3: publish command
         // publish(txId=0, null, streamKey, publishType)
@@ -718,7 +754,7 @@ export async function handleRTMPPublish(request: Request): Promise<Response> {
         let publishStarted = false;
 
         for (let i = 0; i < 20 && !publishStarted; i++) {
-          const msg = await readRTMPMessage(reader);
+          const msg = await readRTMPMessage(br);
           if (msg.typeId === MSG_SET_CHUNK_SIZE) {
             const view = new DataView(msg.payload.buffer);
             remoteChunkSize = view.getUint32(0, false) & 0x7FFFFFFF;
@@ -806,6 +842,9 @@ export async function handleRTMPPublish(request: Request): Promise<Response> {
 
 export async function handleRTMPPlay(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -821,6 +860,10 @@ export async function handleRTMPPlay(request: Request): Promise<Response> {
         success: false,
         error: 'Missing required parameters: host, streamName',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -842,11 +885,12 @@ export async function handleRTMPPlay(request: Request): Promise<Response> {
       await socket.opened;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
         // Step 1: Handshake + connect
-        const { connectResult } = await rtmpHandshakeAndConnect(reader, writer, host, port, app);
+        const { connectResult } = await rtmpHandshakeAndConnect(br, writer, host, port, app);
 
         // Step 2: Set buffer length user control message (optional but good practice)
         // User Control: SetBufferLength (event 3), stream 1, buffer 3000ms
@@ -860,7 +904,7 @@ export async function handleRTMPPlay(request: Request): Promise<Response> {
         }));
 
         // Step 3: createStream
-        const streamId = await rtmpCreateStream(reader, writer, 2);
+        const streamId = await rtmpCreateStream(br, writer, 2);
 
         // Step 4: play command
         // play(txId=0, null, streamName, start=-1 for live)
@@ -880,7 +924,7 @@ export async function handleRTMPPlay(request: Request): Promise<Response> {
         let streamMetaData: AMF0Value = null;
 
         for (let i = 0; i < 30 && !playStarted; i++) {
-          const msg = await readRTMPMessage(reader);
+          const msg = await readRTMPMessage(br);
 
           if (msg.typeId === MSG_SET_CHUNK_SIZE) {
             const view = new DataView(msg.payload.buffer);

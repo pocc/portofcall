@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import ChecklistTab from './ChecklistTab';
 
@@ -7,7 +7,7 @@ type PopularityTier = 'ubiquitous' | 'common' | 'moderate' | 'rare' | 'niche';
 type ProtocolCategory = 'databases' | 'messaging' | 'email' | 'remote' | 'files' | 'web' | 'network' | 'specialty';
 
 interface ProtocolSelectorProps {
-  onSelect: (protocol: 'echo' | 'activeusers' | 'whois' | 'syslog' | 'socks4' | 'daytime' | 'finger' | 'time' | 'chargen' | 'gemini' | 'ftp' | 'ftps' | 'sftp' | 'ssh' | 'telnet' | 'smtp' | 'submission' | 'pop3' | 'imap' | 'mysql' | 'postgres' | 'redis' | 'mqtt' | 'ldap' | 'smb' | 'irc' | 'ircs' | 'gopher' | 'memcached' | 'dns' | 'stomp' | 'socks5' | 'modbus' | 'mongodb' | 'graphite' | 'git' | 'zookeeper' | 'amqp' | 'cassandra' | 'kafka' | 'rtsp' | 'rsync' | 'tds' | 'vnc' | 'spice' | 'battlenet' | 'neo4j' | 'rtmp' | 'tacacs' | 'hl7' | 'elasticsearch' | 'ajp' | 'rcon' | 'sourcercon' | 'nntp' | 'rdp' | 'xmpp' | 'nats' | 'jetdirect' | 'fastcgi' | 'diameter' | 'etcd' | 'consul' | 'influxdb' | 'bgp' | 'docker' | 'jupyter' | 'pptp' | 'dicom' | 'jsonrpc' | '9p' | 'thrift' | 'slp' | 'bittorrent' | 'x11' | 'kerberos' | 'sccp' | 'matrix' | 'cdp' | 'node-inspector' | 'dap' | 'iscsi' | 'websocket' | 'h323' | 'dot' | 'soap' | 'openvpn' | 'dict' | 'sip' | 'qotd' | 'lpd' | 'discard' | 'minecraft' | 'zabbix' | 'ident' | 'oracle-tns' | 'mpd' | 'beanstalkd' | 'clamav' | 'lmtp' | 'managesieve' | 'couchdb' | 'ipp' | 'svn' | 'smpp' | 'teamspeak' | 'radius' | 'nrpe' | 'rlogin' | 's7comm' | 'snpp' | 'rethinkdb' | 'clickhouse' | 'gearman' | 'ethernetip' | 'prometheus' | 'portmapper' | 'relp' | 'adb' | 'dnp3' | 'fluentd' | 'stun' | 'rexec' | 'rsh' | 'fix' | 'aerospike' | 'epmd' | 'epp' | 'tarantool' | 'vault' | 'solr' | 'iec104' | 'riak' | 'opentsdb' | 'bitcoin' | 'spamd' | 'nsq' | 'opcua' | 'zmtp' | 'munin' | 'sane' | 'ceph' | 'httpproxy' | 'varnish' | 'fins' | 'couchbase' | 'ami' | 'jdwp' | 'drda' | 'livestatus' | 'dcerpc' | 'nsca' | 'imaps' | 'loki' | 'openflow' | 'pjlink' | 'icecast' | 'meilisearch' | 'haproxy' | 'rmi' | 'nbd' | 'ganglia' | 'netbios' | 'pop3s' | 'smtps' | 'pcep' | 'winrm' | 'uwsgi' | 'torcontrol' | 'gpsd' | 'ldaps' | 'kibana' | 'grafana' | 'rserve' | 'sonic' | 'sentinel' | 'nntps' | 'rabbitmq' | 'cvs' | 'amqps' | 'nomad' | 'ldp-mpls' | 'firebird' | 'hazelcast' | 'ignite' | 'beats' | 'coap' | 'msrp' | 'radsec' | 'sips' | 'gadugadu' | 'napster' | 'ventrilo' | 'oscar' | 'ymsg' | 'msn' | 'jabber-component' | 'xmpp-s2s' | 'informix' | 'sybase' | 'shoutcast' | 'realaudio' | 'mms' | 'mumble' | 'ike' | 'l2tp' | 'turn' | 'kubernetes' | 'activemq' | 'uucp' | 'perforce' | 'quake3' | 'collectd' | 'ethereum' | 'ipfs' | 'tcp' | 'lsp' | 'maxdb' | 'nfs' | 'mgcp' | 'cifs' | 'doh' | 'ipmi' | 'scp' | 'spdy' | 'shadowsocks') => void;
+  onSelect: (protocol: 'echo' | 'activeusers' | 'whois' | 'syslog' | 'socks4' | 'daytime' | 'finger' | 'time' | 'chargen' | 'gemini' | 'ftp' | 'ftps' | 'sftp' | 'ssh' | 'telnet' | 'smtp' | 'submission' | 'pop3' | 'imap' | 'mysql' | 'postgres' | 'redis' | 'mqtt' | 'ldap' | 'smb' | 'irc' | 'ircs' | 'gopher' | 'memcached' | 'dns' | 'stomp' | 'socks5' | 'modbus' | 'mongodb' | 'graphite' | 'git' | 'zookeeper' | 'amqp' | 'cassandra' | 'kafka' | 'rtsp' | 'rsync' | 'tds' | 'vnc' | 'spice' | 'battlenet' | 'neo4j' | 'rtmp' | 'tacacs' | 'hl7' | 'elasticsearch' | 'ajp' | 'rcon' | 'sourcercon' | 'nntp' | 'rdp' | 'xmpp' | 'nats' | 'jetdirect' | 'fastcgi' | 'diameter' | 'etcd' | 'consul' | 'influxdb' | 'bgp' | 'docker' | 'jupyter' | 'pptp' | 'dicom' | 'jsonrpc' | '9p' | 'thrift' | 'slp' | 'bittorrent' | 'x11' | 'kerberos' | 'sccp' | 'matrix' | 'cdp' | 'node-inspector' | 'dap' | 'iscsi' | 'websocket' | 'h323' | 'dot' | 'soap' | 'openvpn' | 'dict' | 'sip' | 'qotd' | 'lpd' | 'discard' | 'minecraft' | 'zabbix' | 'ident' | 'oracle-tns' | 'mpd' | 'beanstalkd' | 'clamav' | 'lmtp' | 'managesieve' | 'couchdb' | 'ipp' | 'svn' | 'smpp' | 'teamspeak' | 'radius' | 'nrpe' | 'rlogin' | 's7comm' | 'snpp' | 'rethinkdb' | 'clickhouse' | 'gearman' | 'ethernetip' | 'prometheus' | 'portmapper' | 'relp' | 'adb' | 'dnp3' | 'fluentd' | 'stun' | 'rexec' | 'rsh' | 'fix' | 'aerospike' | 'epmd' | 'epp' | 'tarantool' | 'vault' | 'solr' | 'iec104' | 'riak' | 'opentsdb' | 'bitcoin' | 'spamd' | 'nsq' | 'opcua' | 'zmtp' | 'munin' | 'sane' | 'ceph' | 'httpproxy' | 'varnish' | 'fins' | 'couchbase' | 'ami' | 'jdwp' | 'drda' | 'livestatus' | 'dcerpc' | 'nsca' | 'imaps' | 'loki' | 'openflow' | 'pjlink' | 'icecast' | 'meilisearch' | 'haproxy' | 'rmi' | 'nbd' | 'ganglia' | 'netbios' | 'pop3s' | 'smtps' | 'pcep' | 'winrm' | 'uwsgi' | 'torcontrol' | 'gpsd' | 'ldaps' | 'kibana' | 'grafana' | 'rserve' | 'sonic' | 'sentinel' | 'nntps' | 'rabbitmq' | 'cvs' | 'amqps' | 'nomad' | 'ldp-mpls' | 'firebird' | 'hazelcast' | 'ignite' | 'beats' | 'coap' | 'msrp' | 'radsec' | 'sips' | 'gadugadu' | 'napster' | 'ventrilo' | 'oscar' | 'ymsg' | 'msn' | 'jabber-component' | 'xmpp-s2s' | 'informix' | 'sybase' | 'shoutcast' | 'realaudio' | 'mms' | 'mumble' | 'ike' | 'l2tp' | 'turn' | 'kubernetes' | 'activemq' | 'uucp' | 'perforce' | 'quake3' | 'collectd' | 'ethereum' | 'ipfs' | 'tcp' | 'lsp' | 'maxdb' | 'nfs' | 'mgcp' | 'cifs' | 'doh' | 'ipmi' | 'scp' | 'spdy' | 'shadowsocks' | 'oracle' | 'afp') => void;
 }
 
 const popularityConfig: Record<PopularityTier, { width: number; barColor: string; textColor: string; label: string }> = {
@@ -69,7 +69,7 @@ const nonImplementableRFCs: RFCEntry[] = [
   { name: 'IGMP', icon: '📢', rfc: '1112', year: 1989, description: 'Internet Group Management Protocol - IP multicast group management', workersCompatible: false, reason: 'Layer 3 protocol, requires multicast support', layer: 'L3' },
   { name: 'IPsec', icon: '🔐', rfc: '4301', year: 2005, description: 'Internet Protocol Security - Network layer encryption and authentication', workersCompatible: false, reason: 'Layer 3 protocol, requires raw IP packet manipulation', layer: 'L3' },
   { name: 'OSPF', icon: '🗺️', rfc: '2328', year: 1998, description: 'Open Shortest Path First - Interior gateway routing protocol', workersCompatible: false, reason: 'Layer 3 routing protocol, requires raw IP access', layer: 'L3' },
-  { name: 'RIP', icon: '🗺️', rfc: '2453', year: 1998, description: 'Routing Information Protocol - Distance-vector routing protocol', workersCompatible: false, reason: 'Layer 3 routing protocol, uses UDP', layer: 'L3' },
+  { name: 'RIP (UDP)', icon: '🗺️', rfc: '2453', year: 1998, description: 'Routing Information Protocol over UDP - Distance-vector routing protocol (TCP variant implemented)', workersCompatible: false, reason: 'Native UDP form not available on Workers; TCP variant is implemented', layer: 'L3' },
   { name: 'GRE', icon: '🚇', rfc: '2784', year: 2000, description: 'Generic Routing Encapsulation - IP tunneling protocol', workersCompatible: false, reason: 'Layer 3 protocol, requires raw IP packet manipulation', layer: 'L3' },
   { name: 'IS-IS', icon: '🗺️', rfc: '1142', year: 1990, description: 'Intermediate System to Intermediate System - Link-state routing protocol', workersCompatible: false, reason: 'Layer 3 routing protocol, operates directly on data link layer', layer: 'L3' },
 
@@ -77,8 +77,7 @@ const nonImplementableRFCs: RFCEntry[] = [
   { name: 'DHCP', icon: '📋', rfc: '2131', year: 1997, description: 'Dynamic Host Configuration Protocol - Automatic IP address assignment', workersCompatible: false, reason: 'UDP-based protocol, Workers only supports TCP', layer: 'L4/L7' },
   { name: 'DHCPv6', icon: '📋', rfc: '8415', year: 2018, description: 'Dynamic Host Configuration Protocol for IPv6', workersCompatible: false, reason: 'UDP-based protocol, Workers only supports TCP', layer: 'L4/L7' },
   { name: 'TFTP', icon: '📁', rfc: '1350', year: 1992, description: 'Trivial File Transfer Protocol - Simple file transfer over UDP', workersCompatible: false, reason: 'UDP-based protocol, Workers only supports TCP', layer: 'L4/L7' },
-  { name: 'NTP', icon: '⏰', rfc: '5905', year: 2010, description: 'Network Time Protocol - Clock synchronization over UDP', workersCompatible: false, reason: 'UDP-based protocol, Workers only supports TCP', layer: 'L4/L7' },
-  { name: 'SNMP', icon: '📊', rfc: '1157', year: 1990, description: 'Simple Network Management Protocol - Network device monitoring', workersCompatible: false, reason: 'Primarily UDP-based, Workers only supports TCP', layer: 'L4/L7' },
+  // NTP and SNMP omitted — both are implemented over TCP (NTP RFC 5905 §7.2, SNMP RFC 3430)
   { name: 'RTP', icon: '🎵', rfc: '3550', year: 2003, description: 'Real-time Transport Protocol - Audio/video streaming over UDP', workersCompatible: false, reason: 'UDP-based protocol, Workers only supports TCP', layer: 'L4/L7' },
   { name: 'QUIC', icon: '⚡', rfc: '9000', year: 2021, description: 'Quick UDP Internet Connections - Modern transport protocol (HTTP/3)', workersCompatible: false, reason: 'UDP-based protocol, Workers only supports TCP', layer: 'L4/L7' },
   { name: 'SCTP', icon: '📦', rfc: '4960', year: 2007, description: 'Stream Control Transmission Protocol - Alternative to TCP/UDP', workersCompatible: false, reason: 'Separate L4 protocol, Workers only supports TCP', layer: 'L4/L7' },
@@ -104,7 +103,7 @@ export const protocols = [
   { id: 'sftp' as const, name: 'SFTP', description: 'SSH File Transfer Protocol - Secure file transfer and remote file system access over SSH', port: 22, icon: '📂', features: ['SSH subsystem probe', 'Server capability detection', 'Secure channel verification'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'files' as ProtocolCategory, year: 2006 },
   { id: 'ssh' as const, name: 'SSH', description: 'Secure Shell - Execute commands on remote servers', port: 22, icon: '🔐', features: ['Private key authentication', 'Password authentication', 'Encrypted connection'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'remote' as ProtocolCategory , year: 1995, lastUpdated: 2025, implementations: [{name: 'OpenSSH 9.9p2', url: 'https://www.openssh.com/'}] },
   { id: 'telnet' as const, name: 'Telnet', description: 'Telnet Protocol - Unencrypted text-based terminal protocol', port: 23, icon: '📟', features: ['Interactive terminal', 'Command execution', 'WebSocket tunnel'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'remote' as ProtocolCategory , year: 1983 },
-  { id: 'smtp' as const, name: 'SMTP', description: 'Simple Mail Transfer Protocol - Send emails via SMTP servers', port: 587, icon: '📧', features: ['Email sending', 'AUTH LOGIN support', 'Multiple ports (25/587/465)'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'email' as ProtocolCategory , year: 1982 },
+  { id: 'smtp' as const, name: 'SMTP', description: 'Simple Mail Transfer Protocol - Send emails via SMTP servers', port: 25, icon: '📧', features: ['Email sending', 'AUTH LOGIN support', 'Multiple ports (25/587/465)'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'email' as ProtocolCategory , year: 1982 },
   { id: 'submission' as const, name: 'Submission', description: 'Message Submission Protocol (RFC 6409) - Authenticated mail submission on port 587 with STARTTLS', port: 587, icon: '📮', features: ['STARTTLS support', 'Authenticated submission', 'AUTH before MAIL FROM', 'RFC 6409 compliance'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'email' as ProtocolCategory , year: 2011 },
   { id: 'pop3' as const, name: 'POP3', description: 'Post Office Protocol v3 - Retrieve emails from mail servers', port: 110, icon: '📬', features: ['Email retrieval', 'Message listing', 'Mailbox management'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'email' as ProtocolCategory , year: 1996 },
   { id: 'imap' as const, name: 'IMAP', description: 'Internet Message Access Protocol - Advanced email management', port: 143, icon: '📮', features: ['Multiple folders', 'Server-side organization', 'Message flags'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'email' as ProtocolCategory , year: 2003 },
@@ -114,6 +113,7 @@ export const protocols = [
   { id: 'mqtt' as const, name: 'MQTT', description: 'MQTT Protocol - Lightweight IoT messaging protocol', port: 1883, icon: '📡', features: ['Publish/subscribe', 'MQTT 3.1.1', 'Username/password auth'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 1999 },
   { id: 'ldap' as const, name: 'LDAP', description: 'LDAP Protocol - Directory services and authentication', port: 389, icon: '📂', features: ['BIND operation', 'Anonymous/authenticated bind', 'ASN.1/BER encoding'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'network' as ProtocolCategory , year: 1993 },
   { id: 'ldaps' as const, name: 'LDAPS', description: 'LDAP over TLS - Secure directory services with implicit TLS', port: 636, icon: '🔒', features: ['Implicit TLS encryption', 'Secure bind (anonymous/authenticated)', 'Base DN search over TLS'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'network' as ProtocolCategory , year: 1997 },
+  { id: 'afp' as const, name: 'AFP', description: 'Apple Filing Protocol - macOS/Classic Mac OS network file sharing and remote file system access', port: 548, icon: '🍎', features: ['Server info & version detection', 'Volume enumeration', 'File browser & authentication'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'files' as ProtocolCategory, year: 1986 },
   { id: 'smb' as const, name: 'SMB', description: 'SMB Protocol - Windows file sharing and network communication', port: 445, icon: '💾', features: ['SMB2/SMB3 negotiation', 'Protocol dialect detection', 'Connectivity testing'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'files' as ProtocolCategory , year: 1984 },
   { id: 'irc' as const, name: 'IRC', description: 'IRC Protocol (RFC 2812) - Real-time internet relay chat', port: 6667, icon: '💬', features: ['Channel chat', 'Private messaging', 'Interactive WebSocket session'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 1988 },
   { id: 'ircs' as const, name: 'IRCS', description: 'IRC over TLS (RFC 7194) - Encrypted real-time internet relay chat with implicit TLS on port 6697', port: 6697, icon: '🔐', features: ['Implicit TLS encryption', 'Channel chat', 'Private messaging', 'Interactive WebSocket session'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 2000 },
@@ -198,11 +198,11 @@ export const protocols = [
   { id: 'sip' as const, name: 'SIP', description: 'SIP Protocol (RFC 3261) - VoIP and multimedia session signaling', port: 5060, icon: '📱', features: ['OPTIONS capability probe', 'REGISTER auth detection', 'Server agent fingerprinting'], status: 'active' as ProtocolStatus, popularity: 'ubiquitous' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1999 },
   { id: 'qotd' as const, name: 'QOTD', description: 'Quote of the Day (RFC 865) - Random quotes from remote servers', port: 17, icon: '💬', features: ['Zero-command protocol', 'Completes classic RFC simple services', 'Network connectivity test'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1983 },
   { id: 'lpd' as const, name: 'LPD', description: 'Line Printer Daemon (RFC 1179) - Classic Unix network printing protocol', port: 515, icon: '🖨️', features: ['Print queue status query', 'Short & long format listing', 'Printer name discovery'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1987 },
-  { id: 'discard' as const, name: 'DISCARD', description: 'DISCARD Protocol (RFC 863) - Send data into a silent black hole for network testing', port: 9, icon: '🕳️', features: ['Bandwidth/throughput testing', 'Connection verification', 'Complement to ECHO (RFC 862)'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 1983 },
   { id: 'minecraft' as const, name: 'Minecraft SLP', description: 'Minecraft Server List Ping - Query server status, players, version, and MOTD', port: 25565, icon: '⛏️', features: ['Server status & MOTD', 'Player count & list', 'Version & latency check'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 2009 },
   { id: 'zabbix' as const, name: 'Zabbix', description: 'Zabbix Protocol - Network monitoring server and agent connectivity testing', port: 10051, icon: '📊', features: ['Server probe (active checks)', 'Agent item queries', 'ZBXD binary header protocol'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'network' as ProtocolCategory , year: 2001 },
   { id: 'ident' as const, name: 'IDENT', description: 'IDENT Protocol (RFC 1413) - TCP connection user identification for IRC and mail servers', port: 113, icon: '🪪', features: ['User ID lookup by port pair', 'OS type detection', 'IRC/SMTP auth verification'], status: 'deprecated' as ProtocolStatus, popularity: 'rare' as PopularityTier, category: 'network' as ProtocolCategory , year: 1993 },
   { id: 'oracle-tns' as const, name: 'Oracle TNS', description: 'Oracle TNS Protocol - Oracle Database listener detection and service connectivity testing', port: 1521, icon: '🔶', features: ['TNS Connect handshake', 'Listener & version detection', 'Service name probe'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory , year: 1990 },
+  { id: 'oracle' as const, name: 'Oracle Database', description: 'Oracle Database Client - Full SQL query execution and schema browsing over TNS', port: 1521, icon: '🔶', features: ['SQL query execution', 'Schema & table browsing', 'Database identification'], status: 'active' as ProtocolStatus, popularity: 'common' as PopularityTier, category: 'databases' as ProtocolCategory, year: 1990 },
   { id: 'mpd' as const, name: 'MPD', description: 'Music Player Daemon - Server-side music player with text-based control protocol', port: 6600, icon: '🎵', features: ['Playback status & stats', 'Current song metadata', 'Audio output discovery'], status: 'niche' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 2003 },
   { id: 'beanstalkd' as const, name: 'Beanstalkd', description: 'Beanstalkd Work Queue - Fast text-based job queue for distributing time-consuming tasks', port: 11300, icon: '🫘', features: ['Server stats & version', 'Tube listing & stats', 'Read-only job inspection'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'messaging' as ProtocolCategory , year: 2007 },
   { id: 'clamav' as const, name: 'ClamAV', description: 'ClamAV Daemon Protocol - Open-source antivirus engine health and version checking', port: 3310, icon: '🛡️', features: ['PING/PONG health check', 'Version & DB info', 'Thread pool statistics'], status: 'active' as ProtocolStatus, popularity: 'moderate' as PopularityTier, category: 'specialty' as ProtocolCategory , year: 2001 },
@@ -317,16 +317,67 @@ export const protocols = [
 ];
 
 type SortOption = 'popularity' | 'year-asc' | 'year-desc' | 'port-asc' | 'port-desc';
+type ViewMode = 'cards' | 'compact' | 'grid';
+
+const tabHashes = ['about', 'rfcs', 'checklist'] as const;
+type TabType = 'protocols' | 'about' | 'rfcs' | 'checklist';
+
+function getTabFromHash(): TabType {
+  const hash = window.location.hash.replace('#', '');
+  if (tabHashes.includes(hash as typeof tabHashes[number])) return hash as TabType;
+  return 'protocols';
+}
 
 export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
   const { theme } = useTheme();
   const isRetro = theme === 'retro';
-  const [activeTab, setActiveTab] = useState<'protocols' | 'about' | 'rfcs' | 'checklist'>('protocols');
+  const [activeTab, setActiveTab] = useState<TabType>(getTabFromHash);
   const [selectedCategory, setSelectedCategory] = useState<'all' | ProtocolCategory>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deprecated'>('all');
   const [sortBy, setSortBy] = useState<SortOption>('popularity');
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem('portofcall-view') as ViewMode) || 'cards');
   const [rfcSortBy, setRfcSortBy] = useState<'rfc' | 'year' | null>(null);
   const [rfcSortDirection, setRfcSortDirection] = useState<'asc' | 'desc'>('asc');
+
+  const changeViewMode = useCallback((mode: ViewMode) => {
+    setViewMode(mode);
+    localStorage.setItem('portofcall-view', mode);
+  }, []);
+
+  const switchTab = useCallback((tab: TabType) => {
+    setActiveTab(tab);
+    if (tab === 'protocols') {
+      history.pushState(null, '', window.location.pathname);
+    } else {
+      window.location.hash = tab;
+    }
+  }, []);
+
+  useEffect(() => {
+    const onHashChange = () => setActiveTab(getTabFromHash());
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Focus search with / key (power user shortcut)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === '/' && activeTab === 'protocols' && !e.ctrlKey && !e.metaKey) {
+        const tag = (e.target as HTMLElement)?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+        e.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (e.key === 'Escape' && document.activeElement === searchRef.current) {
+        setSearchQuery('');
+        searchRef.current?.blur();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeTab]);
 
   const filteredProtocols = protocols
     .filter(p => selectedCategory === 'all' || p.category === selectedCategory)
@@ -334,6 +385,17 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
       if (statusFilter === 'all') return true;
       if (statusFilter === 'active') return p.status !== 'deprecated';
       return p.status === 'deprecated';
+    })
+    .filter(p => {
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.id.toLowerCase().includes(q) ||
+        p.description.toLowerCase().includes(q) ||
+        p.port.toString() === q ||
+        p.features.some(f => f.toLowerCase().includes(q))
+      );
     });
 
   const sortedProtocols = [...filteredProtocols].sort((a, b) => {
@@ -384,14 +446,14 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
           <p className={`text-xl ${isRetro ? 'retro-text' : 'text-slate-300'}`}>
             {isRetro ? '> ' : ''}TCP PROTOCOL CLIENT TESTING INTERFACE
           </p>
-          <a
-            href="#about"
+          <button
+            onClick={() => switchTab('about')}
             className={`text-xl ${isRetro ? 'retro-link' : 'hover:scale-110 transition-transform'}`}
             title="About this tool"
             aria-label="About this tool"
           >
             ℹ️
-          </a>
+          </button>
         </div>
         <p className={`text-2xl font-bold mt-3 ${isRetro ? 'retro-text retro-glow' : 'text-blue-400'}`}>
           {totalCount} Protocols Available
@@ -412,7 +474,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         {/* Tab Navigation */}
         <div className="mt-8 flex justify-center gap-2">
           <button
-            onClick={() => setActiveTab('protocols')}
+            onClick={() => switchTab('protocols')}
             className={`px-6 py-3 font-semibold transition-all duration-200 ${
               isRetro
                 ? `retro-button ${activeTab === 'protocols' ? 'retro-glow retro-text' : 'retro-text-amber'}`
@@ -428,7 +490,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
             {isRetro ? (activeTab === 'protocols' ? ' <<' : '') : ''}
           </button>
           <button
-            onClick={() => setActiveTab('about')}
+            onClick={() => switchTab('about')}
             className={`px-6 py-3 font-semibold transition-all duration-200 ${
               isRetro
                 ? `retro-button ${activeTab === 'about' ? 'retro-glow retro-text' : 'retro-text-amber'}`
@@ -444,7 +506,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
             {isRetro ? (activeTab === 'about' ? ' <<' : '') : ''}
           </button>
           <button
-            onClick={() => setActiveTab('rfcs')}
+            onClick={() => switchTab('rfcs')}
             className={`px-6 py-3 font-semibold transition-all duration-200 ${
               isRetro
                 ? `retro-button ${activeTab === 'rfcs' ? 'retro-glow retro-text' : 'retro-text-amber'}`
@@ -460,7 +522,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
             {isRetro ? (activeTab === 'rfcs' ? ' <<' : '') : ''}
           </button>
           <button
-            onClick={() => setActiveTab('checklist')}
+            onClick={() => switchTab('checklist')}
             className={`px-6 py-3 font-semibold transition-all duration-200 ${
               isRetro
                 ? `retro-button ${activeTab === 'checklist' ? 'retro-glow retro-text' : 'retro-text-amber'}`
@@ -520,8 +582,51 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         </div>
       </div>
 
+      {/* Search Bar */}
+      <div className="mb-6 max-w-md mx-auto">
+        <div className="relative">
+          <input
+            ref={searchRef}
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search protocols by name, port, or feature..."
+            aria-label="Search protocols"
+            className={`w-full px-4 py-2.5 pl-10 ${
+              isRetro
+                ? 'retro-input bg-black border-green-500 text-green-400 placeholder-green-700 font-mono'
+                : 'bg-slate-700 border border-slate-600 rounded-lg text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+            }`}
+          />
+          <span className={`absolute left-3 top-1/2 -translate-y-1/2 ${isRetro ? 'text-green-600' : 'text-slate-400'}`} aria-hidden="true">
+            {isRetro ? '>' : '🔍'}
+          </span>
+          {searchQuery && (
+            <button
+              onClick={() => { setSearchQuery(''); searchRef.current?.focus(); }}
+              className={`absolute right-2 top-1/2 -translate-y-1/2 px-2 py-0.5 text-xs ${
+                isRetro ? 'retro-text-amber' : 'text-slate-400 hover:text-white'
+              }`}
+              aria-label="Clear search"
+            >
+              {isRetro ? '[CLR]' : '✕'}
+            </button>
+          )}
+          {!searchQuery && (
+            <span className={`absolute right-3 top-1/2 -translate-y-1/2 text-xs ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>
+              {isRetro ? '[/]' : 'Press / to search'}
+            </span>
+          )}
+        </div>
+        {searchQuery && (
+          <p className={`text-xs mt-1.5 text-center ${isRetro ? 'retro-text-amber' : 'text-slate-400'}`}>
+            {sortedProtocols.length} result{sortedProtocols.length !== 1 ? 's' : ''} for "{searchQuery}"
+          </p>
+        )}
+      </div>
+
       {/* Category Filter Bar */}
-      <div className="mb-8 flex flex-wrap justify-center gap-2">
+      <div className="mb-8 flex flex-nowrap justify-center gap-2 overflow-x-auto pb-1">
         {categoryKeys.map((key) => {
           const cfg = categoryConfig[key];
           const count = key === 'all' ? protocols.length : protocols.filter(p => p.category === key).length;
@@ -587,6 +692,105 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         </div>
       </div>
 
+      {/* View Mode Toggle */}
+      <div className="mb-6 flex justify-center gap-1">
+        {([
+          { mode: 'cards' as ViewMode, label: 'Cards', icon: '▦' },
+          { mode: 'compact' as ViewMode, label: 'Rows', icon: '☰' },
+          { mode: 'grid' as ViewMode, label: 'Grid', icon: '⊞' },
+        ]).map(({ mode, label, icon }) => (
+          <button
+            key={mode}
+            onClick={() => changeViewMode(mode)}
+            className={isRetro
+              ? `retro-button px-3 py-1 text-xs ${viewMode === mode ? 'retro-text font-bold' : 'retro-text-amber'}`
+              : `px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-150 ${
+                  viewMode === mode
+                    ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/25'
+                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 border border-slate-700'
+                }`
+            }
+            aria-pressed={viewMode === mode}
+          >
+            {isRetro ? `[${viewMode === mode ? '*' : ' '}] ${label}` : <><span aria-hidden="true">{icon}</span> {label}</>}
+          </button>
+        ))}
+      </div>
+
+      {/* === COMPACT ROWS VIEW === */}
+      {viewMode === 'compact' && (
+        <div className={`${isRetro ? 'retro-box' : 'bg-slate-800/50 rounded-xl border border-slate-700'} overflow-hidden`}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className={isRetro ? 'retro-border' : 'border-b border-slate-600 bg-slate-800'}>
+                <th className={`text-left py-2 px-3 ${isRetro ? 'retro-text' : 'text-slate-400 font-medium text-xs'}`}>Protocol</th>
+                <th className={`text-left py-2 px-3 ${isRetro ? 'retro-text' : 'text-slate-400 font-medium text-xs'}`}>Port</th>
+                <th className={`text-left py-2 px-3 hidden md:table-cell ${isRetro ? 'retro-text' : 'text-slate-400 font-medium text-xs'}`}>Category</th>
+                <th className={`text-left py-2 px-3 hidden lg:table-cell ${isRetro ? 'retro-text' : 'text-slate-400 font-medium text-xs'}`}>Popularity</th>
+                <th className={`text-left py-2 px-3 hidden xl:table-cell ${isRetro ? 'retro-text' : 'text-slate-400 font-medium text-xs'}`}>Year</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sortedProtocols.map((protocol, idx) => (
+                <tr
+                  key={protocol.id}
+                  onClick={() => onSelect(protocol.id)}
+                  className={`cursor-pointer transition-colors ${
+                    isRetro
+                      ? 'retro-border hover:bg-green-900/20'
+                      : `border-b border-slate-700/50 hover:bg-slate-700/50 ${idx % 2 === 0 ? 'bg-slate-800/30' : ''} ${protocol.status === 'deprecated' ? 'opacity-50' : ''}`
+                  }`}
+                >
+                  <td className="py-2 px-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg" aria-hidden="true">{protocol.icon}</span>
+                      <span className={`font-medium ${isRetro ? 'retro-text' : 'text-white'}`}>{protocol.name}</span>
+                      {protocol.status === 'deprecated' && <span className={`text-[9px] uppercase ${isRetro ? 'retro-text-amber' : 'text-red-400'}`}>DEP</span>}
+                    </div>
+                  </td>
+                  <td className={`py-2 px-3 font-mono text-xs ${isRetro ? 'retro-text-amber' : 'text-slate-400'}`}>{protocol.port}</td>
+                  <td className={`py-2 px-3 hidden md:table-cell text-xs ${isRetro ? 'retro-text' : 'text-slate-400'}`}>
+                    {categoryConfig[protocol.category]?.icon} {categoryConfig[protocol.category]?.label}
+                  </td>
+                  <td className="py-2 px-3 hidden lg:table-cell">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-16 h-1 rounded-full ${isRetro ? 'bg-slate-700' : 'bg-slate-700'} overflow-hidden`}>
+                        <div className={`h-full rounded-full ${popularityConfig[protocol.popularity].barColor}`} style={{ width: `${popularityConfig[protocol.popularity].width}%` }} />
+                      </div>
+                      <span className={`text-[10px] ${popularityConfig[protocol.popularity].textColor}`}>{popularityConfig[protocol.popularity].label}</span>
+                    </div>
+                  </td>
+                  <td className={`py-2 px-3 hidden xl:table-cell text-xs ${isRetro ? 'retro-text' : 'text-slate-500'}`}>{protocol.year}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* === SMALL CARDS GRID VIEW === */}
+      {viewMode === 'grid' && (
+        <div className={isRetro ? 'retro-grid' : 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-2'}>
+          {sortedProtocols.map(protocol => (
+            <button
+              key={protocol.id}
+              onClick={() => onSelect(protocol.id)}
+              className={isRetro
+                ? `retro-card retro-button text-center p-2 ${protocol.status === 'deprecated' ? 'opacity-50' : ''}`
+                : `bg-slate-800 hover:bg-slate-700 border ${protocol.status === 'deprecated' ? 'border-dashed border-slate-600 opacity-50' : 'border-slate-700'} rounded-lg p-3 text-center transition-all hover:scale-105 hover:shadow-lg focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:outline-none group`
+              }
+              title={`${protocol.name} — ${protocol.description}`}
+            >
+              <div className="text-2xl mb-1" aria-hidden="true">{protocol.icon}</div>
+              <div className={`text-xs font-semibold truncate ${isRetro ? 'retro-text' : 'text-white group-hover:text-blue-400'}`}>{protocol.name}</div>
+              <div className={`text-[10px] font-mono ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>:{protocol.port}</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* === ORIGINAL CARDS VIEW === */}
+      {viewMode === 'cards' && (
       <div className={isRetro ? 'retro-grid' : 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6'}>
         {(() => {
           const shownYearRanges = new Set<string>();
@@ -721,6 +925,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
         });
         })()}
       </div>
+      )}
         </>
       )}
 
@@ -751,7 +956,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                 </div>
               </div>
             </div>
-            <div className={`${isRetro ? 'retro-box' : 'bg-blue-900/30 border border-blue-600/50 rounded-lg'} p-6`}>
+            <div className={`${isRetro ? 'retro-box' : 'bg-blue-900/30 border border-blue-600/50 rounded-lg'} p-6 mb-6`}>
               <div className="flex items-start gap-3">
                 <span className={`${isRetro ? 'retro-text' : 'text-blue-400'} text-2xl`} aria-hidden="true">🌐</span>
                 <div>
@@ -761,6 +966,31 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                   <p className={`${isRetro ? 'retro-text' : 'text-blue-100/80'} text-sm leading-relaxed`}>
                     Built on Cloudflare Workers' TCP Sockets API, enabling direct TCP connections from the edge.
                     Each protocol implementation demonstrates real-world use cases and provides interactive testing capabilities.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className={`${isRetro ? 'retro-box' : 'bg-orange-900/30 border border-orange-600/50 rounded-lg'} p-6`}>
+              <div className="flex items-start gap-3">
+                <span className={`${isRetro ? 'retro-text' : 'text-orange-400'} text-2xl`} aria-hidden="true">🐳</span>
+                <div>
+                  <p className={`${isRetro ? 'retro-text font-bold' : 'text-orange-200'} text-lg font-semibold mb-2`}>
+                    Deploy Your Own Targets with Docker
+                  </p>
+                  <p className={`${isRetro ? 'retro-text' : 'text-orange-100/80'} text-sm leading-relaxed mb-3`}>
+                    Port of Call connects to <strong>your</strong> infrastructure. Deploy protocol servers on your VPS using Docker
+                    and point Port of Call at them. Run Redis, MySQL, SSH, MQTT, or any of the {totalCount} supported protocols
+                    as Docker containers, then test them from here.
+                  </p>
+                  <div className={`${isRetro ? 'retro-text-amber' : 'bg-slate-900/50 text-slate-300'} rounded p-3 text-xs font-mono`}>
+                    <div># Example: spin up a Redis target on your VPS</div>
+                    <div>docker run -d --name redis -p 6379:6379 redis:alpine</div>
+                    <div className="mt-1"># Then test it from Port of Call</div>
+                    <div>→ Host: your-vps.example.com, Port: 6379</div>
+                  </div>
+                  <p className={`${isRetro ? 'retro-text' : 'text-orange-100/60'} text-xs mt-3`}>
+                    Note: Port of Call itself runs on Cloudflare Workers (not Docker). It connects outbound to your targets via TCP.
+                    Targets behind Cloudflare proxy will be blocked — use direct IPs or gray-cloud DNS.
                   </p>
                 </div>
               </div>
@@ -868,7 +1098,7 @@ export default function ProtocolSelector({ onSelect }: ProtocolSelectorProps) {
                           {entry.implemented && entry.protocolId ? (
                             <button
                               onClick={() => onSelect(entry.protocolId as Parameters<typeof onSelect>[0])}
-                              className={`flex items-center gap-2 ${isRetro ? 'retro-link' : 'hover:text-blue-400 transition-colors'} text-left`}
+                              className={`flex items-center gap-2 ${isRetro ? 'retro-link' : 'text-blue-400 hover:text-blue-300 underline decoration-blue-400/40 hover:decoration-blue-300 underline-offset-2 transition-colors'} text-left`}
                             >
                               <span className="text-xl" aria-hidden="true">{entry.icon}</span>
                               <span className="whitespace-nowrap">{entry.name}</span>

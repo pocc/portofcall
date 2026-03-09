@@ -43,15 +43,17 @@ async function sendHttpGet(
 
   const writer = socket.writable.getWriter();
 
-  // Build HTTP/1.1 request
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  // Build HTTP/1.1 request — sanitize to prevent CRLF injection
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
 
   if (token) {
-    request += `X-Consul-Token: ${token}\r\n`;
+    request += `X-Consul-Token: ${token.replace(/[\r\n]/g, '')}\r\n`;
   }
 
   request += `\r\n`;
@@ -67,7 +69,12 @@ async function sendHttpGet(
     const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (readResult.done) break;
     if (readResult.value) {
-      response += decoder.decode(readResult.value, { stream: true });
+      const chunk = decoder.decode(readResult.value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -146,6 +153,11 @@ function decodeChunked(data: string): string {
  * - Service catalog (GET /v1/catalog/services) → registered services
  */
 export async function handleConsulHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 8500, token, timeout = 15000 } = await request.json<{
       host: string;
@@ -155,9 +167,14 @@ export async function handleConsulHealth(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -231,6 +248,11 @@ export async function handleConsulHealth(request: Request): Promise<Response> {
  * Lists all registered services with their tags.
  */
 export async function handleConsulServices(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 8500, token, timeout = 15000 } = await request.json<{
       host: string;
@@ -240,9 +262,14 @@ export async function handleConsulServices(request: Request): Promise<Response> 
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -308,8 +335,7 @@ async function sendConsulHttpRequest(
   body: string | null,
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
-  const { connect: tcpConnect } = await import('cloudflare:sockets' as string);
-  const socket = tcpConnect(`${host}:${port}`);
+  const socket = connect(`${host}:${port}`);
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
@@ -318,12 +344,14 @@ async function sendConsulHttpRequest(
   await Promise.race([socket.opened, timeoutPromise]);
 
   const writer = socket.writable.getWriter();
-  let req = `${method} ${path} HTTP/1.1\r\n`;
-  req += `Host: ${host}:${port}\r\n`;
+  const safeHost2 = host.replace(/[\r\n]/g, '');
+  const safePath2 = path.replace(/[\r\n]/g, '');
+  let req = `${method} ${safePath2} HTTP/1.1\r\n`;
+  req += `Host: ${safeHost2}:${port}\r\n`;
   req += `Accept: application/json\r\n`;
   req += `Connection: close\r\n`;
   req += `User-Agent: PortOfCall/1.0\r\n`;
-  if (token) req += `X-Consul-Token: ${token}\r\n`;
+  if (token) req += `X-Consul-Token: ${token.replace(/[\r\n]/g, '')}\r\n`;
   if (body !== null) {
     const bodyBytes = new TextEncoder().encode(body);
     req += `Content-Type: application/json\r\n`;
@@ -340,10 +368,18 @@ async function sendConsulHttpRequest(
   const reader = socket.readable.getReader();
   let response = '';
   const maxSize = 512000;
+  const httpDecoder = new TextDecoder();
   while (response.length < maxSize) {
     const res = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (res.done) break;
-    if (res.value) response += new TextDecoder().decode(res.value, { stream: true });
+    if (res.value) {
+      const chunk = httpDecoder.decode(res.value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
+    }
   }
   reader.releaseLock();
   socket.close();
@@ -373,15 +409,33 @@ async function sendConsulHttpRequest(
  * Body: { host, port?, key, token?, dc? }
  */
 export async function handleConsulKVGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const data = await request.json<{
       host: string; port?: number; key: string; token?: string; dc?: string; timeout?: number;
     }>();
     const { host, port = 8500, key, token, dc, timeout = 15000 } = data;
     if (!host || !key) {
-      return new Response(JSON.stringify({ error: 'Missing required parameters: host, key' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameters: host, key' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cfCheckKVGet = await checkIfCloudflare(host);
+    if (cfCheckKVGet.isCloudflare && cfCheckKVGet.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckKVGet.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
     let path = `/v1/kv/${encodeURIComponent(key)}`;
     if (dc) path += `?dc=${encodeURIComponent(dc)}`;
@@ -395,7 +449,8 @@ export async function handleConsulKVGet(request: Request): Promise<Response> {
         if (Array.isArray(arr) && arr.length > 0) {
           parsed = arr[0];
           if (parsed.Value) {
-            value = atob(parsed.Value);
+            const bytes = Uint8Array.from(atob(parsed.Value), c => c.charCodeAt(0));
+            value = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
           }
         }
       } catch { /* ignore */ }
@@ -427,15 +482,33 @@ export async function handleConsulKVGet(request: Request): Promise<Response> {
  * Body: { host, port?, key, value, token?, dc? }
  */
 export async function handleConsulKVPut(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const data = await request.json<{
       host: string; port?: number; key: string; value: string; token?: string; dc?: string; timeout?: number;
     }>();
     const { host, port = 8500, key, value = '', token, dc, timeout = 15000 } = data;
     if (!host || !key) {
-      return new Response(JSON.stringify({ error: 'Missing required parameters: host, key' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameters: host, key' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cfCheckKVPut = await checkIfCloudflare(host);
+    if (cfCheckKVPut.isCloudflare && cfCheckKVPut.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckKVPut.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
     let path = `/v1/kv/${encodeURIComponent(key)}`;
     if (dc) path += `?dc=${encodeURIComponent(dc)}`;
@@ -462,15 +535,33 @@ export async function handleConsulKVPut(request: Request): Promise<Response> {
  * Body: { host, port?, prefix, token?, dc? }
  */
 export async function handleConsulKVList(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const data = await request.json<{
       host: string; port?: number; prefix?: string; token?: string; dc?: string; timeout?: number;
     }>();
     const { host, port = 8500, prefix = '', token, dc, timeout = 15000 } = data;
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cfCheckKVList = await checkIfCloudflare(host);
+    if (cfCheckKVList.isCloudflare && cfCheckKVList.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckKVList.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
     let path = `/v1/kv/${encodeURIComponent(prefix)}?keys=true&separator=/`;
     if (dc) path += `&dc=${encodeURIComponent(dc)}`;
@@ -501,15 +592,33 @@ export async function handleConsulKVList(request: Request): Promise<Response> {
  * Body: { host, port?, key, token?, dc? }
  */
 export async function handleConsulKVDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const data = await request.json<{
       host: string; port?: number; key: string; token?: string; dc?: string; timeout?: number;
     }>();
     const { host, port = 8500, key, token, dc, timeout = 15000 } = data;
     if (!host || !key) {
-      return new Response(JSON.stringify({ error: 'Missing required parameters: host, key' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameters: host, key' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    const cfCheckKVDelete = await checkIfCloudflare(host);
+    if (cfCheckKVDelete.isCloudflare && cfCheckKVDelete.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckKVDelete.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
     let path = `/v1/kv/${encodeURIComponent(key)}`;
     if (dc) path += `?dc=${encodeURIComponent(dc)}`;
@@ -536,6 +645,11 @@ export async function handleConsulKVDelete(request: Request): Promise<Response> 
  * Returns health status for all instances of a named service.
  */
 export async function handleConsulServiceHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const data = await request.json<{
       host: string;
@@ -549,7 +663,12 @@ export async function handleConsulServiceHealth(request: Request): Promise<Respo
     const { host, port = 8500, serviceName, token, passing, dc, timeout = 10000 } = data;
 
     if (!host || !serviceName) {
-      return new Response(JSON.stringify({ error: 'Missing required parameters: host, serviceName' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameters: host, serviceName' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -623,6 +742,11 @@ export async function handleConsulServiceHealth(request: Request): Promise<Respo
  * Creates a new Consul session for distributed locking.
  */
 export async function handleConsulSessionCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const data = await request.json<{
       host: string;
@@ -636,7 +760,12 @@ export async function handleConsulSessionCreate(request: Request): Promise<Respo
     const { host, port = 8500, token, name, ttl, behavior = 'release', timeout = 10000 } = data;
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }

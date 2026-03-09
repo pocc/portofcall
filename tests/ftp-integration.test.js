@@ -5,7 +5,7 @@
  * Run with: node tests/ftp-integration.test.js
  */
 
-const API_BASE = 'https://portofcall.ross.gg/api/ftp';
+const API_BASE = 'https://l4.fyi/api/ftp';
 
 // Test server credentials
 const FTP_CONFIG = {

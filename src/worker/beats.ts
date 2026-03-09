@@ -33,6 +33,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface BeatsRequest {
   host: string;
@@ -147,6 +148,11 @@ function parseAckFrame(data: Uint8Array): number | null {
  * Send events using the Beats protocol.
  */
 export async function handleBeatsSend(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as BeatsRequest;
     const {
@@ -182,7 +188,7 @@ export async function handleBeatsSend(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -190,6 +196,20 @@ export async function handleBeatsSend(request: Request): Promise<Response> {
         error: 'Port must be between 1 and 65535',
       } satisfies BeatsResponse), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -302,6 +322,11 @@ interface BeatsTLSResponse {
  * Default port is 5045 (conventional TLS Beats port).
  */
 export async function handleBeatsTLS(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -343,7 +368,7 @@ export async function handleBeatsTLS(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         tls: true,
         host,
@@ -351,6 +376,20 @@ export async function handleBeatsTLS(request: Request): Promise<Response> {
         error: 'Port must be between 1 and 65535',
       } satisfies BeatsTLSResponse), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        tls: true,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -447,6 +486,11 @@ export async function handleBeatsTLS(request: Request): Promise<Response> {
  * Test Beats connection by sending a ping-like event.
  */
 export async function handleBeatsConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -462,6 +506,28 @@ export async function handleBeatsConnect(request: Request): Promise<Response> {
         error: 'Host is required',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

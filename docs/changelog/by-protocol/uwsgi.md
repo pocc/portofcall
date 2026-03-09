@@ -34,3 +34,8 @@ Created canonical review/spec document for packet structure, endpoint contract, 
 
 - [Protocol Stub](../../protocols/UWSGI.md)
 - [Worker Implementation](../../../src/worker/uwsgi.ts)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

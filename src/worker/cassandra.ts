@@ -143,6 +143,9 @@ function parseError(data: Uint8Array): { code: number; message: string } {
   const view = new DataView(data.buffer, data.byteOffset);
   const code = view.getInt32(0, false);
   const msgLen = view.getInt16(4, false);
+  if (6 + msgLen > data.length) {
+    throw new Error('Malformed response: length field exceeds buffer');
+  }
   const message = new TextDecoder().decode(data.slice(6, 6 + msgLen));
   return { code, message };
 }
@@ -173,34 +176,45 @@ function getOpcodeName(opcode: number): string {
 }
 
 /**
- * Read exactly `length` bytes from a reader, accumulating chunks
+ * BufferedReader retains unconsumed bytes between reads to prevent data loss
+ * when TCP delivers more bytes than a single readExact call requests.
  */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
+class BufferedReader {
+  private reader: ReadableStreamDefaultReader<Uint8Array>;
+  private buffer: Uint8Array = new Uint8Array(0);
 
-  while (offset < length) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed while reading');
-
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
+  constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    this.reader = reader;
   }
 
-  return buffer;
+  async readExact(length: number): Promise<Uint8Array> {
+    // Accumulate until we have enough bytes
+    while (this.buffer.length < length) {
+      const { value, done } = await this.reader.read();
+      if (done || !value) throw new Error('Connection closed while reading');
+      const merged = new Uint8Array(this.buffer.length + value.length);
+      merged.set(this.buffer);
+      merged.set(value, this.buffer.length);
+      this.buffer = merged;
+    }
+    // Extract requested bytes, retain the rest
+    const result = this.buffer.slice(0, length);
+    this.buffer = this.buffer.slice(length);
+    return result;
+  }
+
+  releaseLock(): void {
+    this.reader.releaseLock();
+  }
 }
 
 /**
  * Read a complete CQL frame (header + body)
  */
 async function readFrame(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  bufferedReader: BufferedReader,
 ): Promise<{ version: number; flags: number; stream: number; opcode: number; body: Uint8Array }> {
-  const header = await readExact(reader, FRAME_HEADER_SIZE);
+  const header = await bufferedReader.readExact(FRAME_HEADER_SIZE);
   const view = new DataView(header.buffer);
 
   const version = view.getUint8(0);
@@ -209,7 +223,11 @@ async function readFrame(
   const opcode = view.getUint8(4);
   const length = view.getInt32(5, false);
 
-  const body = length > 0 ? await readExact(reader, length) : new Uint8Array(0);
+  if (length < 0 || length > 10 * 1024 * 1024) {
+    throw new Error(`Cassandra frame length out of range: ${length} bytes`);
+  }
+
+  const body = length > 0 ? await bufferedReader.readExact(length) : new Uint8Array(0);
 
   return { version, flags, stream, opcode, body };
 }
@@ -219,6 +237,11 @@ async function readFrame(
  * Sends OPTIONS + STARTUP and returns server capabilities
  */
 export async function handleCassandraConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -238,7 +261,7 @@ export async function handleCassandraConnect(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -261,8 +284,9 @@ export async function handleCassandraConnect(request: Request): Promise<Response
       });
     }
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     const connectionPromise = (async () => {
@@ -272,12 +296,16 @@ export async function handleCassandraConnect(request: Request): Promise<Response
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const bufferedReader = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
         // Step 1: Send OPTIONS to discover supported features
+        // OPTIONS frame uses stream 0
+        const optionsStreamId = 0;
         await writer.write(buildOptionsFrame());
-        const optionsResponse = await readFrame(reader);
+        const optionsResponse = await readFrame(bufferedReader);
+        const optionsStreamMismatch = optionsResponse.stream !== optionsStreamId;
 
         let supportedOptions: Record<string, string[]> = {};
         if (optionsResponse.opcode === OPCODE_SUPPORTED) {
@@ -288,8 +316,11 @@ export async function handleCassandraConnect(request: Request): Promise<Response
         }
 
         // Step 2: Send STARTUP to initialize connection
+        // STARTUP frame uses stream 0
+        const startupStreamId = 0;
         await writer.write(buildStartupFrame());
-        const startupResponse = await readFrame(reader);
+        const startupResponse = await readFrame(bufferedReader);
+        const startupStreamMismatch = startupResponse.stream !== startupStreamId;
         const rtt = Date.now() - startTime;
 
         let authRequired = false;
@@ -314,6 +345,15 @@ export async function handleCassandraConnect(request: Request): Promise<Response
         // Determine protocol version from response
         const protocolVersion = optionsResponse.version & 0x7F; // mask off response bit
 
+        // Collect any stream ID mismatches as warnings
+        const streamWarnings: string[] = [];
+        if (optionsStreamMismatch) {
+          streamWarnings.push(`OPTIONS response stream ID (${optionsResponse.stream}) does not match request stream ID (${optionsStreamId})`);
+        }
+        if (startupStreamMismatch) {
+          streamWarnings.push(`STARTUP response stream ID (${startupResponse.stream}) does not match request stream ID (${startupStreamId})`);
+        }
+
         return {
           success: true,
           host,
@@ -327,15 +367,21 @@ export async function handleCassandraConnect(request: Request): Promise<Response
           authenticator: authenticator || undefined,
           startupError: startupError || undefined,
           startupResponse: getOpcodeName(startupResponse.opcode),
+          ...(streamWarnings.length > 0 && { warning: streamWarnings.join('; ') }),
         };
       } finally {
         try { writer.releaseLock(); } catch { /* ignored */ }
-        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { bufferedReader.releaseLock(); } catch { /* ignored */ }
         try { socket.close(); } catch { /* ignored */ }
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    let result;
+    try {
+      result = await Promise.race([connectionPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -395,6 +441,9 @@ interface CqlTypeInfo {
 function readCqlShortString(data: Uint8Array, offset: number): [string, number] {
   const view = new DataView(data.buffer, data.byteOffset);
   const len = view.getInt16(offset, false);
+  if (offset + 2 + len > data.length) {
+    throw new Error('Malformed response: length field exceeds buffer');
+  }
   const str = new TextDecoder().decode(data.slice(offset + 2, offset + 2 + len));
   return [str, offset + 2 + len];
 }
@@ -660,19 +709,21 @@ function buildAuthResponseFrame(username: string, password: string): Uint8Array 
   return buildFrame(OPCODE_AUTH_RESPONSE_FRAME, body, 2);
 }
 
-// Per-call stream ID generator (range 1-127, wraps around)
-let _nextStreamId = 1;
-const nextStreamId = (): number => {
-  const id = _nextStreamId;
-  _nextStreamId = (_nextStreamId % 127) + 1;
-  return id;
-};
+// Per-call stream ID generator factory (range 1-127, wraps around)
+function createStreamIdGenerator(): () => number {
+  let _nextStreamId = 1;
+  return () => {
+    const id = _nextStreamId;
+    _nextStreamId = (_nextStreamId % 127) + 1;
+    return id;
+  };
+}
 
 /**
  * Build a QUERY frame.
  * Body: [query_len 4B][query bytes][consistency 2B=ONE][flags 1B=0x00][page_size 4B=100]
  */
-function buildQueryFrame(cql: string, stream = nextStreamId()): Uint8Array {
+function buildQueryFrame(cql: string, stream: number): Uint8Array {
   const qBytes = new TextEncoder().encode(cql);
   const body = new Uint8Array(4 + qBytes.length + 7);
   const view = new DataView(body.buffer);
@@ -680,7 +731,7 @@ function buildQueryFrame(cql: string, stream = nextStreamId()): Uint8Array {
   view.setInt32(off, qBytes.length, false); off += 4;
   body.set(qBytes, off); off += qBytes.length;
   view.setInt16(off, 0x0001, false); off += 2;  // consistency ONE
-  body[off] = 0x00; off += 1;                   // flags none
+  body[off] = 0x04; off += 1;                   // flags: PAGE_SIZE (bit 2)
   view.setInt32(off, 100, false); off += 4;      // page_size 100
   return buildFrame(OPCODE_QUERY_EXEC, body.slice(0, off), stream);
 }
@@ -699,6 +750,13 @@ function parseResultRows(body: Uint8Array): {
   if (kind !== RESULT_KIND_ROWS) return { columns: [], rows: [] };
   const flags = view.getInt32(off, false); off += 4;
   const colCount = view.getInt32(off, false); off += 4;
+
+  // Skip paging state if Has_more_pages flag (0x0002) is set
+  if ((flags & 0x0002) !== 0) {
+    const psLen = view.getInt32(off, false); off += 4;
+    if (psLen > 0) off += psLen;
+  }
+
   const hasGlobal = (flags & 0x0001) !== 0;
   let gKs = '', gTbl = '';
   if (hasGlobal) {
@@ -751,6 +809,11 @@ function parseResultRows(body: Uint8Array): {
  * Protocol flow: OPTIONS -> STARTUP -> (AUTH_RESPONSE if needed) -> QUERY -> parse RESULT
  */
 export async function handleCassandraQuery(request: Request, _env: unknown): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -761,6 +824,16 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
       password?: string;
     };
     const { host, port = 9042, timeout = 15000, cql, username = '', password = '' } = body;
+    const nextStreamId = createStreamIdGenerator();
+
+    // Enforce read-only CQL — block DDL/DML to prevent data destruction
+    const ALLOWED_CQL_PREFIXES = /^\s*(SELECT|DESCRIBE|USE|SHOW)\b/i;
+    if (!ALLOWED_CQL_PREFIXES.test(cql)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only CQL is allowed (SELECT, DESCRIBE, USE)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
@@ -773,20 +846,35 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
       });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckQuery = await checkIfCloudflare(host);
+    if (cfCheckQuery.isCloudflare && cfCheckQuery.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheckQuery.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     const connectionPromise = (async () => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const reader = socket.readable.getReader();
+      const bufferedReader = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
       try {
         // Step 1: OPTIONS - discover server capabilities
         await writer.write(buildOptionsFrame());
-        const optResp = await readFrame(reader);
+        const optResp = await readFrame(bufferedReader);
         let supported: Record<string, string[]> = {};
         if (optResp.opcode === OPCODE_SUPPORTED) {
           supported = parseStringMultimap(optResp.body);
@@ -794,12 +882,12 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
 
         // Step 2: STARTUP - negotiate CQL version
         await writer.write(buildStartupFrame());
-        const startResp = await readFrame(reader);
+        const startResp = await readFrame(bufferedReader);
 
         if (startResp.opcode === OPCODE_AUTHENTICATE) {
           // Server requires auth - send SASL PLAIN credentials
           await writer.write(buildAuthResponseFrame(username, password));
-          const authResp = await readFrame(reader);
+          const authResp = await readFrame(bufferedReader);
           if (authResp.opcode !== OPCODE_AUTH_SUCCESS_RESP && authResp.opcode !== OPCODE_READY) {
             const msg = authResp.opcode === OPCODE_ERROR
               ? parseError(authResp.body).message
@@ -816,9 +904,11 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
         }
 
         // Step 3: QUERY - execute CQL and parse result
-        await writer.write(buildQueryFrame(cql));
-        const queryResp = await readFrame(reader);
+        const queryStreamId = nextStreamId();
+        await writer.write(buildQueryFrame(cql, queryStreamId));
+        const queryResp = await readFrame(bufferedReader);
         const rtt = Date.now() - startTime;
+        const queryStreamMismatch = queryResp.stream !== queryStreamId;
 
         if (queryResp.opcode === OPCODE_ERROR) {
           const err = parseError(queryResp.body);
@@ -826,6 +916,9 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
             success: false, host, port, rtt,
             error: `Query error: ${err.message} (code ${err.code})`,
             cqlVersions: supported['CQL_VERSION'] ?? [],
+            ...(queryStreamMismatch && {
+              warning: `QUERY response stream ID (${queryResp.stream}) does not match request stream ID (${queryStreamId}).`,
+            }),
           };
         }
 
@@ -839,15 +932,23 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
           success: true, host, port, rtt,
           cqlVersions: supported['CQL_VERSION'] ?? [],
           columns, rows, rowCount: rows.length,
+          ...(queryStreamMismatch && {
+            warning: `QUERY response stream ID (${queryResp.stream}) does not match request stream ID (${queryStreamId}). The response may belong to a different request.`,
+          }),
         };
       } finally {
         try { writer.releaseLock(); } catch { /* ignored */ }
-        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { bufferedReader.releaseLock(); } catch { /* ignored */ }
         try { socket.close(); } catch { /* ignored */ }
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    let result;
+    try {
+      result = await Promise.race([connectionPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
     return new Response(JSON.stringify(result), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     });
@@ -864,7 +965,7 @@ export async function handleCassandraQuery(request: Request, _env: unknown): Pro
 // ============================================================
 
 /** Build a PREPARE frame (opcode 0x09): long-string encoded CQL. */
-function buildPrepareFrame(cql: string, stream = nextStreamId()): Uint8Array {
+function buildPrepareFrame(cql: string, stream: number): Uint8Array {
   const qBytes = new TextEncoder().encode(cql);
   const body = new Uint8Array(4 + qBytes.length);
   new DataView(body.buffer).setInt32(0, qBytes.length, false);
@@ -890,7 +991,7 @@ function parsePreparedId(body: Uint8Array): Uint8Array | null {
 function buildExecuteFrame(
   preparedId: Uint8Array,
   values: string[],
-  stream = nextStreamId(),
+  stream: number,
 ): Uint8Array {
   // Header: short_bytes(preparedId) + consistency(2) + flags(1)
   // If values present, flags=0x01, then 2-byte count + [4-byte len + bytes]*
@@ -924,6 +1025,11 @@ function buildExecuteFrame(
  * Returns the prepared statement metadata + query result rows.
  */
 export async function handleCassandraPrepare(request: Request, _env: unknown): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
@@ -931,29 +1037,56 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
       username?: string; password?: string;
     };
     const { host, port = 9042, timeout = 15000, cql, values = [], username = '', password = '' } = body;
+    const nextStreamId = createStreamIdGenerator();
 
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!cql)  return new Response(JSON.stringify({ success: false, error: 'CQL is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    // Enforce read-only CQL — block DDL/DML to prevent data destruction
+    const ALLOWED_CQL_PREFIXES_PREPARE = /^\s*(SELECT|DESCRIBE|USE|SHOW)\b/i;
+    if (!ALLOWED_CQL_PREFIXES_PREPARE.test(cql)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only CQL is allowed (SELECT, DESCRIBE, USE)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckPrepare = await checkIfCloudflare(host);
+    if (cfCheckPrepare.isCloudflare && cfCheckPrepare.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheckPrepare.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
 
     const connectionPromise = (async () => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const reader = socket.readable.getReader();
+      const bufferedReader = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
       try {
         // OPTIONS + STARTUP + optional AUTH
         await writer.write(buildOptionsFrame());
-        const optResp = await readFrame(reader);
+        const optResp = await readFrame(bufferedReader);
         const supported: Record<string, string[]> = optResp.opcode === OPCODE_SUPPORTED ? parseStringMultimap(optResp.body) : {};
 
         await writer.write(buildStartupFrame());
-        const startResp = await readFrame(reader);
+        const startResp = await readFrame(bufferedReader);
         if (startResp.opcode === OPCODE_AUTHENTICATE) {
           await writer.write(buildAuthResponseFrame(username, password));
-          const authResp = await readFrame(reader);
+          const authResp = await readFrame(bufferedReader);
           if (authResp.opcode !== OPCODE_AUTH_SUCCESS_RESP && authResp.opcode !== OPCODE_READY) {
             throw new Error(`Authentication failed: ${authResp.opcode === OPCODE_ERROR ? parseError(authResp.body).message : getOpcodeName(authResp.opcode)}`);
           }
@@ -966,21 +1099,39 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
         }
 
         // PREPARE
-        await writer.write(buildPrepareFrame(cql));
-        const prepResp = await readFrame(reader);
+        const prepStreamId = nextStreamId();
+        await writer.write(buildPrepareFrame(cql, prepStreamId));
+        const prepResp = await readFrame(bufferedReader);
+        const prepStreamMismatch = prepResp.stream !== prepStreamId;
         if (prepResp.opcode === OPCODE_ERROR) throw new Error(`PREPARE error: ${parseError(prepResp.body).message}`);
         if (prepResp.opcode !== OPCODE_RESULT) throw new Error(`Unexpected PREPARE response: ${getOpcodeName(prepResp.opcode)}`);
         const preparedId = parsePreparedId(prepResp.body);
         if (!preparedId) throw new Error('Could not parse prepared statement ID');
 
         // EXECUTE with bound values
-        await writer.write(buildExecuteFrame(preparedId, values));
-        const execResp = await readFrame(reader);
+        const execStreamId = nextStreamId();
+        await writer.write(buildExecuteFrame(preparedId, values, execStreamId));
+        const execResp = await readFrame(bufferedReader);
         const rtt = Date.now() - startTime;
+        const execStreamMismatch = execResp.stream !== execStreamId;
+
+        // Collect stream warnings
+        const prepStreamWarnings: string[] = [];
+        if (prepStreamMismatch) {
+          prepStreamWarnings.push(`PREPARE response stream ID (${prepResp.stream}) does not match request stream ID (${prepStreamId})`);
+        }
+        if (execStreamMismatch) {
+          prepStreamWarnings.push(`EXECUTE response stream ID (${execResp.stream}) does not match request stream ID (${execStreamId})`);
+        }
 
         if (execResp.opcode === OPCODE_ERROR) {
           const err = parseError(execResp.body);
-          return { success: false, host, port, rtt, error: `EXECUTE error: ${err.message} (code ${err.code})`, cqlVersions: supported['CQL_VERSION'] ?? [] };
+          return {
+            success: false, host, port, rtt,
+            error: `EXECUTE error: ${err.message} (code ${err.code})`,
+            cqlVersions: supported['CQL_VERSION'] ?? [],
+            ...(prepStreamWarnings.length > 0 && { warning: prepStreamWarnings.join('; ') }),
+          };
         }
 
         let columns: Array<{ keyspace: string; table: string; name: string; type: string }> = [];
@@ -994,15 +1145,21 @@ export async function handleCassandraPrepare(request: Request, _env: unknown): P
           preparedIdHex: Array.from(preparedId).map(b => b.toString(16).padStart(2, '0')).join(''),
           cqlVersions: supported['CQL_VERSION'] ?? [],
           columns, rows, rowCount: rows.length,
+          ...(prepStreamWarnings.length > 0 && { warning: prepStreamWarnings.join('; ') }),
         };
       } finally {
         try { writer.releaseLock(); } catch { /* ignored */ }
-        try { reader.releaseLock(); } catch { /* ignored */ }
+        try { bufferedReader.releaseLock(); } catch { /* ignored */ }
         try { socket.close(); } catch { /* ignored */ }
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    let result;
+    try {
+      result = await Promise.race([connectionPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
     return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });

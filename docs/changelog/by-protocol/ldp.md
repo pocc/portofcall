@@ -59,3 +59,8 @@ The implementation includes detailed documentation:
 - [RFC 5036 - LDP Specification](https://www.rfc-editor.org/rfc/rfc5036)
 - [RFC 5561 - LDP Capabilities](https://www.rfc-editor.org/rfc/rfc5561)
 - [MPLS Label Distribution Protocol (IANA)](https://www.iana.org/assignments/ldp-namespaces/)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

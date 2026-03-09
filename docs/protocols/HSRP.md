@@ -340,32 +340,32 @@ The Coup endpoint sends a single Coup packet but does not track whether the targ
 
 ```bash
 # HSRPv1 probe -- discover HSRP routers
-curl -s -X POST https://portofcall.ross.gg/api/hsrp/probe \
+curl -s -X POST https://l4.fyi/api/hsrp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.1"}' | jq .
 
 # HSRPv1 probe with custom timeout
-curl -s -X POST https://portofcall.ross.gg/api/hsrp/probe \
+curl -s -X POST https://l4.fyi/api/hsrp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"10.0.0.1","port":1985,"timeout":5000}' | jq .
 
 # Send Coup with max priority to test preemption
-curl -s -X POST https://portofcall.ross.gg/api/hsrp/coup \
+curl -s -X POST https://l4.fyi/api/hsrp/coup \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.1","group":0,"priority":255}' | jq .
 
 # Coup with custom authentication
-curl -s -X POST https://portofcall.ross.gg/api/hsrp/coup \
+curl -s -X POST https://l4.fyi/api/hsrp/coup \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.1","group":1,"priority":255,"authentication":"s3cret"}' | jq .
 
 # HSRPv2 probe with group number > 255 (v2-only feature)
-curl -s -X POST https://portofcall.ross.gg/api/hsrp/v2-probe \
+curl -s -X POST https://l4.fyi/api/hsrp/v2-probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"10.0.0.1","group":1000,"priority":50}' | jq .
 
 # Passive listen (alias for probe)
-curl -s -X POST https://portofcall.ross.gg/api/hsrp/listen \
+curl -s -X POST https://l4.fyi/api/hsrp/listen \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.1"}' | jq .
 ```

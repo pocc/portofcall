@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-const BASE_URL = 'https://portofcall.ross.gg';
+const BASE_URL = 'https://l4.fyi';
 
 describe('DCERPC/MS-RPC Protocol', () => {
   // Connect endpoint tests

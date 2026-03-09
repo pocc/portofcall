@@ -44,12 +44,13 @@ async function readSMTPResponse(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
 
       // Check if we have a complete response (ends with \r\n and has a code)
@@ -103,7 +104,7 @@ export async function handleSMTPConnect(request: Request): Promise<Response> {
     // Validate required fields
     if (!options.host) {
       return new Response(JSON.stringify({
-        error: 'Missing required parameter: host',
+        success: false, error: 'Missing required parameter: host',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -113,6 +114,12 @@ export async function handleSMTPConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 25;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -206,7 +213,7 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
-        error: 'Method not allowed',
+        success: false, error: 'Method not allowed',
       }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
@@ -218,7 +225,7 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
     // Validate required fields
     if (!options.host || !options.from || !options.to || !options.subject || !options.body) {
       return new Response(JSON.stringify({
-        error: 'Missing required parameters: host, from, to, subject, body',
+        success: false, error: 'Missing required parameters: host, from, to, subject, body',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -228,6 +235,27 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 25;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate email addresses — reject angle brackets and CRLF to prevent command injection
+    const EMAIL_RE = /^[^\s<>\r\n@]+@[^\s<>\r\n@]+\.[^\s<>\r\n@]+$/;
+    if (!EMAIL_RE.test(options.from!) || !EMAIL_RE.test(options.to!)) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Invalid email address format (from/to must not contain <, >, or whitespace)',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Require authentication to prevent open relay abuse
+    if (!options.username || !options.password) {
+      return new Response(JSON.stringify({
+        success: false, error: 'Authentication required: username and password must be provided',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -323,18 +351,26 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
         const safeFrom = (options.from ?? '').replace(/[\r\n]/g, ' ');
         const safeTo = (options.to ?? '').replace(/[\r\n]/g, ' ');
         const safeSubject = (options.subject ?? '').replace(/[\r\n]/g, ' ');
+        // Normalize body line endings to CRLF before dot-stuffing (M-1)
+        const normalizedBody = (options.body ?? '').replace(/\r?\n/g, '\r\n');
         const emailContent = [
           `From: ${safeFrom}`,
           `To: ${safeTo}`,
           `Subject: ${safeSubject}`,
+          `Date: ${new Date().toUTCString()}`,
+          `MIME-Version: 1.0`,
+          `Content-Type: text/plain; charset=UTF-8`,
           '',
-          options.body,
+          normalizedBody,
         ].join('\r\n');
 
         const dotStuffedBody = emailContent.replace(/(^|\r\n)\./g, '$1..');
-        const finalContent = dotStuffedBody + '\r\n.';
+        const finalContent = dotStuffedBody + '\r\n.\r\n';
 
-        const sendResp = await sendSMTPCommand(reader, writer, finalContent, 10000);
+        // Write DATA content directly — do NOT use sendSMTPCommand which strips CRLF
+        await writer.write(new TextEncoder().encode(finalContent));
+        const sendRaw = await readSMTPResponse(reader, 10000);
+        const sendResp = parseSMTPResponse(sendRaw);
         if (sendResp.code !== 250) {
           throw new Error(`Email sending failed: ${sendResp.message}`);
         }

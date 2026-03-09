@@ -58,3 +58,8 @@ The implementation includes detailed documentation:
 - [UPnP Device Architecture 1.1](https://openconnectivity.org/upnp-specs/UPnP-arch-DeviceArchitecture-v1.1.pdf)
 - [GENA Specification](https://openconnectivity.org/upnp-specs/gena.html)
 - [Common UPnP Actions (IGD)](https://openconnectivity.org/upnp-specs/UPnP-gw-InternetGatewayDevice-v2-Device.pdf)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

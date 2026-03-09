@@ -20,7 +20,7 @@ import type { GelfMessage, GelfLevel } from '../src/worker/gelf';
 describe('GELF TCP Protocol', () => {
   const GELF_HOST = 'test-host.invalid';
   const GELF_PORT = 12201;
-  const BASE_URL = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
+  const BASE_URL = (process.env.API_BASE || 'https://l4.fyi/api').replace(/\/api$/, '');
 
   describe('Message Validation', () => {
     it('should validate required fields', async () => {

@@ -186,3 +186,8 @@ DNP3 Secure Authentication (IEEE 1815-2012 Annex G) defines:
 - [IEEE 1815-2012 DNP3 Specification](https://ieeexplore.ieee.org/document/6327578)
 - [IEC 62351-5 Security for DNP3](https://webstore.iec.ch/publication/6912)
 - [DNP Users Group Technical Bulletins](https://www.dnp.org/)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

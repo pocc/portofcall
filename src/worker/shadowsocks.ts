@@ -41,6 +41,9 @@ interface ShadowsocksRequest {
  * we measure TCP connect time and confirm the port is open.
  */
 export async function handleShadowsocksProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as ShadowsocksRequest;
     const { host, port = 8388, timeout = 10000 } = body;
@@ -55,7 +58,7 @@ export async function handleShadowsocksProbe(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',

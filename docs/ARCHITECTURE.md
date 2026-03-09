@@ -86,7 +86,7 @@ Browser                  Worker                      Backend
 
 ### `pipeSocketToWebSocket` — Backend → Browser
 
-**Source:** `src/worker/index.ts` (function `pipeSocketToWebSocket`)
+**Source:** `src/worker/websocket-pipe.ts` (function `pipeSocketToWebSocket`)
 
 Reads from the TCP socket and forwards to the WebSocket. Implements two safety mechanisms:
 
@@ -100,7 +100,7 @@ reader.read()               ← Backend's TCP window closes
 ws.send(chunk)              ← Throughput = client consumption rate
 ```
 
-The Worker never buffers more than ~1.1 MiB per connection (1 MiB HWM + ~64 KB in-flight read). This protects the 128 MiB isolate from OOM on slow clients receiving bulk transfers.
+The Worker never buffers more than ~1.1 MiB **outbound** per connection (1 MiB HWM + ~64 KB in-flight read). Inbound (browser → backend) uses a separate 4 MiB high-water mark. Worst-case bidirectional memory per connection is ~5.1 MiB.
 
 **Payload Chunking (1 MiB WebSocket Limit):**
 
@@ -108,7 +108,7 @@ If a TCP read returns >1 MiB (unlikely but not guaranteed), the payload is split
 
 ### `pipeWebSocketToSocket` — Browser → Backend
 
-**Source:** `src/worker/index.ts` (function `pipeWebSocketToSocket`)
+**Source:** `src/worker/websocket-pipe.ts` (function `pipeWebSocketToSocket`)
 
 Receives WebSocket messages and writes to the TCP socket. Implements:
 
@@ -134,9 +134,9 @@ Measures TCP handshake RTT using `performance.now()` (monotonic, sub-millisecond
 
 | Metric | Value |
 |--------|-------|
-| Memory per bulk-transfer connection | ~1.1 MiB (worst case) |
+| Memory per bulk-transfer connection | ~5.1 MiB worst case (1 MiB outbound HWM + 4 MiB inbound HWM + ~64 KB in-flight) |
 | Memory per interactive connection | ~67 KB (typical) |
-| Max concurrent bulk transfers | ~102 (in 128 MiB isolate) |
+| Max concurrent bulk transfers | ~25 (in 128 MiB isolate, bidirectional worst case) |
 | Max concurrent interactive sessions | ~1,700 |
 | Worker CPU time limit | 30s per request (Paid plan) |
 | WebSocket message size limit | 1 MiB |
@@ -160,10 +160,17 @@ All connections pass through `isBlockedHost()` at the router level before any pr
 | `172.16.0.0/12` | RFC 1918 private |
 | `192.168.0.0/16` | RFC 1918 private |
 | `169.254.0.0/16` | Link-local (includes AWS/GCP/Azure metadata at `169.254.169.254`) |
-| `100.64.0.0/10` | CGN / shared address space |
-| `192.0.0.0/29` | IANA special |
-| `0.0.0.0/32` | Unspecified |
+| `0.0.0.0/8` | "This network" (RFC 1122) |
 | `255.255.255.255/32` | Broadcast |
+| `192.0.0.0/29` | IANA special |
+| `100.64.0.0/10` | CGN / shared address space |
+| `192.0.2.0/24` | TEST-NET-1 (RFC 5737) |
+| `198.18.0.0/15` | Benchmarking (RFC 2544) |
+| `198.51.100.0/24` | TEST-NET-2 (RFC 5737) |
+| `203.0.113.0/24` | TEST-NET-3 (RFC 5737) |
+| `240.0.0.0/4` | Reserved / Class E |
+
+Also blocks alternate IP representations: decimal integers, hex notation, octal/mixed-radix, and shortened dotted-decimal forms.
 
 **Blocked IPv6:**
 
@@ -174,6 +181,9 @@ All connections pass through `isBlockedHost()` at the router level before any pr
 | `fc00::/7` (fc, fd prefixes) | Unique Local Address (ULA) |
 | `fe80::/10` | Link-local |
 | `::ffff:x.x.x.x` | IPv4-mapped — extracted and checked against IPv4 blocklist |
+| `::x.x.x.x` | IPv4-compatible — extracted and checked against IPv4 blocklist |
+| `2002::/16` | 6to4 tunneling (RFC 3056) — embedded IPv4 checked |
+| `64:ff9b::/96` | NAT64 well-known prefix (RFC 6052) — embedded IPv4 checked |
 
 **Blocked Hostnames:**
 

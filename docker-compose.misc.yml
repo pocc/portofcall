@@ -1,0 +1,66 @@
+version: '3.8'
+
+# Miscellaneous Protocol Servers
+# Protocols covered: qotd, whois, gopher, ident, nntp, dict, zabbix, gearman, clamav, mpd
+#
+# Usage: docker compose -f docker-compose.misc.yml up -d
+
+services:
+  # Custom multi-protocol server (like simple-protocols)
+  # QOTD (17), WHOIS (43), Gopher (70), Ident (113), NNTP (119), DICT (2628)
+  misc-protocols:
+    build:
+      context: ./docker/misc-protocols
+      dockerfile: Dockerfile
+    container_name: testserver-misc
+    ports:
+      - "17:17"       # QOTD
+      - "43:43"       # WHOIS
+      - "70:70"       # Gopher
+      - "113:113"     # Ident
+      - "119:119"     # NNTP
+      - "2628:2628"   # DICT
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Zabbix Agent (for testing Zabbix protocol)
+  zabbix-agent:
+    image: zabbix/zabbix-agent:alpine-latest
+    container_name: testserver-zabbix-agent
+    ports:
+      - "10050:10050"   # Zabbix agent
+    environment:
+      - ZBX_HOSTNAME=testserver-zabbix-agent
+      - ZBX_SERVER_HOST=0.0.0.0/0
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Gearman - Job server
+  gearman:
+    image: artefactual/gearmand
+    container_name: testserver-gearman
+    ports:
+      - "4730:4730"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+# MPD - Music Player Daemon
+  mpd:
+    image: vimagick/mpd
+    container_name: testserver-mpd
+    ports:
+      - "6600:6600"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

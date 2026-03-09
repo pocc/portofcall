@@ -107,3 +107,8 @@ Collectd implementation provides 4 endpoints (probe, send, put, receive) using t
 - [collectd Binary Protocol Specification](https://collectd.org/wiki/index.php/Binary_protocol) - TLV format reference
 - [collectd Network Plugin](https://collectd.org/wiki/index.php/Plugin:Network) - Server/client mode documentation
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols (none for collectd)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

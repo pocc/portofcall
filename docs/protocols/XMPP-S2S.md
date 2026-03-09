@@ -810,7 +810,7 @@ XMPP over WebSocket for browser-based clients. Not applicable to S2S.
 ### Basic Connection Test
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/xmpp-s2s/connect \
+curl -X POST https://l4.fyi/api/xmpp-s2s/connect \
   -H "Content-Type: application/json" \
   -d '{
     "host": "jabber.org",
@@ -822,7 +822,7 @@ curl -X POST https://portofcall.ross.gg/api/xmpp-s2s/connect \
 ### IQ Ping Test
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/xmpp-s2s/ping \
+curl -X POST https://l4.fyi/api/xmpp-s2s/ping \
   -H "Content-Type: application/json" \
   -d '{
     "host": "jabber.org",
@@ -836,7 +836,7 @@ curl -X POST https://portofcall.ross.gg/api/xmpp-s2s/ping \
 ### Full Dialback Authentication
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/xmpps2s/dialback \
+curl -X POST https://l4.fyi/api/xmpps2s/dialback \
   -H "Content-Type: application/json" \
   -d '{
     "host": "jabber.org",

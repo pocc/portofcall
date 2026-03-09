@@ -144,6 +144,12 @@ export async function handleSubmissionConnect(request: Request): Promise<Respons
     const port = options.port || 587;
     const timeoutMs = options.timeout || 30000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -263,6 +269,12 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
     const port = options.port || 587;
     const timeoutMs = options.timeout || 30000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -359,6 +371,8 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
         const safeFrom = (options.from ?? '').replace(/[\r\n]/g, ' ');
         const safeTo = (options.to ?? '').replace(/[\r\n]/g, ' ');
         const safeSubject = (options.subject ?? '').replace(/[\r\n]/g, ' ');
+        // Normalize body line endings to CRLF before dot-stuffing (H-2)
+        const normalizedBody = (options.body ?? '').replace(/\r?\n/g, '\r\n');
         const messageBody = [
           `From: ${safeFrom}`,
           `To: ${safeTo}`,
@@ -367,7 +381,7 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
           'MIME-Version: 1.0',
           'Content-Type: text/plain; charset=UTF-8',
           '',
-          options.body,
+          normalizedBody,
         ].join('\r\n');
 
         // RFC 5321 §4.5.2: Dot-stuff the body — any line starting with "."

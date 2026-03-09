@@ -420,56 +420,56 @@ CIDv0 is 46 characters (always starts with `Qm`). CIDv1 is variable-length and s
 
 ```bash
 # Probe an IPFS node's libp2p protocols (swarm port)
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/probe \
+curl -s -X POST https://l4.fyi/api/ipfs/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":4001}' | jq .
 
 # Get node identity (peer ID, agent version, addresses)
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/node-info \
+curl -s -X POST https://l4.fyi/api/ipfs/node-info \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001}' | jq '{id: .id, agent: .agentVersion, protocols: .protocols}'
 
 # Add content and get CID
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/add \
+curl -s -X POST https://l4.fyi/api/ipfs/add \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001,"content":"Hello, IPFS!","filename":"hello.txt"}' | jq .cid
 
 # Retrieve content by CID
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/cat \
+curl -s -X POST https://l4.fyi/api/ipfs/cat \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001,"cid":"QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o"}' | jq .content
 
 # Pin a CID
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/pin-add \
+curl -s -X POST https://l4.fyi/api/ipfs/pin-add \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001,"cid":"QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o"}' | jq .
 
 # List all pins (recursive only)
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/pin-ls \
+curl -s -X POST https://l4.fyi/api/ipfs/pin-ls \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001,"type":"recursive"}' | jq '.pins[] | .cid'
 
 # Remove a pin
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/pin-rm \
+curl -s -X POST https://l4.fyi/api/ipfs/pin-rm \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001,"cid":"QmT78zSuBmuS4z925WZfrqQ1qHaJ56DQaTfyMUF7F8ff5o"}' | jq .
 
 # Publish to pubsub topic
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/pubsub-pub \
+curl -s -X POST https://l4.fyi/api/ipfs/pubsub-pub \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001,"topic":"my-channel","data":"Hello subscribers!"}' | jq .
 
 # List subscribed pubsub topics
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/pubsub-ls \
+curl -s -X POST https://l4.fyi/api/ipfs/pubsub-ls \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","port":5001}' | jq .topics
 
 # Round-trip: add content, then retrieve it
-CID=$(curl -s -X POST https://portofcall.ross.gg/api/ipfs/add \
+CID=$(curl -s -X POST https://l4.fyi/api/ipfs/add \
   -H 'Content-Type: application/json' \
   -d '{"host":"ipfs.example.com","content":"Round-trip test"}' | jq -r .cid)
 echo "CID: $CID"
-curl -s -X POST https://portofcall.ross.gg/api/ipfs/cat \
+curl -s -X POST https://l4.fyi/api/ipfs/cat \
   -H 'Content-Type: application/json' \
   -d "{\"host\":\"ipfs.example.com\",\"cid\":\"$CID\"}" | jq .content
 ```

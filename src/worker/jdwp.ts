@@ -100,6 +100,7 @@ function parseReplyHeader(data: Uint8Array): {
 function readJDWPString(data: Uint8Array, offset: number): { value: string; nextOffset: number } | null {
   if (offset + 4 > data.length) return null;
   const len = ((data[offset] << 24) | (data[offset + 1] << 16) | (data[offset + 2] << 8) | data[offset + 3]) >>> 0;
+  if (len > 10 * 1024 * 1024) return null; // Reject strings > 10MB
   offset += 4;
   if (offset + len > data.length) return null;
   const value = new TextDecoder().decode(data.slice(offset, offset + len));
@@ -286,7 +287,7 @@ async function readResponse(
  */
 export async function handleJDWPProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -310,7 +311,7 @@ export async function handleJDWPProbe(request: Request): Promise<Response> {
     const port = body.port || 5005;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -413,7 +414,7 @@ export async function handleJDWPProbe(request: Request): Promise<Response> {
  */
 export async function handleJDWPThreads(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -429,6 +430,11 @@ export async function handleJDWPThreads(request: Request): Promise<Response> {
     const port = body.port || 5005;
     const timeout = body.timeout || 15000;
     const limit = Math.min(body.limit ?? 20, 50);
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -532,7 +538,7 @@ export async function handleJDWPThreads(request: Request): Promise<Response> {
  */
 export async function handleJDWPVersion(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -556,7 +562,7 @@ export async function handleJDWPVersion(request: Request): Promise<Response> {
     const port = body.port || 5005;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }

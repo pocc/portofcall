@@ -205,6 +205,8 @@ function parseRecord(data: Uint8Array): {
 /**
  * Read all available data from socket with timeout
  */
+const MAX_FASTCGI_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB per-read limit
+
 async function readAllRecords(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeout: number
@@ -216,7 +218,7 @@ async function readAllRecords(
     setTimeout(() => resolve(null), timeout)
   );
 
-  while (true) {
+  while (totalLength < MAX_FASTCGI_RESPONSE_BYTES) {
     const readPromise = reader.read();
     const result = await Promise.race([readPromise, timeoutPromise]);
 
@@ -243,7 +245,7 @@ async function readAllRecords(
  */
 export async function handleFastCGIProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -263,7 +265,7 @@ export async function handleFastCGIProbe(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -399,7 +401,7 @@ export async function handleFastCGIProbe(request: Request): Promise<Response> {
  */
 export async function handleFastCGIRequest(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -429,7 +431,7 @@ export async function handleFastCGIRequest(request: Request): Promise<Response> 
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -478,7 +480,7 @@ export async function handleFastCGIRequest(request: Request): Promise<Response> 
         // 2. Send FCGI_PARAMS (CGI environment variables)
         const params = encodeNameValuePairs([
           ['SCRIPT_FILENAME', scriptFilename],
-          ['SCRIPT_NAME', scriptFilename],
+          ['SCRIPT_NAME', requestUri],  // URL path to script, not filesystem path (CGI/1.1 spec)
           ['REQUEST_URI', requestUri],
           ['DOCUMENT_URI', requestUri],
           ['QUERY_STRING', ''],

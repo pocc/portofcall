@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 const NFS_BASE = `${API_BASE}/nfs`;
 
 // Note: NFS server must be running and accessible for these tests

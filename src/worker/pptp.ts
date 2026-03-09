@@ -29,6 +29,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 /** PPTP Magic Cookie */
 const PPTP_MAGIC_COOKIE = 0x1a2b3c4d;
@@ -110,24 +111,6 @@ function buildSCCRQ(): Uint8Array {
 /**
  * Read exactly `length` bytes from a reader, accumulating chunks
  */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
-
-  while (offset < length) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed while reading');
-
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
-  }
-
-  return buffer;
-}
 
 /**
  * Parse a Start-Control-Connection-Reply (SCCRP) message
@@ -226,7 +209,7 @@ export async function handlePPTPConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -260,6 +243,7 @@ export async function handlePPTPConnect(request: Request): Promise<Response> {
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
@@ -268,7 +252,7 @@ export async function handlePPTPConnect(request: Request): Promise<Response> {
         await writer.write(sccrq);
 
         // Step 2: Read Start-Control-Connection-Reply (156 bytes)
-        const sccrp = await readExact(reader, SCCRQ_LENGTH);
+        const sccrp = await br.readExact(SCCRQ_LENGTH);
         const rtt = Date.now() - startTime;
 
         // Step 3: Parse response
@@ -328,6 +312,12 @@ export async function handlePPTPStartControl(request: Request): Promise<Response
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -343,11 +333,12 @@ export async function handlePPTPStartControl(request: Request): Promise<Response
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
       try {
         await writer.write(buildSCCRQ());
         writer.releaseLock();
-        const data = await readExact(reader, SCCRQ_LENGTH);
+        const data = await br.readExact(SCCRQ_LENGTH);
         const latencyMs = Date.now() - start;
         reader.releaseLock();
         socket.close();
@@ -474,6 +465,12 @@ export async function handlePPTPCallSetup(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -489,12 +486,13 @@ export async function handlePPTPCallSetup(request: Request): Promise<Response> {
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
         // Step 1: SCCRQ → SCCRP (control tunnel)
         await writer.write(buildSCCRQ());
-        const sccrpData = await readExact(reader, SCCRQ_LENGTH);
+        const sccrpData = await br.readExact(SCCRQ_LENGTH);
 
         const dv = new DataView(sccrpData.buffer, sccrpData.byteOffset, sccrpData.byteLength);
         if (dv.getUint32(4, false) !== PPTP_MAGIC_COOKIE) throw new Error('Bad SCCRP magic cookie');
@@ -514,7 +512,7 @@ export async function handlePPTPCallSetup(request: Request): Promise<Response> {
         await writer.write(buildOCRQ(localCallId));
 
         // OCRP is 32 bytes: 12 header + 18 body + 2 padding
-        const ocrpData = await readExact(reader, 32);
+        const ocrpData = await br.readExact(32);
         const ocrpDv = new DataView(ocrpData.buffer, ocrpData.byteOffset, ocrpData.byteLength);
 
         if (ocrpDv.getUint32(4, false) !== PPTP_MAGIC_COOKIE) throw new Error('Bad OCRP magic cookie');
@@ -523,13 +521,14 @@ export async function handlePPTPCallSetup(request: Request): Promise<Response> {
           throw new Error(`Expected OCRP (type 8), got ${ocrpCtrlType}`);
         }
 
-        // OCRP body (starts at offset 12):
-        // peerCallId(2) + reserved(1) + resultCode(1) + errorCode(1) + causeCode(2) + connectSpeed(4)
+        // OCRP body (starts at offset 12, per RFC 2637 section 9.1.2):
+        // peerCallId(2) + peersCallId(2) + resultCode(1) + errorCode(1) + causeCode(2) + connectSpeed(4)
         // + recvWindowSize(2) + procDelay(2) + physChannelId(4)
         const peerCallId    = ocrpDv.getUint16(12, false);
-        const ocrpResult    = ocrpDv.getUint8(15);
-        const ocrpError     = ocrpDv.getUint8(16);
-        const connectSpeed  = ocrpDv.getUint32(19, false);
+        // bytes 14-15: peer's call ID (echo of our call ID)
+        const ocrpResult    = ocrpDv.getUint8(16);
+        const ocrpError     = ocrpDv.getUint8(17);
+        const connectSpeed  = ocrpDv.getUint32(20, false);
 
         writer.releaseLock();
         reader.releaseLock();

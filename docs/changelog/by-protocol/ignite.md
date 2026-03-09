@@ -56,3 +56,8 @@ The implementation includes extensive documentation:
 - [Ignite Binary Client Protocol](https://ignite.apache.org/docs/latest/thin-clients/binary-client-protocol) - Official protocol specification
 - [Ignite Thin Clients](https://ignite.apache.org/docs/latest/thin-clients/getting-started-thin-clients) - Client overview
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

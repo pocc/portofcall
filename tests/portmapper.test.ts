@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
+const API_BASE = (process.env.API_BASE || 'https://l4.fyi/api').replace(/\/api$/, '');
 
 describe('Portmapper / rpcbind Protocol Integration Tests', () => {
   // --- NULL Probe Tests (/api/portmapper/probe) ---
@@ -233,7 +233,7 @@ describe('Portmapper / rpcbind Protocol Integration Tests', () => {
       view.setUint32(offset, 0);           offset += 4; // AUTH_NONE
       view.setUint32(offset, 0);           offset += 4; // Cred length = 0
       view.setUint32(offset, 0);           offset += 4; // AUTH_NONE verifier
-      view.setUint32(offset, 0);           offset += 4; // Verifier length = 0
+      view.setUint32(offset, 0); // Verifier length = 0
 
       // Verify XID
       expect(view.getUint32(0)).toBe(0x12345678);
@@ -271,7 +271,7 @@ describe('Portmapper / rpcbind Protocol Integration Tests', () => {
       view.setUint32(offset, 0);           offset += 4; // MSG_ACCEPTED
       view.setUint32(offset, 0);           offset += 4; // Verifier flavor
       view.setUint32(offset, 0);           offset += 4; // Verifier length
-      view.setUint32(offset, 0);           offset += 4; // SUCCESS
+      view.setUint32(offset, 0); // SUCCESS
 
       // Verify reply fields
       expect(view.getUint32(0)).toBe(0x12345678); // XID matches
@@ -306,7 +306,7 @@ describe('Portmapper / rpcbind Protocol Integration Tests', () => {
       view.setUint32(offset, 2049);    offset += 4; // Port = 2049
 
       // Terminator
-      view.setUint32(offset, 0);       offset += 4; // Value follows = FALSE
+      view.setUint32(offset, 0); // Value follows = FALSE
 
       // Verify first mapping
       let readOffset = 0;

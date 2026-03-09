@@ -312,7 +312,7 @@ function parseRefAdvertisement(rawLines: string[]): {
  */
 export async function handleGitFetch(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -339,7 +339,7 @@ export async function handleGitFetch(request: Request): Promise<Response> {
       { status: 400, headers: { 'Content-Type': 'application/json' } },
     );
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(
       JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
       { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -347,6 +347,14 @@ export async function handleGitFetch(request: Request): Promise<Response> {
   }
 
   const repoPath = repository.startsWith('/') ? repository : `/${repository}`;
+
+  // Reject paths with null bytes or directory traversal sequences
+  if (repoPath.includes('\x00') || repoPath.includes('..')) {
+    return new Response(
+      JSON.stringify({ success: false, error: 'Invalid repository path' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } },
+    );
+  }
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -559,8 +567,8 @@ export async function handleGitFetch(request: Request): Promise<Response> {
       try { await socket.close(); } catch { /* ignore */ }
       throw error;
     } finally {
-      writer.releaseLock();
-      reader.releaseLock();
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
     }
   })();
 
@@ -587,7 +595,7 @@ export async function handleGitFetch(request: Request): Promise<Response> {
 export async function handleGitRefs(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -611,7 +619,7 @@ export async function handleGitRefs(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -620,6 +628,14 @@ export async function handleGitRefs(request: Request): Promise<Response> {
 
     // Ensure repo path starts with /
     const repoPath = repo.startsWith('/') ? repo : `/${repo}`;
+
+    // Reject paths with null bytes or directory traversal sequences
+    if (repoPath.includes('\x00') || repoPath.includes('..')) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid repository path' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -647,9 +663,10 @@ export async function handleGitRefs(request: Request): Promise<Response> {
 
       const connectTime = Date.now() - startTime;
 
+      const writer = socket.writable.getWriter();
+      const reader = socket.readable.getReader();
+
       try {
-        const writer = socket.writable.getWriter();
-        const reader = socket.readable.getReader();
 
         // Send git-upload-pack request
         // Format: "git-upload-pack /path/to/repo\0host=hostname\0"
@@ -677,8 +694,6 @@ export async function handleGitRefs(request: Request): Promise<Response> {
         await writer.write(buildFlushPkt());
 
         // Cleanup
-        writer.releaseLock();
-        reader.releaseLock();
         await socket.close();
 
         const result: GitRefsResponse = {
@@ -699,6 +714,9 @@ export async function handleGitRefs(request: Request): Promise<Response> {
       } catch (error) {
         try { await socket.close(); } catch { /* ignore */ }
         throw error;
+      } finally {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
       }
     })();
 

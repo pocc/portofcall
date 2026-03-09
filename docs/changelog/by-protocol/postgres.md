@@ -52,3 +52,8 @@ The original doc was an implementation plan with fictional library usage. Replac
 - [PostgreSQL Protocol Specification](../protocols/POSTGRESQL.md) - Technical wire format reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
 - [SCRAM-SHA-256 RFC 7677](https://datatracker.ietf.org/doc/html/rfc7677) - SCRAM-SHA-256 specification
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

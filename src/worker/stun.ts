@@ -426,6 +426,11 @@ async function readStunMessage(
  * Returns the public-facing IP:port as seen by the STUN server
  */
 export async function handleStunBinding(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -435,7 +440,7 @@ export async function handleStunBinding(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
-        error: 'Missing required parameter: host',
+        success: false, error: 'Missing required parameter: host',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -445,6 +450,12 @@ export async function handleStunBinding(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 3478;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -566,6 +577,11 @@ export async function handleStunBinding(request: Request): Promise<Response> {
  * Sends a minimal Binding Request and checks for valid response
  */
 export async function handleStunProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -575,7 +591,7 @@ export async function handleStunProbe(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
-        error: 'Missing required parameter: host',
+        success: false, error: 'Missing required parameter: host',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -585,6 +601,12 @@ export async function handleStunProbe(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 3478;
     const timeoutMs = options.timeout || 8000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);

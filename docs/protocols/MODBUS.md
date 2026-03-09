@@ -366,42 +366,42 @@ fire first. Setting `timeout: 3000` on a write effectively applies a 3 s outer l
 
 ### Connectivity check
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/modbus/connect \
+curl -s -X POST https://l4.fyi/api/modbus/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"plc.factory.local","unitId":1}' | jq .
 ```
 
 ### Read 10 holding registers from address 100
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/modbus/read \
+curl -s -X POST https://l4.fyi/api/modbus/read \
   -H 'Content-Type: application/json' \
   -d '{"host":"plc.factory.local","functionCode":3,"address":100,"quantity":10}' | jq .
 ```
 
 ### Read 16 coils from address 0
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/modbus/read \
+curl -s -X POST https://l4.fyi/api/modbus/read \
   -H 'Content-Type: application/json' \
   -d '{"host":"plc.factory.local","functionCode":1,"address":0,"quantity":16}' | jq .values
 ```
 
 ### Write coil ON at address 17
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/modbus/write/coil \
+curl -s -X POST https://l4.fyi/api/modbus/write/coil \
   -H 'Content-Type: application/json' \
   -d '{"host":"plc.factory.local","address":17,"value":true}' | jq .
 ```
 
 ### Write three registers starting at address 100
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/modbus/write/registers \
+curl -s -X POST https://l4.fyi/api/modbus/write/registers \
   -H 'Content-Type: application/json' \
   -d '{"host":"plc.factory.local","address":100,"values":[1000,2000,3000]}' | jq .
 ```
 
 ### Non-standard port (common on embedded systems)
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/modbus/connect \
+curl -s -X POST https://l4.fyi/api/modbus/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.50","port":5020,"unitId":3}' | jq .
 ```

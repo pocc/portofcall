@@ -36,3 +36,8 @@ Created canonical review/spec document covering implemented probe/auth/login beh
 
 - [Protocol Stub](../../protocols/YMSG.md)
 - [Worker Implementation](../../../src/worker/ymsg.ts)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

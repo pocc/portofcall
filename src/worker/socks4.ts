@@ -19,6 +19,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { isBlockedHost } from './host-validator';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface Socks4Request {
   proxyHost: string;
@@ -173,6 +174,11 @@ function parseSocks4Response(response: Uint8Array): {
  * Test SOCKS4 proxy connection
  */
 export async function handleSocks4Connect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as Socks4Request;
     const {
@@ -235,6 +241,13 @@ export async function handleSocks4Connect(request: Request): Promise<Response> {
         status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckProxy = await checkIfCloudflare(proxyHost);
+    if (cfCheckProxy.isCloudflare && cfCheckProxy.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(proxyHost, cfCheckProxy.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Connect to SOCKS proxy server
@@ -402,6 +415,11 @@ async function readExactly(
  * the tunnel and checks for an HTTP response to confirm the tunnel is live.
  */
 export async function handleSOCKS4Connect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -442,7 +460,7 @@ export async function handleSOCKS4Connect(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Proxy port must be between 1 and 65535',
@@ -454,6 +472,13 @@ export async function handleSOCKS4Connect(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: `Connections to private/internal addresses are not allowed: ${targetHost}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheckSocks4 = await checkIfCloudflare(host);
+    if (cfCheckSocks4.isCloudflare && cfCheckSocks4.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheckSocks4.ip), isCloudflare: true,
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -496,7 +521,8 @@ export async function handleSOCKS4Connect(request: Request): Promise<Response> {
       if (granted) {
         // Attempt to verify tunnel by sending HTTP/1.0 HEAD request
         try {
-          const httpRequest = `HEAD / HTTP/1.0\r\nHost: ${targetHost}\r\nConnection: close\r\n\r\n`;
+          const safeTargetHost = targetHost.replace(/[\r\n]/g, '');
+          const httpRequest = `HEAD / HTTP/1.0\r\nHost: ${safeTargetHost}\r\nConnection: close\r\n\r\n`;
           await writer.write(new TextEncoder().encode(httpRequest));
 
           // Read up to 512 bytes of HTTP response

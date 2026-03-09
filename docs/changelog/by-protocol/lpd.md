@@ -91,3 +91,8 @@ LPD implementation provides 4 endpoints (probe, print, queue, remove) for Unix p
 - [RFC 1179](https://datatracker.ietf.org/doc/html/rfc1179) - Line Printer Daemon Protocol
 - [CUPS LPD Backend](https://www.cups.org/doc/man-lpd.html) - CUPS LPD implementation
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

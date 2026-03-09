@@ -273,3 +273,8 @@ Should document:
 - [SMPP v3.4 Specification](https://smpp.org/SMPP_v3_4_Issue1_2.pdf)
 - [SMS Security Best Practices](../security-notes/sms-security.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

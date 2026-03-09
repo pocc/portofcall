@@ -23,6 +23,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface EtcdRequest {
   host: string;
@@ -62,9 +63,11 @@ async function sendHttpRequest(
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
 
+  try {
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
   await Promise.race([socket.opened, timeoutPromise]);
@@ -72,15 +75,17 @@ async function sendHttpRequest(
   const writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
 
-  // Build HTTP/1.1 request
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  // Build HTTP/1.1 request — sanitize to prevent CRLF injection
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `${method} ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
 
   if (authHeader) {
-    request += `Authorization: ${authHeader}\r\n`;
+    request += `Authorization: ${authHeader.replace(/[\r\n]/g, '')}\r\n`;
   }
 
   if (body) {
@@ -107,12 +112,16 @@ async function sendHttpRequest(
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
   reader.releaseLock();
-  socket.close();
 
   // Parse HTTP response
   const headerEnd = response.indexOf('\r\n\r\n');
@@ -146,6 +155,10 @@ async function sendHttpRequest(
   }
 
   return { statusCode, headers, body: bodySection };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    try { socket.close(); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -196,6 +209,11 @@ function buildAuthHeader(username?: string, password?: string): string | undefin
  * POST /v3/maintenance/status returns server status with leader/raft info.
  */
 export async function handleEtcdHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as EtcdHealthRequest;
     const { host, port = 2379, username, password, timeout = 15000 } = body;
@@ -207,6 +225,23 @@ export async function handleEtcdHealth(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -291,6 +326,11 @@ export async function handleEtcdHealth(request: Request): Promise<Response> {
  * Sends an arbitrary POST request to the etcd v3 HTTP/JSON API.
  */
 export async function handleEtcdQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as EtcdQueryRequest;
     const {
@@ -313,6 +353,12 @@ export async function handleEtcdQuery(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     if (!path) {
       return new Response(JSON.stringify({
         success: false,
@@ -320,6 +366,17 @@ export async function handleEtcdQuery(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -418,7 +475,8 @@ function decodeKV(kv: Record<string, unknown>): Record<string, unknown> {
 
   if (typeof decoded.key === 'string') {
     try {
-      decoded.key_decoded = atob(decoded.key);
+      const bytes = Uint8Array.from(atob(decoded.key), c => c.charCodeAt(0));
+      decoded.key_decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     } catch {
       decoded.key_decoded = decoded.key;
     }
@@ -426,7 +484,8 @@ function decodeKV(kv: Record<string, unknown>): Record<string, unknown> {
 
   if (typeof decoded.value === 'string') {
     try {
-      decoded.value_decoded = atob(decoded.value);
+      const bytes = Uint8Array.from(atob(decoded.value), c => c.charCodeAt(0));
+      decoded.value_decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     } catch {
       decoded.value_decoded = decoded.value;
     }

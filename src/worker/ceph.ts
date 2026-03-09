@@ -33,6 +33,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // MSGR v1 banner prefix
 const BANNER_V1_PREFIX = 'ceph v0';
@@ -51,34 +52,6 @@ const ENTITY_TYPES: Record<number, string> = {
   0xFF: 'any',      // Any (CEPH_ENTITY_TYPE_ANY)
 };
 
-/**
- * Read exactly N bytes from the socket.
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  needed: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  while (total < needed) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) {
-      throw new Error(`Connection closed after ${total} bytes (expected ${needed})`);
-    }
-    chunks.push(result.value);
-    total += result.value.length;
-  }
-
-  const combined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return combined;
-}
 
 /**
  * Detect MSGR protocol version from banner data.
@@ -220,6 +193,12 @@ function parseMsgrV1EntityAddr(data: Uint8Array): {
  * Handle Ceph Monitor connection test — reads banner and entity address info.
  */
 export async function handleCephConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -239,7 +218,7 @@ export async function handleCephConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -273,28 +252,27 @@ export async function handleCephConnect(request: Request): Promise<Response> {
     const connectTime = Date.now() - startTime;
 
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
-    // Read initial data — the server should send a banner immediately
-    const initialData = await readExact(reader, 8, timeoutPromise);
+    // Read initial data — the server should send a banner immediately.
+    // Read enough for a v1 banner (9 bytes "ceph v027\n") plus v1 entity addr (136 bytes)
+    // or v2 banner (8 bytes) plus payload header (4 bytes) plus payload (16 bytes).
+    const initialData = await br.readExact(9, timeoutPromise);
 
-    // We might need more data; try to read up to 256 bytes total
-    let allData = initialData;
+    // Try to read more data via the BufferedReader to get entity addr / v2 payload
+    let moreData: Uint8Array = new Uint8Array(0);
     try {
-      const moreResult = await Promise.race([
-        reader.read(),
-        new Promise<{ done: true; value: undefined }>((resolve) =>
-          setTimeout(() => resolve({ done: true, value: undefined }), 500),
-        ),
-      ]);
-      if (!moreResult.done && moreResult.value) {
-        const combined = new Uint8Array(allData.length + moreResult.value.length);
-        combined.set(allData, 0);
-        combined.set(moreResult.value, allData.length);
-        allData = combined;
-      }
+      moreData = await br.readExact(136, new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout')), 500),
+      ));
     } catch {
-      // Timeout reading more data is fine
+      // Timeout reading more data is fine — use leftover from br if any
+      moreData = br.leftover;
     }
+
+    const allData = new Uint8Array(initialData.length + moreData.length);
+    allData.set(initialData, 0);
+    allData.set(moreData, initialData.length);
 
     const rtt = Date.now() - startTime;
     const detection = detectBanner(allData);
@@ -310,7 +288,7 @@ export async function handleCephConnect(request: Request): Promise<Response> {
       }
     }
 
-    reader.releaseLock();
+    br.raw.releaseLock();
     socket.close();
 
     return new Response(JSON.stringify({
@@ -428,6 +406,12 @@ function buildConnectMessage(): Uint8Array {
  * 4. Read CONNECT_REPLY (reveals auth requirement, features, etc.)
  */
 export async function handleCephClusterInfo(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -439,6 +423,13 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -465,11 +456,12 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
     const connectTime = Date.now() - startTime;
 
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
     const writer = socket.writable.getWriter();
 
     try {
       // Step 1: Read server banner (9 bytes "ceph v027\n")
-      const bannerData = await readExact(reader, 9, timeoutPromise);
+      const bannerData = await br.readExact(9, timeoutPromise);
       const serverBanner = new TextDecoder().decode(bannerData).trim();
 
       const isCeph = serverBanner.startsWith('ceph v0') || serverBanner.startsWith('ceph v2');
@@ -486,13 +478,13 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
       // For MSGR v2, the handshake is different — just report what we know
       if (msgrVersion === 'v2 (msgr2)') {
         // Read the 4-byte payload length header
-        const payloadHdr = await readExact(reader, 4, timeoutPromise);
+        const payloadHdr = await br.readExact(4, timeoutPromise);
         const phv = new DataView(payloadHdr.buffer);
         const payloadLen = phv.getUint16(0, true);
         let features: { supported?: string; required?: string } = {};
 
         if (payloadLen >= 16) {
-          const payload = await readExact(reader, payloadLen, timeoutPromise);
+          const payload = await br.readExact(payloadLen, timeoutPromise);
           const pv = new DataView(payload.buffer);
           if (payload.length >= 16) {
             features = {
@@ -515,7 +507,7 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
       }
 
       // MSGR v1: Step 2 — read server entity address (136 bytes)
-      const serverEntityAddr = await readExact(reader, 136, timeoutPromise);
+      const serverEntityAddr = await br.readExact(136, timeoutPromise);
       const seav = new DataView(serverEntityAddr.buffer);
       const serverEntityType = seav.getUint32(0, true);
       const serverNonce = seav.getUint32(4, true);
@@ -555,7 +547,7 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
       } | null = null;
 
       try {
-        const replyData = await readExact(reader, 26, new Promise<never>((_, reject) =>
+        const replyData = await br.readExact(26, new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('timeout')), replyTimeout),
         ));
 
@@ -652,6 +644,12 @@ export async function handleCephClusterInfo(request: Request): Promise<Response>
  * Body: { host, port=8003, apiKey?, apiSecret?, timeout=10000 }
  */
 export async function handleCephRestHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -677,6 +675,13 @@ export async function handleCephRestHealth(request: Request): Promise<Response> 
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -773,6 +778,12 @@ export async function handleCephRestHealth(request: Request): Promise<Response> 
  * Handle Ceph Monitor probe — lightweight detection that just reads the banner.
  */
 export async function handleCephProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -787,6 +798,13 @@ export async function handleCephProbe(request: Request): Promise<Response> {
         success: false,
         error: 'Missing required parameter: host',
       }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -815,9 +833,10 @@ export async function handleCephProbe(request: Request): Promise<Response> {
     await Promise.race([socket.opened, timeoutPromise]);
 
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     // Read at least 9 bytes (v1 banner length) for detection
-    const data = await readExact(reader, 9, timeoutPromise);
+    const data = await br.readExact(9, timeoutPromise);
     const rtt = Date.now() - startTime;
 
     const detection = detectBanner(data);
@@ -892,6 +911,12 @@ function mgrAuth(body: {
  * Body: { host, port=8003, apiKey?, apiSecret?, username?, password?, timeout=10000 }
  */
 export async function handleCephOSDList(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number;
@@ -902,6 +927,13 @@ export async function handleCephOSDList(request: Request): Promise<Response> {
 
     if (!body.host) {
       return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const osdPort = body.port ?? 8003;
+    if (osdPort < 1 || osdPort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -971,6 +1003,12 @@ export async function handleCephOSDList(request: Request): Promise<Response> {
  * Body: { host, port=8003, apiKey?, apiSecret?, username?, password?, timeout=10000 }
  */
 export async function handleCephPoolList(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number;
@@ -981,6 +1019,13 @@ export async function handleCephPoolList(request: Request): Promise<Response> {
 
     if (!body.host) {
       return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const poolPort = body.port ?? 8003;
+    if (poolPort < 1 || poolPort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }

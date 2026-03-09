@@ -64,3 +64,8 @@ No dedicated protocol documentation file found in `docs/protocols/`. Consider cr
 - [Asterisk AMI Actions](https://docs.asterisk.org/Asterisk_18_Documentation/API_Documentation/AMI_Actions/) - Official AMI action reference
 - [Asterisk AMI Events](https://docs.asterisk.org/Asterisk_18_Documentation/API_Documentation/AMI_Events/) - Event documentation
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

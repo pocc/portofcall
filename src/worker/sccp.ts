@@ -17,6 +17,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // Message IDs
 const MSG = {
@@ -222,6 +223,9 @@ async function readWithTimeout(
  * This is the lightest way to detect a SCCP/CUCM server.
  */
 export async function handleSCCPProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SCCPRequest;
     const { host, port = 2000, timeout = 10000 } = body;
@@ -234,6 +238,15 @@ export async function handleSCCPProbe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -295,6 +308,9 @@ export async function handleSCCPProbe(request: Request): Promise<Response> {
  * Sends a Station Register message and parses the response.
  */
 export async function handleSCCPRegister(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SCCPRequest;
     const {
@@ -316,6 +332,15 @@ export async function handleSCCPRegister(request: Request): Promise<Response> {
     }
 
     const deviceTypeName = DEVICE_TYPES[deviceType] || `Unknown (${deviceType})`;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const start = Date.now();
     const socket = connect(`${host}:${port}`);
@@ -580,6 +605,9 @@ function parseCapabilitiesAck(data: Uint8Array): string[] {
  *   7. Return { lines, capabilities, rtt }
  */
 export async function handleSCCPLineState(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SCCPLineRequest;
     const {
@@ -600,6 +628,15 @@ export async function handleSCCPLineState(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -796,6 +833,9 @@ function buildKeypadDigit(digit: string): Uint8Array {
  *  5. Collect server responses (CallState, CallInfo, OpenReceiveChannel)
  */
 export async function handleSCCPCallSetup(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
@@ -813,6 +853,15 @@ export async function handleSCCPCallSetup(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();

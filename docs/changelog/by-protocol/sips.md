@@ -304,3 +304,8 @@ Should document:
 - [RFC 2617 - HTTP Digest Authentication](https://datatracker.ietf.org/doc/html/rfc2617)
 - [Cloudflare Sockets TLS Limitations](../security-notes/cloudflare-tls-limitations.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

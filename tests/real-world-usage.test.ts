@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 const isLocal = API_BASE.includes('localhost');
 
 // Echo server: use local Docker simple server on port 7 when running locally

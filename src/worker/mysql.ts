@@ -140,8 +140,12 @@ function readLengthEncodedInt(data: Uint8Array, offset: number): LenEncResult {
     // 8-byte integer — read full 64-bit value safely using Number
     const lo = (data[offset + 1] | (data[offset + 2] << 8) | (data[offset + 3] << 16) | (data[offset + 4] << 24)) >>> 0;
     const hi = (data[offset + 5] | (data[offset + 6] << 8) | (data[offset + 7] << 16) | (data[offset + 8] << 24)) >>> 0;
-    // Combine: safe up to 2^53 (Number.MAX_SAFE_INTEGER)
-    const value = hi * 0x100000000 + lo;
+    // Use BigInt to avoid precision loss above 2^53, then validate range
+    const big = (BigInt(hi) << 32n) | BigInt(lo);
+    if (big > BigInt(Number.MAX_SAFE_INTEGER)) {
+      throw new Error('Length-encoded integer exceeds safe JavaScript integer range');
+    }
+    const value = Number(big);
     return { value, bytesRead: 9 };
   }
   // 0xfb = NULL (not valid here as an integer)

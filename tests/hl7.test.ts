@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('HL7 v2.x Protocol Integration Tests', () => {
   describe('HL7 Connect (MLLP Connectivity)', () => {

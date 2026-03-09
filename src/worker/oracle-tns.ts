@@ -213,6 +213,7 @@ class BufferedReader {
     while (this.buf.length < n) {
       const { value, done } = await this.reader.read();
       if (done || !value) throw new Error('Connection closed before full TNS response received');
+      if (this.buf.length + value.length > 128 * 1024) break;
       const merged = new Uint8Array(this.buf.length + value.length);
       merged.set(this.buf);
       merged.set(value, this.buf.length);
@@ -243,18 +244,22 @@ async function doTNSConnect(
   host: string,
   port: number,
   serviceName: string,
+  timeoutMs = 30000,
 ): Promise<{
   parsedResponse: ReturnType<typeof parseTNSResponse>;
   oracleVersion: string | null;
   errorCode: string | null;
 }> {
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
-
-  const writer = socket.writable.getWriter();
-  const buffered = new BufferedReader(socket.readable.getReader());
-
   try {
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+    ]);
+
+    const writer = socket.writable.getWriter();
+    const buffered = new BufferedReader(socket.readable.getReader());
+
     const connectPacket = buildTNSConnectPacket(host, port, serviceName);
     await writer.write(connectPacket);
 
@@ -272,17 +277,14 @@ async function doTNSConnect(
       fullPacket = headerData;
     }
 
-    await socket.close();
-
     const parsedResponse = parseTNSResponse(fullPacket);
     const textData = parsedResponse.refuseData ?? parsedResponse.redirectData ?? '';
     const oracleVersion = extractOracleVersion(textData);
     const errorCode = extractErrorCode(textData);
 
     return { parsedResponse, oracleVersion, errorCode };
-  } catch (error) {
-    await socket.close();
-    throw error;
+  } finally {
+    try { socket.close(); } catch { /* ignore */ }
   }
 }
 
@@ -297,7 +299,7 @@ async function doTNSConnect(
  */
 export async function handleOracleTNSConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -315,6 +317,12 @@ export async function handleOracleTNSConnect(request: Request): Promise<Response
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -381,11 +389,12 @@ export async function handleOracleTNSConnect(request: Request): Promise<Response
       return result;
     })();
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout)
     );
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await Promise.race([connectionPromise, timeoutPromise]).finally(() => clearTimeout(timeoutHandle));
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -404,7 +413,7 @@ export async function handleOracleTNSConnect(request: Request): Promise<Response
  */
 export async function handleOracleTNSProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -421,6 +430,12 @@ export async function handleOracleTNSProbe(request: Request): Promise<Response> 
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -456,11 +471,12 @@ export async function handleOracleTNSProbe(request: Request): Promise<Response> 
       };
     })();
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout)
     );
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await Promise.race([connectionPromise, timeoutPromise]).finally(() => clearTimeout(timeoutHandle));
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -499,7 +515,7 @@ export async function handleOracleTNSProbe(request: Request): Promise<Response> 
  */
 export async function handleOracleQuery(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -525,6 +541,12 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -537,12 +559,12 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
     const connectionPromise = (async () => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
-      await socket.opened;
-
-      const writer = socket.writable.getWriter();
-      const buffered = new BufferedReader(socket.readable.getReader());
-
       try {
+        await socket.opened;
+
+        const writer = socket.writable.getWriter();
+        const buffered = new BufferedReader(socket.readable.getReader());
+
         // Phase 1: TNS Connect
         const connectPacket = buildTNSConnectPacket(host, port, service);
         await writer.write(connectPacket);
@@ -661,19 +683,18 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
         if (responseDbVersion) result.dbVersion = responseDbVersion;
         if (instanceName) result.instanceName = instanceName;
 
-        await socket.close();
         return result;
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { socket.close(); } catch { /* ignore */ }
       }
     })();
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout)
     );
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await Promise.race([connectionPromise, timeoutPromise]).finally(() => clearTimeout(timeoutHandle));
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -719,7 +740,7 @@ export async function handleOracleQuery(request: Request): Promise<Response> {
  */
 export async function handleOracleSQLQuery(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -748,6 +769,12 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -804,7 +831,6 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           result.errorMessage = parsed.refuseData ?? 'Connection refused';
           if (dbVersion) result.dbVersion = dbVersion;
           result.latencyMs = Date.now() - startTime;
-          await socket.close();
           return result;
         }
 
@@ -812,14 +838,12 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           result.errorMessage = `Redirected: ${parsed.redirectData ?? 'unknown'}`;
           if (dbVersion) result.dbVersion = dbVersion;
           result.latencyMs = Date.now() - startTime;
-          await socket.close();
           return result;
         }
 
         if (parsed.packetType !== TNS_ACCEPT) {
           result.errorMessage = `Unexpected packet: ${parsed.packetTypeName}`;
           result.latencyMs = Date.now() - startTime;
-          await socket.close();
           return result;
         }
 
@@ -870,7 +894,6 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           result.success = true;
           result.note = 'Connect and negotiate phases completed. Provide username/password for login.';
           result.latencyMs = Date.now() - startTime;
-          await socket.close();
           return result;
         }
 
@@ -950,7 +973,6 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
 
         if (!loginAccepted) {
           result.latencyMs = Date.now() - startTime;
-          await socket.close();
           return result;
         }
 
@@ -982,8 +1004,12 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
           if (!queryResult.done && queryResult.value && queryResult.value.length > 10) {
             const qRespText = new TextDecoder('utf-8', { fatal: false })
               .decode(queryResult.value.slice(10));
-            // eslint-disable-next-line no-control-regex
-            result.queryResult = qRespText.replace(/\x00/g, '').trim().slice(0, 512);
+            result.queryResult = qRespText
+              .split('\0')
+              .map(s => s.trim())
+              .filter(s => s.length > 0 && /^[\x20-\x7E]+$/.test(s))
+              .join(' | ')
+              .slice(0, 1024);
             result.phase = 'query';
             result.success = true;
           }
@@ -992,20 +1018,18 @@ export async function handleOracleSQLQuery(request: Request): Promise<Response> 
         }
 
         result.latencyMs = Date.now() - startTime;
-        await socket.close();
         return result;
-
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { socket.close(); } catch { /* ignore */ }
       }
     })();
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout)
     );
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await Promise.race([connectionPromise, timeoutPromise]).finally(() => clearTimeout(timeoutHandle));
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });

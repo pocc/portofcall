@@ -244,7 +244,7 @@ function validateInput(host: string, port: number): string | null {
     return 'Host contains invalid characters';
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 
@@ -263,7 +263,7 @@ function validateInput(host: string, port: number): string | null {
  */
 export async function handleManageSieveConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -356,7 +356,7 @@ export async function handleManageSieveConnect(request: Request): Promise<Respon
  */
 export async function handleManageSieveList(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -378,7 +378,7 @@ export async function handleManageSieveList(request: Request): Promise<Response>
       );
     }
 
-    if (!password || password.length === 0) {
+    if (password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -578,7 +578,7 @@ async function connectAndAuth(
  */
 export async function handleManageSievePutScript(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -600,7 +600,7 @@ export async function handleManageSievePutScript(request: Request): Promise<Resp
       );
     }
 
-    if (!password || password.length === 0) {
+    if (password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -619,6 +619,11 @@ export async function handleManageSievePutScript(request: Request): Promise<Resp
         JSON.stringify({ success: false, error: 'Script content is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies ManageSieveResponse), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -689,7 +694,7 @@ export async function handleManageSievePutScript(request: Request): Promise<Resp
  */
 export async function handleManageSieveGetScript(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -711,7 +716,7 @@ export async function handleManageSieveGetScript(request: Request): Promise<Resp
       );
     }
 
-    if (!password || password.length === 0) {
+    if (password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -723,6 +728,11 @@ export async function handleManageSieveGetScript(request: Request): Promise<Resp
         JSON.stringify({ success: false, error: 'Script name is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies ManageSieveResponse), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -813,7 +823,7 @@ export async function handleManageSieveGetScript(request: Request): Promise<Resp
  */
 export async function handleManageSieveDeleteScript(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -835,7 +845,7 @@ export async function handleManageSieveDeleteScript(request: Request): Promise<R
       );
     }
 
-    if (!password || password.length === 0) {
+    if (password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -847,6 +857,11 @@ export async function handleManageSieveDeleteScript(request: Request): Promise<R
         JSON.stringify({ success: false, error: 'Script name is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies ManageSieveResponse), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -915,7 +930,7 @@ export async function handleManageSieveDeleteScript(request: Request): Promise<R
  */
 export async function handleManageSieveSetActive(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -937,11 +952,16 @@ export async function handleManageSieveSetActive(request: Request): Promise<Resp
       );
     }
 
-    if (!password || password.length === 0) {
+    if (password == null) {
       return new Response(
         JSON.stringify({ success: false, error: 'Password is required' } satisfies ManageSieveResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies ManageSieveResponse), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();

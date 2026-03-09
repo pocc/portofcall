@@ -32,6 +32,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface TSConnectRequest {
   host: string;
@@ -325,6 +326,12 @@ async function tsSession(
  * Handle TeamSpeak connect - get server banner, version, and whoami
  */
 export async function handleTeamSpeakConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TSConnectRequest;
     const {
@@ -344,7 +351,7 @@ export async function handleTeamSpeakConnect(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -375,6 +382,16 @@ export async function handleTeamSpeakConnect(request: Request): Promise<Response
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckConnect = await checkIfCloudflare(host);
+    if (cfCheckConnect.isCloudflare && cfCheckConnect.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: getCloudflareErrorMessage(host, cfCheckConnect.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const { banner, responses } = await tsSession(
@@ -420,6 +437,12 @@ export async function handleTeamSpeakConnect(request: Request): Promise<Response
  * Handle TeamSpeak command - run a single read-only ServerQuery command
  */
 export async function handleTeamSpeakCommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TSCommandRequest;
     const {
@@ -451,7 +474,7 @@ export async function handleTeamSpeakCommand(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -507,6 +530,16 @@ export async function handleTeamSpeakCommand(request: Request): Promise<Response
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckCommand = await checkIfCloudflare(host);
+    if (cfCheckCommand.isCloudflare && cfCheckCommand.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: getCloudflareErrorMessage(host, cfCheckCommand.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const { responses } = await tsSession(
@@ -617,6 +650,12 @@ interface TSChannelResponse {
  *   { host, port?, timeout?, serverAdminToken?, channelName?, channelTopic? }
  */
 export async function handleTeamSpeakChannel(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TSChannelRequest;
     const {
@@ -639,7 +678,7 @@ export async function handleTeamSpeakChannel(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -670,6 +709,16 @@ export async function handleTeamSpeakChannel(request: Request): Promise<Response
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckChannel = await checkIfCloudflare(host);
+    if (cfCheckChannel.isCloudflare && cfCheckChannel.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: getCloudflareErrorMessage(host, cfCheckChannel.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Build command list — login and virtual-server selection are done
@@ -919,6 +968,12 @@ interface TSBanResponse {
  * POST /api/teamspeak/message
  */
 export async function handleTeamSpeakMessage(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TSMessageRequest;
     const {
@@ -946,7 +1001,7 @@ export async function handleTeamSpeakMessage(request: Request): Promise<Response
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' } satisfies TSMessageResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -955,6 +1010,16 @@ export async function handleTeamSpeakMessage(request: Request): Promise<Response
       return new Response(JSON.stringify({ success: false, server: '', error: 'Timeout must be between 1 and 300000 ms' } satisfies TSMessageResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckMessage = await checkIfCloudflare(host);
+    if (cfCheckMessage.isCloudflare && cfCheckMessage.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: getCloudflareErrorMessage(host, cfCheckMessage.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const commands: string[] = [];
@@ -1046,6 +1111,12 @@ export async function handleTeamSpeakMessage(request: Request): Promise<Response
  * POST /api/teamspeak/kick
  */
 export async function handleTeamSpeakKick(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TSKickRequest;
     const {
@@ -1073,7 +1144,7 @@ export async function handleTeamSpeakKick(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' } satisfies TSMessageResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -1082,6 +1153,16 @@ export async function handleTeamSpeakKick(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, server: '', error: 'Timeout must be between 1 and 300000 ms' } satisfies TSMessageResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckKick = await checkIfCloudflare(host);
+    if (cfCheckKick.isCloudflare && cfCheckKick.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: getCloudflareErrorMessage(host, cfCheckKick.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     let kickCmd = `clientkick reasonid=${reasonid} clid=${clid}`;
@@ -1153,6 +1234,12 @@ export async function handleTeamSpeakKick(request: Request): Promise<Response> {
  * POST /api/teamspeak/ban
  */
 export async function handleTeamSpeakBan(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TSBanRequest;
     const {
@@ -1180,7 +1267,7 @@ export async function handleTeamSpeakBan(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' } satisfies TSBanResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -1189,6 +1276,16 @@ export async function handleTeamSpeakBan(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, server: '', error: 'Timeout must be between 1 and 300000 ms' } satisfies TSBanResponse), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckBan = await checkIfCloudflare(host);
+    if (cfCheckBan.isCloudflare && cfCheckBan.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        server: '',
+        error: getCloudflareErrorMessage(host, cfCheckBan.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     let banCmd = `banclient clid=${clid} time=${time}`;

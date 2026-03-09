@@ -305,7 +305,7 @@ async function readFINSFrame(
  */
 export async function handleFINSConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -324,7 +324,7 @@ export async function handleFINSConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -632,7 +632,7 @@ function parseMemoryAreaWriteResponse(payload: Uint8Array): { endCode: string; s
  */
 export async function handleFINSMemoryWrite(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -661,6 +661,12 @@ export async function handleFINSMemoryWrite(request: Request): Promise<Response>
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -810,7 +816,7 @@ export async function handleFINSMemoryWrite(request: Request): Promise<Response>
  */
 export async function handleFINSMemoryRead(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -844,6 +850,12 @@ export async function handleFINSMemoryRead(request: Request): Promise<Response> 
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     if (!memoryArea || !(memoryArea.toUpperCase() in MEMORY_AREAS)) {
       return new Response(JSON.stringify({
         success: false,
@@ -864,7 +876,7 @@ export async function handleFINSMemoryRead(request: Request): Promise<Response> 
       });
     }
 
-    if (itemCount < 1 || itemCount > 500) {
+    if (typeof itemCount !== 'number' || isNaN(itemCount) || itemCount < 1 || itemCount > 500) {
       return new Response(JSON.stringify({
         success: false,
         error: 'itemCount must be between 1 and 500',

@@ -110,3 +110,8 @@ Grafana implementation provides 9 endpoints (health, datasources, dashboards, fo
 - [Grafana Authentication](https://grafana.com/docs/grafana/latest/developers/http_api/#authentication) - Service accounts, API keys, Basic auth
 - [Grafana Provisioning API](https://grafana.com/docs/grafana/latest/developers/http_api/alerting_provisioning/) - Alert rules CRUD (v9+)
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols (none for Grafana)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

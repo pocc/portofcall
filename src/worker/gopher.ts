@@ -20,6 +20,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 export interface GopherItem {
   type: string;
@@ -58,7 +59,7 @@ function validateGopherInput(host: string, port: number, selector: string): stri
     return 'Host contains invalid characters';
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 
@@ -98,7 +99,7 @@ function parseGopherMenu(content: string): GopherItem[] {
         display: parts[0],
         selector: parts[1],
         host: parts[2],
-        port: parseInt(parts[3].replace(/\r$/, ''), 10) || 70,
+        port: (() => { const parsedPort = parseInt(parts[3].replace(/\r$/, ''), 10); return (parsedPort >= 1 && parsedPort <= 65535) ? parsedPort : 70; })(),
       });
     } else if (type === 'i') {
       // Info text lines may have fewer fields
@@ -166,6 +167,25 @@ export async function handleGopherFetch(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Validate query parameter for control characters (prevents CRLF injection)
+    // eslint-disable-next-line no-control-regex
+    if (query && /[\x00-\x08\x0a-\x1f\x7f]/.test(query)) {
+      return new Response(JSON.stringify({
+        success: false,
+        isMenu: false,
+        error: 'Query contains invalid control characters',
+      } satisfies GopherFetchResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, isMenu: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true } satisfies GopherFetchResponse & { isCloudflare: boolean }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Build the request string

@@ -48,6 +48,12 @@ export async function handleGraphiteSend(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     if (!metrics || !Array.isArray(metrics) || metrics.length === 0) {
       return new Response(JSON.stringify({
         error: 'Missing required parameter: metrics (array of {name, value, timestamp?})',
@@ -118,6 +124,7 @@ export async function handleGraphiteSend(request: Request): Promise<Response> {
 
         const payload = lines.join('\n') + '\n';
         await writer.write(encoder.encode(payload));
+        writer.releaseLock();
 
         await socket.close();
 
@@ -130,6 +137,7 @@ export async function handleGraphiteSend(request: Request): Promise<Response> {
           payload: payload.trimEnd(),
         };
       } catch (error) {
+        try { writer.releaseLock(); } catch { /* already released */ }
         await socket.close();
         throw error;
       }
@@ -168,8 +176,15 @@ export async function handleGraphiteQuery(request: Request): Promise<Response> {
     const renderPort = parseInt(url.searchParams.get('renderPort') || '80', 10);
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!target) return new Response(JSON.stringify({ success: false, error: 'Missing target' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (isNaN(renderPort) || renderPort < 1 || renderPort > 65535) return new Response(JSON.stringify({ success: false, error: 'renderPort must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    // eslint-disable-next-line no-control-regex
+    const safeHost = host.replace(/[\r\n\x00]/g, '');
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const params = new URLSearchParams({ target, from, until, format });
-    const fetchUrl = 'http://' + host + ':' + String(renderPort) + '/render?' + params.toString();
+    const fetchUrl = 'http://' + safeHost + ':' + String(renderPort) + '/render?' + params.toString();
     const start = Date.now();
     const resp = await fetch(fetchUrl, { headers: { Accept: 'application/json' } });
     const latencyMs = Date.now() - start;
@@ -196,8 +211,15 @@ export async function handleGraphiteFind(request: Request): Promise<Response> {
     const renderPort = parseInt(url.searchParams.get('renderPort') || '80', 10);
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!query) return new Response(JSON.stringify({ success: false, error: 'Missing query' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (isNaN(renderPort) || renderPort < 1 || renderPort > 65535) return new Response(JSON.stringify({ success: false, error: 'renderPort must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    // eslint-disable-next-line no-control-regex
+    const safeHost = host.replace(/[\r\n\x00]/g, '');
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const params = new URLSearchParams({ query, format: 'json' });
-    const fetchUrl = 'http://' + host + ':' + String(renderPort) + '/metrics/find?' + params.toString();
+    const fetchUrl = 'http://' + safeHost + ':' + String(renderPort) + '/metrics/find?' + params.toString();
     const start = Date.now();
     const resp = await fetch(fetchUrl, { headers: { Accept: 'application/json' } });
     const latencyMs = Date.now() - start;
@@ -222,18 +244,25 @@ export async function handleGraphiteInfo(request: Request): Promise<Response> {
     const host = url.searchParams.get('host');
     const renderPort = parseInt(url.searchParams.get('renderPort') || '80', 10);
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (isNaN(renderPort) || renderPort < 1 || renderPort > 65535) return new Response(JSON.stringify({ success: false, error: 'renderPort must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    // eslint-disable-next-line no-control-regex
+    const safeHost = host.replace(/[\r\n\x00]/g, '');
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const start = Date.now();
     let rootStatus = 0;
     let rootBody = '';
     try {
-      const resp = await fetch('http://' + host + ':' + String(renderPort) + '/');
+      const resp = await fetch('http://' + safeHost + ':' + String(renderPort) + '/');
       rootStatus = resp.status;
       rootBody = (await resp.text()).substring(0, 512);
     } catch (e) { rootBody = e instanceof Error ? e.message : 'Connection failed'; }
     let renderStatus = 0;
     let renderHealthy = false;
     try {
-      const resp = await fetch('http://' + host + ':' + String(renderPort) + '/render?format=json&target=test&from=-1min');
+      const resp = await fetch('http://' + safeHost + ':' + String(renderPort) + '/render?format=json&target=test&from=-1min');
       renderStatus = resp.status;
       renderHealthy = resp.status === 200 || resp.status === 400;
     } catch { renderHealthy = false; }

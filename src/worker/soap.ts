@@ -17,6 +17,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface SOAPRequest {
   host: string;
@@ -84,24 +85,27 @@ async function sendSoapRequest(
   // Auto-detect SOAP version if not specified
   const detectedVersion = soapVersion || detectSoapVersion(soapBody);
 
-  let request = `POST ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `POST ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
 
   // SOAP 1.1 vs 1.2 Content-Type difference per W3C specs
+  const safeSoapAction = soapAction ? soapAction.replace(/[\r\n]/g, '') : soapAction;
   if (detectedVersion === '1.2') {
     // RFC 3902: SOAP 1.2 uses application/soap+xml
     // Action parameter replaces SOAPAction header
     let contentType = 'application/soap+xml; charset=utf-8';
-    if (soapAction) {
-      contentType += `; action="${soapAction}"`;
+    if (safeSoapAction) {
+      contentType += `; action="${safeSoapAction}"`;
     }
     request += `Content-Type: ${contentType}\r\n`;
   } else {
     // SOAP 1.1 uses text/xml and separate SOAPAction header
     request += `Content-Type: text/xml; charset=utf-8\r\n`;
-    if (soapAction !== undefined) {
+    if (safeSoapAction !== undefined) {
       // SOAPAction header is required in SOAP 1.1, even if empty
-      request += `SOAPAction: "${soapAction}"\r\n`;
+      request += `SOAPAction: "${safeSoapAction}"\r\n`;
     }
   }
 
@@ -124,7 +128,12 @@ async function sendSoapRequest(
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -226,10 +235,11 @@ async function sendWsdlRequest(
   const encoder = new TextEncoder();
 
   // Append ?wsdl if not already present
-  const wsdlPath = path.includes('?') ? path : `${path}?wsdl`;
+  const safeHost2 = host.replace(/[\r\n]/g, '');
+  const wsdlPath = path.includes('?') ? path.replace(/[\r\n]/g, '') : `${path.replace(/[\r\n]/g, '')}?wsdl`;
 
   let request = `GET ${wsdlPath} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  request += `Host: ${safeHost2}:${port}\r\n`;
   request += `Accept: text/xml, application/xml\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -248,7 +258,12 @@ async function sendWsdlRequest(
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -332,6 +347,11 @@ function parseSoapResponse(xml: string): SOAPResponse['parsed'] {
  * Handle SOAP call - send a SOAP envelope and parse the response.
  */
 export async function handleSoapCall(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SOAPRequest;
     const {
@@ -361,6 +381,19 @@ export async function handleSoapCall(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckSoap = await checkIfCloudflare(host);
+    if (cfCheckSoap.isCloudflare && cfCheckSoap.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheckSoap.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
@@ -408,6 +441,11 @@ export async function handleSoapCall(request: Request): Promise<Response> {
  * Handle WSDL discovery - fetch the WSDL document from a service endpoint.
  */
 export async function handleSoapWsdl(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SOAPRequest;
     const { host, port = 80, path = '/', timeout = 15000 } = body;
@@ -420,6 +458,19 @@ export async function handleSoapWsdl(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckWsdl = await checkIfCloudflare(host);
+    if (cfCheckWsdl.isCloudflare && cfCheckWsdl.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheckWsdl.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;

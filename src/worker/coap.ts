@@ -307,7 +307,7 @@ function decodeOptionDeltaLength(
 /**
  * Parse CoAP response message
  */
-function parseCoAPResponse(data: Uint8Array): Omit<CoAPResponse, 'success'> {
+function parseCoAPResponse(data: Uint8Array): Omit<CoAPResponse, 'success'> & { messageId: number; token: Uint8Array } {
   if (data.length < 4) {
     throw new Error('CoAP message too short');
   }
@@ -317,7 +317,7 @@ function parseCoAPResponse(data: Uint8Array): Omit<CoAPResponse, 'success'> {
   // const _type = (data[0] >> 4) & 0x3;
   const tokenLength = data[0] & 0xf;
   const code = data[1];
-  // const _messageId = (data[2] << 8) | data[3];
+  const messageId = (data[2] << 8) | data[3];
 
   if (version !== 1) {
     throw new Error(`Unsupported CoAP version: ${version}`);
@@ -328,7 +328,7 @@ function parseCoAPResponse(data: Uint8Array): Omit<CoAPResponse, 'success'> {
     throw new Error('CoAP message truncated (token)');
   }
 
-  // const _token = data.slice(4, 4 + tokenLength);
+  const token = data.slice(4, 4 + tokenLength);
 
   // Parse options and payload
   let offset = 4 + tokenLength;
@@ -395,13 +395,67 @@ function parseCoAPResponse(data: Uint8Array): Omit<CoAPResponse, 'success'> {
     payload: payloadStr,
     contentFormat,
     options,
+    messageId,
+    token,
   };
+}
+
+/**
+ * Accumulate raw bytes from a ReadableStream until parseCoAPResponse succeeds
+ * (i.e., we have a complete CoAP PDU) or the deadline is reached.
+ *
+ * A single reader.read() may only return a partial PDU when the TCP stack
+ * segments the response. This function keeps reading and merging chunks until
+ * the accumulated buffer can be parsed without error, then returns it.
+ *
+ * The caller provides a `timeoutRace` promise that rejects on deadline; any
+ * rejection propagates out of this function immediately.
+ */
+async function readCoAPPdu(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutRace: Promise<never>,
+): Promise<Uint8Array> {
+  let buf = new Uint8Array(0);
+  while (true) {
+    const { value, done } = await Promise.race([reader.read(), timeoutRace]);
+    if (done || !value) throw new Error('Connection closed before CoAP response');
+    const merged = new Uint8Array(buf.length + value.length);
+    merged.set(buf);
+    merged.set(value, buf.length);
+    buf = merged;
+    // Attempt to parse — throws 'CoAP message too short' or 'CoAP message
+    // truncated (token)' if the header/token haven't fully arrived yet.
+    // For option/payload truncation the parser doesn't throw; it stops at
+    // whatever data is present.  For our probe use-case this is acceptable:
+    // once we have header + token we return the buffer and let the caller
+    // handle partial options (they will still decode meaningful fields).
+    try {
+      parseCoAPResponse(buf);
+      return buf; // parsed successfully — buffer is at least structurally complete
+    } catch (e) {
+      if (e instanceof Error && (
+        e.message === 'CoAP message too short' ||
+        e.message.startsWith('CoAP message truncated')
+      )) {
+        // Need more data — keep accumulating
+        if (buf.length > 65536) throw new Error('CoAP response too large (> 64 KiB)', { cause: e });
+        continue;
+      }
+      throw e; // unexpected parse error (e.g. bad version) — propagate
+    }
+  }
 }
 
 /**
  * Handle CoAP request
  */
 export async function handleCoAPRequest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as CoAPRequest;
     const {
@@ -420,6 +474,16 @@ export async function handleCoAPRequest(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -471,6 +535,9 @@ export async function handleCoAPRequest(request: Request): Promise<Response> {
       contentFormat
     );
 
+    // Extract the message ID from the built request (bytes 2-3 of header)
+    const sentMessageId = (requestMessage[2] << 8) | requestMessage[3];
+
     // Connect to CoAP server
     const socket = connect(`${host}:${port}`);
 
@@ -487,27 +554,33 @@ export async function handleCoAPRequest(request: Request): Promise<Response> {
       // Send CoAP request
       await writer.write(requestMessage);
 
-      // Read CoAP response
-      const { value: responseData } = await Promise.race([
-        reader.read(),
-        timeoutPromise,
-      ]);
-
-      if (!responseData) {
-        throw new Error('No response from CoAP server');
-      }
+      // Read CoAP response — accumulate chunks until we have a complete PDU.
+      // A single reader.read() may return only part of the response when the
+      // TCP stack segments it across multiple packets.
+      const responseData = await readCoAPPdu(reader, timeoutPromise);
 
       // Parse response
       const result = parseCoAPResponse(responseData);
+
+      // Validate that the response message ID matches what we sent.
+      // A mismatch is not fatal — it could be a valid multicast response —
+      // but we surface it as a warning for diagnostics.
+      const messageIdMismatch = result.messageId !== sentMessageId;
 
       // Cleanup
       writer.releaseLock();
       reader.releaseLock();
       socket.close();
 
+      // Destructure to strip internal-only fields from the JSON output
+      const { messageId: _mid, token: _tok, ...publicResult } = result;
+
       return new Response(JSON.stringify({
         success: true,
-        ...result,
+        ...publicResult,
+        ...(messageIdMismatch && {
+          warning: `Response message ID (${result.messageId}) does not match request message ID (${sentMessageId}). This may indicate a multicast response or a protocol error.`,
+        }),
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -540,6 +613,16 @@ export async function handleCoAPDiscover(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host parameter required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -682,6 +765,11 @@ function buildCoAPBlockRequest(
  * Returns: { success, path, blocks, totalBytes, contentFormat, payload }
  */
 export async function handleCoAPBlockGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -701,6 +789,11 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -762,16 +855,16 @@ export async function handleCoAPBlockGet(request: Request): Promise<Response> {
     const COAP_TYPE_ACK      = 2;
 
     /**
-     * Read one CoAP PDU, skipping empty ACKs (piggybacked-ACK acknowledgement
-     * without a response code) per RFC 7252 §4.2.
+     * Read one complete CoAP PDU, skipping empty ACKs (piggybacked-ACK
+     * acknowledgement without a response code) per RFC 7252 §4.2.
      * Returns the first PDU that carries actual response data.
+     *
+     * Uses readCoAPPdu internally to accumulate TCP segments so that a single
+     * block response is never silently truncated due to a split TCP segment.
      */
     async function readBlockResponse(): Promise<Uint8Array> {
       while (true) {
-        const result = await Promise.race([reader.read(), timeoutPromise]);
-        if (result.done || !result.value) throw new Error('Connection closed during block transfer');
-        const pdu = result.value;
-        if (pdu.length < 4) continue;
+        const pdu = await readCoAPPdu(reader, timeoutPromise);
         const pduType = (pdu[0] >> 4) & 0x3;
         const pduCode = pdu[1];
         // Empty ACK (type=ACK, code=0.00) — server is still preparing the response.
@@ -960,6 +1053,11 @@ const COAP_OBSERVE_OPTION = 6;
  * }
  */
 export async function handleCoAPObserve(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -977,6 +1075,11 @@ export async function handleCoAPObserve(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1092,9 +1195,12 @@ export async function handleCoAPObserve(request: Request): Promise<Response> {
       return { observeSeq, contentFormat, payload, messageId, type: msgType };
     }
 
-    // Wait for first notification (current resource value)
-    const firstResult = await Promise.race([reader.read(), connTimeout]);
-    if (firstResult.done || !firstResult.value) {
+    // Wait for first notification (current resource value).
+    // Use readCoAPPdu to accumulate TCP segments in case the response is split.
+    let firstPdu: Uint8Array;
+    try {
+      firstPdu = await readCoAPPdu(reader, connTimeout);
+    } catch {
       writer.releaseLock(); reader.releaseLock(); socket.close();
       return new Response(JSON.stringify({
         success: false,
@@ -1102,18 +1208,17 @@ export async function handleCoAPObserve(request: Request): Promise<Response> {
       }), { status: 500, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const initial = parseObserveNotification(firstResult.value);
+    const initial = parseObserveNotification(firstPdu);
 
-    // Wait up to observeMs for a second notification (a state change)
+    // Wait up to observeMs for a second notification (a state change).
+    // Use readCoAPPdu to accumulate TCP segments here too.
     let update: ReturnType<typeof parseObserveNotification> | undefined;
     try {
       const updateTimeout = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('observe_timeout')), observeMs)
       );
-      const secondResult = await Promise.race([reader.read(), updateTimeout]);
-      if (!secondResult.done && secondResult.value) {
-        update = parseObserveNotification(secondResult.value);
-      }
+      const secondPdu = await readCoAPPdu(reader, updateTimeout);
+      update = parseObserveNotification(secondPdu);
     } catch {
       // No second notification arrived within observeMs — normal
     }

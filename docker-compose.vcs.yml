@@ -1,0 +1,51 @@
+version: '3.8'
+
+# Version Control Systems
+# Protocols covered: git, svn
+#
+# Usage: docker compose -f docker-compose.vcs.yml up -d
+
+services:
+  # Gitea - Git hosting (SSH + HTTP)
+  gitea:
+    image: gitea/gitea:latest
+    container_name: testserver-gitea
+    ports:
+      - "3022:22"       # Git SSH
+      - "3080:3000"     # Git HTTP
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__server__ROOT_URL=http://localhost:3080/
+      - GITEA__server__SSH_PORT=3022
+      - GITEA__service__DISABLE_REGISTRATION=false
+    volumes:
+      - gitea_data:/data
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Subversion (svnserve)
+  svn:
+    build:
+      context: ./docker/svn
+      dockerfile: Dockerfile
+    container_name: testserver-svn
+    ports:
+      - "3690:3690"
+    volumes:
+      - svn_data:/var/svn
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  gitea_data:
+  svn_data:

@@ -68,52 +68,64 @@ async function sendHttpRequest(
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
-
-  // Build HTTP/1.1 request
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-
-  if (token) {
-    request += `Authorization: token ${token}\r\n`;
-  }
-
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
   let response = '';
   const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
+
+    // Build HTTP/1.1 request — sanitize to prevent CRLF injection
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeMethod = method.replace(/[\r\n\x00]/g, '').toUpperCase();
+    let request = `${safeMethod} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+
+    if (token) {
+      request += `Authorization: token ${token.replace(/[\r\n]/g, '')}\r\n`;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+    }
+
+    writer.releaseLock();
+
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* ignore */ }
+  }
 
   // Parse HTTP response
   const headerEnd = response.indexOf('\r\n\r\n');
@@ -185,6 +197,9 @@ function decodeChunked(data: string): string {
  * GET /api/kernelspecs returns available kernels
  */
 export async function handleJupyterHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JupyterRequest;
     const { host, port = 8888, token, timeout = 15000 } = body;
@@ -196,6 +211,12 @@ export async function handleJupyterHealth(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -302,6 +323,9 @@ export async function handleJupyterHealth(request: Request): Promise<Response> {
  * Sends an arbitrary HTTP request to the Jupyter REST API.
  */
 export async function handleJupyterQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JupyterQueryRequest;
     const {
@@ -321,6 +345,12 @@ export async function handleJupyterQuery(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -431,10 +461,14 @@ function encodeContentsPath(path: string): string {
  * POST /api/jupyter/kernels
  */
 export async function handleJupyterKernelCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as { host: string; port?: number; token?: string; kernelName?: string };
     const { host, port = 8888, token, kernelName = 'python3' } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const start = Date.now();
@@ -458,13 +492,14 @@ export async function handleJupyterKernelCreate(request: Request): Promise<Respo
 export async function handleJupyterKernelList(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as { host?: string; port?: number; token?: string };
     const host = body.host;
     const port = body.port || 8888;
     const token = body.token || undefined;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const start = Date.now();
@@ -482,11 +517,15 @@ export async function handleJupyterKernelList(request: Request): Promise<Respons
  * DELETE /api/jupyter/kernels/:id
  */
 export async function handleJupyterKernelDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as { host: string; port?: number; token?: string; kernelId: string };
     const { host, port = 8888, token, kernelId } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!kernelId) return new Response(JSON.stringify({ success: false, error: 'kernelId is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const start = Date.now();
@@ -505,7 +544,7 @@ export async function handleJupyterKernelDelete(request: Request): Promise<Respo
 export async function handleJupyterNotebooks(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as { host?: string; port?: number; token?: string; path?: string };
     const host = body.host;
@@ -513,6 +552,7 @@ export async function handleJupyterNotebooks(request: Request): Promise<Response
     const token = body.token || undefined;
     const path = body.path || '';
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const apiPath = '/api/contents/' + (path ? encodeContentsPath(path) : '');
@@ -538,7 +578,7 @@ export async function handleJupyterNotebooks(request: Request): Promise<Response
 export async function handleJupyterNotebookGet(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as { host?: string; port?: number; token?: string; path?: string };
     const host = body.host;
@@ -547,6 +587,7 @@ export async function handleJupyterNotebookGet(request: Request): Promise<Respon
     const path = body.path;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!path) return new Response(JSON.stringify({ success: false, error: 'path is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     const apiPath = '/api/contents/' + encodeContentsPath(path) + '?content=1';

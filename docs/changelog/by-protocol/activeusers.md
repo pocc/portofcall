@@ -50,3 +50,8 @@ The Active Users protocol had minimal documentation. Created complete reference 
 - [Active Users Protocol Specification](../protocols/ACTIVEUSERS.md) - Technical reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
 - [RFC 866](https://datatracker.ietf.org/doc/html/rfc866) - Active Users specification
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

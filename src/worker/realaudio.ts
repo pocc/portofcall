@@ -72,6 +72,12 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+
+/** Strip CR/LF to prevent CRLF header injection in raw RTSP requests. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
 
 /**
  * Concatenate multiple Uint8Array chunks into a single buffer
@@ -113,7 +119,7 @@ interface RealAudioResponse {
  */
 function buildRTSPOptions(host: string, port: number, streamPath: string = '/'): string {
   return [
-    `OPTIONS rtsp://${host}:${port}${streamPath} RTSP/1.0`,
+    `OPTIONS rtsp://${sanitizeCRLF(host)}:${port}${sanitizeCRLF(streamPath)} RTSP/1.0`,
     'CSeq: 1',
     'User-Agent: RealMedia Player Version 6.0.9.1235',
     'ClientChallenge: 9e26d33f2984236010ef6253fb1887f7',
@@ -130,7 +136,7 @@ function buildRTSPOptions(host: string, port: number, streamPath: string = '/'):
  */
 function buildRTSPDescribe(host: string, port: number, streamPath: string): string {
   return [
-    `DESCRIBE rtsp://${host}:${port}${streamPath} RTSP/1.0`,
+    `DESCRIBE rtsp://${sanitizeCRLF(host)}:${port}${sanitizeCRLF(streamPath)} RTSP/1.0`,
     'CSeq: 2',
     'User-Agent: RealMedia Player Version 6.0.9.1235',
     'Accept: application/sdp',
@@ -224,6 +230,9 @@ function parseRTSPResponse(data: string): {
  */
 export async function handleRealAudioProbe(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RealAudioRequest;
     const { host, port = 7070, timeout = 15000, streamPath = '/' } = body;
 
@@ -239,7 +248,7 @@ export async function handleRealAudioProbe(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -249,6 +258,11 @@ export async function handleRealAudioProbe(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -369,6 +383,9 @@ export async function handleRealAudioProbe(request: Request): Promise<Response> 
  */
 export async function handleRealAudioDescribe(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RealAudioRequest;
     const {
       host,
@@ -385,6 +402,15 @@ export async function handleRealAudioDescribe(request: Request): Promise<Respons
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const socket = connect(`${host}:${port}`);
@@ -553,6 +579,9 @@ function parseSdpTracks(sdp: string): SdpTrack[] {
  */
 export async function handleRealAudioSetup(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = (await request.json()) as RealAudioSetupRequest;
     const { host, port = 554, path = '/testclip.rm', timeout = 10000 } = body;
 
@@ -563,7 +592,16 @@ export async function handleRealAudioSetup(request: Request): Promise<Response> 
       );
     }
 
-    const baseUrl = `rtsp://${host}:${port}${path}`;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const baseUrl = `rtsp://${sanitizeCRLF(host)}:${port}${sanitizeCRLF(path)}`;
     const startTime = Date.now();
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Connection timeout')), timeout),
@@ -713,7 +751,7 @@ interface RealAudioSessionResult {
  */
 export async function handleRealAudioSession(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
   try {
     const body = (await request.json()) as {
@@ -732,7 +770,16 @@ export async function handleRealAudioSession(request: Request): Promise<Response
       );
     }
 
-    const baseUrl = `rtsp://${host}:${port}${path}`;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const baseUrl = `rtsp://${sanitizeCRLF(host)}:${port}${sanitizeCRLF(path)}`;
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);

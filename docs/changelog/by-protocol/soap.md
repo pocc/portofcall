@@ -401,3 +401,8 @@ Should document:
 - [SOAP 1.2 Specification](https://www.w3.org/TR/soap12/)
 - [WSDL 1.1 Specification](https://www.w3.org/TR/wsdl/)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

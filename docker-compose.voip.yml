@@ -1,0 +1,42 @@
+version: '3.8'
+
+# VoIP & Telecom Protocols
+# Protocols covered: sip, sips, ami, h323, mgcp, stun, turn
+#
+# Usage: docker compose -f docker-compose.voip.yml up -d
+
+services:
+  # Asterisk PBX — disabled, build fails on ARM64 (TODO: find ARM64-compatible image)
+  # asterisk:
+  #   build:
+  #     context: ./docker/asterisk
+  #     dockerfile: Dockerfile
+  #   container_name: testserver-asterisk
+  #   ports:
+  #     - "5060:5060/tcp"   # SIP TCP
+  #     - "5038:5038"       # AMI
+
+  # coturn - STUN/TURN server
+  coturn:
+    image: coturn/coturn
+    container_name: testserver-coturn
+    ports:
+      - "3478:3478/tcp"   # STUN/TURN TCP
+      - "3478:3478/udp"   # STUN/TURN UDP
+    command: >
+      --no-auth
+      --no-tls
+      --no-dtls
+      --listening-port=3478
+      --realm=test.local
+      --server-name=testserver-coturn
+      --fingerprint
+      --verbose
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

@@ -34,6 +34,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface SNPPProbeRequest {
   host: string;
@@ -131,6 +132,11 @@ async function sendCommand(
  * Probe an SNPP server - connect and read the banner.
  */
 export async function handleSNPPProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as SNPPProbeRequest;
     const { host, port = 444, timeout = 10000 } = body;
@@ -147,7 +153,7 @@ export async function handleSNPPProbe(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -169,6 +175,13 @@ export async function handleSNPPProbe(request: Request): Promise<Response> {
         } satisfies SNPPProbeResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheckProbe = await checkIfCloudflare(host);
+    if (cfCheckProbe.isCloudflare && cfCheckProbe.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port, error: getCloudflareErrorMessage(host, cfCheckProbe.ip), isCloudflare: true,
+      } satisfies SNPPProbeResponse & { isCloudflare: boolean }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -259,6 +272,11 @@ export async function handleSNPPProbe(request: Request): Promise<Response> {
  * Executes: PAGE <id> → MESS <message> → SEND → QUIT
  */
 export async function handleSNPPPage(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as SNPPPageRequest;
     const { host, port = 444, pagerId, message, timeout = 15000 } = body;
@@ -305,7 +323,7 @@ export async function handleSNPPPage(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -376,6 +394,13 @@ export async function handleSNPPPage(request: Request): Promise<Response> {
         } satisfies SNPPPageResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheckPage = await checkIfCloudflare(host);
+    if (cfCheckPage.isCloudflare && cfCheckPage.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port, pagerId, transcript: [], error: getCloudflareErrorMessage(host, cfCheckPage.ip), isCloudflare: true,
+      } satisfies SNPPPageResponse & { isCloudflare: boolean }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();

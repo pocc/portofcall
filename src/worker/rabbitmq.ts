@@ -62,10 +62,12 @@ async function sendHttpGet(
 
   const writer = socket.writable.getWriter();
 
-  // Build HTTP/1.1 request with Basic auth
+  // Build HTTP/1.1 request with Basic auth — sanitize to prevent CRLF injection
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
   const auth = base64Encode(`${username}:${password}`);
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Authorization: Basic ${auth}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
@@ -84,7 +86,12 @@ async function sendHttpGet(
     const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (readResult.done) break;
     if (readResult.value) {
-      response += decoder.decode(readResult.value, { stream: true });
+      const chunk = decoder.decode(readResult.value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -163,7 +170,7 @@ function decodeChunked(data: string): string {
  */
 export async function handleRabbitMQHealth(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -191,7 +198,7 @@ export async function handleRabbitMQHealth(request: Request): Promise<Response> 
     const password = body.password || 'guest';
     const timeout = body.timeout || 15000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
@@ -320,10 +327,12 @@ async function sendHttpPost(
 
   const writer = socket.writable.getWriter();
 
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
   const auth = base64Encode(`${username}:${password}`);
   const bodyBytes = encoder.encode(body);
-  let requestStr = `POST ${path} HTTP/1.1\r\n`;
-  requestStr += `Host: ${host}:${port}\r\n`;
+  let requestStr = `POST ${safePath} HTTP/1.1\r\n`;
+  requestStr += `Host: ${safeHost}:${port}\r\n`;
   requestStr += `Authorization: Basic ${auth}\r\n`;
   requestStr += `Content-Type: application/json\r\n`;
   requestStr += `Content-Length: ${bodyBytes.length}\r\n`;
@@ -348,7 +357,12 @@ async function sendHttpPost(
     const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (readResult.done) break;
     if (readResult.value) {
-      response += decoder.decode(readResult.value, { stream: true });
+      const chunk = decoder.decode(readResult.value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -391,7 +405,7 @@ async function sendHttpPost(
  */
 export async function handleRabbitMQPublish(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -429,6 +443,12 @@ export async function handleRabbitMQPublish(request: Request): Promise<Response>
     const payloadEncoding = body.payload_encoding ?? 'string';
     const properties = body.properties ?? {};
     const timeout = body.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -491,7 +511,7 @@ export async function handleRabbitMQPublish(request: Request): Promise<Response>
  */
 export async function handleRabbitMQQuery(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -528,7 +548,7 @@ export async function handleRabbitMQQuery(request: Request): Promise<Response> {
     const password = body.password || 'guest';
     const timeout = body.timeout || 15000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },

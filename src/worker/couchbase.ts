@@ -185,6 +185,9 @@ async function readResponse(
 
   let body: Uint8Array = new Uint8Array(0);
   if (header.bodyLength > 0) {
+    if (header.bodyLength > 10_485_760) {
+      throw new Error(`Response body too large: ${header.bodyLength} bytes (max 10 MiB)`);
+    }
     body = await buffered.readExact(header.bodyLength, timeoutPromise);
   }
 
@@ -196,7 +199,7 @@ async function readResponse(
  */
 export async function handleCouchbasePing(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -212,7 +215,7 @@ export async function handleCouchbasePing(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -228,8 +231,9 @@ export async function handleCouchbasePing(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -248,7 +252,6 @@ export async function handleCouchbasePing(request: Request): Promise<Response> {
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
         return new Response(JSON.stringify({
@@ -272,9 +275,9 @@ export async function handleCouchbasePing(request: Request): Promise<Response> {
           rtt,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -289,7 +292,7 @@ export async function handleCouchbasePing(request: Request): Promise<Response> {
  */
 export async function handleCouchbaseVersion(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -305,7 +308,7 @@ export async function handleCouchbaseVersion(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -321,8 +324,9 @@ export async function handleCouchbaseVersion(request: Request): Promise<Response
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -341,7 +345,6 @@ export async function handleCouchbaseVersion(request: Request): Promise<Response
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
         return new Response(JSON.stringify({
@@ -366,9 +369,9 @@ export async function handleCouchbaseVersion(request: Request): Promise<Response
           rtt,
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -385,7 +388,7 @@ export async function handleCouchbaseVersion(request: Request): Promise<Response
  */
 export async function handleCouchbaseStats(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -401,7 +404,7 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -417,8 +420,9 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     try {
@@ -447,7 +451,6 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
         if (header.status !== STATUS_SUCCESS) {
           writer.releaseLock();
           buffered.releaseLock();
-          socket.close();
           return new Response(JSON.stringify({
             success: false, host, port,
             error: `STAT failed with status: 0x${header.status.toString(16).padStart(4, '0')} (${STATUS_NAMES[header.status] || 'Unknown'})`,
@@ -472,7 +475,6 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       return new Response(JSON.stringify({
         success: true, host, port,
@@ -480,9 +482,9 @@ export async function handleCouchbaseStats(request: Request): Promise<Response> 
         statCount: Object.keys(stats).length,
         rtt,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -630,7 +632,7 @@ function buildIncrDecrRequest(
  */
 export async function handleCouchbaseGet(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -639,7 +641,7 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
     const { host, port = 11210, timeout = 10000, key } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!key) return new Response(JSON.stringify({ success: false, error: 'Key is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -648,7 +650,8 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutHandle: any;
+    const timeoutPromise = new Promise<never>((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout); });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -661,7 +664,6 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `Invalid response magic: 0x${header.magic.toString(16)}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -682,9 +684,9 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
       const value = new TextDecoder().decode(respBody.slice(valueOffset));
 
       return new Response(JSON.stringify({ success: true, host, port, key, rtt, value, flags }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -699,7 +701,7 @@ export async function handleCouchbaseGet(request: Request): Promise<Response> {
  */
 export async function handleCouchbaseSet(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -708,7 +710,7 @@ export async function handleCouchbaseSet(request: Request): Promise<Response> {
     const { host, port = 11210, timeout = 10000, key, value = '' } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!key) return new Response(JSON.stringify({ success: false, error: 'Key is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -717,7 +719,8 @@ export async function handleCouchbaseSet(request: Request): Promise<Response> {
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutHandle: any;
+    const timeoutPromise = new Promise<never>((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout); });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -730,7 +733,6 @@ export async function handleCouchbaseSet(request: Request): Promise<Response> {
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `Invalid response magic: 0x${header.magic.toString(16)}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -741,9 +743,9 @@ export async function handleCouchbaseSet(request: Request): Promise<Response> {
       } else {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `SET failed: ${STATUS_NAMES[header.status] ?? 'Unknown'} (0x${header.status.toString(16)})`, statusCode: header.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -758,7 +760,7 @@ export async function handleCouchbaseSet(request: Request): Promise<Response> {
  */
 export async function handleCouchbaseDelete(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -767,7 +769,7 @@ export async function handleCouchbaseDelete(request: Request): Promise<Response>
     const { host, port = 11210, timeout = 10000, key } = body;
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!key) return new Response(JSON.stringify({ success: false, error: 'Key is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -776,7 +778,8 @@ export async function handleCouchbaseDelete(request: Request): Promise<Response>
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutHandle: any;
+    const timeoutPromise = new Promise<never>((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout); });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -789,7 +792,6 @@ export async function handleCouchbaseDelete(request: Request): Promise<Response>
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `Invalid response magic: 0x${header.magic.toString(16)}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -804,9 +806,9 @@ export async function handleCouchbaseDelete(request: Request): Promise<Response>
       } else {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `DELETE failed: ${STATUS_NAMES[header.status] ?? 'Unknown'} (0x${header.status.toString(16)})`, statusCode: header.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -838,7 +840,7 @@ interface CouchbaseIncrRequest {
  */
 export async function handleCouchbaseIncr(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -857,8 +859,10 @@ export async function handleCouchbaseIncr(request: Request): Promise<Response> {
 
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!key) return new Response(JSON.stringify({ success: false, error: 'Key is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be 1-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (delta < 0) return new Response(JSON.stringify({ success: false, error: 'delta must be non-negative' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (delta > 0xFFFFFFFF) return new Response(JSON.stringify({ success: false, error: 'delta must not exceed 4294967295' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (initialValue > 0xFFFFFFFF) return new Response(JSON.stringify({ success: false, error: 'initialValue must not exceed 4294967295' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (operation !== 'increment' && operation !== 'decrement') {
       return new Response(JSON.stringify({ success: false, error: "operation must be 'increment' or 'decrement'" }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -871,7 +875,8 @@ export async function handleCouchbaseIncr(request: Request): Promise<Response> {
     const opcode = operation === 'increment' ? OPCODE_INCREMENT : OPCODE_DECREMENT;
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutHandle: any;
+    const timeoutPromise = new Promise<never>((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout); });
 
     try {
       await Promise.race([socket.opened, timeoutPromise]);
@@ -884,7 +889,6 @@ export async function handleCouchbaseIncr(request: Request): Promise<Response> {
 
       writer.releaseLock();
       buffered.releaseLock();
-      socket.close();
 
       if (header.magic !== MAGIC_RESPONSE) {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `Invalid response magic: 0x${header.magic.toString(16)}` }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -899,16 +903,16 @@ export async function handleCouchbaseIncr(request: Request): Promise<Response> {
         const dv = new DataView(respBody.buffer, respBody.byteOffset);
         const hi = dv.getUint32(0);
         const lo = dv.getUint32(4);
-        const newValue = hi * 0x100000000 + lo;
+        const newValue = (BigInt(hi) << 32n) | BigInt(lo);
         return new Response(JSON.stringify({ success: true, host, port, key, rtt, operation, delta, newValue, newValueStr: String(newValue) }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       } else if (header.status === STATUS_SUCCESS) {
         return new Response(JSON.stringify({ success: true, host, port, key, rtt, operation, delta }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       } else {
         return new Response(JSON.stringify({ success: false, host, port, key, rtt, error: `${operation} failed: ${STATUS_NAMES[header.status] ?? 'Unknown'} (0x${header.status.toString(16)})`, statusCode: header.status }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });

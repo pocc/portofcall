@@ -334,3 +334,8 @@ Should document:
 - [RFC 4954 - SMTP AUTH](https://datatracker.ietf.org/doc/html/rfc4954)
 - [Cloudflare Sockets TLS Limitations](../security-notes/cloudflare-tls-limitations.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

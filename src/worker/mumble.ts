@@ -328,11 +328,17 @@ function mumbleClose(socket: ReturnType<typeof connect>, writer: WritableStreamD
  * Returns: { success, host, port, tls, version, release, os, rtt }
  */
 export async function handleMumbleProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as MumbleBaseRequest;
     const { host, port = 64738, timeout = 10000, tls = true } = body;
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -392,11 +398,17 @@ export async function handleMumbleVersion(request: Request): Promise<Response> {
  * Returns: { success, host, port, tls, rtt, gotVersion, gotPong, msgTypes }
  */
 export async function handleMumblePing(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as MumbleBaseRequest;
     const { host, port = 64738, timeout = 8000, tls = true } = body;
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -433,10 +445,16 @@ export async function handleMumblePing(request: Request): Promise<Response> {
  *            channels[{id,parent,name}], users[{session,name,channel,muted,deafened}] }
  */
 export async function handleMumbleAuth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as MumbleBaseRequest & { username?: string; password?: string };
     const { host, port = 64738, username = 'portofcall', password = '', timeout = 12000, tls = true } = body;
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -510,6 +528,11 @@ export async function handleMumbleAuth(request: Request): Promise<Response> {
  * Returns: { success, channelId, messageSent }
  */
 export async function handleMumbleTextMessage(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as MumbleBaseRequest & {
       username?: string; password?: string; channelId?: number; message: string;
@@ -517,6 +540,7 @@ export async function handleMumbleTextMessage(request: Request): Promise<Respons
     const { host, port = 64738, username = 'portofcall', password = '', channelId = 0, message, timeout = 12000, tls = true } = body;
     if (!host)    return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
     if (!message) return Response.json({ success: false, error: 'Message is required' }, { status: 400 });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {

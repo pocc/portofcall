@@ -114,11 +114,16 @@ function encodeInteger(value: number): Uint8Array {
 }
 
 /**
- * Encode a string in ASN.1 BER format
+ * Encode a string in ASN.1 BER format (with correct long-form length for > 127 bytes)
  */
 function encodeOctetString(str: string): Uint8Array {
   const bytes = new TextEncoder().encode(str);
-  return new Uint8Array([BER_TYPE.OCTET_STRING, bytes.length, ...bytes]);
+  const len = encodeLength(bytes.length);
+  const result = new Uint8Array(1 + len.length + bytes.length);
+  result[0] = BER_TYPE.OCTET_STRING;
+  result.set(len, 1);
+  result.set(bytes, 1 + len.length);
+  return result;
 }
 
 /**
@@ -325,21 +330,37 @@ function buildGetBulkRequest(community: string, oid: string, maxRepetitions: num
  * Parse ASN.1 BER encoded data
  */
 function parseBER(data: Uint8Array, offset = 0): { type: number; length: number; value: Uint8Array; nextOffset: number } {
+  if (offset >= data.length) {
+    throw new Error(`BER parse: offset ${offset} beyond data length ${data.length}`);
+  }
   const type = data[offset];
   let lengthOffset = offset + 1;
+  if (lengthOffset >= data.length) {
+    throw new Error(`BER parse: truncated at length byte (offset ${lengthOffset})`);
+  }
   let length = data[lengthOffset];
 
   if (length & 0x80) {
     // Long form length
     const numLengthBytes = length & 0x7f;
+    if (numLengthBytes === 0 || numLengthBytes > 4) {
+      throw new Error(`BER parse: invalid long-form length byte count: ${numLengthBytes}`);
+    }
     length = 0;
     for (let i = 0; i < numLengthBytes; i++) {
-      length = (length << 8) | data[lengthOffset + 1 + i];
+      const byteOffset = lengthOffset + 1 + i;
+      if (byteOffset >= data.length) {
+        throw new Error(`BER parse: truncated in long-form length bytes at offset ${byteOffset}`);
+      }
+      length = (length << 8) | data[byteOffset];
     }
     lengthOffset += numLengthBytes;
   }
 
   const valueOffset = lengthOffset + 1;
+  if (valueOffset + length > data.length) {
+    throw new Error(`BER parse: value (offset ${valueOffset}, length ${length}) extends beyond data (${data.length} bytes)`);
+  }
   const value = data.slice(valueOffset, valueOffset + length);
 
   return {
@@ -351,17 +372,84 @@ function parseBER(data: Uint8Array, offset = 0): { type: number; length: number;
 }
 
 /**
+ * Read a complete BER-framed SNMP response from a TCP stream, handling multi-chunk delivery.
+ * Inspects the outer SEQUENCE length to know when to stop reading.
+ */
+async function readSNMPResponse(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  deadlineMs: number,
+): Promise<Uint8Array | null> {
+  const chunks: Uint8Array[] = [];
+  let totalRead = 0;
+  let expectedSize = -1; // determined after reading BER header
+
+  while (true) {
+    const remaining = deadlineMs - Date.now();
+    if (remaining <= 0) break;
+
+    const t = new Promise<{ value: undefined; done: true }>(resolve =>
+      setTimeout(() => resolve({ value: undefined, done: true }), remaining),
+    );
+    const { value, done } = await Promise.race([reader.read(), t]);
+    if (done || !value) break;
+
+    chunks.push(value);
+    totalRead += value.length;
+
+    // Once we have enough bytes to read the BER outer SEQUENCE header, compute expected total size
+    if (expectedSize === -1 && totalRead >= 2) {
+      const combined = new Uint8Array(totalRead);
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+
+      // combined[0] = type (0x30 = SEQUENCE), combined[1] = first length byte
+      const lenByte = combined[1];
+      let headerSize: number;
+      let bodyLen: number;
+      if (!(lenByte & 0x80)) {
+        // Short form: single byte
+        headerSize = 2;
+        bodyLen = lenByte;
+      } else {
+        const numLenBytes = lenByte & 0x7f;
+        if (numLenBytes === 0 || numLenBytes > 4) throw new Error(`SNMP: invalid BER length prefix (numLenBytes=${numLenBytes})`);
+        if (totalRead < 2 + numLenBytes) continue; // need more bytes
+        bodyLen = 0;
+        for (let i = 0; i < numLenBytes; i++) {
+          bodyLen = (bodyLen << 8) | combined[2 + i];
+        }
+        headerSize = 2 + numLenBytes;
+      }
+      expectedSize = headerSize + bodyLen;
+      const MAX_SNMP_RESPONSE = 1_048_576; // 1 MB — generous upper bound for any SNMP message
+      if (expectedSize > MAX_SNMP_RESPONSE) {
+        throw new Error(`SNMP response too large: ${expectedSize} bytes (max ${MAX_SNMP_RESPONSE})`);
+      }
+    }
+
+    if (expectedSize !== -1 && totalRead >= expectedSize) break;
+  }
+
+  if (totalRead === 0) return null;
+  const combined = new Uint8Array(totalRead);
+  let off = 0;
+  for (const c of chunks) { combined.set(c, off); off += c.length; }
+  return combined;
+}
+
+/**
  * Parse an integer from BER
  */
 function parseInteger(data: Uint8Array): number {
   let value = 0;
   const isNegative = data[0] & 0x80;
 
+  // Use arithmetic (not bitwise) to avoid 32-bit signed truncation for values > 2^23
   for (let i = 0; i < data.length; i++) {
-    value = (value << 8) | data[i];
+    value = value * 256 + data[i];
   }
 
-  // Handle negative numbers
+  // Handle negative numbers (two's complement)
   if (isNegative) {
     value -= Math.pow(2, data.length * 8);
   }
@@ -375,26 +463,39 @@ function parseInteger(data: Uint8Array): number {
 function parseOID(data: Uint8Array): string {
   const parts: number[] = [];
 
-  // First byte encodes first two components
+  // First byte encodes first two arc components per RFC 1157 §8.3.4:
+  // arc 0: first byte 0–39  → [0, byte]
+  // arc 1: first byte 40–79 → [1, byte - 40]
+  // arc 2: first byte ≥ 80  → [2, byte - 80]
   if (data.length > 0) {
-    const first = Math.floor(data[0] / 40);
-    const second = data[0] % 40;
-    parts.push(first, second);
+    const b0 = data[0];
+    if (b0 < 40) {
+      parts.push(0, b0);
+    } else if (b0 < 80) {
+      parts.push(1, b0 - 40);
+    } else {
+      parts.push(2, b0 - 80);
+    }
   }
 
   // Parse remaining components
   let i = 1;
   while (i < data.length) {
     let value = 0;
+    let foundTerminator = false;
 
-    while (i < data.length && (data[i] & 0x80)) {
-      value = (value << 7) | (data[i] & 0x7f);
-      i++;
+    // Accumulate base-128 encoded arc value
+    while (i < data.length) {
+      const byte = data[i++];
+      value = value * 128 + (byte & 0x7f);
+      if (!(byte & 0x80)) {
+        foundTerminator = true;
+        break;
+      }
     }
 
-    if (i < data.length) {
-      value = (value << 7) | data[i];
-      i++;
+    if (!foundTerminator) {
+      throw new Error('OID parse: truncated multi-byte arc — data ends in a continuation byte');
     }
 
     parts.push(value);
@@ -657,12 +758,9 @@ function parseCounter64(data: Uint8Array): number | string {
       lo = lo * 256 + data[i];
     }
   }
-  // Combine: hi * 2^32 + lo
-  const value = hi * 4294967296 + lo;
-  // If within safe integer range, return a number
-  if (value <= Number.MAX_SAFE_INTEGER) return value;
-  // Otherwise return a decimal string to avoid precision loss
-  return `${BigInt(hi) * BigInt(4294967296) + BigInt(lo)}`;
+  // Use BigInt for any value with a non-zero high word to avoid float64 precision loss
+  if (hi === 0) return lo;
+  return `${BigInt(hi) * 4294967296n + BigInt(lo)}`;
 }
 
 /**
@@ -901,6 +999,9 @@ function parseSNMPv3Discovery(data: Uint8Array): {
  *   4. Parse response variable bindings
  */
 export async function handleSNMPv3Get(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -920,6 +1021,7 @@ export async function handleSNMPv3Get(request: Request): Promise<Response> {
       timeout = 10000,
       username,
       authPassword,
+      privPassword,
       authProtocol = 'SHA',
       oids,
     } = body;
@@ -941,6 +1043,20 @@ export async function handleSNMPv3Get(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+    // Privacy (encryption) is not yet implemented; reject rather than silently ignore
+    if (privPassword) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'SNMPv3 privacy (encryption) is not yet supported. Remove privPassword to use authentication-only.',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -1006,7 +1122,10 @@ export async function handleSNMPv3Get(request: Request): Promise<Response> {
       const reader1 = socket1.readable.getReader();
 
       await writer1.write(discMessage);
-      const { value: discResponse } = await Promise.race([reader1.read(), timeoutPromise]);
+      const discResponse = await Promise.race([
+        readSNMPResponse(reader1, Date.now() + timeout),
+        timeoutPromise,
+      ]);
 
       writer1.releaseLock();
       reader1.releaseLock();
@@ -1111,7 +1230,10 @@ export async function handleSNMPv3Get(request: Request): Promise<Response> {
       const reader2 = socket2.readable.getReader();
 
       await writer2.write(fullMessage);
-      const { value: getResponse } = await Promise.race([reader2.read(), timeoutPromise2]);
+      const getResponse = await Promise.race([
+        readSNMPResponse(reader2, Date.now() + timeout),
+        timeoutPromise2,
+      ]);
 
       writer2.releaseLock();
       reader2.releaseLock();
@@ -1248,6 +1370,9 @@ export async function handleSNMPv3Get(request: Request): Promise<Response> {
  * Handle SNMP GET request
  */
 export async function handleSNMPGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SNMPRequest;
     const {
@@ -1278,6 +1403,42 @@ export async function handleSNMPGet(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Validate community string length (>255 bytes would exceed most agent limits)
+    if (community.length > 255) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Community string must not exceed 255 characters',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate OID format and depth
+    const oidParts = oid.split('.');
+    if (oidParts.some(p => !/^\d+$/.test(p))) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'OID must contain only numeric dot-separated components',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (oidParts.length > 128) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'OID must not exceed 128 components',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Check if behind Cloudflare
@@ -1312,9 +1473,9 @@ export async function handleSNMPGet(request: Request): Promise<Response> {
       // Send request
       await writer.write(requestData);
 
-      // Read response
-      const { value: responseData } = await Promise.race([
-        reader.read(),
+      // Read response — buffer all TCP chunks until the full BER SEQUENCE is received
+      const responseData = await Promise.race([
+        readSNMPResponse(reader, Date.now() + timeout),
         timeoutPromise,
       ]);
 
@@ -1353,6 +1514,9 @@ export async function handleSNMPGet(request: Request): Promise<Response> {
  * Handle SNMP WALK request (retrieves multiple OIDs under a subtree)
  */
 export async function handleSNMPWalk(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SNMPWalkRequest;
     const {
@@ -1376,6 +1540,10 @@ export async function handleSNMPWalk(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Check if behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1397,7 +1565,10 @@ export async function handleSNMPWalk(request: Request): Promise<Response> {
     const socket = connect(`${host}:${port}`);
 
     try {
-      await socket.opened;
+      await Promise.race([
+        socket.opened,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+      ]);
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
@@ -1414,8 +1585,9 @@ export async function handleSNMPWalk(request: Request): Promise<Response> {
         // Send request
         await writer.write(requestData);
 
-        // Read response
-        const { value: responseData } = await reader.read();
+        // Read response — buffer all TCP chunks until full BER SEQUENCE
+        const walkDeadline = startTime + timeout;
+        const responseData = await readSNMPResponse(reader, walkDeadline);
 
         if (!responseData) {
           break;
@@ -1493,6 +1665,9 @@ export async function handleSNMPWalk(request: Request): Promise<Response> {
  * valueType: INTEGER | STRING | OID | IPADDRESS | COUNTER32 | GAUGE32 | TIMETICKS
  */
 export async function handleSNMPSet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -1537,6 +1712,10 @@ export async function handleSNMPSet(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -1567,7 +1746,7 @@ export async function handleSNMPSet(request: Request): Promise<Response> {
 
       await writer.write(requestData);
 
-      const { value: responseData } = await Promise.race([reader.read(), timeoutPromise]);
+      const responseData = await Promise.race([readSNMPResponse(reader, Date.now() + timeout), timeoutPromise]);
 
       writer.releaseLock();
       reader.releaseLock();
@@ -1615,6 +1794,9 @@ export async function handleSNMPSet(request: Request): Promise<Response> {
  * Body: { host, port?, community?, oids: string[], version?, timeout? }
  */
 export async function handleSNMPMultiGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -1650,6 +1832,10 @@ export async function handleSNMPMultiGet(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -1672,7 +1858,7 @@ export async function handleSNMPMultiGet(request: Request): Promise<Response> {
 
       await writer.write(requestData);
 
-      const { value: responseData } = await Promise.race([reader.read(), timeoutPromise]);
+      const responseData = await Promise.race([readSNMPResponse(reader, Date.now() + timeout), timeoutPromise]);
 
       writer.releaseLock();
       reader.releaseLock();

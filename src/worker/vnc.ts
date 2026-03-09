@@ -53,25 +53,36 @@ function getSecurityTypeName(type: number): string {
 }
 
 /**
- * Read exactly `length` bytes from a reader, accumulating chunks
+ * BufferedReader retains unconsumed bytes between reads to prevent data loss
+ * when TCP delivers more bytes than a single readExact call requests.
  */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
+class BufferedReader {
+  private reader: ReadableStreamDefaultReader<Uint8Array>;
+  private buffer: Uint8Array = new Uint8Array(0);
 
-  while (offset < length) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed while reading');
-
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
+  constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
+    this.reader = reader;
   }
 
-  return buffer;
+  async readExact(length: number): Promise<Uint8Array> {
+    // Accumulate until we have enough bytes
+    while (this.buffer.length < length) {
+      const { value, done } = await this.reader.read();
+      if (done || !value) throw new Error('Connection closed while reading');
+      const merged = new Uint8Array(this.buffer.length + value.length);
+      merged.set(this.buffer);
+      merged.set(value, this.buffer.length);
+      this.buffer = merged;
+    }
+    // Extract requested bytes, retain the rest
+    const result = this.buffer.slice(0, length);
+    this.buffer = this.buffer.slice(length);
+    return result;
+  }
+
+  releaseLock(): void {
+    this.reader.releaseLock();
+  }
 }
 
 /**
@@ -406,6 +417,11 @@ function vncDesEncrypt(password: string, challenge: Uint8Array): Uint8Array {
  * POST /api/vnc/auth
  */
 export async function handleVNCAuth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -426,7 +442,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -468,11 +484,12 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
       await socket.opened;
 
       const reader = socket.readable.getReader();
+      const bufferedReader = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
         // Step 1: Read server RFB version (12 bytes)
-        const serverVersionBytes = await Promise.race([readExact(reader, 12), timeoutPromise]);
+        const serverVersionBytes = await Promise.race([bufferedReader.readExact(12), timeoutPromise]);
         const serverVersionStr = new TextDecoder().decode(serverVersionBytes).trim();
 
         if (!serverVersionStr.startsWith('RFB ')) {
@@ -497,23 +514,23 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         let securityTypes: number[] = [];
 
         if (serverMajor >= 3 && serverMinor >= 7) {
-          const countBytes = await Promise.race([readExact(reader, 1), timeoutPromise]);
+          const countBytes = await Promise.race([bufferedReader.readExact(1), timeoutPromise]);
           const count = countBytes[0];
 
           if (count === 0) {
             // Server is rejecting — read error reason
-            const reasonLenBytes = await Promise.race([readExact(reader, 4), timeoutPromise]);
+            const reasonLenBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
             const reasonLen = new DataView(reasonLenBytes.buffer).getUint32(0, false);
-            const reasonBytes = await Promise.race([readExact(reader, Math.min(reasonLen, 256)), timeoutPromise]);
+            const reasonBytes = await Promise.race([bufferedReader.readExact(Math.min(reasonLen, 256)), timeoutPromise]);
             const reason = new TextDecoder().decode(reasonBytes);
             throw new Error(`Server rejected connection: ${reason}`);
           }
 
-          const typesBytes = await Promise.race([readExact(reader, count), timeoutPromise]);
+          const typesBytes = await Promise.race([bufferedReader.readExact(count), timeoutPromise]);
           securityTypes = Array.from(typesBytes);
         } else {
           // RFB 3.3: server decides security type
-          const typeBytes = await Promise.race([readExact(reader, 4), timeoutPromise]);
+          const typeBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
           const type = new DataView(typeBytes.buffer).getUint32(0, false);
           if (type === 0) {
             throw new Error('Server chose no security type (connection failure)');
@@ -533,7 +550,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         // For RFB 3.3 the server already chose it — no client selection needed
 
         // Step 5: Read 16-byte DES challenge
-        const challenge = await Promise.race([readExact(reader, 16), timeoutPromise]);
+        const challenge = await Promise.race([bufferedReader.readExact(16), timeoutPromise]);
         const challengeHex = Array.from(challenge).map(b => b.toString(16).padStart(2, '0')).join('');
 
         // Step 6: Encrypt challenge with DES (VNC bit-reversed key)
@@ -541,7 +558,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         await writer.write(response);
 
         // Step 7: Read SecurityResult (4 bytes, big-endian uint32)
-        const resultBytes = await Promise.race([readExact(reader, 4), timeoutPromise]);
+        const resultBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
         const resultCode = new DataView(resultBytes.buffer).getUint32(0, false);
 
         let authResult: 'ok' | 'failed' | 'tooMany';
@@ -554,10 +571,10 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
           // RFB 3.8+: read failure reason string
           if (serverMajor >= 3 && serverMinor >= 8) {
             try {
-              const reasonLenBytes = await Promise.race([readExact(reader, 4), timeoutPromise]);
+              const reasonLenBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
               const reasonLen = new DataView(reasonLenBytes.buffer).getUint32(0, false);
               if (reasonLen > 0 && reasonLen < 1024) {
-                const reasonBytes = await Promise.race([readExact(reader, reasonLen), timeoutPromise]);
+                const reasonBytes = await Promise.race([bufferedReader.readExact(reasonLen), timeoutPromise]);
                 reason = new TextDecoder().decode(reasonBytes);
               }
             } catch {
@@ -574,7 +591,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         const rtt = Date.now() - startTime;
 
         writer.releaseLock();
-        reader.releaseLock();
+        bufferedReader.releaseLock();
         socket.close();
 
         return {
@@ -595,7 +612,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         };
       } catch (error) {
         writer.releaseLock();
-        reader.releaseLock();
+        bufferedReader.releaseLock();
         socket.close();
         throw error;
       }
@@ -624,6 +641,11 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
  * Performs RFB version exchange and security type discovery
  */
 export async function handleVNCConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -643,7 +665,7 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -677,11 +699,12 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const bufferedReader = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
         // Step 1: Read server's RFB version string (12 bytes: "RFB XXX.YYY\n")
-        const serverVersionBytes = await readExact(reader, 12);
+        const serverVersionBytes = await bufferedReader.readExact(12);
         const serverVersionStr = new TextDecoder().decode(serverVersionBytes).trim();
 
         // Validate it looks like an RFB version string
@@ -710,28 +733,28 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
 
         if (serverMajor >= 3 && serverMinor >= 7) {
           // RFB 3.7+: server sends count(1 byte) + type list
-          const countBytes = await readExact(reader, 1);
+          const countBytes = await bufferedReader.readExact(1);
           const count = countBytes[0];
 
           if (count === 0) {
             // Server is refusing connection - read error message
-            const reasonLenBytes = await readExact(reader, 4);
+            const reasonLenBytes = await bufferedReader.readExact(4);
             const reasonLen = new DataView(reasonLenBytes.buffer).getUint32(0, false);
-            const reasonBytes = await readExact(reader, Math.min(reasonLen, 256));
+            const reasonBytes = await bufferedReader.readExact(Math.min(reasonLen, 256));
             securityError = new TextDecoder().decode(reasonBytes);
           } else {
-            const typesBytes = await readExact(reader, count);
+            const typesBytes = await bufferedReader.readExact(count);
             securityTypes = Array.from(typesBytes);
           }
         } else {
           // RFB 3.3: server sends a single uint32 security type
-          const typeBytes = await readExact(reader, 4);
+          const typeBytes = await bufferedReader.readExact(4);
           const type = new DataView(typeBytes.buffer).getUint32(0, false);
           if (type === 0) {
             // Connection failed - read error message
-            const reasonLenBytes = await readExact(reader, 4);
+            const reasonLenBytes = await bufferedReader.readExact(4);
             const reasonLen = new DataView(reasonLenBytes.buffer).getUint32(0, false);
-            const reasonBytes = await readExact(reader, Math.min(reasonLen, 256));
+            const reasonBytes = await bufferedReader.readExact(Math.min(reasonLen, 256));
             securityError = new TextDecoder().decode(reasonBytes);
           } else {
             securityTypes = [type];
@@ -741,7 +764,7 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
         const rtt = Date.now() - startTime;
 
         writer.releaseLock();
-        reader.releaseLock();
+        bufferedReader.releaseLock();
         socket.close();
 
         const authRequired = !securityTypes.includes(1); // Type 1 = None
@@ -765,7 +788,7 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
         };
       } catch (error) {
         writer.releaseLock();
-        reader.releaseLock();
+        bufferedReader.releaseLock();
         socket.close();
         throw error;
       }

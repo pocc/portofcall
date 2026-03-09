@@ -21,6 +21,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface IPPRequest {
   host: string;
@@ -345,13 +346,21 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535'
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -364,9 +373,11 @@ export async function handleIPPProbe(request: Request): Promise<Response> {
     const httpPath = extractPathFromUri(printerUri);
 
     // Build HTTP request wrapping the IPP payload
+    const safeHost2 = host.replace(/[\r\n]/g, '');
+    const safeHttpPath2 = httpPath.replace(/[\r\n]/g, '');
     const httpRequest =
-      `POST ${httpPath} HTTP/1.1\r\n` +
-      `Host: ${host}:${port}\r\n` +
+      `POST ${safeHttpPath2} HTTP/1.1\r\n` +
+      `Host: ${safeHost2}:${port}\r\n` +
       `Content-Type: application/ipp\r\n` +
       `Content-Length: ${ippPayload.length}\r\n` +
       `Connection: close\r\n` +
@@ -602,15 +613,25 @@ export async function handleIPPPrintJob(request: Request): Promise<Response> {
       });
     }
 
+    // SSRF protection
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck2.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
     const ippPayload = buildPrintJobRequest(printerUri, data, mimeType, jobName);
 
     // Derive the HTTP resource path from the printer URI
     const httpPath = extractPathFromUri(printerUri);
 
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safeHttpPath = httpPath.replace(/[\r\n]/g, '');
     const httpRequest =
-      `POST ${httpPath} HTTP/1.1\r\n` +
-      `Host: ${host}:${port}\r\n` +
+      `POST ${safeHttpPath} HTTP/1.1\r\n` +
+      `Host: ${safeHost}:${port}\r\n` +
       `Content-Type: application/ipp\r\n` +
       `Content-Length: ${ippPayload.length}\r\n` +
       `Connection: close\r\n` +

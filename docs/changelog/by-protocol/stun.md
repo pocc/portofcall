@@ -60,3 +60,8 @@ The implementation includes detailed documentation:
 - [RFC 8489 - STUN bis](https://www.rfc-editor.org/rfc/rfc8489)
 - [STUN Attribute Registry (IANA)](https://www.iana.org/assignments/stun-parameters/)
 - [TURN Protocol (RFC 5766)](https://www.rfc-editor.org/rfc/rfc5766) - STUN extension for relay
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

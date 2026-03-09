@@ -5,31 +5,30 @@ Complete step-by-step guide for implementing TCP protocols in Port of Call.
 ## Prerequisites
 
 Before starting, **ALWAYS**:
-1. ✅ Check [../node_modules/mutex.md](../node_modules/mutex.md) - Avoid duplicate work
-2. ✅ Verify protocol is TCP-based (consult [IMPOSSIBLE.md](IMPOSSIBLE.md))
-3. ✅ Review implemented protocols in [IMPLEMENTED.md](IMPLEMENTED.md)
+1. ✅ Check the git log / branch history - Avoid duplicate work
+2. ✅ Verify protocol is TCP-based (consult [IMPOSSIBLE.md](../reference/IMPOSSIBLE.md))
+3. ✅ Review implemented protocols in [IMPLEMENTED.md](../reference/IMPLEMENTED.md)
 4. ✅ Read the full documentation in [docs/](docs/)
 
 ## Quick Start Checklist
 
 ### 1. Protocol Selection
 - [ ] Protocol uses TCP (not UDP, ICMP, or raw sockets)
-- [ ] Not listed as "Currently Implementing" in [../node_modules/mutex.md](../node_modules/mutex.md)
-- [ ] Not listed as "Impossible" in [IMPOSSIBLE.md](IMPOSSIBLE.md)
-- [ ] Not already completed in [IMPLEMENTED.md](IMPLEMENTED.md)
+- [ ] Not currently being worked on by someone else (check git branches)
+- [ ] Not listed as "Impossible" in [IMPOSSIBLE.md](../reference/IMPOSSIBLE.md)
+- [ ] Not already completed in [IMPLEMENTED.md](../reference/IMPLEMENTED.md)
 
-### 2. Mark as In Progress
-**IMPORTANT**: Update [../node_modules/mutex.md](../node_modules/mutex.md):
-```markdown
-## Currently Implementing:
-- YourProtocol (Port XXXX) - Brief description
+### 2. Create a Feature Branch
+**IMPORTANT**: Create a dedicated branch for your protocol work:
+```bash
+git checkout -b feat/{protocol}
 ```
 
 ### 3. Research Phase
 - [ ] Read RFC or official protocol specification
-- [ ] Study [TCP_PROTOCOLS.md](TCP_PROTOCOLS.md) for protocol details
+- [ ] Study [TCP_PROTOCOLS.md](../reference/TCP_PROTOCOLS.md) for protocol details
 - [ ] Check if protocol-specific docs exist in [protocols/](protocols/)
-- [ ] Review implementation patterns in [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md)
+- [ ] Review implementation patterns in [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)
 
 ## Implementation Process
 
@@ -78,29 +77,20 @@ Create a brief outline covering:
 Follow this file structure:
 
 ```
-src/worker/protocols/{protocol}/
-├── client.ts           # TCP socket handler
-├── tunnel.ts           # WebSocket tunnel
-├── types.ts            # TypeScript interfaces
-└── utils.ts            # Helper functions
+src/worker/{protocol}.ts              # TCP socket handler (flat file, not nested)
+src/components/{Protocol}Client.tsx   # Main UI component
 
-src/components/{Protocol}/
-├── {Protocol}Client.tsx    # Main UI component
-├── ConnectionForm.tsx      # Connection inputs
-└── {Protocol}Interface.tsx # Protocol-specific UI
+tests/{protocol}.test.ts              # Tests
 
-tests/protocols/
-├── {protocol}.test.ts      # Unit tests
-└── {protocol}.integration.test.ts  # Integration tests
-
-protocols/
-└── {PROTOCOL}.md           # Implementation documentation
+docs/protocols/{PROTOCOL}.md          # Protocol documentation
 ```
+
+> **Note:** Protocol handlers are flat files in `src/worker/`, NOT in subdirectories. Each protocol is a single `.ts` file (e.g., `src/worker/redis.ts`, `src/worker/ssh.ts`).
 
 #### Worker Implementation Template
 
 ```typescript
-// src/worker/protocols/{protocol}/client.ts
+// src/worker/{protocol}.ts
 import { connect } from 'cloudflare:sockets';
 
 export interface ProtocolConfig {
@@ -143,7 +133,7 @@ export class ProtocolClient {
 #### WebSocket Tunnel Template
 
 ```typescript
-// src/worker/protocols/{protocol}/tunnel.ts
+// WebSocket tunnel pattern (in the same src/worker/{protocol}.ts file)
 export async function createProtocolTunnel(
   request: Request,
   config: ProtocolConfig
@@ -228,9 +218,8 @@ Document how your protocol handles:
 ### Unit Tests
 
 ```typescript
-// tests/protocols/{protocol}.test.ts
+// tests/{protocol}.test.ts
 import { describe, it, expect } from 'vitest';
-import { ProtocolClient } from '@/worker/protocols/{protocol}/client';
 
 describe('Protocol Client', () => {
   it('should connect successfully', async () => {
@@ -260,8 +249,8 @@ docker run -d -p 6379:6379 redis:latest
 Create or update:
 
 1. **[protocols/{PROTOCOL}.md](protocols/)** - Implementation details
-2. **[IMPLEMENTED.md](IMPLEMENTED.md)** - Add to implemented list
-3. **[../node_modules/mutex.md](../node_modules/mutex.md)** - Move to "Completed This Session"
+2. **[IMPLEMENTED.md](../reference/IMPLEMENTED.md)** - Add to implemented list
+3. Merge your feature branch
 4. **[README.md](README.md)** - Update if adding major feature
 
 ## Completion Checklist
@@ -278,7 +267,7 @@ Before marking as complete:
 - [ ] Code reviewed for best practices
 - [ ] Cloudflare detection handled (if applicable)
 - [ ] Rate limiting considered
-- [ ] Moved from "Currently Implementing" to "Completed" in mutex.md
+- [ ] Feature branch merged to main
 
 ## Deployment
 
@@ -342,7 +331,7 @@ Study these for patterns:
 
 ## Getting Help
 
-- **Patterns**: [protocols/IMPLEMENTATION_GUIDE.md](protocols/IMPLEMENTATION_GUIDE.md)
+- **Patterns**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)
 - **Quick Reference**: [protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md)
 - **Security**: [CLOUDFLARE_DETECTION.md](CLOUDFLARE_DETECTION.md)
 - **Testing**: [API_TESTING.md](API_TESTING.md)
@@ -352,8 +341,8 @@ Study these for patterns:
 
 When you finish implementing a protocol:
 
-1. ✅ Update [IMPLEMENTED.md](IMPLEMENTED.md)
-2. ✅ Move to "Completed This Session" in [../node_modules/mutex.md](../node_modules/mutex.md)
+1. ✅ Update [IMPLEMENTED.md](../reference/IMPLEMENTED.md)
+2. ✅ Move to "Completed This Session" in the git log / branch history
 3. ✅ Create protocol documentation in [protocols/](protocols/)
 4. ✅ Deploy to production
 5. ✅ Test live deployment

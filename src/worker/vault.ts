@@ -46,15 +46,17 @@ async function sendHttpGet(
 
   const writer = socket.writable.getWriter();
 
-  // Build HTTP/1.1 request
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  // Build HTTP/1.1 request — sanitize user inputs to prevent CRLF injection
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
 
   if (token) {
-    request += `X-Vault-Token: ${token}\r\n`;
+    request += `X-Vault-Token: ${token.replace(/[\r\n]/g, '')}\r\n`;
   }
 
   request += `\r\n`;
@@ -70,7 +72,12 @@ async function sendHttpGet(
     const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (readResult.done) break;
     if (readResult.value) {
-      response += decoder.decode(readResult.value, { stream: true });
+      const chunk = decoder.decode(readResult.value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -176,7 +183,7 @@ export async function handleVaultHealth(request: Request): Promise<Response> {
     const token = body.token;
     const timeout = body.timeout || 15000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -297,7 +304,7 @@ export async function handleVaultQuery(request: Request): Promise<Response> {
     const token = body.token;
     const timeout = body.timeout || 15000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -399,7 +406,7 @@ export async function handleVaultSecretRead(request: Request): Promise<Response>
     const timeout = body.timeout || 10000;
 
     // Bug fix: port validation was missing; out-of-range ports caused connect() to throw.
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -421,6 +428,14 @@ export async function handleVaultSecretRead(request: Request): Promise<Response>
 
     const mount = body.mount || 'secret';
     const kvVersion = body.kv_version || 2;
+
+    // Prevent path traversal via mount or path fields
+    if (/\.\./.test(mount) || /\.\./.test(body.path)) {
+      return new Response(JSON.stringify({ success: false, error: 'Path traversal sequences (..) are not allowed in mount or path' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const apiPath = kvVersion === 2
       ? `/v1/${mount}/data/${body.path}`
       : `/v1/${mount}/${body.path}`;
@@ -489,7 +504,7 @@ export async function handleVaultSecretWrite(request: Request): Promise<Response
     const timeout = body.timeout || 10000;
 
     // Bug fix: port validation was missing.
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -511,6 +526,14 @@ export async function handleVaultSecretWrite(request: Request): Promise<Response
 
     const mount = body.mount || 'secret';
     const kvVersion = body.kv_version || 2;
+
+    // Prevent path traversal via mount or path fields
+    if (/\.\./.test(mount) || /\.\./.test(body.path)) {
+      return new Response(JSON.stringify({ success: false, error: 'Path traversal sequences (..) are not allowed in mount or path' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const apiPath = kvVersion === 2
       ? `/v1/${mount}/data/${body.path}`
       : `/v1/${mount}/${body.path}`;
@@ -522,16 +545,21 @@ export async function handleVaultSecretWrite(request: Request): Promise<Response
     // the top-level `connect` import. The top-level `connect` is used directly here.
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
 
     try {
       const payloadBytes = new TextEncoder().encode(payload);
+      const safeH = host.replace(/[\r\n]/g, '');
+      const safeToken = (body.token || '').replace(/[\r\n]/g, '');
       const headers = [
         `POST ${apiPath} HTTP/1.1`,
-        `Host: ${host}:${port}`,
-        `X-Vault-Token: ${body.token}`,
+        `Host: ${safeH}:${port}`,
+        `X-Vault-Token: ${safeToken}`,
         'Content-Type: application/json',
         `Content-Length: ${payloadBytes.length}`,
         'Connection: close',

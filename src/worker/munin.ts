@@ -119,6 +119,11 @@ async function sendCommand(
  * POST /api/munin/connect
  */
 export async function handleMuninConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -140,7 +145,7 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
     const timeoutMs = options.timeout || 10000;
 
     // Fix: validate port range
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         error: 'Port must be between 1 and 65535',
       }), {
@@ -284,6 +289,11 @@ export async function handleMuninConnect(request: Request): Promise<Response> {
  * POST /api/munin/fetch
  */
 export async function handleMuninFetch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -326,7 +336,7 @@ export async function handleMuninFetch(request: Request): Promise<Response> {
     const timeoutMs = options.timeout || 10000;
 
     // Fix: validate port range
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         error: 'Port must be between 1 and 65535',
       }), {

@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
+const API_BASE = (process.env.API_BASE || 'https://l4.fyi/api').replace(/\/api$/, '');
 
 describe('Zabbix Protocol Integration Tests', () => {
   // --- Server Probe Tests (/api/zabbix/connect) ---
@@ -385,6 +385,7 @@ describe('Zabbix Protocol Integration Tests', () => {
     for (const key of validKeys) {
       it(`should accept valid key: ${key}`, () => {
         // Key should not contain control characters
+        // eslint-disable-next-line no-control-regex
         expect(/[\x00-\x1f]/.test(key)).toBe(false);
 
         // Key should be <= 255 chars
@@ -397,6 +398,7 @@ describe('Zabbix Protocol Integration Tests', () => {
 
     it('should reject keys with null bytes', () => {
       const maliciousKey = 'agent.ping\x00';
+      // eslint-disable-next-line no-control-regex
       expect(/[\x00-\x1f]/.test(maliciousKey)).toBe(true);
     });
 

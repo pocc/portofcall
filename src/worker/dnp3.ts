@@ -279,9 +279,9 @@ function parseApplicationResponse(userData: Uint8Array): {
 } | null {
   if (userData.length < 5) return null; // transport(1) + app_ctrl(1) + func(1) + iin(2) minimum
 
-  // Transport header
-  const transportFIR = !!(userData[0] & 0x40);
-  const transportFIN = !!(userData[0] & 0x80);
+  // Transport header (IEEE 1815: bit 7 = FIR, bit 6 = FIN)
+  const transportFIR = !!(userData[0] & 0x80);
+  const transportFIN = !!(userData[0] & 0x40);
   const transportSeq = userData[0] & 0x3F;
 
   // Application Control
@@ -426,6 +426,11 @@ function toHex(data: Uint8Array, maxBytes = 64): string {
  * Sends a REQUEST_LINK_STATUS to check if a DNP3 outstation is reachable
  */
 export async function handleDNP3Connect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -442,9 +447,15 @@ export async function handleDNP3Connect(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -548,6 +559,11 @@ export async function handleDNP3Connect(request: Request): Promise<Response> {
  * This is a read-only operation safe for critical infrastructure
  */
 export async function handleDNP3Read(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -566,7 +582,7 @@ export async function handleDNP3Read(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -574,10 +590,17 @@ export async function handleDNP3Read(request: Request): Promise<Response> {
 
     if (classNum < 0 || classNum > 3) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'classNum must be 0 (static data), 1, 2, or 3 (event classes)',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -840,6 +863,11 @@ function buildSelectOperateRequest(
  *   Group 41 Var 2 — Analog Output (16-bit integer value)
  */
 export async function handleDNP3SelectOperate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -864,7 +892,7 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -875,10 +903,17 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
                       (objectGroup === 41 && objectVariation === 2);
     if (!supported) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Only Group 12 Var 1 (CROB) and Group 41 Var 2 (Analog Output) are supported',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 

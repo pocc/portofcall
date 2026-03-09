@@ -3,7 +3,7 @@
 ## What This Is
 A browser-to-TCP bridge deployed as a Cloudflare Worker. Uses the `cloudflare:sockets` API to proxy TCP connections from the browser via WebSocket tunnels.
 
-Live: https://portofcall.ross.gg
+Live: https://l4.fyi
 
 ## Tech Stack
 - **Frontend:** Vite 7 + React 19 + TypeScript + Tailwind CSS 3
@@ -36,10 +36,21 @@ The following security measures are **already in place**. Do NOT flag these as m
 - **Rate Limiting:** Implemented at the infrastructure/Cloudflare level (nginx connection limits, fail2ban for failed auth). See `SECURITY.md` and `docker/` configs.
 - **SSRF Prevention:** `host-validator.ts` blocks RFC 1918, loopback, link-local, CGN, metadata IPs, and dangerous hostnames. Enforced at router level before any handler runs. **Known limitation:** DNS rebinding (a hostname that resolves to a private IP after passing the text-based check) cannot be prevented because `cloudflare:sockets` `connect()` resolves hostnames internally. This is a platform constraint, not a missing feature — do NOT flag it as a bug.
 - **Cloudflare IP Detection:** `cloudflare-detector.ts` blocks connections to Cloudflare-proxied IPs to prevent loop-back attacks.
-- **Backpressure Control:** WebSocket-to-TCP pipe functions handle backpressure (4 MiB high-water mark) and close connections exceeding the limit.
+- **Backpressure Control:** WebSocket-to-TCP pipe functions handle backpressure with two thresholds: 1 MiB outbound HWM (pauses TCP reads when `ws.bufferedAmount` exceeds it) and 4 MiB inbound HWM (hard-closes the connection if the TCP write queue exceeds it). See `websocket-pipe.ts`.
 - **Resource Cleanup:** All stream readers/writers released in `finally` blocks.
 - **Error Sanitization:** Internal portofcall errors (checklist, config, etc.) are sanitized to "Internal server error" before reaching the client. **SSH and protocol errors are intentionally passed through raw** — users own the servers they connect to and need real error messages for debugging. Do NOT sanitize `/api/ssh/`, `/api/connect`, or `/api/tcp` error responses.
 - **Credential Security:** All HTTP handlers require `POST` with credentials in the JSON body — never in URL query params. **Known limitation:** WebSocket upgrade requests are inherently GET-only, so 7 WS handlers (imap, imaps, redis, mqtt, irc, ircs, rexec) still read credentials from query params. These are protected by Origin validation. SSH already uses the message-body pattern (credentials sent in the first WS message after upgrade). Do NOT flag WS query params as a security gap unless proposing to migrate them to the SSH-style first-message pattern.
+
+## Docker Testing — IMPORTANT
+All compose files have `mem_limit` set to prevent runaway memory usage (host has 36GB RAM). See `docs/prompts/DOCKER_TESTING.md` for the full testing prompt.
+
+**Key rules:**
+- **Never run all compose files at once.** Only start the stacks you need for a specific test.
+- **Always stop containers when done:** `docker compose -f <file> down`
+- **Total memory budget: ~8GB.** Docker Desktop is configured for ~7.6GB. Don't exceed this.
+- **MongoDB, MySQL, PostgreSQL, Kafka, Elasticsearch** are the heaviest services (512m–1g each). Avoid running more than 2–3 simultaneously.
+- **Clean up regularly:** `docker system prune` to reclaim disk/volumes.
+- **Use `docker stats`** to monitor real-time memory usage during tests.
 
 ## Style
 - Do not include 'Co-Authored-By' trailers or any AI attribution in git commit messages.

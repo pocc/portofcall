@@ -24,7 +24,7 @@ Every curl example was parsed and validated:
 
 - **560 total examples** (556 POST, 4 GET)
 - **555 JSON bodies** all parse via `JSON.parse()` without error
-- **0 invalid URLs** -- all use `https://portofcall.ross.gg/api/` base
+- **0 invalid URLs** -- all use `https://l4.fyi/api/` base
 - **0 malformed flags** -- all `-X POST`, `-H`, `-d` flags correct
 - **1 multipart upload** (FTP) correctly uses `-F` instead of `-d` -- not an error
 
@@ -58,7 +58,7 @@ Script: `/tmp/validate-routes.mjs`
 
 ## 3. Production Deployment Testing
 
-Tested one representative endpoint per protocol against `https://portofcall.ross.gg`:
+Tested one representative endpoint per protocol against `https://l4.fyi`:
 
 | HTTP Status | Count | Meaning |
 |-------------|-------|---------|

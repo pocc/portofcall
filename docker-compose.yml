@@ -12,6 +12,7 @@ services:
       - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./docker/nginx/html:/usr/share/nginx/html:ro
       - ./docker/nginx/ssl:/etc/nginx/ssl:ro
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - testnet
@@ -34,6 +35,7 @@ services:
       - LOCAL_UMASK=022
     volumes:
       - ftp_data:/home/vsftpd
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - testnet
@@ -57,6 +59,7 @@ services:
     volumes:
       - ./docker/openssh/sshd_config:/config/sshd_config:ro
       - ssh_data:/config
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - testnet
@@ -90,6 +93,7 @@ services:
       - mailserver_logs:/var/log/mail
     cap_add:
       - NET_ADMIN
+    mem_limit: 1g
     restart: unless-stopped
     networks:
       - testnet
@@ -109,6 +113,7 @@ services:
     volumes:
       - ./docker/redis/init.sh:/docker-entrypoint-initdb.d/init.sh:ro
       - redis_data:/data
+    mem_limit: 512m
     restart: unless-stopped
     networks:
       - testnet
@@ -132,6 +137,7 @@ services:
     volumes:
       - ./docker/mysql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - mysql_data:/var/lib/mysql
+    mem_limit: 1g
     restart: unless-stopped
     networks:
       - testnet
@@ -156,6 +162,7 @@ services:
     volumes:
       - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       - postgres_data:/var/lib/postgresql/data
+    mem_limit: 1g
     restart: unless-stopped
     networks:
       - testnet
@@ -173,6 +180,7 @@ services:
       - "19:19"     # Chargen
       - "37:37"     # Time
       - "79:79"     # Finger
+    mem_limit: 128m
     restart: unless-stopped
     networks:
       - testnet
@@ -200,6 +208,7 @@ services:
         echo 'testuser:testpass123' | chpasswd &&
         xinetd -dontfork
       "
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - testnet
@@ -212,6 +221,7 @@ services:
       - "6667:6667"
     volumes:
       - ./docker/ircd/inspircd.conf:/inspircd/conf/inspircd.conf:ro
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - testnet
@@ -227,6 +237,7 @@ services:
       - ./docker/mosquitto/passwd:/mosquitto/config/passwd:ro
       - mosquitto_data:/mosquitto/data
       - mosquitto_logs:/mosquitto/log
+    mem_limit: 256m
     restart: unless-stopped
     networks:
       - testnet
@@ -249,6 +260,7 @@ services:
     volumes:
       - ./docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
       - mongodb_data:/data/db
+    mem_limit: 1g
     restart: unless-stopped
     networks:
       - testnet
@@ -260,6 +272,7 @@ services:
     ports:
       - "11211:11211"
     command: memcached -m 64 -t 900
+    mem_limit: 128m
     restart: unless-stopped
     networks:
       - testnet

@@ -81,3 +81,8 @@ Recommended documentation should include:
 - [EIP-8](https://eips.ethereum.org/EIPS/eip-8) - RLPx forward compatibility
 - [Ethereum JSON-RPC](https://eth.wiki/json-rpc/API) - JSON-RPC API specification
 - [EIP-695](https://eips.ethereum.org/EIPS/eip-695) - eth_chainId method
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

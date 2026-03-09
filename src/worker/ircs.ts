@@ -16,7 +16,7 @@ import type { IRCConnectionOptions } from './irc';
 export async function handleIRCSConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -26,27 +26,33 @@ export async function handleIRCSConnect(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(
-        JSON.stringify({ error: 'Missing required parameter: host' }),
+        JSON.stringify({ success: false, error: 'Missing required parameter: host' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (!options.nickname) {
       return new Response(
-        JSON.stringify({ error: 'Missing required parameter: nickname' }),
+        JSON.stringify({ success: false, error: 'Missing required parameter: nickname' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (!validateNickname(options.nickname)) {
       return new Response(
-        JSON.stringify({ error: 'Invalid nickname. Must start with a letter and contain only alphanumeric characters.' }),
+        JSON.stringify({ success: false, error: 'Invalid nickname. Must start with a letter and contain only alphanumeric characters.' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     const host = options.host;
     const port = options.port || 6697;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
     const nickname = options.nickname;
     const username = options.username || nickname;
     const realname = options.realname || nickname;
@@ -79,11 +85,15 @@ export async function handleIRCSConnect(request: Request): Promise<Response> {
       const decoder = new TextDecoder();
 
       // Send registration commands
-      if (options.password) {
-        await writer.write(encoder.encode(`PASS ${options.password}\r\n`));
+      const safeNick = nickname.replace(/[\r\n]/g, '');
+      const safeUsername = username.replace(/[\r\n]/g, '');
+      const safeRealname = realname.replace(/[\r\n]/g, '');
+      const safePassword = options.password ? options.password.replace(/[\r\n]/g, '') : '';
+      if (safePassword) {
+        await writer.write(encoder.encode(`PASS ${safePassword}\r\n`));
       }
-      await writer.write(encoder.encode(`NICK ${nickname}\r\n`));
-      await writer.write(encoder.encode(`USER ${username} 0 * :${realname}\r\n`));
+      await writer.write(encoder.encode(`NICK ${safeNick}\r\n`));
+      await writer.write(encoder.encode(`USER ${safeUsername} 0 * :${safeRealname}\r\n`));
       writer.releaseLock();
 
       // Read server responses (welcome, MOTD, etc.)
@@ -201,31 +211,34 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
 
     const host = url.searchParams.get('host');
     const port = parseInt(url.searchParams.get('port') || '6697', 10);
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
     const nickname = url.searchParams.get('nickname');
     const username = url.searchParams.get('username') || nickname || '';
     const realname = url.searchParams.get('realname') || nickname || '';
-    const password = url.searchParams.get('password') || '';
     const channels = url.searchParams.get('channels')?.split(',').filter(Boolean) || [];
-    const saslUsername = url.searchParams.get('saslUsername') || '';
-    const saslPassword = url.searchParams.get('saslPassword') || '';
 
     if (!host) {
       return new Response(
-        JSON.stringify({ error: 'Missing required parameter: host' }),
+        JSON.stringify({ success: false, error: 'Missing required parameter: host' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (!nickname) {
       return new Response(
-        JSON.stringify({ error: 'Missing required parameter: nickname' }),
+        JSON.stringify({ success: false, error: 'Missing required parameter: nickname' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
 
     if (!validateNickname(nickname)) {
       return new Response(
-        JSON.stringify({ error: 'Invalid nickname' }),
+        JSON.stringify({ success: false, error: 'Invalid nickname' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -249,14 +262,43 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
 
     server.accept();
 
-    // Connect to IRC server with TLS in background
+    // Credentials arrive via first WebSocket message (not URL params)
+    const credentialPromise = new Promise<{ password: string; saslUsername: string; saslPassword: string }>((resolve, reject) => {
+      const authTimer = setTimeout(() => {
+        server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+        server.close(4001, 'Auth timeout');
+        reject(new Error('Auth timeout'));
+      }, 15_000);
+
+      server.addEventListener('message', function onAuth(event) {
+        try {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'auth') {
+            clearTimeout(authTimer);
+            server.removeEventListener('message', onAuth);
+            resolve({
+              password: msg.password || '',
+              saslUsername: msg.saslUsername || '',
+              saslPassword: msg.saslPassword || '',
+            });
+          }
+        } catch { /* not JSON yet — ignore until auth */ }
+      });
+    });
+
+    // Connect to IRC server with TLS in background after receiving credentials
     (async () => {
       try {
+        const { password, saslUsername, saslPassword } = await credentialPromise;
+
         const socket = connect(`${host}:${port}`, {
           secureTransport: 'on',
           allowHalfOpen: false,
         });
-        await socket.opened;
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+        ]);
 
         const encoder = new TextEncoder();
         const decoder = new TextDecoder();
@@ -274,12 +316,16 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
 
         // Send IRC registration — CAP LS first for IRCv3 negotiation
         const regWriter = socket.writable.getWriter();
-        if (password) {
-          await regWriter.write(encoder.encode(`PASS ${password}\r\n`));
+        const safeNick = nickname.replace(/[\r\n]/g, '');
+        const safeUsername = username.replace(/[\r\n]/g, '');
+        const safeRealname = realname.replace(/[\r\n]/g, '');
+        const safePassword = password ? password.replace(/[\r\n]/g, '') : '';
+        if (safePassword) {
+          await regWriter.write(encoder.encode(`PASS ${safePassword}\r\n`));
         }
         await regWriter.write(encoder.encode('CAP LS 302\r\n'));
-        await regWriter.write(encoder.encode(`NICK ${nickname}\r\n`));
-        await regWriter.write(encoder.encode(`USER ${username} 0 * :${realname}\r\n`));
+        await regWriter.write(encoder.encode(`NICK ${safeNick}\r\n`));
+        await regWriter.write(encoder.encode(`USER ${safeUsername} 0 * :${safeRealname}\r\n`));
         regWriter.releaseLock();
 
         // Track registration state
@@ -295,85 +341,88 @@ export async function handleIRCSWebSocket(request: Request): Promise<Response> {
               const cmd = JSON.parse(data);
               const cmdWriter = socket.writable.getWriter();
 
+              // Sanitize all string fields to prevent CRLF injection
+              const s = (v: unknown): string => (typeof v === 'string' ? v.replace(/[\r\n]/g, '') : String(v ?? ''));
+
               switch (cmd.type) {
                 case 'raw':
-                  await cmdWriter.write(encoder.encode(`${cmd.command}\r\n`));
+                  await cmdWriter.write(encoder.encode(`${s(cmd.command)}\r\n`));
                   break;
                 case 'join':
-                  await cmdWriter.write(encoder.encode(`JOIN ${cmd.channel}\r\n`));
+                  await cmdWriter.write(encoder.encode(`JOIN ${s(cmd.channel)}\r\n`));
                   break;
                 case 'part':
                   await cmdWriter.write(
                     encoder.encode(
-                      `PART ${cmd.channel}${cmd.message ? ' :' + cmd.message : ''}\r\n`
+                      `PART ${s(cmd.channel)}${cmd.message ? ' :' + s(cmd.message) : ''}\r\n`
                     )
                   );
                   break;
                 case 'privmsg':
                   await cmdWriter.write(
-                    encoder.encode(`PRIVMSG ${cmd.target} :${cmd.message}\r\n`)
+                    encoder.encode(`PRIVMSG ${s(cmd.target)} :${s(cmd.message)}\r\n`)
                   );
                   break;
                 case 'nick':
-                  await cmdWriter.write(encoder.encode(`NICK ${cmd.nickname}\r\n`));
+                  await cmdWriter.write(encoder.encode(`NICK ${s(cmd.nickname)}\r\n`));
                   break;
                 case 'quit':
                   await cmdWriter.write(
-                    encoder.encode(`QUIT :${cmd.message || 'Leaving'}\r\n`)
+                    encoder.encode(`QUIT :${s(cmd.message) || 'Leaving'}\r\n`)
                   );
                   break;
                 case 'topic':
                   if (cmd.topic) {
                     await cmdWriter.write(
-                      encoder.encode(`TOPIC ${cmd.channel} :${cmd.topic}\r\n`)
+                      encoder.encode(`TOPIC ${s(cmd.channel)} :${s(cmd.topic)}\r\n`)
                     );
                   } else {
-                    await cmdWriter.write(encoder.encode(`TOPIC ${cmd.channel}\r\n`));
+                    await cmdWriter.write(encoder.encode(`TOPIC ${s(cmd.channel)}\r\n`));
                   }
                   break;
                 case 'names':
-                  await cmdWriter.write(encoder.encode(`NAMES ${cmd.channel}\r\n`));
+                  await cmdWriter.write(encoder.encode(`NAMES ${s(cmd.channel)}\r\n`));
                   break;
                 case 'list':
                   await cmdWriter.write(encoder.encode('LIST\r\n'));
                   break;
                 case 'whois':
-                  await cmdWriter.write(encoder.encode(`WHOIS ${cmd.nickname}\r\n`));
+                  await cmdWriter.write(encoder.encode(`WHOIS ${s(cmd.nickname)}\r\n`));
                   break;
                 case 'notice':
-                  await cmdWriter.write(encoder.encode(`NOTICE ${cmd.target} :${cmd.message}\r\n`));
+                  await cmdWriter.write(encoder.encode(`NOTICE ${s(cmd.target)} :${s(cmd.message)}\r\n`));
                   break;
                 case 'kick':
-                  await cmdWriter.write(encoder.encode(`KICK ${cmd.channel} ${cmd.user}${cmd.reason ? ' :' + cmd.reason : ''}\r\n`));
+                  await cmdWriter.write(encoder.encode(`KICK ${s(cmd.channel)} ${s(cmd.user)}${cmd.reason ? ' :' + s(cmd.reason) : ''}\r\n`));
                   break;
                 case 'mode':
-                  await cmdWriter.write(encoder.encode(`MODE ${cmd.target} ${cmd.mode}${cmd.params ? ' ' + cmd.params : ''}\r\n`));
+                  await cmdWriter.write(encoder.encode(`MODE ${s(cmd.target)} ${s(cmd.mode)}${cmd.params ? ' ' + s(cmd.params) : ''}\r\n`));
                   break;
                 case 'invite':
-                  await cmdWriter.write(encoder.encode(`INVITE ${cmd.nick} ${cmd.channel}\r\n`));
+                  await cmdWriter.write(encoder.encode(`INVITE ${s(cmd.nick)} ${s(cmd.channel)}\r\n`));
                   break;
                 case 'away':
-                  await cmdWriter.write(encoder.encode(cmd.message ? `AWAY :${cmd.message}\r\n` : `AWAY\r\n`));
+                  await cmdWriter.write(encoder.encode(cmd.message ? `AWAY :${s(cmd.message)}\r\n` : `AWAY\r\n`));
                   break;
                 case 'ctcp':
-                  await cmdWriter.write(encoder.encode(`PRIVMSG ${cmd.target} :\x01${cmd.ctcp}${cmd.args ? ' ' + cmd.args : ''}\x01\r\n`));
+                  await cmdWriter.write(encoder.encode(`PRIVMSG ${s(cmd.target)} :\x01${s(cmd.ctcp)}${cmd.args ? ' ' + s(cmd.args) : ''}\x01\r\n`));
                   break;
                 case 'ctcp-reply':
-                  await cmdWriter.write(encoder.encode(`NOTICE ${cmd.target} :\x01${cmd.ctcp}${cmd.args ? ' ' + cmd.args : ''}\x01\r\n`));
+                  await cmdWriter.write(encoder.encode(`NOTICE ${s(cmd.target)} :\x01${s(cmd.ctcp)}${cmd.args ? ' ' + s(cmd.args) : ''}\x01\r\n`));
                   break;
                 case 'cap':
-                  await cmdWriter.write(encoder.encode(`CAP ${cmd.subcommand}${cmd.params ? ' :' + cmd.params : ''}\r\n`));
+                  await cmdWriter.write(encoder.encode(`CAP ${s(cmd.subcommand)}${cmd.params ? ' :' + s(cmd.params) : ''}\r\n`));
                   break;
                 case 'userhost':
-                  await cmdWriter.write(encoder.encode(`USERHOST ${(cmd.nicks as string[]).slice(0, 5).join(' ')}\r\n`));
+                  await cmdWriter.write(encoder.encode(`USERHOST ${(cmd.nicks as string[]).slice(0, 5).map(s).join(' ')}\r\n`));
                   break;
               }
 
               cmdWriter.releaseLock();
             } catch {
-              // Not JSON - send as raw IRC command
+              // Not JSON - send as raw IRC command (sanitize CRLF)
               const rawWriter = socket.writable.getWriter();
-              await rawWriter.write(encoder.encode(`${data}\r\n`));
+              await rawWriter.write(encoder.encode(`${data.replace(/[\r\n]/g, '')}\r\n`));
               rawWriter.releaseLock();
             }
           } catch (error) {

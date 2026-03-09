@@ -412,27 +412,27 @@ The binary protocol job submission endpoint (`/api/gearman/submit`) is a separat
 
 ```bash
 # Connection probe (version + status)
-curl -s -X POST https://portofcall.ross.gg/api/gearman/connect \
+curl -s -X POST https://l4.fyi/api/gearman/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"gearman.example.com","port":4730}' | jq .
 
 # Get server version
-curl -s -X POST https://portofcall.ross.gg/api/gearman/command \
+curl -s -X POST https://l4.fyi/api/gearman/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"gearman.example.com","command":"version"}' | jq -r '.response'
 
 # List registered functions and queue depth
-curl -s -X POST https://portofcall.ross.gg/api/gearman/command \
+curl -s -X POST https://l4.fyi/api/gearman/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"gearman.example.com","command":"status"}' | jq -r '.response'
 
 # List connected workers
-curl -s -X POST https://portofcall.ross.gg/api/gearman/command \
+curl -s -X POST https://l4.fyi/api/gearman/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"gearman.example.com","command":"workers"}' | jq -r '.response'
 
 # Submit a background job (fire-and-forget)
-curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
+curl -s -X POST https://l4.fyi/api/gearman/submit \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "gearman.example.com",
@@ -442,7 +442,7 @@ curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
   }' | jq .
 
 # Submit a foreground job and wait for result
-curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
+curl -s -X POST https://l4.fyi/api/gearman/submit \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "gearman.example.com",
@@ -452,7 +452,7 @@ curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
   }' | jq .
 
 # Submit a high-priority background job
-curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
+curl -s -X POST https://l4.fyi/api/gearman/submit \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "gearman.example.com",
@@ -463,7 +463,7 @@ curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
   }' | jq .
 
 # Submit with deduplication key
-curl -s -X POST https://portofcall.ross.gg/api/gearman/submit \
+curl -s -X POST https://l4.fyi/api/gearman/submit \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "gearman.example.com",

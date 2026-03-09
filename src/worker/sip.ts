@@ -36,6 +36,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface SipOptionsRequest {
   host: string;
@@ -272,6 +273,9 @@ async function readSipResponse(
  * Handle SIP OPTIONS request - probe server capabilities
  */
 export async function handleSipOptions(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let socket: ReturnType<typeof connect> | undefined;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -295,7 +299,7 @@ export async function handleSipOptions(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -332,6 +336,11 @@ export async function handleSipOptions(request: Request): Promise<Response> {
     const callId = generateCallId(host);
     const branch = generateBranch();
     const fromTag = generateTag();
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, server: '', error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     // Build SIP OPTIONS request
     const safeUri = stripCRLF(uri);
@@ -478,6 +487,9 @@ function buildToHeader(toUri: string, toTag?: string): string {
  * credentials (using sip: scheme for the digest-uri).
  */
 export async function handleSipInvite(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -494,6 +506,15 @@ export async function handleSipInvite(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, server: '', error: 'Host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, server: '', error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheckInvite = await checkIfCloudflare(host);
+    if (cfCheckInvite.isCloudflare && cfCheckInvite.ip) {
+      return new Response(JSON.stringify({ success: false, server: '', error: getCloudflareErrorMessage(host, cfCheckInvite.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const sipDomain = host;
@@ -662,7 +683,9 @@ export async function handleSipInvite(request: Request): Promise<Response> {
 
           // Use sip: scheme for digest-uri (plain SIP, not sips:)
           const digestUri = `sip:${toUser}@${sipDomain}`;
-          const ha1 = md5(`${body.username}:${realm}:${body.password}`);
+          const safeUsername = stripCRLF(body.username || '');
+          const safePassword = stripCRLF(body.password || '');
+          const ha1 = md5(`${safeUsername}:${realm}:${safePassword}`);
           const ha2 = md5(`INVITE:${digestUri}`);
           const nc = '00000001';
           const cnonce = Math.random().toString(36).substring(2, 10);
@@ -671,7 +694,7 @@ export async function handleSipInvite(request: Request): Promise<Response> {
             : md5(`${ha1}:${nonce}:${ha2}`);
 
           const authHeaderName = finalCode === 407 ? 'Proxy-Authorization' : 'Authorization';
-          let authVal = `Digest username="${body.username}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
+          let authVal = `Digest username="${safeUsername}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
           if (useQop === 'auth') authVal += `, qop=auth, nc=${nc}, cnonce="${cnonce}"`;
 
           // Re-INVITE with credentials
@@ -819,6 +842,9 @@ export async function handleSipInvite(request: Request): Promise<Response> {
  * Handle SIP REGISTER probe - test registration and auth requirements
  */
 export async function handleSipRegister(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let socket: ReturnType<typeof connect> | undefined;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -847,7 +873,7 @@ export async function handleSipRegister(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -899,6 +925,11 @@ export async function handleSipRegister(request: Request): Promise<Response> {
     const callId = generateCallId(host);
     const branch = generateBranch();
     const fromTag = generateTag();
+
+    const cfCheckReg = await checkIfCloudflare(host);
+    if (cfCheckReg.isCloudflare && cfCheckReg.ip) {
+      return new Response(JSON.stringify({ success: false, server: '', requiresAuth: false, error: getCloudflareErrorMessage(host, cfCheckReg.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     // Build SIP REGISTER request
     const safeUri = stripCRLF(uri);
@@ -1109,6 +1140,9 @@ function md5(input: string): string {
  * Request body: { host, port?, username, password, domain?, timeout? }
  */
 export async function handleSIPDigestAuth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let socket: ReturnType<typeof connect> | undefined;
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
 
@@ -1149,6 +1183,15 @@ export async function handleSIPDigestAuth(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: `Timeout must be between ${MIN_TIMEOUT} and ${MAX_TIMEOUT}ms` }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheckDigest = await checkIfCloudflare(host);
+    if (cfCheckDigest.isCloudflare && cfCheckDigest.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckDigest.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();

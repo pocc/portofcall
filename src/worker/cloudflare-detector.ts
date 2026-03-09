@@ -42,10 +42,10 @@ const CLOUDFLARE_IPV6_RANGES = [
 function ipv4ToInt(ip: string): number {
   const parts = ip.split('.');
   return (
-    (parseInt(parts[0], 10) << 24) +
-    (parseInt(parts[1], 10) << 16) +
-    (parseInt(parts[2], 10) << 8) +
-    parseInt(parts[3], 10)
+    (parseInt(parts[0], 10) * 16777216 +   // 256^3
+     parseInt(parts[1], 10) * 65536 +       // 256^2
+     parseInt(parts[2], 10) * 256 +         // 256^1
+     parseInt(parts[3], 10)) >>> 0           // unsigned 32-bit
   );
 }
 
@@ -142,30 +142,31 @@ export async function checkIfCloudflare(host: string): Promise<{
       };
     }
 
-    // For hostnames, we need to make a DNS query
-    // In a Cloudflare Worker, we can use DNS over HTTPS (DoH)
-    const dohResponse = await fetch(
-      `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(host)}&type=A`,
-      {
-        headers: {
-          'Accept': 'application/dns-json',
-        },
-      }
-    );
+    // For hostnames, query both A and AAAA records via DNS over HTTPS (DoH)
+    // to catch IPv6-only hosts behind Cloudflare (bug class 14E)
+    const encodedHost = encodeURIComponent(host);
+    const dohHeaders = { 'Accept': 'application/dns-json' };
 
-    if (!dohResponse.ok) {
-      return {
-        isCloudflare: false,
-        ip: null,
-        error: 'DNS resolution failed',
-      };
+    const [aResponse, aaaaResponse] = await Promise.all([
+      fetch(`https://cloudflare-dns.com/dns-query?name=${encodedHost}&type=A`, { headers: dohHeaders }),
+      fetch(`https://cloudflare-dns.com/dns-query?name=${encodedHost}&type=AAAA`, { headers: dohHeaders }),
+    ]);
+
+    type DnsAnswer = { Answer?: Array<{ type: number; data: string }> };
+    const allIPs: string[] = [];
+
+    if (aResponse.ok) {
+      const aData = await aResponse.json() as DnsAnswer;
+      // Filter to type 1 (A records) — exclude CNAMEs (type 5) and other non-IP answers
+      if (aData.Answer) allIPs.push(...aData.Answer.filter(a => a.type === 1).map(a => a.data));
+    }
+    if (aaaaResponse.ok) {
+      const aaaaData = await aaaaResponse.json() as DnsAnswer;
+      // Filter to type 28 (AAAA records)
+      if (aaaaData.Answer) allIPs.push(...aaaaData.Answer.filter(a => a.type === 28).map(a => a.data));
     }
 
-    const dnsData = await dohResponse.json() as {
-      Answer?: Array<{ data: string }>;
-    };
-
-    if (!dnsData.Answer || dnsData.Answer.length === 0) {
+    if (allIPs.length === 0) {
       return {
         isCloudflare: false,
         ip: null,
@@ -173,13 +174,12 @@ export async function checkIfCloudflare(host: string): Promise<{
       };
     }
 
-    // Get the first A record
-    const ip = dnsData.Answer[0].data;
-    const isCloudflare = isCloudflareIP(ip);
+    // Check all resolved IPs — if any is Cloudflare, the host is behind Cloudflare
+    const cfIP = allIPs.find(ip => isCloudflareIP(ip));
 
     return {
-      isCloudflare,
-      ip,
+      isCloudflare: !!cfIP,
+      ip: cfIP || allIPs[0],
       error: null,
     };
   } catch (error) {

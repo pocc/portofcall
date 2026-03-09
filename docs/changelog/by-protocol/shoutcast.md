@@ -88,3 +88,8 @@ The `SOURCE` endpoint tests broadcaster authentication by:
 This confirms both authentication and that the server accepts the data path, without requiring actual audio content or long-lived connection.
 
 ---
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -84,3 +84,8 @@ ActiveMQ implementation provides 9 endpoints supporting both OpenWire binary pro
 - [STOMP 1.2 Protocol](https://stomp.github.io/stomp-specification-1.2.html) - Text protocol specification
 - [Jolokia REST API](https://jolokia.org/reference/html/protocol.html) - JMX-over-HTTP protocol
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols (none for ActiveMQ)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

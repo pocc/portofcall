@@ -17,11 +17,16 @@ Complete documentation for Port of Call - a browser-to-TCP bridge via Cloudflare
 - **[Cross-Platform Notes](guides/CROSS_PLATFORM.md)** - Platform compatibility considerations
 - **[API Examples Validation](guides/API_EXAMPLES_VALIDATION.md)** - API testing and validation procedures
 
+### CLI & curl Interface
+- **[curl-Friendly Interface](../README.md#curl-friendly-interface)** - Short URL routes with plain text output
+- **[CLI Tool (`poc`)](../README.md#cli-tool-poc)** - Downloadable bash script with protocol auto-detection
+- Source: [`src/worker/cli-routes.ts`](../src/worker/cli-routes.ts), [`src/worker/formatters.ts`](../src/worker/formatters.ts), [`src/worker/content-negotiation.ts`](../src/worker/content-negotiation.ts)
+
 ### Technical References
 - **[Sockets API Reference](reference/SOCKETS_API.md)** - Cloudflare Workers Sockets API guide
 - **[TCP Protocols List](reference/TCP_PROTOCOLS.md)** - Comprehensive list of implementable TCP protocols
 - **[Impossible Protocols](reference/IMPOSSIBLE.md)** - Protocols that cannot run on Workers (UDP, raw sockets)
-- **[Implemented Protocols](reference/IMPLEMENTED.md)** - Complete list of 181 implemented protocols with test status
+- **[Implemented Protocols](reference/IMPLEMENTED.md)** - Complete list of 244 implemented protocols with test status
 - **[Internet Standards Analysis](reference/INTERNET_STANDARDS.md)** - RFC Internet Standards feasibility analysis
 - **[RFC Compliance Audit](reference/RFC_COMPLIANCE_AUDIT.md)** - Protocol standards compliance review
 - **[Cloudflare Detection](reference/CLOUDFLARE_DETECTION.md)** - Connection restrictions and workarounds
@@ -31,7 +36,7 @@ Complete documentation for Port of Call - a browser-to-TCP bridge via Cloudflare
 - **[Naming History](reference/NAMING_HISTORY.md)** - How we chose "Port of Call"
 
 ### Protocol Specifications
-- **[protocols/](protocols/)** - Individual protocol specs (242 protocols)
+- **[protocols/](protocols/)** - Individual protocol specs (244 protocols)
   - [SSH](protocols/SSH.md), [Shadowsocks](protocols/SHADOWSOCKS.md), [TURN](protocols/TURN.md), [Redis](protocols/REDIS.md), [MySQL](protocols/MYSQL.md), etc.
 - **[protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md)** - One-page cheat sheet for protocol implementation
 - **[protocols/non-tcp/](protocols/non-tcp/)** - Non-TCP protocol specs (27 protocols)
@@ -43,7 +48,7 @@ Complete documentation for Port of Call - a browser-to-TCP bridge via Cloudflare
   - [Medium Fixes Summary](changelog/medium-fixes.md) - All medium-severity bugs (31 protocols)
   - [2026-02-18 Protocol Review](changelog/2026-02-18-protocol-review.md) - Comprehensive audit overview
   - [By Protocol Changelogs](changelog/by-protocol/) - Individual protocol bug reports (86 protocols)
-- **[reviews/](changelog/reviews/)** - Audit pass reports (Passes 3-19, findings, review indexes)
+- **[reviews/](changelog/reviews/)** - Audit pass reports (Passes 3-27, findings, review indexes)
 
 ## 🎯 Quick Links by Role
 
@@ -66,14 +71,14 @@ Understanding the system:
 ### For Security Reviewers
 Security and bug fixes:
 1. [Architecture — Security](ARCHITECTURE.md#security) - SSRF prevention, Cloudflare IP detection, resource lifecycle
-2. [Protocol Registry — Certification](PROTOCOL_REGISTRY.md#data-plane-certification) - 19-pass audit trail
+2. [Protocol Registry — Certification](PROTOCOL_REGISTRY.md#data-plane-certification) - 27-pass audit trail
 3. [Critical Fixes Summary](changelog/critical-fixes.md) - 200+ security/data corruption bugs fixed
 4. [SSH Authentication](reference/SSH_AUTHENTICATION.md) - Auth security deep dive
 
 ### For Project Managers
 Planning and tracking:
 1. [Project Overview](PROJECT_OVERVIEW.md) - Goals and vision
-2. [Implemented Protocols](reference/IMPLEMENTED.md) - Current status (181 protocols)
+2. [Implemented Protocols](reference/IMPLEMENTED.md) - Current status (244 protocols)
 3. [Implementation Guide](guides/IMPLEMENTATION_GUIDE.md) - Implementation roadmap
 4. [Documentation Summary](reference/DOCUMENTATION_SUMMARY.md) - Documentation inventory
 
@@ -82,12 +87,12 @@ Planning and tracking:
 ### Implementation Progress
 - **Total Protocols**: 244 implemented
 - **Internet Standards**: 24 IETF Internet Standards (IS) implemented
-- **Latest Review**: February 2026 — 19 audit passes, 200+ critical bugs fixed
+- **Latest Review**: February 2026 — 27 audit passes, 200+ critical bugs fixed
 - **Data Plane**: Certified "Industrial Grade" — backpressure, chunking, serialization, resource safety
 - **Test Coverage**: 92% (214+ integration tests)
 
 ### Recent Updates (February 2026)
-- **Data Plane Certification**: 19-pass audit: backpressure, zero-copy chunking, promise-chain serialization, SSRF prevention
+- **Data Plane Certification**: 27-pass audit: backpressure, zero-copy chunking, promise-chain serialization, SSRF prevention
 - **Security Fixes**: 200+ critical bugs fixed (resource leaks, injection vulnerabilities, data corruption, SSRF)
 - **RFC Compliance**: 30+ medium-severity bugs fixed for protocol compliance
 - **Documentation Consolidation**: Architecture and registry docs unified; audit history archived
@@ -109,7 +114,7 @@ Planning and tracking:
 
 ## 🔗 External Resources
 
-- [Live Demo](https://portofcall.ross.gg)
+- [Live Demo](https://l4.fyi)
 - [Cloudflare Sockets API Docs](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/)
 - [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/)
 
@@ -178,8 +183,8 @@ docs/
 ├── changelog/                   # Bug fixes and reviews
 │   ├── critical-fixes.md        # Critical bugs (24 protocols)
 │   ├── medium-fixes.md          # Medium bugs (31 protocols)
-│   ├── by-protocol/             # Individual changelogs (246 protocols)
-│   └── reviews/                 # Audit pass reports (Passes 3-19)
+│   ├── by-protocol/             # Individual changelogs (248 protocols)
+│   └── reviews/                 # Audit pass reports (Passes 3-27)
 │
 └── protocols/                   # Protocol specifications
     ├── QUICK_REFERENCE.md       # Cheat sheet
@@ -613,5 +618,5 @@ To contribute to documentation:
 **Last Updated**: February 2026
 **Total Documentation Files**: 300+ files
 **Lines of Documentation**: 100,000+ lines
-**Protocols Documented**: 242 protocol specifications
+**Protocols Documented**: 244 protocol specifications
 **Bug Fixes Documented**: 200+ critical, 30+ medium severity

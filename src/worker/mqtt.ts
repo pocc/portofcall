@@ -275,19 +275,40 @@ async function mqttConnect(opts: {
   sessionPresent: boolean;
 }> {
   const socket = connect(`${opts.host}:${opts.port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), opts.timeoutMs)),
+  ]);
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
 
   await writer.write(encodeCONNECT(opts));
 
-  // Read CONNACK
-  const connackBuf = await Promise.race([
-    reader.read().then(r => r.value!),
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('CONNACK timeout')), opts.timeoutMs)),
-  ]);
-
-  const connack = parseMQTTPacket(connackBuf);
+  // Read CONNACK — accumulate chunks until extractPackets yields at least one
+  // complete packet. A single reader.read() may return a partial packet if the
+  // TCP stack segments the 4-byte CONNACK across multiple reads.
+  let connackBuf = new Uint8Array(0);
+  const connackDeadline = Date.now() + opts.timeoutMs;
+  // eslint-disable-next-line no-useless-assignment -- used as fallback after loop
+  let connack: ReturnType<typeof parseMQTTPacket> | null = null;
+  while (true) {
+    const remaining = connackDeadline - Date.now();
+    if (remaining <= 0) throw new Error('CONNACK timeout');
+    const chunk = await Promise.race<Uint8Array | undefined>([
+      reader.read().then(r => r.value),
+      new Promise<undefined>((_, reject) => setTimeout(() => reject(new Error('CONNACK timeout')), remaining)),
+    ]);
+    if (!chunk) throw new Error('Connection closed before CONNACK');
+    const merged = new Uint8Array(connackBuf.length + chunk.length);
+    merged.set(connackBuf);
+    merged.set(chunk, connackBuf.length);
+    connackBuf = merged;
+    const [pkts] = extractPackets(connackBuf);
+    if (pkts.length > 0) {
+      connack = pkts[0];
+      break;
+    }
+  }
   if (!connack || connack.type !== 2) throw new Error('Expected CONNACK');
   const rc = (connack.parsed as { returnCode: number; sessionPresent: boolean }).returnCode;
   if (rc !== 0) {
@@ -336,13 +357,12 @@ export async function handleMQTTConnect(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const { socket, sessionPresent } = await Promise.race([
+    const { socket, writer, sessionPresent } = await Promise.race([
       mqttConnect({ host, port, clientId, username: options.username, password: options.password, timeoutMs }),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
     ]);
 
-    // Send DISCONNECT gracefully
-    const writer = socket.writable.getWriter();
+    // Send DISCONNECT gracefully (writer already acquired by mqttConnect)
     await writer.write(DISCONNECT).catch(() => {});
     await socket.close().catch(() => {});
 
@@ -489,14 +509,16 @@ export async function handleMQTTSession(request: Request): Promise<Response> {
   const host = url.searchParams.get('host') || '';
   const port = parseInt(url.searchParams.get('port') || '1883', 10);
   const clientId = url.searchParams.get('clientId') || `poc-${cryptoRandomHex(8)}`;
-  const username = url.searchParams.get('username') || undefined;
-  const password = url.searchParams.get('password') || undefined;
   const willTopic = url.searchParams.get('willTopic') || undefined;
   const willPayload = url.searchParams.get('willPayload') || undefined;
   const cleanSession = url.searchParams.get('cleanSession') !== 'false';
 
   if (!host) {
     return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
+  }
+
+  if (isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ error: 'Port must be between 1 and 65535' }), { status: 400 });
   }
 
   const cfCheck = await checkIfCloudflare(host);
@@ -508,12 +530,36 @@ export async function handleMQTTSession(request: Request): Promise<Response> {
   const [client, server] = Object.values(pair);
   server.accept();
 
+  // Credentials arrive via first WebSocket message (not URL params)
+  const credentialPromise = new Promise<{ username?: string; password?: string }>((resolve, reject) => {
+    const authTimer = setTimeout(() => {
+      server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+      server.close(4001, 'Auth timeout');
+      reject(new Error('Auth timeout'));
+    }, 15_000);
+
+    server.addEventListener('message', function onAuth(event) {
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'auth') {
+          clearTimeout(authTimer);
+          server.removeEventListener('message', onAuth);
+          resolve({
+            username: msg.username || undefined,
+            password: msg.password || undefined,
+          });
+        }
+      } catch { /* not JSON yet — ignore until auth */ }
+    });
+  });
+
   (async () => {
     let mqttSocket: Socket | null = null;
     let msgIdCounter = 1;
     const nextMsgId = () => (msgIdCounter++ & 0xffff) || 1;
 
     try {
+      const { username, password } = await credentialPromise;
       const will = willTopic && willPayload ? { topic: willTopic, payload: willPayload } : undefined;
       const { socket, reader, writer, sessionPresent } = await mqttConnect({
         host, port, clientId, username, password, will, cleanSession, timeoutMs: 10000,
@@ -568,52 +614,55 @@ export async function handleMQTTSession(request: Request): Promise<Response> {
         }
       })();
 
-      // Handle browser → worker commands
-      server.addEventListener('message', async (event) => {
-        try {
-          const msg = JSON.parse(event.data as string) as {
-            type: string;
-            topic?: string;
-            payload?: string;
-            qos?: number;
-            retain?: boolean;
-            topics?: Array<{ topic: string; qos?: number }> | string[];
-          };
+      // Handle browser → worker commands (serialized to prevent interleaving writes)
+      let writeChain = Promise.resolve();
+      server.addEventListener('message', (event) => {
+        writeChain = writeChain.then(async () => {
+          try {
+            const msg = JSON.parse(event.data as string) as {
+              type: string;
+              topic?: string;
+              payload?: string;
+              qos?: number;
+              retain?: boolean;
+              topics?: Array<{ topic: string; qos?: number }> | string[];
+            };
 
-          if (msg.type === 'publish') {
-            const qos = Math.min(msg.qos ?? 0, 1);
-            const mid = qos > 0 ? nextMsgId() : undefined;
-            await writer.write(encodePUBLISH({
-              topic: msg.topic!,
-              payload: msg.payload ?? '',
-              qos,
-              retain: msg.retain ?? false,
-              messageId: mid,
-            }));
-            server.send(JSON.stringify({ type: 'published', topic: msg.topic, qos, messageId: mid }));
+            if (msg.type === 'publish') {
+              const qos = Math.min(msg.qos ?? 0, 1);
+              const mid = qos > 0 ? nextMsgId() : undefined;
+              await writer.write(encodePUBLISH({
+                topic: msg.topic!,
+                payload: msg.payload ?? '',
+                qos,
+                retain: msg.retain ?? false,
+                messageId: mid,
+              }));
+              server.send(JSON.stringify({ type: 'published', topic: msg.topic, qos, messageId: mid }));
 
-          } else if (msg.type === 'subscribe') {
-            const mid = nextMsgId();
-            const topics = (msg.topics as Array<{ topic: string; qos?: number }>).map(t =>
-              typeof t === 'string' ? { topic: t, qos: 0 } : t
-            );
-            await writer.write(encodeSUBSCRIBE(mid, topics));
+            } else if (msg.type === 'subscribe') {
+              const mid = nextMsgId();
+              const topics = (msg.topics as Array<{ topic: string; qos?: number }>).map(t =>
+                typeof t === 'string' ? { topic: t, qos: 0 } : t
+              );
+              await writer.write(encodeSUBSCRIBE(mid, topics));
 
-          } else if (msg.type === 'unsubscribe') {
-            const mid = nextMsgId();
-            const topics = (msg.topics as string[]).map(t => typeof t === 'string' ? t : (t as { topic: string }).topic);
-            await writer.write(encodeUNSUBSCRIBE(mid, topics));
+            } else if (msg.type === 'unsubscribe') {
+              const mid = nextMsgId();
+              const topics = (msg.topics as string[]).map(t => typeof t === 'string' ? t : (t as { topic: string }).topic);
+              await writer.write(encodeUNSUBSCRIBE(mid, topics));
 
-          } else if (msg.type === 'ping') {
-            await writer.write(PINGREQ);
+            } else if (msg.type === 'ping') {
+              await writer.write(PINGREQ);
 
-          } else if (msg.type === 'disconnect') {
-            await writer.write(DISCONNECT).catch(() => {});
-            server.close();
+            } else if (msg.type === 'disconnect') {
+              await writer.write(DISCONNECT).catch(() => {});
+              server.close();
+            }
+          } catch (e) {
+            server.send(JSON.stringify({ type: 'error', message: String(e) }));
           }
-        } catch (e) {
-          server.send(JSON.stringify({ type: 'error', message: String(e) }));
-        }
+        });
       });
 
       server.addEventListener('close', async () => {

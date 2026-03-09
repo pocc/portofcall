@@ -358,31 +358,31 @@ Total wall-clock time is bounded by `timeout`, not `2 × timeout`.
 
 ```bash
 # Health check (no auth)
-curl -s -X POST https://portofcall.ross.gg/api/grafana/health \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","port":3000}' | jq '{v:.health.version,db:.health.database}'
+curl -s -X POST https://l4.fyi/api/grafana/health \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","port":3000}' | jq '{v:.health.version,db:.health.database}'
 
 # With service account token
-curl -s -X POST https://portofcall.ross.gg/api/grafana/health \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' | jq '{auth:.authenticated,req:.authRequired}'
+curl -s -X POST https://l4.fyi/api/grafana/health \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' | jq '{auth:.authenticated,req:.authRequired}'
 
 # List datasources
-curl -s -X POST https://portofcall.ross.gg/api/grafana/datasources \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '.datasources[] | {name,type,url,default:.isDefault}'
+curl -s -X POST https://l4.fyi/api/grafana/datasources \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '.datasources[] | {name,type,url,default:.isDefault}'
 # Search dashboards
-curl -s -X POST https://portofcall.ross.gg/api/grafana/dashboards \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","query":"node","limit":10}' \n  | jq '.dashboards[] | {title,uid,folder:.folderTitle}'
+curl -s -X POST https://l4.fyi/api/grafana/dashboards \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","query":"node","limit":10}' \n  | jq '.dashboards[] | {title,uid,folder:.folderTitle}'
 
 # Fetch full dashboard JSON by UID
-curl -s -X POST https://portofcall.ross.gg/api/grafana/dashboard \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","uid":"cdp3Ysick"}' \n  | jq '.dashboard.dashboard | {title,panels:(.panels|length),ver:.version}'
+curl -s -X POST https://l4.fyi/api/grafana/dashboard \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","uid":"cdp3Ysick"}' \n  | jq '.dashboard.dashboard | {title,panels:(.panels|length),ver:.version}'
 
 # List folders
-curl -s -X POST https://portofcall.ross.gg/api/grafana/folders \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '.folders[] | {title,uid,canEdit}'
+curl -s -X POST https://l4.fyi/api/grafana/folders \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '.folders[] | {title,uid,canEdit}'
 # Alert rules (Grafana 9+)
-curl -s -X POST https://portofcall.ross.gg/api/grafana/alert-rules \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '.alertRules[] | {title,for:.for,severity:.labels.severity}'
+curl -s -X POST https://l4.fyi/api/grafana/alert-rules \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '.alertRules[] | {title,for:.for,severity:.labels.severity}'
 
 # Org info + users (requires Org Admin)
-curl -s -X POST https://portofcall.ross.gg/api/grafana/org \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '{org:.org.name,users:[.users[]|{login,role}]}'
+curl -s -X POST https://l4.fyi/api/grafana/org \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx"}' \n  | jq '{org:.org.name,users:[.users[]|{login,role}]}'
 
 # Create a dashboard (Grafana 9+: folderUid)
-curl -s -X POST https://portofcall.ross.gg/api/grafana/dashboard/create \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","title":"My Dashboard","tags":["test"],"folderUid":"abcDEF123"}' \n  | jq '{uid:.dashboard.uid,url:.dashboard.url}'
+curl -s -X POST https://l4.fyi/api/grafana/dashboard/create \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","title":"My Dashboard","tags":["test"],"folderUid":"abcDEF123"}' \n  | jq '{uid:.dashboard.uid,url:.dashboard.url}'
 # Create a point annotation on a specific panel
-curl -s -X POST https://portofcall.ross.gg/api/grafana/annotation/create \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","text":"Deploy v2.3.1","tags":["deploy"],"dashboardId":14,"panelId":3}' \n  | jq .
+curl -s -X POST https://l4.fyi/api/grafana/annotation/create \n  -H 'Content-Type: application/json' \n  -d '{"host":"grafana.example.com","token":"glsa_xxxx","text":"Deploy v2.3.1","tags":["deploy"],"dashboardId":14,"panelId":3}' \n  | jq .
 ```
 
 ---

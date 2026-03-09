@@ -80,3 +80,8 @@ Recommended documentation should include:
 - [Erlang Distribution Protocol](https://www.erlang.org/doc/apps/erts/erl_dist_protocol.html) - Official Erlang documentation
 - [RabbitMQ Clustering](https://www.rabbitmq.com/clustering.html) - EPMD usage in RabbitMQ
 - [CouchDB Clustering](https://docs.couchdb.org/en/stable/cluster/index.html) - EPMD usage in CouchDB
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

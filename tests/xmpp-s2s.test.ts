@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('XMPP S2S Protocol Integration Tests', () => {
   describe('XMPP S2S Connect Endpoint', () => {

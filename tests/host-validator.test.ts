@@ -56,12 +56,67 @@ describe('isBlockedHost', () => {
     });
   });
 
+  describe('IPv4 — new blocked ranges', () => {
+    it('blocks TEST-NET-1 192.0.2.0/24 (RFC 5737)', () => {
+      expect(isBlockedHost('192.0.2.1')).toBe(true);
+      expect(isBlockedHost('192.0.2.255')).toBe(true);
+    });
+
+    it('blocks TEST-NET-2 198.51.100.0/24 (RFC 5737)', () => {
+      expect(isBlockedHost('198.51.100.1')).toBe(true);
+      expect(isBlockedHost('198.51.100.255')).toBe(true);
+    });
+
+    it('blocks TEST-NET-3 203.0.113.0/24 (RFC 5737)', () => {
+      expect(isBlockedHost('203.0.113.1')).toBe(true);
+      expect(isBlockedHost('203.0.113.255')).toBe(true);
+    });
+
+    it('blocks benchmarking 198.18.0.0/15 (RFC 2544)', () => {
+      expect(isBlockedHost('198.18.0.1')).toBe(true);
+      expect(isBlockedHost('198.19.255.255')).toBe(true);
+      expect(isBlockedHost('198.20.0.1')).toBe(false);
+    });
+
+    it('blocks reserved/Class E 240.0.0.0/4', () => {
+      expect(isBlockedHost('240.0.0.1')).toBe(true);
+      expect(isBlockedHost('250.1.2.3')).toBe(true);
+    });
+
+    it('blocks 0.0.0.0/8 "this network"', () => {
+      expect(isBlockedHost('0.0.0.0')).toBe(true);
+      expect(isBlockedHost('0.1.2.3')).toBe(true);
+      expect(isBlockedHost('0.255.255.255')).toBe(true);
+    });
+  });
+
+  describe('IPv4 — alternate representations', () => {
+    it('blocks decimal integer IPs', () => {
+      expect(isBlockedHost('2130706433')).toBe(true); // 127.0.0.1
+      expect(isBlockedHost('3232235521')).toBe(true); // 192.168.0.1
+    });
+
+    it('blocks hex integer IPs', () => {
+      expect(isBlockedHost('0x7f000001')).toBe(true); // 127.0.0.1
+      expect(isBlockedHost('0xC0A80001')).toBe(true); // 192.168.0.1
+    });
+
+    it('blocks octal-prefixed IPs', () => {
+      expect(isBlockedHost('0177.0.0.1')).toBe(true); // 127.0.0.1
+    });
+
+    it('blocks shortened dotted-decimal', () => {
+      expect(isBlockedHost('127.1')).toBe(true); // 127.0.0.1
+      expect(isBlockedHost('10.1.1')).toBe(true); // 10.1.0.1
+    });
+  });
+
   describe('IPv4 — allowed ranges', () => {
     it('allows public IPs', () => {
       expect(isBlockedHost('8.8.8.8')).toBe(false);
       expect(isBlockedHost('1.1.1.1')).toBe(false);
       expect(isBlockedHost('93.184.216.34')).toBe(false);
-      expect(isBlockedHost('203.0.113.1')).toBe(false);
+      expect(isBlockedHost('151.101.1.69')).toBe(false);
     });
   });
 

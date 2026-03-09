@@ -32,6 +32,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface VentriloRequest {
   host: string;
@@ -161,6 +162,11 @@ function parseVentriloStatus(data: Uint8Array): {
  * Test Ventrilo server connectivity.
  */
 export async function handleVentriloConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as VentriloRequest;
     const {
@@ -182,7 +188,7 @@ export async function handleVentriloConnect(request: Request): Promise<Response>
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -192,6 +198,17 @@ export async function handleVentriloConnect(request: Request): Promise<Response>
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckConnect = await checkIfCloudflare(host);
+    if (cfCheckConnect.isCloudflare && cfCheckConnect.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheckConnect.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -245,6 +262,11 @@ export async function handleVentriloConnect(request: Request): Promise<Response>
  * Query Ventrilo server status.
  */
 export async function handleVentriloStatus(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as VentriloRequest;
     const {
@@ -266,7 +288,7 @@ export async function handleVentriloStatus(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -276,6 +298,17 @@ export async function handleVentriloStatus(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckStatus = await checkIfCloudflare(host);
+    if (cfCheckStatus.isCloudflare && cfCheckStatus.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheckStatus.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();

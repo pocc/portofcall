@@ -21,6 +21,8 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // PDU Types
 const PDU_A_ASSOCIATE_RQ = 0x01;
@@ -294,37 +296,14 @@ function buildReleaseRequest(): Uint8Array {
 }
 
 /**
- * Read exactly N bytes from a socket reader
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
-
-  while (offset < length) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) throw new Error('Connection closed unexpectedly');
-
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
-  }
-
-  return buffer;
-}
-
-/**
  * Read a full DICOM PDU (header + data)
  */
 async function readPDU(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutPromise: Promise<never>,
 ): Promise<{ type: number; data: Uint8Array }> {
   // Read PDU header: type(1) + reserved(1) + length(4) = 6 bytes
-  const header = await readExact(reader, 6, timeoutPromise);
+  const header = await br.readExact(6, timeoutPromise);
   const type = header[0];
   const length = new DataView(header.buffer).getUint32(2, false);
 
@@ -332,7 +311,7 @@ async function readPDU(
     throw new Error(`PDU too large: ${length} bytes`);
   }
 
-  const data = length > 0 ? await readExact(reader, length, timeoutPromise) : new Uint8Array(0);
+  const data = length > 0 ? await br.readExact(length, timeoutPromise) : new Uint8Array(0);
   return { type, data };
 }
 
@@ -485,6 +464,11 @@ function parseCEchoResponse(data: Uint8Array): { status: number; statusText: str
  * Handle DICOM association test (connect + optional C-ECHO)
  */
 export async function handleDICOMConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as DICOMConnectRequest;
     const { host, port = 104, callingAE = 'PORTOFCALL', calledAE = 'ANY-SCP', timeout = 10000 } = body;
@@ -495,7 +479,7 @@ export async function handleDICOMConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -514,6 +498,17 @@ export async function handleDICOMConnect(request: Request): Promise<Response> {
       });
     }
 
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
@@ -526,6 +521,7 @@ export async function handleDICOMConnect(request: Request): Promise<Response> {
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       // Send A-ASSOCIATE-RQ
@@ -533,7 +529,7 @@ export async function handleDICOMConnect(request: Request): Promise<Response> {
       await writer.write(associateRQ);
 
       // Read response PDU
-      const response = await readPDU(reader, timeoutPromise);
+      const response = await readPDU(br, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       if (response.type === PDU_A_ASSOCIATE_AC) {
@@ -542,7 +538,7 @@ export async function handleDICOMConnect(request: Request): Promise<Response> {
         // Clean up
         try {
           await writer.write(buildReleaseRequest());
-          await readPDU(reader, timeoutPromise);
+          await readPDU(br, timeoutPromise);
         } catch { /* ignore release errors */ }
 
         reader.releaseLock();
@@ -648,6 +644,11 @@ export async function handleDICOMConnect(request: Request): Promise<Response> {
  * Handle DICOM C-ECHO (verification/ping) test
  */
 export async function handleDICOMEcho(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as DICOMEchoRequest;
     const { host, port = 104, callingAE = 'PORTOFCALL', calledAE = 'ANY-SCP', timeout = 15000 } = body;
@@ -658,7 +659,7 @@ export async function handleDICOMEcho(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -676,6 +677,17 @@ export async function handleDICOMEcho(request: Request): Promise<Response> {
       });
     }
 
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
@@ -687,11 +699,12 @@ export async function handleDICOMEcho(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       // Step 1: Association
       await writer.write(buildAssociateRequest(callingAE, calledAE));
-      const assocResponse = await readPDU(reader, timeoutPromise);
+      const assocResponse = await readPDU(br, timeoutPromise);
 
       if (assocResponse.type !== PDU_A_ASSOCIATE_AC) {
         reader.releaseLock();
@@ -737,7 +750,7 @@ export async function handleDICOMEcho(request: Request): Promise<Response> {
       // Step 2: C-ECHO
       const echoStartTime = Date.now();
       await writer.write(buildCEchoRequest(1));
-      const echoResponse = await readPDU(reader, timeoutPromise);
+      const echoResponse = await readPDU(br, timeoutPromise);
       const echoTime = Date.now() - echoStartTime;
 
       let echoStatus = { status: -1, statusText: 'No response' };
@@ -748,7 +761,7 @@ export async function handleDICOMEcho(request: Request): Promise<Response> {
       // Step 3: Release
       try {
         await writer.write(buildReleaseRequest());
-        await readPDU(reader, timeoutPromise);
+        await readPDU(br, timeoutPromise);
       } catch { /* ignore */ }
 
       reader.releaseLock();
@@ -1119,6 +1132,11 @@ interface DICOMFindRequest {
  * Returns: { success, studies: [{ patientId, patientName, studyDate, studyInstanceUID, ... }] }
  */
 export async function handleDICOMFind(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as DICOMFindRequest;
     const {
@@ -1138,7 +1156,7 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -1156,6 +1174,17 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
       });
     }
 
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
@@ -1167,11 +1196,12 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       // Step 1: A-ASSOCIATE with Study Root Find SOP
       await writer.write(buildAssociateRequestFind(callingAE, calledAE));
-      const assocResponse = await readPDU(reader, timeoutPromise);
+      const assocResponse = await readPDU(br, timeoutPromise);
 
       if (assocResponse.type === PDU_A_ASSOCIATE_RJ) {
         const rejection = parseAssociateReject(assocResponse.data);
@@ -1216,7 +1246,7 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
       const studies: Array<Record<string, string>> = [];
 
       while (true) {
-        const pdu = await readPDU(reader, timeoutPromise);
+        const pdu = await readPDU(br, timeoutPromise);
         if (pdu.type === PDU_A_ABORT || pdu.type === PDU_A_ASSOCIATE_RJ) {
           break;
         }
@@ -1244,7 +1274,7 @@ export async function handleDICOMFind(request: Request): Promise<Response> {
       // Step 4: Release
       try {
         await writer.write(buildReleaseRequest());
-        await readPDU(reader, timeoutPromise);
+        await readPDU(br, timeoutPromise);
       } catch { /* ignore */ }
 
       reader.releaseLock();

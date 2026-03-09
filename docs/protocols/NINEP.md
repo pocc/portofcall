@@ -18,7 +18,7 @@ Performs a full 9P2000 handshake: Tversion/Rversion negotiation with msize=8192,
 |-------|------|---------|-------|
 | `host` | string | — | Required. Alphanumeric + dots/hyphens only |
 | `port` | number | `564` | Standard 9P port. Range: 1-65535 |
-| `timeout` | number | `10000` | Total timeout in ms (max: no enforced limit) |
+| `timeout` | number | `10000` | Total timeout in ms (max: 30000) |
 
 **Success (200):**
 ```json
@@ -40,7 +40,7 @@ Performs a full 9P2000 handshake: Tversion/Rversion negotiation with msize=8192,
 - `msize` — negotiated max message size (server's choice, ≤ 8192)
 - `serverVersion` — server's version string (usually `"9P2000"`, `"9P2000.u"`, or `"9P2000.L"`)
 - `rootQid` — QID of the root directory (only present if Tattach succeeds)
-  - `type` — QID type byte (bit 7 = directory, bit 0 = append-only, etc.)
+  - `type` — QID type byte (bit 7 = directory, bit 6 = append-only, etc.)
   - `version` — version number for cache coherency
   - `path` — 64-bit unique file identifier (hex string)
 
@@ -138,6 +138,7 @@ Walks to a given path (relative to root) and retrieves its stat structure. Perfo
 | 31 | 0x80000000 | Directory (DMDIR) |
 | 30 | 0x40000000 | Append-only (DMAPPEND) |
 | 29 | 0x20000000 | Exclusive use (DMEXCL) |
+| 28 | 0x10000000 | Mounted channel (DMMOUNT) |
 | 27 | 0x08000000 | Auth file (DMAUTH) |
 | 26 | 0x04000000 | Temporary (DMTMP) |
 | 0-8 | 0x1FF | Unix permission bits (rwxrwxrwx) |
@@ -155,12 +156,12 @@ Example: `mode=2147484141` (0x80000FED) = directory (bit 31) + 0755 permissions
 **curl example:**
 ```bash
 # Stat the root
-curl -s -X POST https://portofcall.ross.gg/api/9p/stat \
+curl -s -X POST https://l4.fyi/api/9p/stat \
   -H 'Content-Type: application/json' \
   -d '{"host":"9p.example.com","port":564,"path":""}' | jq .
 
 # Stat a nested path
-curl -s -X POST https://portofcall.ross.gg/api/9p/stat \
+curl -s -X POST https://l4.fyi/api/9p/stat \
   -H 'Content-Type: application/json' \
   -d '{"host":"9p.example.com","path":"home/user/.profile"}' | jq '.stat'
 ```
@@ -213,7 +214,7 @@ Walks to a file, opens it for reading (mode 0), reads up to `count` bytes at `of
 
 **Decode in shell:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/9p/read \
+curl -s -X POST https://l4.fyi/api/9p/read \
   -H 'Content-Type: application/json' \
   -d '{"host":"9p.example.com","path":"etc/motd"}' \
   | jq -r '.data' | base64 -d
@@ -267,6 +268,7 @@ Opens a directory for reading and retrieves the stat records for all entries. In
   "port": 564,
   "path": "/usr/local",
   "count": 3,
+  "truncated": false,
   "entries": [
     {
       "type": 0,
@@ -313,20 +315,23 @@ Opens a directory for reading and retrieves the stat records for all entries. In
 
 **Response:**
 - `count` — number of entries returned
+- `truncated` — `true` if the directory listing did not reach natural EOF (e.g. safety limit hit, timeout, or incomplete response)
 - `entries` — array of stat structures (same format as `/api/9p/stat`)
 
 **Filter directories:**
 ```bash
-curl -s https://portofcall.ross.gg/api/9p/ls \
+curl -s https://l4.fyi/api/9p/ls \
   -H 'Content-Type: application/json' \
   -d '{"host":"9p.example.com","path":"usr"}' \
   | jq '.entries[] | select((.mode | tonumber) >= 2147483648) | .name'
 # Filters for mode bit 31 set (DMDIR = 0x80000000 = 2147483648)
 ```
 
-**Limitations:**
-- The directory read is a single Tread request with `count = msize - 11` (typically ~8181 bytes). Large directories may be truncated. The 9P protocol supports pagination via multiple Tread calls at increasing offsets, but this implementation reads offset 0 only.
-- Stat structures in the response are parsed until the buffer is exhausted. Partial stat structures at the end are silently dropped.
+**Directory reading:**
+- The directory read loops multiple Tread calls at increasing offsets until the server returns 0 bytes (EOF), per the 9P2000 spec. Each read requests up to `msize - 11` bytes.
+- Safety limit: 64 reads maximum per listing to prevent infinite loops from misbehaving servers.
+- `truncated: true` is returned if the listing did not reach natural EOF — this covers: safety limit hit, timeout approaching, or null/malformed responses from the server.
+- Partial stat structures at the end of any individual read chunk are silently dropped.
 
 ---
 
@@ -390,8 +395,9 @@ Max string length: 65535 bytes.
   - 0x80 (bit 7) = directory (QTDIR)
   - 0x40 (bit 6) = append-only (QTAPPEND)
   - 0x20 (bit 5) = exclusive use (QTEXCL)
-  - 0x04 (bit 2) = auth file (QTAUTH)
-  - 0x01 (bit 0) = temporary file (QTTMP)
+  - 0x10 (bit 4) = mounted channel (QTMOUNT)
+  - 0x08 (bit 3) = auth file (QTAUTH)
+  - 0x04 (bit 2) = temporary file (QTTMP)
 - `version` — modification version for cache validation (0 = no cache)
 - `path` — unique 64-bit identifier (typically inode number)
 
@@ -413,10 +419,12 @@ A 9P stat is a complex nested structure:
   [muid:string]
 ```
 
-Rstat and directory reads prepend a total byte count:
+Rstat prepends a total byte count before the stat structure:
 ```
 [nstat:uint16LE][stat_bytes...]
 ```
+
+Directory reads (Rread of a directory) contain concatenated stat structures directly — no nstat prefix. Each entry starts with its own `size[2]` field.
 
 ---
 
@@ -537,14 +545,15 @@ Additional flags (OR'd with mode):
 
 ### Directory Reads
 
-**Single-read pagination:**
-- `/api/9p/ls` issues a single Tread with `offset=0` and `count=msize-11`
-- Large directories (>8181 bytes of stat structures) are silently truncated
-- Workaround: not possible via this API (would require client-side pagination loop)
+**Multi-read directory pagination:**
+- `/api/9p/ls` loops Tread calls at increasing offsets until the server returns 0 bytes (EOF)
+- Each read requests `count=msize-11` bytes (~8181 bytes at default msize)
+- Safety limit: 64 reads maximum per listing to prevent runaway loops
+- `truncated: true` returned if the listing did not reach natural EOF (safety limit, timeout, or incomplete response)
 
 **Partial stat structures dropped:**
-- If the Rread buffer ends mid-stat, the partial structure is silently ignored
-- No warning or indication that the listing is incomplete
+- If an Rread buffer ends mid-stat, the partial structure is silently ignored
+- Per-entry try/catch ensures one malformed entry does not abort the entire listing
 
 **No sorting:**
 - Entries are returned in the order the server provides (typically inode order)
@@ -562,14 +571,13 @@ Additional flags (OR'd with mode):
 - Errors during cleanup are caught and ignored to prevent masking the original error
 
 **Cloudflare detection:**
-- **Missing**: Unlike other protocol handlers, 9P does not check for Cloudflare protection
-- Connecting to a Cloudflare-protected host will result in a connection timeout or TLS handshake error
+- Handled at the router level via `maybeBlockCloudflareTarget` in `src/worker/router-guards.ts` (`'9p'` is included in `ROUTER_CLOUDFLARE_GUARD_PROTOCOLS`)
+- Connections to Cloudflare-protected hosts are blocked before the handler runs
 
 ### Response Consistency
 
 **405 responses:**
-- `/api/9p/stat`, `/api/9p/read`, `/api/9p/ls` return `'Method not allowed'` (plain text) for non-POST
-- Missing `{ success: false, error: ... }` JSON structure (inconsistent with other endpoints)
+- All four endpoints return `{ success: false, error: "Method not allowed" }` JSON with status 405 for non-POST requests
 
 ---
 
@@ -578,7 +586,7 @@ Additional flags (OR'd with mode):
 ### Check if a 9P server is reachable
 
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/9p/connect \
+curl -s -X POST https://l4.fyi/api/9p/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.100","port":564}' | jq .
 ```
@@ -601,7 +609,7 @@ curl -s -X POST https://portofcall.ross.gg/api/9p/connect \
 ### List files in a directory
 
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/9p/ls \
+curl -s -X POST https://l4.fyi/api/9p/ls \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.100","path":"bin"}' \
   | jq -r '.entries[] | "\(.name) \(.length) \(.mtime)"'
@@ -610,7 +618,7 @@ curl -s -X POST https://portofcall.ross.gg/api/9p/ls \
 ### Read a configuration file
 
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/9p/read \
+curl -s -X POST https://l4.fyi/api/9p/read \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.100","path":"etc/hostname","count":256}' \
   | jq -r '.data' | base64 -d
@@ -619,7 +627,7 @@ curl -s -X POST https://portofcall.ross.gg/api/9p/read \
 ### Get file metadata
 
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/9p/stat \
+curl -s -X POST https://l4.fyi/api/9p/stat \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.100","path":"var/log/messages"}' \
   | jq '.stat | {name, length, mtime, mode}'
@@ -644,7 +652,7 @@ fi
 ### Check file modification time
 
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/9p/stat \
+curl -s -X POST https://l4.fyi/api/9p/stat \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.100","path":"etc/passwd"}' \
   | jq -r '.stat.mtime' \
@@ -660,18 +668,21 @@ curl -s -X POST https://portofcall.ross.gg/api/9p/stat \
 ```bash
 mode=$(curl -s ... | jq -r '.stat.mode')
 
-if (( mode & 0x80000000 )); then echo "Directory"
-elif (( mode & 0x40000000 )); then echo "Append-only"
-elif (( mode & 0x20000000 )); then echo "Exclusive"
-elif (( mode & 0x04000000 )); then echo "Temporary"
-else echo "Regular file"
-fi
+# Check all type bits (a file can have multiple flags set)
+flags=""
+if (( mode & 0x80000000 )); then flags+="Directory "; fi
+if (( mode & 0x40000000 )); then flags+="Append-only "; fi
+if (( mode & 0x20000000 )); then flags+="Exclusive "; fi
+if (( mode & 0x10000000 )); then flags+="Mounted "; fi
+if (( mode & 0x08000000 )); then flags+="Auth "; fi
+if (( mode & 0x04000000 )); then flags+="Temporary "; fi
+echo "${flags:-Regular file}"
 ```
 
 ### Find large files
 
 ```bash
-curl -s https://portofcall.ross.gg/api/9p/ls \
+curl -s https://l4.fyi/api/9p/ls \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.100","path":"var/log"}' \
   | jq '.entries[] | select((.length | tonumber) > 1048576) | {name, length}'
@@ -683,7 +694,7 @@ The API does not support recursion, but you can implement it client-side:
 ```bash
 function list_recursive() {
   local path=$1
-  local response=$(curl -s https://portofcall.ross.gg/api/9p/ls \
+  local response=$(curl -s https://l4.fyi/api/9p/ls \
     -H 'Content-Type: application/json' \
     -d "{\"host\":\"192.168.1.100\",\"path\":\"$path\"}")
 
@@ -702,19 +713,19 @@ list_recursive "usr/local"
 
 ```bash
 HOST="192.168.1.100"
-PATH="var/log/syslog"
+FILEPATH="var/log/syslog"
 CHUNK=65536
 
 # Get file size
-SIZE=$(curl -s https://portofcall.ross.gg/api/9p/stat \
+SIZE=$(curl -s https://l4.fyi/api/9p/stat \
   -H 'Content-Type: application/json' \
-  -d "{\"host\":\"$HOST\",\"path\":\"$PATH\"}" | jq -r '.stat.length')
+  -d "{\"host\":\"$HOST\",\"path\":\"$FILEPATH\"}" | jq -r '.stat.length')
 
 offset=0
 while (( offset < SIZE )); do
-  curl -s https://portofcall.ross.gg/api/9p/read \
+  curl -s https://l4.fyi/api/9p/read \
     -H 'Content-Type: application/json' \
-    -d "{\"host\":\"$HOST\",\"path\":\"$PATH\",\"offset\":$offset,\"count\":$CHUNK}" \
+    -d "{\"host\":\"$HOST\",\"path\":\"$FILEPATH\",\"offset\":$offset,\"count\":$CHUNK}" \
     | jq -r '.data' | base64 -d
   offset=$((offset + CHUNK))
 done
@@ -764,7 +775,7 @@ sudo diod -f -n -p 564 -e /mnt/c
 
 Then probe from Port of Call:
 ```bash
-curl -s https://portofcall.ross.gg/api/9p/ls \
+curl -s https://l4.fyi/api/9p/ls \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":564}'
 ```
@@ -785,6 +796,6 @@ Plan 9 systems natively export filesystems via 9P. Typical exports:
 
 **Resource exhaustion:** No limit on the number of concurrent requests. An attacker could open many connections to exhaust worker resources or backend 9P server fids.
 
-**Timeout bypass:** The `timeout` parameter is capped at 30000ms for `/api/9p/stat`, `/api/9p/read`, `/api/9p/ls`, but `/api/9p/connect` has no enforced maximum. A malicious client could set an extremely high timeout to hold worker resources.
+**Timeout bypass (FIXED):** All four endpoints now cap timeouts at 30000ms.
 
-**Cloudflare detection missing:** Unlike other handlers, 9P does not detect Cloudflare-protected hosts. This could lead to confusing timeout errors instead of clear "Cloudflare detected" messages.
+**Cloudflare detection:** Handled at the router level via `ROUTER_CLOUDFLARE_GUARD_PROTOCOLS` (key: `'9p'`) in `src/worker/router-guards.ts`. Connections to Cloudflare-protected hosts are blocked before the 9P handler runs.

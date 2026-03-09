@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('SSDP/UPnP Protocol Integration Tests', () => {
   describe('SSDP Discover', () => {
@@ -14,7 +14,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 1900,
           path: '/rootDesc.xml',
           timeout: 10000,
@@ -58,7 +58,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 99999,
         }),
       });
@@ -74,7 +74,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -88,7 +88,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -105,7 +105,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -125,7 +125,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -149,7 +149,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 1900,
           timeout: 15000,
         }),
@@ -189,7 +189,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 0,
         }),
       });
@@ -205,7 +205,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -225,7 +225,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 1900,
           st: 'ssdp:all',
           mx: 3,
@@ -267,7 +267,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: -1,
         }),
       });
@@ -283,7 +283,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           mx: 200,
         }),
       });
@@ -299,7 +299,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -313,7 +313,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -327,7 +327,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           st: 'urn:schemas-upnp-org:device:InternetGatewayDevice:1',
         }),
       });
@@ -342,7 +342,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -362,7 +362,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 1900,
           eventSubURL: '/eventSub',
           callbackURL: 'http://127.0.0.1:1901/',
@@ -404,7 +404,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -419,7 +419,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           eventSubURL: '/eventSub',
         }),
       });
@@ -434,7 +434,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           eventSubURL: '/eventSub',
         }),
       });
@@ -451,7 +451,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 1900,
           controlURL: '/ctl/IPConn',
           serviceType: 'urn:schemas-upnp-org:service:WANIPConnection:1',
@@ -498,7 +498,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           serviceType: 'urn:test',
           action: 'Test',
         }),
@@ -515,7 +515,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           controlURL: '/ctl',
           action: 'Test',
         }),
@@ -532,7 +532,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           controlURL: '/ctl',
           serviceType: 'urn:test',
         }),
@@ -549,7 +549,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           controlURL: '/ctl/IPConn',
           serviceType: 'urn:schemas-upnp-org:service:WANIPConnection:1',
           action: 'SetConnectionType',
@@ -569,7 +569,7 @@ describe('SSDP/UPnP Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           controlURL: '/ctl/invalid',
           serviceType: 'urn:invalid',
           action: 'InvalidAction',

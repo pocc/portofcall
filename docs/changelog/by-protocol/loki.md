@@ -116,3 +116,8 @@ Loki implementation provides 5 endpoints (health, query, metrics, push, range) f
 - [LogQL Query Language](https://grafana.com/docs/loki/latest/query/) - Query syntax reference
 - [Loki Push API](https://grafana.com/docs/loki/latest/reference/loki-http-api/#push-log-entries-to-loki) - Log ingestion format
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols (none for Loki)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

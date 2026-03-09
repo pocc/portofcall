@@ -83,3 +83,8 @@ Jabber Component implementation provides 4 endpoints (probe, handshake, send, ro
 - [XEP-0114](https://xmpp.org/extensions/xep-0114.html) - Jabber Component Protocol
 - [RFC 6120](https://datatracker.ietf.org/doc/html/rfc6120) - XMPP Core (stream errors)
 - [RFC 6121](https://datatracker.ietf.org/doc/html/rfc6121) - XMPP Instant Messaging and Presence (roster semantics)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -181,7 +181,7 @@ export async function handleNSQConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -220,7 +220,7 @@ export async function handleNSQConnect(request: Request): Promise<Response> {
         // Step 2: Send IDENTIFY with client metadata
         const identifyPayload = JSON.stringify({
           client_id: 'portofcall',
-          hostname: 'portofcall.ross.gg',
+          hostname: 'l4.fyi',
           user_agent: 'portofcall/1.0',
           feature_negotiation: true,
         });
@@ -355,6 +355,12 @@ export async function handleNSQPublish(request: Request): Promise<Response> {
     const timeout = body.timeout || 10000;
     const message = body.message || '';
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -382,7 +388,7 @@ export async function handleNSQPublish(request: Request): Promise<Response> {
         // Send IDENTIFY (minimal, no feature negotiation)
         const identifyPayload = JSON.stringify({
           client_id: 'portofcall',
-          hostname: 'portofcall.ross.gg',
+          hostname: 'l4.fyi',
         });
         const identifyBytes = new TextEncoder().encode(identifyPayload);
         const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
@@ -510,6 +516,12 @@ export async function handleNSQSubscribe(request: Request): Promise<Response> {
     const collectMs = body.collect_ms || 2000;
     const timeout = body.timeout || 15000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -528,7 +540,7 @@ export async function handleNSQSubscribe(request: Request): Promise<Response> {
         // Send V2 magic + IDENTIFY
         await writer.write(new TextEncoder().encode(NSQ_MAGIC_V2));
 
-        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'portofcall.ross.gg' });
+        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'l4.fyi' });
         const identifyBytes = new TextEncoder().encode(identifyPayload);
         const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
         const sizeBuf = new Uint8Array(4);
@@ -664,6 +676,12 @@ export async function handleNSQDeferredPublish(request: Request): Promise<Respon
     const port = body.port || 4150;
     const timeout = body.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -682,7 +700,7 @@ export async function handleNSQDeferredPublish(request: Request): Promise<Respon
         // Send V2 magic + IDENTIFY
         await writer.write(new TextEncoder().encode(NSQ_MAGIC_V2));
 
-        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'portofcall.ross.gg' });
+        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'l4.fyi' });
         const identifyBytes = new TextEncoder().encode(identifyPayload);
         const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
         const idSizeBuf = new Uint8Array(4);
@@ -789,6 +807,12 @@ export async function handleNSQMultiPublish(request: Request): Promise<Response>
     const port = body.port || 4150;
     const timeout = body.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -807,7 +831,7 @@ export async function handleNSQMultiPublish(request: Request): Promise<Response>
         // Send V2 magic + IDENTIFY
         await writer.write(new TextEncoder().encode(NSQ_MAGIC_V2));
 
-        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'portofcall.ross.gg' });
+        const identifyPayload = JSON.stringify({ client_id: 'portofcall', hostname: 'l4.fyi' });
         const identifyBytes = new TextEncoder().encode(identifyPayload);
         const identifyCmd = new TextEncoder().encode('IDENTIFY\n');
         const idSizeBuf = new Uint8Array(4);

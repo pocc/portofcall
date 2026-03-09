@@ -61,3 +61,8 @@ The implementation includes detailed documentation:
 - [RFC 2409 - IKEv1](https://www.rfc-editor.org/rfc/rfc2409)
 - [RFC 7296 - IKEv2](https://www.rfc-editor.org/rfc/rfc7296)
 - [IKE Notify Message Types (IANA)](https://www.iana.org/assignments/ikev2-parameters/)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

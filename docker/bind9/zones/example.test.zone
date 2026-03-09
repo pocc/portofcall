@@ -1,0 +1,16 @@
+$TTL 86400
+@   IN  SOA ns1.example.test. admin.example.test. (
+        2024021601  ; Serial
+        3600        ; Refresh
+        1800        ; Retry
+        604800      ; Expire
+        86400       ; Minimum TTL
+)
+
+@       IN  NS      ns1.example.test.
+ns1     IN  A       127.0.0.1
+www     IN  A       10.0.0.1
+api     IN  A       10.0.0.2
+db      IN  A       10.0.0.3
+@       IN  MX  10  mail.example.test.
+mail    IN  A       10.0.0.4

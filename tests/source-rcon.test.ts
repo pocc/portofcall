@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('Source RCON Protocol Integration Tests', () => {
   // --- Validation Tests (same as Minecraft RCON) ---

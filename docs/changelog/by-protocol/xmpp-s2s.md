@@ -161,3 +161,8 @@ Full protocol documentation created with endpoint references, stream format spec
 - [XEP-0199 - XMPP Ping](https://xmpp.org/extensions/xep-0199.html) - IQ ping specification
 - [Protocol Specification](../../protocols/XMPP-S2S.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -19,6 +19,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface InfluxDBHealthRequest {
   host: string;
@@ -70,91 +71,115 @@ async function sendHttpRequest(
   authToken?: string,
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    throw new Error('Port must be between 1 and 65535');
+  }
+
+  // SSRF protection
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
+  }
+
   const socket = connect(`${host}:${port}`);
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
 
-  // Build HTTP/1.1 request
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
+    // Sanitize inputs to prevent CRLF injection / request smuggling
+    const safePath = path.replace(/[\r\n]/g, '');
+    const safeHost = host.replace(/[\r\n]/g, '');
 
-  if (authToken) {
-    request += `Authorization: Token ${authToken}\r\n`;
-  }
+    // Build HTTP/1.1 request
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: ${contentType || 'application/json'}\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
-  const maxSize = 512000; // 512KB limit
-
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    if (authToken) {
+      request += `Authorization: Token ${authToken.replace(/[\r\n]/g, '')}\r\n`;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
-
-  // Parse HTTP response
-  const headerEnd = response.indexOf('\r\n\r\n');
-  if (headerEnd === -1) {
-    throw new Error('Invalid HTTP response: no header terminator found');
-  }
-
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
-
-  // Parse status line
-  const statusLine = headerSection.split('\r\n')[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-
-  // Parse headers
-  const headers: Record<string, string> = {};
-  const headerLines = headerSection.split('\r\n').slice(1);
-  for (const line of headerLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.substring(0, colonIdx).trim().toLowerCase();
-      const value = line.substring(colonIdx + 1).trim();
-      headers[key] = value;
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: ${contentType || 'application/json'}\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
     }
-  }
 
-  // Handle chunked transfer encoding
-  if (headers['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
-  }
+    writer.releaseLock();
 
-  return { statusCode, headers, body: bodySection };
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    let response = '';
+    const maxSize = 512000; // 512KB limit
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+    socket.close();
+
+    // Parse HTTP response
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      throw new Error('Invalid HTTP response: no header terminator found');
+    }
+
+    const headerSection = response.substring(0, headerEnd);
+    let bodySection = response.substring(headerEnd + 4);
+
+    // Parse status line
+    const statusLine = headerSection.split('\r\n')[0];
+    const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+    // Parse headers
+    const headers: Record<string, string> = {};
+    const headerLines = headerSection.split('\r\n').slice(1);
+    for (const line of headerLines) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.substring(0, colonIdx).trim().toLowerCase();
+        const value = line.substring(colonIdx + 1).trim();
+        headers[key] = value;
+      }
+    }
+
+    // Handle chunked transfer encoding
+    if (headers['transfer-encoding']?.includes('chunked')) {
+      bodySection = decodeChunked(bodySection);
+    }
+
+    return { statusCode, headers, body: bodySection };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
 }
 
 /**
@@ -170,9 +195,10 @@ function decodeChunked(data: string): string {
 
     const sizeStr = remaining.substring(0, lineEnd).trim();
     const chunkSize = parseInt(sizeStr, 16);
-    if (isNaN(chunkSize) || chunkSize === 0) break;
+    if (isNaN(chunkSize) || chunkSize <= 0) break;
 
     const chunkStart = lineEnd + 2;
+    if (chunkStart + chunkSize > remaining.length) break;
     const chunkEnd = chunkStart + chunkSize;
     if (chunkEnd > remaining.length) {
       result += remaining.substring(chunkStart);

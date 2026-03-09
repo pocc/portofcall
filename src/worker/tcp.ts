@@ -57,9 +57,13 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       port,
       data = '',
       encoding = 'utf8',
-      timeout = 10000,
       maxBytes = 4096,
     } = body;
+    let { timeout = 10000 } = body;
+
+    // Clamp timeout to safe bounds
+    const MAX_TIMEOUT = 30000;
+    timeout = Math.min(Math.max(timeout, 1000), MAX_TIMEOUT);
 
     // Validation
     if (!host) {
@@ -120,6 +124,18 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       let sendBuf: Uint8Array;
       if (encoding === 'hex') {
         const hex = data.replace(/\s/g, '');
+        if (hex.length % 2 !== 0) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'Hex data must have an even number of characters' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        if (hex.length > 0 && !/^[0-9a-fA-F]+$/.test(hex)) {
+          return new Response(
+            JSON.stringify({ success: false, error: 'Hex data contains invalid characters (must be 0-9, a-f, A-F)' }),
+            { status: 400, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
         sendBuf = new Uint8Array(hex.length / 2);
         for (let i = 0; i < hex.length; i += 2) {
           sendBuf[i / 2] = parseInt(hex.slice(i, i + 2), 16);
@@ -143,7 +159,6 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       );
 
       while (totalBytes < maxBytes) {
-        if (totalBytes >= maxBytes) break;
         const remaining = maxBytes - totalBytes;
         const readResult = await Promise.race([
           reader.read(),
@@ -158,6 +173,8 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       }
     } catch {
       // Partial read is fine
+    } finally {
+      try { reader.releaseLock(); } catch { /* already released */ }
     }
 
     await writer.close().catch(() => {});

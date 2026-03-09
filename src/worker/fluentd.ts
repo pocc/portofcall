@@ -184,12 +184,16 @@ function decodeMsgpack(data: Uint8Array, offset = 0): DecodeResult {
       return { value: str, bytesRead: 2 + len };
     }
     case 0xda: { // str 16
+      if (offset + 3 > data.length) return { value: '', bytesRead: 0 };
       const len = (data[offset + 1] << 8) | data[offset + 2];
+      if (offset + 3 + len > data.length) return { value: '', bytesRead: 0 };
       const str = new TextDecoder().decode(data.subarray(offset + 3, offset + 3 + len));
       return { value: str, bytesRead: 3 + len };
     }
     case 0xdb: { // str 32
+      if (offset + 5 > data.length) return { value: '', bytesRead: 0 };
       const len = ((data[offset + 1] << 24) | (data[offset + 2] << 16) | (data[offset + 3] << 8) | data[offset + 4]) >>> 0;
+      if (len > 1048576 || offset + 5 + len > data.length) return { value: '', bytesRead: 0 };
       const str = new TextDecoder().decode(data.subarray(offset + 5, offset + 5 + len));
       return { value: str, bytesRead: 5 + len };
     }
@@ -307,6 +311,9 @@ async function readFluentdResponse(
 
     chunks.push(result.value);
     totalBytes += result.value.length;
+    if (totalBytes > maxBytes) {
+      throw new Error('Fluentd response exceeds maximum allowed size');
+    }
 
     // Try to decode — if successful, we have a complete message
     const combined = concatUint8Arrays(chunks);
@@ -326,7 +333,7 @@ async function readFluentdResponse(
  */
 export async function handleFluentdConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -352,7 +359,7 @@ export async function handleFluentdConnect(request: Request): Promise<Response> 
     const tag = body.tag || 'portofcall.probe';
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -465,7 +472,7 @@ export async function handleFluentdConnect(request: Request): Promise<Response> 
  */
 export async function handleFluentdSend(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -493,7 +500,7 @@ export async function handleFluentdSend(request: Request): Promise<Response> {
     const timeout = body.timeout || 10000;
     const record = body.record || { message: 'Hello from Port of Call' };
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -652,6 +659,20 @@ export async function handleFluentdBulk(request: Request): Promise<Response> {
     const timeout = body.timeout || 10000;
     const events = (body.events || [{ record: { message: 'Hello from Port of Call' } }]).slice(0, 100);
 
+    if (!/^[a-zA-Z0-9._-]+$/.test(tag) || tag.length > 128) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid tag format (alphanumeric, dots, hyphens, underscores; max 128 chars)' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(
@@ -716,7 +737,7 @@ export async function handleFluentdBulk(request: Request): Promise<Response> {
         const { value, done } = await Promise.race([reader.read(), ackTimeout]);
         if (!done && value && value.length > 0) {
           const text = new TextDecoder().decode(value);
-          ackReceived = text.includes(chunkId) || value.length > 0;
+          ackReceived = text.includes(chunkId);
         }
       } catch { /* no ack */ }
 

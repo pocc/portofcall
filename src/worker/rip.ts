@@ -43,6 +43,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { createHash } from 'node:crypto';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface RIPRequest {
   host: string;
@@ -363,6 +364,9 @@ function toHexString(data: Uint8Array): string {
  */
 export async function handleRIPRequest(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RIPRequest;
     const { host, port = 520, timeout = 15000, version = 2, networkAddress } = body;
 
@@ -378,7 +382,7 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -400,6 +404,11 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -522,6 +531,9 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
  */
 export async function handleRIPProbe(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RIPRequest;
     const { host, port = 520, timeout = 10000, version = 2 } = body;
 
@@ -577,6 +589,9 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
   let port = 520;
 
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -599,7 +614,7 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -617,6 +632,11 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Build the RIP v2 whole-table request packet
@@ -637,7 +657,10 @@ export async function handleRIPUpdate(request: Request): Promise<Response> {
 
     try {
       const socket = connect(`${host}:${port}`);
-      await Promise.race([socket.opened, timeoutPromise]);
+      await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+        try { socket.close(); } catch { /* ignore */ }
+        throw err;
+      });
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 
@@ -723,6 +746,9 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
   let port = 520;
 
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -741,6 +767,15 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const enc = new TextEncoder();
@@ -799,7 +834,10 @@ export async function handleRIPAuthUpdate(request: Request): Promise<Response> {
 
     try {
       const socket = connect(`${host}:${port}`);
-      await Promise.race([socket.opened, timeoutPromise]);
+      await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+        try { socket.close(); } catch { /* ignore */ }
+        throw err;
+      });
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 
@@ -885,6 +923,9 @@ export async function handleRIPSend(request: Request): Promise<Response> {
   let port = 520;
 
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -905,7 +946,7 @@ export async function handleRIPSend(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -913,6 +954,11 @@ export async function handleRIPSend(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Build a RIP v1 whole-table request packet
@@ -1040,6 +1086,9 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
   let port = 520;
 
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -1062,6 +1111,15 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Clamp keyId to valid range per RFC 2082 (1-255, 0 is reserved)
@@ -1152,7 +1210,10 @@ export async function handleRIPMD5Update(request: Request): Promise<Response> {
 
     try {
       const socket = connect(`${host}:${port}`);
-      await Promise.race([socket.opened, timeoutPromise]);
+      await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+        try { socket.close(); } catch { /* ignore */ }
+        throw err;
+      });
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       connected = true;
 

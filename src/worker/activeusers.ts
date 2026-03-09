@@ -24,6 +24,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface ActiveUsersRequest {
   host: string;
@@ -44,6 +45,12 @@ interface ActiveUsersResponse {
  * Connects to a server and retrieves the number of active users
  */
 export async function handleActiveUsersTest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ActiveUsersRequest;
     const { host, port = 11, timeout = 10000 } = body;
@@ -59,7 +66,7 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535'
@@ -67,6 +74,15 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Start timer for RTT measurement
@@ -162,12 +178,15 @@ export async function handleActiveUsersTest(request: Request): Promise<Response>
   }
 }
 
-// Read all bytes until connection closes or timeout
+// Read all bytes until connection closes, timeout, or size limit
+const MAX_RESPONSE_BYTES = 1_048_576; // 1 MiB — prevents OOM from malicious servers
+
 async function readAllBytes(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
+  let total = 0;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
@@ -176,11 +195,17 @@ async function readAllBytes(
       const ct = new Promise<{ value: undefined; done: true }>(r => setTimeout(() => r({ value: undefined, done: true }), remaining));
       const { value, done } = await Promise.race([reader.read(), ct]);
       if (done || !value) break;
+      total += value.length;
+      if (total > MAX_RESPONSE_BYTES) {
+        throw new Error('Response too large (exceeds 1 MiB limit)');
+      }
       chunks.push(value);
-    } catch { break; }
+    } catch (e) {
+      if (e instanceof Error && e.message.includes('too large')) throw e;
+      break;
+    }
   }
   if (chunks.length === 0) return new Uint8Array(0);
-  const total = chunks.reduce((s, c) => s + c.length, 0);
   const out = new Uint8Array(total);
   let off = 0;
   for (const c of chunks) { out.set(c, off); off += c.length; }
@@ -206,13 +231,24 @@ function parseUserLine(line: string): ActiveUser | null {
  * Request body: { host, port=11, timeout=10000 }
  */
 export async function handleActiveUsersQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 11, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({ success: false, users: [], rawCount: 0, raw: '', latencyMs: 0, error: getCloudflareErrorMessage(host, cfCheck2.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -247,13 +283,24 @@ export async function handleActiveUsersQuery(request: Request): Promise<Response
  * Request body: { host, port=11, timeout=10000 }
  */
 export async function handleActiveUsersRaw(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 11, timeout = 10000 } = body;
     if (!host) return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck3 = await checkIfCloudflare(host);
+    if (cfCheck3.isCloudflare && cfCheck3.ip) {
+      return new Response(JSON.stringify({ success: false, raw: '', latencyMs: 0, error: getCloudflareErrorMessage(host, cfCheck3.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();

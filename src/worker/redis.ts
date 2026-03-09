@@ -19,12 +19,22 @@ export interface RedisConnectionOptions {
  * Example: ['PING'] -> "*1\r\n$4\r\nPING\r\n"
  */
 function encodeRESPArray(args: string[]): Uint8Array {
-  let resp = `*${args.length}\r\n`;
+  const encoder = new TextEncoder();
+  const parts: Uint8Array[] = [encoder.encode(`*${args.length}\r\n`)];
   for (const arg of args) {
-    const bytes = new TextEncoder().encode(arg);
-    resp += `$${bytes.length}\r\n${arg}\r\n`;
+    const argBytes = encoder.encode(arg);
+    parts.push(encoder.encode(`$${argBytes.length}\r\n`));
+    parts.push(argBytes);
+    parts.push(encoder.encode('\r\n'));
   }
-  return new TextEncoder().encode(resp);
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
 }
 
 /**
@@ -35,28 +45,36 @@ async function readUntilComplete(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<string> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
-  );
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeoutMs);
+  });
 
   const readPromise = (async () => {
     let buffer = '';
     const MAX_RESP_BUFFER = 512 * 1024; // 512 KB
     const deadline = Date.now() + timeoutMs;
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     while (Date.now() < deadline) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += new TextDecoder().decode(value);
+      buffer += decoder.decode(value, { stream: true });
       if (buffer.length > MAX_RESP_BUFFER) {
         throw new Error('RESP response too large (> 512 KB)');
       }
       // Stop accumulating once we have a complete top-level RESP value
       if (isCompleteRESP(buffer)) break;
     }
+    // Flush any remaining bytes in the decoder
+    buffer += decoder.decode();
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  try {
+    return await Promise.race([readPromise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
 }
 
 /**
@@ -166,7 +184,7 @@ async function readRESPResponse(reader: ReadableStreamDefaultReader<Uint8Array>,
 export async function handleRedisConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = await request.json() as Partial<RedisConnectionOptions>;
 
@@ -181,8 +199,14 @@ export async function handleRedisConnect(request: Request): Promise<Response> {
     }
 
     const host = options.host;
-    const port = options.port || 6379;
-    const timeoutMs = options.timeout || 30000;
+    const port = options.port ?? 6379;
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -255,6 +279,8 @@ export async function handleRedisConnect(request: Request): Promise<Response> {
           version = versionMatch[1];
         }
 
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
         await socket.close();
 
         return {
@@ -266,14 +292,17 @@ export async function handleRedisConnect(request: Request): Promise<Response> {
           version,
         };
       } catch (error) {
-        await socket.close();
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
         throw error;
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
@@ -288,6 +317,8 @@ export async function handleRedisConnect(request: Request): Promise<Response> {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       });
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -373,11 +404,19 @@ export async function handleRedisSession(request: Request): Promise<Response> {
     return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
   }
 
+  if (isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(JSON.stringify({
+      success: false,
       error: getCloudflareErrorMessage(host, cfCheck.ip),
-    }), { status: 403 });
+      isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
   const pair = new WebSocketPair();
@@ -394,7 +433,7 @@ export async function handleRedisSession(request: Request): Promise<Response> {
 
   // Wait for the first message containing credentials before connecting
   let initialized = false;
-  server.addEventListener('message', async (event) => {
+  const initHandler = async (event: MessageEvent) => {
     try {
       const msg = JSON.parse(event.data as string) as {
         type: string;
@@ -406,12 +445,17 @@ export async function handleRedisSession(request: Request): Promise<Response> {
       if (!initialized && msg.type === 'auth') {
         initialized = true;
         clearTimeout(authTimeout);
+        // Remove the outer init handler so subsequent messages are only handled by the inner handler
+        server.removeEventListener('message', initHandler);
         const password = msg.password || undefined;
         const database = msg.database;
 
         try {
           const socket = connect(`${host}:${port}`);
-          await socket.opened;
+          await Promise.race([
+            socket.opened,
+            new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+          ]);
 
           const reader = socket.readable.getReader();
           const writer = socket.writable.getWriter();
@@ -421,6 +465,9 @@ export async function handleRedisSession(request: Request): Promise<Response> {
             await writer.write(encodeRESPArray(['AUTH', password]));
             const authResp = await readRESPResponse(reader, 5000);
             if (!authResp.startsWith('+OK')) {
+              try { reader.releaseLock(); } catch { /* ignore */ }
+              try { writer.releaseLock(); } catch { /* ignore */ }
+              try { await socket.close(); } catch { /* ignore */ }
               server.send(JSON.stringify({ type: 'error', message: 'Authentication failed: invalid credentials' }));
               server.close();
               return;
@@ -432,6 +479,9 @@ export async function handleRedisSession(request: Request): Promise<Response> {
             await writer.write(encodeRESPArray(['SELECT', database.toString()]));
             const selResp = await readRESPResponse(reader, 5000);
             if (!selResp.startsWith('+OK')) {
+              try { reader.releaseLock(); } catch { /* ignore */ }
+              try { writer.releaseLock(); } catch { /* ignore */ }
+              try { await socket.close(); } catch { /* ignore */ }
               server.send(JSON.stringify({ type: 'error', message: 'Database selection failed' }));
               server.close();
               return;
@@ -466,6 +516,8 @@ export async function handleRedisSession(request: Request): Promise<Response> {
           });
 
           server.addEventListener('close', () => {
+            try { reader.releaseLock(); } catch { /* ignore */ }
+            try { writer.releaseLock(); } catch { /* ignore */ }
             socket.close().catch(() => {});
           });
         } catch (e) {
@@ -476,7 +528,8 @@ export async function handleRedisSession(request: Request): Promise<Response> {
     } catch (e) {
       server.send(JSON.stringify({ type: 'error', message: String(e) }));
     }
-  });
+  };
+  server.addEventListener('message', initHandler);
 
   server.addEventListener('close', () => {
     clearTimeout(authTimeout);
@@ -490,6 +543,9 @@ export async function handleRedisSession(request: Request): Promise<Response> {
  */
 export async function handleRedisCommand(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const options = await request.json() as {
       host: string;
       port?: number;
@@ -509,8 +565,14 @@ export async function handleRedisCommand(request: Request): Promise<Response> {
     }
 
     const host = options.host;
-    const port = options.port || 6379;
-    const timeoutMs = options.timeout || 30000;
+    const port = options.port ?? 6379;
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -538,14 +600,20 @@ export async function handleRedisCommand(request: Request): Promise<Response> {
         if (options.password) {
           const authCommand = encodeRESPArray(['AUTH', options.password]);
           await writer.write(authCommand);
-          await readRESPResponse(reader, 5000);
+          const authResponse = await readRESPResponse(reader, 5000);
+          if (!authResponse.startsWith('+OK')) {
+            throw new Error(`Authentication failed: ${authResponse.replace(/[\r\n]+$/, '')}`);
+          }
         }
 
         // Select database if specified
         if (options.database !== undefined) {
           const selectCommand = encodeRESPArray(['SELECT', options.database.toString()]);
           await writer.write(selectCommand);
-          await readRESPResponse(reader, 5000);
+          const selectResponse = await readRESPResponse(reader, 5000);
+          if (!selectResponse.startsWith('+OK')) {
+            throw new Error(`Database SELECT failed: ${selectResponse.replace(/[\r\n]+$/, '')}`);
+          }
         }
 
         // Execute the user's command
@@ -553,6 +621,8 @@ export async function handleRedisCommand(request: Request): Promise<Response> {
         await writer.write(command);
         const response = await readRESPResponse(reader, timeoutMs);
 
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
         await socket.close();
 
         return {
@@ -561,14 +631,17 @@ export async function handleRedisCommand(request: Request): Promise<Response> {
           command: options.command,
         };
       } catch (error) {
-        await socket.close();
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
         throw error;
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
@@ -583,6 +656,8 @@ export async function handleRedisCommand(request: Request): Promise<Response> {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       });
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({

@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
 
@@ -6,22 +6,11 @@ interface SFTPClientProps {
   onBack: () => void;
 }
 
-type AuthMethod = 'password' | 'privateKey';
-
 export default function SFTPClient({ onBack }: SFTPClientProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('22');
-  const [username, setUsername] = useState('');
-  const [authMethod, setAuthMethod] = useState<AuthMethod>('password');
-  const [password, setPassword] = useState('');
-  const [privateKey, setPrivateKey] = useState('');
-  const [passphrase, setPassphrase] = useState('');
-  const [connected, setConnected] = useState(false);
-  const [currentPath] = useState('/');
   const [loading, setLoading] = useState(false);
   const [output, setOutput] = useState<string[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const addOutput = (text: string, type: 'info' | 'error' | 'success' = 'info') => {
     const prefix = {
@@ -36,37 +25,25 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
   };
 
   const handleConnect = async () => {
-    if (!host || !username) {
-      addOutput('Error: Host and username are required', 'error');
-      return;
-    }
-
-    if (authMethod === 'password' && !password) {
-      addOutput('Error: Password is required', 'error');
-      return;
-    }
-
-    if (authMethod === 'privateKey' && !privateKey) {
-      addOutput('Error: Private key is required', 'error');
+    if (!host) {
+      addOutput('Error: Host is required', 'error');
       return;
     }
 
     setLoading(true);
-    addOutput(`Testing connection to ${username}@${host}:${port}...`, 'info');
+    addOutput(`Testing SFTP connectivity to ${host}:${port}...`, 'info');
 
     try {
-      // Test connectivity first
       const testResponse = await fetch('/api/sftp/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           host,
           port: parseInt(port, 10),
-          username,
         }),
       });
 
-      const testData = await testResponse.json() as { success?: boolean; error?: string; sshBanner?: string };
+      const testData = await testResponse.json() as { success?: boolean; error?: string; sshBanner?: string; software?: string; sshVersion?: string };
 
       if (!testResponse.ok || !testData.success) {
         addOutput(`Connection test failed: ${testData.error}`, 'error');
@@ -74,11 +51,15 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
         return;
       }
 
-      addOutput(`SSH server detected: ${testData.sshBanner || 'Unknown'}`, 'success');
-      addOutput('SFTP WebSocket tunnel requires client-side SSH library implementation', 'info');
-      addOutput('For file operations, please use a native SFTP client or command-line tools', 'info');
-
-      setConnected(true);
+      addOutput(`SSH banner: ${testData.sshBanner || 'Unknown'}`, 'success');
+      if (testData.software) {
+        addOutput(`Software: ${testData.software}`, 'info');
+      }
+      if (testData.sshVersion) {
+        addOutput(`SSH version: ${testData.sshVersion}`, 'info');
+      }
+      addOutput('SFTP subsystem is available on this server', 'success');
+      addOutput('File operations (list, upload, download, etc.) are not yet implemented — they require a WebSocket-based SFTP session', 'info');
     } catch (error) {
       addOutput(
         `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
@@ -86,28 +67,6 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
       );
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleDisconnect = () => {
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    setConnected(false);
-    addOutput('Disconnected from SFTP server', 'info');
-  };
-
-  const handleKeyUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const content = event.target?.result as string;
-        setPrivateKey(content);
-        addOutput(`Private key loaded: ${file.name}`, 'success');
-      };
-      reader.readAsText(file);
     }
   };
 
@@ -124,17 +83,17 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
       <ApiExamples examples={apiExamples.SFTP || []} />
 
       <div className="info-box" style={{ marginBottom: '1rem', borderColor: '#f59e0b', background: 'rgba(245,158,11,0.08)', color: '#fcd34d' }}>
-        <strong>Connectivity test only.</strong> Clicking Connect verifies TCP reachability and reads the SSH banner. All file operations (list, upload, download, delete, mkdir, rename) are not implemented — every file operation endpoint returns 501. Full SFTP requires a browser-side SSH library negotiating the SFTP subsystem over a WebSocket tunnel.
+        <strong>Connectivity test only.</strong> Tests TCP reachability and reads the SSH banner to verify SFTP availability. File operations (list, upload, download, delete, mkdir, rename) are not yet implemented — they require a WebSocket-based SFTP session.
       </div>
 
-      {!connected ? (
-        <div className="connection-form">
-          <h3>Connect to SFTP Server</h3>
+      <div className="connection-form">
+        <h3>Test SFTP Server Connectivity</h3>
 
-          <div className="form-group">
-            <label htmlFor="host">Host *</label>
+        <div className="form-row">
+          <div className="form-group" style={{ flex: 3 }}>
+            <label htmlFor="sftp-host">Host</label>
             <input
-              id="host"
+              id="sftp-host"
               type="text"
               value={host}
               onChange={(e) => setHost(e.target.value)}
@@ -143,169 +102,31 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
             />
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="port">Port *</label>
-              <input
-                id="port"
-                type="number"
-                value={port}
-                onChange={(e) => setPort(e.target.value)}
-                disabled={loading}
-              />
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="username">Username *</label>
-              <input
-                id="username"
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="demo"
-                disabled={loading}
-              />
-            </div>
-          </div>
-
-          <div className="form-group">
-            <label>Authentication Method</label>
-            <div className="radio-group">
-              <label>
-                <input
-                  type="radio"
-                  value="password"
-                  checked={authMethod === 'password'}
-                  onChange={() => setAuthMethod('password')}
-                  disabled={loading}
-                />
-                Password
-              </label>
-              <label>
-                <input
-                  type="radio"
-                  value="privateKey"
-                  checked={authMethod === 'privateKey'}
-                  onChange={() => setAuthMethod('privateKey')}
-                  disabled={loading}
-                />
-                Private Key
-              </label>
-            </div>
-          </div>
-
-          {authMethod === 'password' ? (
-            <div className="form-group">
-              <label htmlFor="password">Password *</label>
-              <input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
-                disabled={loading}
-              />
-            </div>
-          ) : (
-            <>
-              <div className="form-group">
-                <label htmlFor="privateKey">Private Key * (PEM format)</label>
-                <textarea
-                  id="privateKey"
-                  value={privateKey}
-                  onChange={(e) => setPrivateKey(e.target.value)}
-                  placeholder="-----BEGIN OPENSSH PRIVATE KEY-----&#10;...&#10;-----END OPENSSH PRIVATE KEY-----"
-                  rows={8}
-                  disabled={loading}
-                />
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pem,.key,.txt"
-                  onChange={handleKeyUpload}
-                  style={{ display: 'none' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="secondary-button"
-                  disabled={loading}
-                >
-                  📂 Load from file
-                </button>
-              </div>
-
-              {privateKey && (
-                <div className="form-group">
-                  <label htmlFor="passphrase">Passphrase (optional)</label>
-                  <input
-                    id="passphrase"
-                    type="password"
-                    value={passphrase}
-                    onChange={(e) => setPassphrase(e.target.value)}
-                    placeholder="Enter passphrase if key is encrypted"
-                    disabled={loading}
-                  />
-                </div>
-              )}
-            </>
-          )}
-
-          <button
-            onClick={handleConnect}
-            disabled={loading}
-            className="connect-button"
-          >
-            {loading ? 'Connecting...' : 'Connect'}
-          </button>
-
-          <div className="help-text">
-            <p>💡 SFTP runs over SSH on port 22</p>
-            <p>🔒 All file transfers are encrypted</p>
-            <p>📝 Test server: test.rebex.net (user: demo, pass: password)</p>
+          <div className="form-group" style={{ flex: 1 }}>
+            <label htmlFor="sftp-port">Port</label>
+            <input
+              id="sftp-port"
+              type="number"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              disabled={loading}
+            />
           </div>
         </div>
-      ) : (
-        <div className="sftp-browser">
-          <div className="browser-toolbar">
-            <div className="current-path">
-              <strong>Path:</strong> {currentPath}
-            </div>
-            <div className="toolbar-actions">
-              <button onClick={handleDisconnect} className="disconnect-button">
-                Disconnect
-              </button>
-            </div>
-          </div>
 
-          <div className="file-list">
-            <div className="info-box">
-              <h4>SFTP File Operations</h4>
-              <p>
-                This is a connectivity test interface. For full SFTP file operations
-                (list, upload, download, delete), you need:
-              </p>
-              <ul>
-                <li>Client-side SSH library (e.g., ssh2.js)</li>
-                <li>SFTP subsystem support</li>
-                <li>Binary packet handling for SFTP protocol</li>
-              </ul>
-              <p>
-                The worker provides the TCP tunnel over WebSocket. The SSH protocol
-                negotiation, authentication, and SFTP subsystem must be implemented
-                client-side.
-              </p>
-              <div className="code-example">
-                <strong>Example usage:</strong>
-                <pre>{`const ws = new WebSocket('wss://api/sftp/connect?host=...&username=...');
-// Implement SSH handshake
-// Request SFTP subsystem
-// Send SFTP protocol packets`}</pre>
-              </div>
-            </div>
-          </div>
+        <button
+          onClick={handleConnect}
+          disabled={loading || !host}
+          className="connect-button"
+        >
+          {loading ? 'Testing...' : 'Test Connection'}
+        </button>
+
+        <div className="help-text">
+          <p>Tests whether an SSH server is reachable and reports the SSH banner.</p>
+          <p>Test server: test.rebex.net:22</p>
         </div>
-      )}
+      </div>
 
       {output.length > 0 && (
         <div className="output-panel">
@@ -317,6 +138,13 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
               </div>
             ))}
           </div>
+          <button
+            onClick={() => setOutput([])}
+            className="secondary-button"
+            style={{ marginTop: '0.5rem' }}
+          >
+            Clear Log
+          </button>
         </div>
       )}
     </div>

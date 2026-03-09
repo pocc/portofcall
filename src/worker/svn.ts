@@ -25,6 +25,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface SVNConnectRequest {
   host: string;
@@ -127,6 +128,11 @@ function parseSvnGreeting(raw: string): {
  * Probe an SVN server and read its greeting
  */
 export async function handleSVNConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SVNConnectRequest;
     const { host, port = 3690, timeout = 10000 } = body;
@@ -141,13 +147,20 @@ export async function handleSVNConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckSvn = await checkIfCloudflare(host);
+    if (cfCheckSvn.isCloudflare && cfCheckSvn.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckSvn.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -398,7 +411,7 @@ function svnStr(s: string): string {
  * Body: { host, port?, repo?, path?, timeout? }
  */
 export async function handleSVNList(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   const startTime = Date.now();
 
@@ -416,8 +429,24 @@ export async function handleSVNList(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, authRequired: false, error: 'Port must be between 1 and 65535', latencyMs: 0 }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckList = await checkIfCloudflare(host);
+    if (cfCheckList.isCloudflare && cfCheckList.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckList.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -582,7 +611,7 @@ export async function handleSVNList(request: Request): Promise<Response> {
  * Body: { host, port?, timeout? }
  */
 export async function handleSVNInfo(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   const startTime = Date.now();
 
@@ -599,8 +628,24 @@ export async function handleSVNInfo(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, latencyMs: 0, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckInfo = await checkIfCloudflare(host);
+    if (cfCheckInfo.isCloudflare && cfCheckInfo.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckInfo.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();

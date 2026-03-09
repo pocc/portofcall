@@ -488,7 +488,11 @@ function parseUpdateMessage(data: Uint8Array, fourByteAS = false): {
  * Response: { success, peerOpen, session, routes, withdrawnRoutes, routeCount, withdrawnCount }
  */
 export async function handleBGPRouteTable(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   let host = '';
   let port = 179;
@@ -519,7 +523,7 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be 1–65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -548,7 +552,7 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
         // 2. Wait for peer OPEN (read with buffering for split packets)
         let peerOpen: ReturnType<typeof parseBGPMessage> = null;
         let buffer = new Uint8Array(0);
-        const sessionDeadline = Date.now() + 10000;
+        const sessionDeadline = Date.now() + timeout;
 
         while (!peerOpen && Date.now() < sessionDeadline) {
           const timer = new Promise<{ value: undefined; done: true }>(res =>
@@ -696,6 +700,11 @@ export async function handleBGPRouteTable(request: Request): Promise<Response> {
  * Handle BGP connection test
  */
 export async function handleBGPConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -725,7 +734,7 @@ export async function handleBGPConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -934,6 +943,11 @@ export async function handleBGPConnect(request: Request): Promise<Response> {
  *   latencyMs    — elapsed milliseconds from TCP connect to first response byte
  */
 export async function handleBGPAnnounce(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   let host = '';
   let port = 179;
 
@@ -962,7 +976,7 @@ export async function handleBGPAnnounce(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -972,10 +986,10 @@ export async function handleBGPAnnounce(request: Request): Promise<Response> {
       });
     }
 
-    if (localAS < 1 || localAS > 4294967295) {
+    if (localAS < 1 || localAS > 65535) {
       return new Response(JSON.stringify({
         success: false,
-        error: 'AS number must be between 1 and 4294967295',
+        error: 'AS number must be between 1 and 65535',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },

@@ -22,6 +22,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 interface BitTorrentRequest {
   host: string;
@@ -138,6 +139,11 @@ function parseExtensions(reserved: Uint8Array): string[] {
  * Handle BitTorrent Handshake - Connect and perform protocol handshake
  */
 export async function handleBitTorrentHandshake(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as BitTorrentRequest;
     const { host, port = 6881, timeout = 10000 } = body;
@@ -149,6 +155,12 @@ export async function handleBitTorrentHandshake(request: Request): Promise<Respo
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -368,6 +380,11 @@ export async function handleBitTorrentHandshake(request: Request): Promise<Respo
  * Body: { host, port?, infoHash, pieceIndex?, pieceOffset?, pieceLength?, timeout? }
  */
 export async function handleBitTorrentPiece(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host?: string;
@@ -390,6 +407,12 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -417,37 +440,22 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
       setTimeout(() => reject(new Error('Connection timeout')), timeout),
     );
 
-    /** Read exactly `n` bytes from reader with per-read timeout */
-    async function readExact(
-      reader: ReadableStreamDefaultReader<Uint8Array>,
-      n: number,
-      waitMs: number,
-    ): Promise<Uint8Array> {
-      const buf = new Uint8Array(n);
-      let off = 0;
-      while (off < n) {
-        const dl = new Promise<{ value: undefined; done: true }>((r) =>
-          setTimeout(() => r({ value: undefined, done: true as const }), waitMs),
-        );
-        const { value, done } = await Promise.race([reader.read(), dl]);
-        if (done || !value) throw new Error(`Stream ended after ${off}/${n} bytes`);
-        const copy = Math.min(value.length, n - off);
-        buf.set(value.slice(0, copy), off);
-        off += copy;
-        // If the chunk had more bytes, we discard the excess (shouldn't happen in practice)
-      }
-      return buf;
-    }
-
     /** Read one peer-wire message: [length(4)] [id(1)] [payload] */
     async function readPeerMessage(
-      reader: ReadableStreamDefaultReader<Uint8Array>,
+      br: BufferedReader,
       waitMs: number,
     ): Promise<{ id: number; payload: Uint8Array } | null> {
-      const lenBuf = await readExact(reader, 4, waitMs);
+      const tp = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Read timeout')), waitMs),
+      );
+      const lenBuf = await br.readExact(4, tp);
       const length = new DataView(lenBuf.buffer).getUint32(0, false);
       if (length === 0) return null; // keep-alive
-      const msgBuf = await readExact(reader, length, waitMs);
+      // Cap at 1 MiB — standard piece messages are 16 KB, max reasonable is 256 KB
+      if (length > 1_048_576) {
+        throw new Error(`BitTorrent message too large: ${length} bytes (max 1 MiB)`);
+      }
+      const msgBuf = await br.readExact(length, tp);
       return { id: msgBuf[0], payload: msgBuf.slice(1) };
     }
 
@@ -455,6 +463,7 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
       const socket = connect(`${host}:${port}`);
       await socket.opened;
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       let bitfieldReceived: boolean | undefined;
@@ -479,17 +488,14 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
         await writer.write(handshake);
 
         // ── 2. Read peer handshake ────────────────────────────────────────
-        let hsBuf = new Uint8Array(0);
-        while (hsBuf.length < 68) {
-          const dl = new Promise<{ value: undefined; done: true }>((r) =>
-            setTimeout(() => r({ value: undefined, done: true as const }), 5000),
+        let hsBuf: Uint8Array;
+        try {
+          const hsTimeout = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Handshake timeout')), 5000),
           );
-          const { value, done } = await Promise.race([reader.read(), dl]);
-          if (done || !value) break;
-          const merged = new Uint8Array(hsBuf.length + value.length);
-          merged.set(hsBuf);
-          merged.set(value, hsBuf.length);
-          hsBuf = merged;
+          hsBuf = await br.readExact(68, hsTimeout);
+        } catch {
+          hsBuf = new Uint8Array(0);
         }
 
         if (hsBuf.length < 68 || hsBuf[0] !== 19) {
@@ -513,7 +519,7 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
         for (let i = 0; i < 8; i++) {
           let msg: { id: number; payload: Uint8Array } | null;
           try {
-            msg = await readPeerMessage(reader, waitMs);
+            msg = await readPeerMessage(br, waitMs);
           } catch {
             break; // timeout or stream end — proceed to INTERESTED
           }
@@ -540,7 +546,7 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
           for (let i = 0; i < 6; i++) {
             let msg: { id: number; payload: Uint8Array } | null;
             try {
-              msg = await readPeerMessage(reader, 3000);
+              msg = await readPeerMessage(br, 3000);
             } catch {
               break;
             }
@@ -566,7 +572,7 @@ export async function handleBitTorrentPiece(request: Request): Promise<Response>
 
           // ── 7. Wait for PIECE ───────────────────────────────────────────
           try {
-            const msg = await readPeerMessage(reader, 8000);
+            const msg = await readPeerMessage(br, 8000);
             if (msg && msg.id === 7 && msg.payload.length >= 8) {
               // PIECE payload: index(4) begin(4) data(variable)
               const pv = new DataView(msg.payload.buffer, msg.payload.byteOffset);
@@ -748,6 +754,11 @@ function bencodeGetInt(dict: BencodeDict, key: string): number | undefined {
  * Body: { host, port?, infoHash, timeout? }
  */
 export async function handleBitTorrentScrape(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as BitTorrentTrackerRequest;
     const { host, port = 6969, timeout = 10000 } = body;
@@ -756,6 +767,12 @@ export async function handleBitTorrentScrape(request: Request): Promise<Response
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -768,6 +785,15 @@ export async function handleBitTorrentScrape(request: Request): Promise<Response
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckScrape = await checkIfCloudflare(host);
+    if (cfCheckScrape.isCloudflare && cfCheckScrape.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckScrape.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const encodedHash = hexToUrlEncoded(cleanHash);
@@ -868,6 +894,11 @@ export async function handleBitTorrentScrape(request: Request): Promise<Response
  * Body: { host, port?, infoHash, peerId?, timeout? }
  */
 export async function handleBitTorrentAnnounce(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as BitTorrentTrackerRequest;
     const { host, port = 6969, timeout = 10000 } = body;
@@ -876,6 +907,12 @@ export async function handleBitTorrentAnnounce(request: Request): Promise<Respon
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -899,6 +936,15 @@ export async function handleBitTorrentAnnounce(request: Request): Promise<Respon
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckAnnounce = await checkIfCloudflare(host);
+    if (cfCheckAnnounce.isCloudflare && cfCheckAnnounce.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckAnnounce.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const encodedHash = hexToUrlEncoded(cleanHash);

@@ -291,3 +291,8 @@ Modbus Security whitepaper (Schneider Electric, 2016) recommends:
 - [Modbus Application Protocol V1.1b3](https://modbus.org/docs/Modbus_Application_Protocol_V1_1b3.pdf)
 - [Modbus Security Whitepaper](https://www.modbus.org/docs/MB-Security_v21.pdf)
 - [CISA Modbus Vulnerabilities](https://www.cisa.gov/news-events/ics-advisories)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

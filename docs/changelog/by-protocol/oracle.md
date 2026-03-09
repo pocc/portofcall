@@ -208,3 +208,8 @@ if (acceptInfo && !SUPPORTED_VERSIONS.includes(acceptInfo.version)) {
 
 - [Oracle TNS Protocol Specification](https://www.oreilly.com/library/view/the-oracle-r-hackers/9780470080221/)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

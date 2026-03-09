@@ -24,6 +24,16 @@ All 86 protocol reviews are organized in `changelog/by-protocol/`:
 For a complete list of all 86 protocols with review status, see:
 - **[by-protocol/README.md](../by-protocol/README.md)** - Full protocol index organized by batch
 
+## 2026-02-23 Security Passes
+
+| File | Focus | Protocols Affected |
+|------|-------|--------------------|
+| [2026-02-23-pass1-review.md](2026-02-23-pass1-review.md) | AFP, Kafka, NFS, SNMP, ActiveMQ | 5 |
+| [2026-02-23-pass2-review.md](2026-02-23-pass2-review.md) | Docker, Ethereum, FastCGI, Elasticsearch, Kibana, Kubernetes | 6 |
+| [2026-02-23-pass3-review.md](2026-02-23-pass3-review.md) | Re-review of Pass 1 (all clean) | 5 |
+| [2026-02-23-pass3b-review.md](2026-02-23-pass3b-review.md) | Re-review of Elasticsearch + Kubernetes (all clean) | 2 |
+| [2026-02-23-database-security-pass.md](2026-02-23-database-security-pass.md) | Unbounded reads (8 fixes) + CRLF injection (33 files, ~50 points) | 41 |
+
 ## Audit Pass Reports
 
 All 17 audit pass reports are in this directory:

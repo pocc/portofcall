@@ -131,8 +131,8 @@ function classifyFrame(controlField: Uint8Array): FrameInfo {
     return { type: 'U-frame', length: 6, controlField: hex, description };
   }
 
-  // S-frame: bit 0 = 0, bit 1 = 1
-  if ((cf0 & 0x01) === 0x00 && (cf0 & 0x02) === 0x02) {
+  // S-frame: bit 0 = 1, bit 1 = 0 (low two bits = 0x01)
+  if ((cf0 & 0x03) === 0x01) {
     const receiveSeq = ((cf3 << 8) | cf2) >> 1;
     return {
       type: 'S-frame',
@@ -214,7 +214,7 @@ export async function handleIEC104Probe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -255,28 +255,40 @@ export async function handleIEC104Probe(request: Request): Promise<Response> {
 
         // Read response with timeout
         const readWithTimeout = async (ms: number): Promise<Uint8Array | null> => {
-          const timeoutPromise = new Promise<null>((resolve) =>
-            setTimeout(() => resolve(null), ms)
-          );
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const timeoutPromise = new Promise<null>((resolve) => {
+            timeoutId = setTimeout(() => {
+              // Cancel the reader so the pending reader.read() rejects,
+              // releasing the lock before the next readWithTimeout call.
+              reader.cancel().catch(() => { /* ignore */ });
+              resolve(null);
+            }, ms);
+          });
           const readPromise = (async () => {
             let buffer = new Uint8Array(0);
-            while (buffer.length < 1024) {
-              const { value, done } = await reader.read();
-              if (done || !value) break;
-              const newBuf = new Uint8Array(buffer.length + value.length);
-              newBuf.set(buffer);
-              newBuf.set(value, buffer.length);
-              buffer = newBuf;
+            try {
+              while (buffer.length < 1024) {
+                const { value, done } = await reader.read();
+                if (done || !value) break;
+                const newBuf = new Uint8Array(buffer.length + value.length);
+                newBuf.set(buffer);
+                newBuf.set(value, buffer.length);
+                buffer = newBuf;
 
-              // Check if we have at least one complete frame
-              if (buffer.length >= 6 && buffer[0] === START_BYTE) {
-                const frameLen = 2 + buffer[1];
-                if (buffer.length >= frameLen) return buffer;
+                // Check if we have at least one complete frame
+                if (buffer.length >= 6 && buffer[0] === START_BYTE) {
+                  const frameLen = 2 + buffer[1];
+                  if (buffer.length >= frameLen) return buffer;
+                }
               }
+            } catch {
+              // Reader was cancelled by timeout — return whatever was buffered
             }
             return buffer.length > 0 ? buffer : null;
           })();
-          return Promise.race([readPromise, timeoutPromise]);
+          const result = await Promise.race([readPromise, timeoutPromise]);
+          clearTimeout(timeoutId);
+          return result;
         };
 
         // Read STARTDT Con response
@@ -642,7 +654,7 @@ export async function handleIEC104ReadData(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -761,8 +773,8 @@ export async function handleIEC104ReadData(request: Request): Promise<Response> 
             const flen = 2 + startdtResp[off + 1];
             if (off + flen > startdtResp.length) break;
             const cf0 = startdtResp[off + 2];
-            if ((cf0 & 0x03) === 0) {
-              // I-frame (bit 0=0 AND bit 1=0): update our N(R)
+            if ((cf0 & 0x01) === 0) {
+              // I-frame (bit 0=0): update our N(R)
               const serverSendSeq = (((startdtResp[off + 3] << 8) | cf0) >> 1) & 0x7FFF;
               recvSeq = (serverSendSeq + 1) & 0x7FFF;
             }
@@ -815,8 +827,8 @@ export async function handleIEC104ReadData(request: Request): Promise<Response> 
             const cf0 = collectionBuffer[off + 2];
             const cf1 = collectionBuffer[off + 3];
 
-            if ((cf0 & 0x03) === 0) {
-              // I-frame (bit 0=0, bit 1=0): extract ASDU (starts at offset+6)
+            if ((cf0 & 0x01) === 0) {
+              // I-frame (bit 0=0): extract ASDU (starts at offset+6)
               const serverSendSeq = (((cf1 << 8) | cf0) >> 1) & 0x7FFF;
               recvSeq = (serverSendSeq + 1) & 0x7FFF;
 
@@ -1046,8 +1058,8 @@ export async function handleIEC104Write(request: Request): Promise<Response> {
 
         if (ackResp && ackResp.length >= 6) {
           const cf0 = ackResp[2];
-          if ((cf0 & 0x03) === 0) {
-            // I-frame response (bit 0=0 AND bit 1=0; excludes S-frames)
+          if ((cf0 & 0x01) === 0) {
+            // I-frame response (bit 0=0; S-frames have bits 1:0=01 so excluded by sequence logic)
             const flen = 2 + ackResp[1];
             if (ackResp.length >= flen && flen > 6) {
               const asduResp = ackResp.slice(6, flen);

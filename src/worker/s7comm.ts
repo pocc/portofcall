@@ -200,54 +200,44 @@ function getS7ErrorMessage(returnCode: number): string {
 }
 
 /**
- * Read a complete TPKT packet from socket
+ * Read a complete TPKT packet from socket using the TPKT length field.
+ * TPKT header: [version(1)][reserved(1)][length-hi(1)][length-lo(1)]
+ * The length field includes the 4-byte header itself.
  */
 async function readTPKTPacket(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutPromise: Promise<never>,
 ): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let totalLen = 0;
   const MAX_PACKET_SIZE = 1024 * 1024; // 1MB limit
 
-  const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-  if (done || !value) return new Uint8Array(0);
-  chunks.push(value);
-  totalLen += value.length;
+  // Accumulate until we have at least 4 bytes (TPKT header)
+  let buffer = new Uint8Array(0);
 
-  // Try to read more
-  let shortTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  try {
-    const shortTimeout = new Promise<never>((_, reject) => {
-      shortTimeoutHandle = setTimeout(() => reject(new Error('read_done')), 500);
-    });
-    while (true) {
-      const { value: next, done: nextDone } = await Promise.race([reader.read(), shortTimeout]);
-      if (nextDone || !next) break;
-      chunks.push(next);
-      totalLen += next.length;
-      if (totalLen > MAX_PACKET_SIZE) {
-        throw new Error('Packet size exceeds 1MB limit');
-      }
-    }
-  } catch (e) {
-    if (e instanceof Error && e.message !== 'read_done') {
-      throw e;
-    }
-    // Done reading
-  } finally {
-    if (shortTimeoutHandle !== null) {
-      clearTimeout(shortTimeoutHandle);
-    }
+  while (buffer.length < 4) {
+    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+    if (done || !value) return buffer.length > 0 ? buffer : new Uint8Array(0);
+    const merged = new Uint8Array(buffer.length + value.length);
+    merged.set(buffer);
+    merged.set(value, buffer.length);
+    buffer = merged;
   }
 
-  const combined = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
+  // Parse TPKT length from bytes 2-3 (big-endian, includes the 4-byte header)
+  const tpktLength = (buffer[2] << 8) | buffer[3];
+  if (tpktLength < 4) return buffer; // Malformed — return what we have
+  if (tpktLength > MAX_PACKET_SIZE) throw new Error('Packet size exceeds 1MB limit');
+
+  // Read remaining bytes until we have the full TPKT packet
+  while (buffer.length < tpktLength) {
+    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+    if (done || !value) break;
+    const merged = new Uint8Array(buffer.length + value.length);
+    merged.set(buffer);
+    merged.set(value, buffer.length);
+    buffer = merged;
   }
-  return combined;
+
+  return buffer.slice(0, tpktLength);
 }
 
 /**
@@ -402,7 +392,7 @@ function validateS7Input(host: string, port: number, rack: number, slot: number)
     return 'Host exceeds maximum length (253 chars)';
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 
@@ -515,7 +505,7 @@ function buildS7WriteDB(dbNumber: number, startByte: number, data: Uint8Array): 
  */
 export async function handleS7commConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -679,7 +669,7 @@ export async function handleS7commConnect(request: Request): Promise<Response> {
  */
 export async function handleS7ReadDB(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {

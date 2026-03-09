@@ -306,7 +306,7 @@ Establishes a bidirectional tunnel between the browser and a DAP server. The wor
 
 **Connection sequence:**
 
-1. Client opens WebSocket to `wss://portofcall.ross.gg/api/dap/tunnel?host=...&port=5678`
+1. Client opens WebSocket to `wss://l4.fyi/api/dap/tunnel?host=...&port=5678`
 2. Worker opens TCP connection to `host:port`
 3. Worker sends confirmation to client:
    ```json
@@ -458,17 +458,17 @@ Note: Xdebug is unusual — it uses a **reverse** connection model where the PHP
 
 ```bash
 # Health probe (initialize handshake + capabilities)
-curl -s -X POST https://portofcall.ross.gg/api/dap/health \
+curl -s -X POST https://l4.fyi/api/dap/health \
   -H 'Content-Type: application/json' \
   -d '{"host":"debugpy.internal","port":5678}' | jq '{success,latencyMs,capabilities:.parsed.capabilities,events:.parsed.events}'
 
 # Health probe with custom timeout
-curl -s -X POST https://portofcall.ross.gg/api/dap/health \
+curl -s -X POST https://l4.fyi/api/dap/health \
   -H 'Content-Type: application/json' \
   -d '{"host":"dlv-server.internal","port":38697,"timeout":5000}' | jq .
 
 # Check netcoredbg
-curl -s -X POST https://portofcall.ross.gg/api/dap/health \
+curl -s -X POST https://l4.fyi/api/dap/health \
   -H 'Content-Type: application/json' \
   -d '{"host":"dotnet-debug.internal","port":4711}' | jq '.parsed.capabilities | keys'
 ```
@@ -477,10 +477,10 @@ curl -s -X POST https://portofcall.ross.gg/api/dap/health \
 
 ```bash
 # Connect to debugpy
-wscat -c 'wss://portofcall.ross.gg/api/dap/tunnel?host=debugpy.internal&port=5678'
+wscat -c 'wss://l4.fyi/api/dap/tunnel?host=debugpy.internal&port=5678'
 
 # Connect to delve
-wscat -c 'wss://portofcall.ross.gg/api/dap/tunnel?host=dlv-server.internal&port=38697'
+wscat -c 'wss://l4.fyi/api/dap/tunnel?host=dlv-server.internal&port=38697'
 
 # Once connected, send DAP requests as JSON:
 # > {"seq":1,"type":"request","command":"initialize","arguments":{"clientID":"wscat","adapterID":"debugpy","linesStartAt1":true,"columnsStartAt1":true}}

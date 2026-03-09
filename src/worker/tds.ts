@@ -1128,6 +1128,7 @@ interface TDSConnectOptions {
   password: string;
   database?: string;
   sql?: string;
+  timeoutMs?: number;
 }
 
 interface TDSConnectResult {
@@ -1137,10 +1138,13 @@ interface TDSConnectResult {
 }
 
 async function tdsConnect(opts: TDSConnectOptions): Promise<TDSConnectResult> {
-  const { host, port, username, password, database, sql } = opts;
+  const { host, port, username, password, database, sql, timeoutMs = 30000 } = opts;
 
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
 
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
@@ -1177,6 +1181,8 @@ async function tdsConnect(opts: TDSConnectOptions): Promise<TDSConnectResult> {
     }
 
     if (!sql) {
+      reader.releaseLock();
+      writer.releaseLock();
       await socket.close();
       return { loginAck: loginTokens.loginAck, database: currentDatabase };
     }
@@ -1189,6 +1195,8 @@ async function tdsConnect(opts: TDSConnectOptions): Promise<TDSConnectResult> {
     const queryResp = await readTDSMessage(reader, buf);
     const queryTokens = parseTokenStream(queryResp.payload);
 
+    reader.releaseLock();
+    writer.releaseLock();
     await socket.close();
 
     return {
@@ -1199,6 +1207,8 @@ async function tdsConnect(opts: TDSConnectOptions): Promise<TDSConnectResult> {
         : undefined,
     };
   } catch (err) {
+    try { reader.releaseLock(); } catch { /* ignore */ }
+    try { writer.releaseLock(); } catch { /* ignore */ }
     try { await socket.close(); } catch { /* ignore */ }
     throw err;
   }
@@ -1209,7 +1219,7 @@ async function tdsConnect(opts: TDSConnectOptions): Promise<TDSConnectResult> {
 // ---------------------------------------------------------------------------
 
 function jsonError(message: string, status: number): Response {
-  return new Response(JSON.stringify({ error: message }), {
+  return new Response(JSON.stringify({ success: false, error: message }), {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
@@ -1220,6 +1230,12 @@ function jsonError(message: string, status: number): Response {
  * Authenticates against a SQL Server using TDS Login7 and returns server metadata.
  */
 export async function handleTDSLogin(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -1240,6 +1256,7 @@ export async function handleTDSLogin(request: Request): Promise<Response> {
     if (!host)                              return jsonError('Missing required parameter: host', 400);
     if (!username)                          return jsonError('Missing required parameter: username', 400);
     if (password === undefined || password === null) return jsonError('Missing required parameter: password', 400);
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535)           return jsonError('Port must be between 1 and 65535', 400);
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1286,6 +1303,12 @@ export async function handleTDSLogin(request: Request): Promise<Response> {
  * Authenticates and executes a SQL query, returning columns + rows.
  */
 export async function handleTDSQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -1308,6 +1331,7 @@ export async function handleTDSQuery(request: Request): Promise<Response> {
     if (!host)     return jsonError('Missing required parameter: host', 400);
     if (!username) return jsonError('Missing required parameter: username', 400);
     if (!sql)      return jsonError('Missing required parameter: sql', 400);
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return jsonError('Port must be between 1 and 65535', 400);
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1361,6 +1385,12 @@ export async function handleTDSQuery(request: Request): Promise<Response> {
  * Pre-Login probe — no credentials required. Extracts SQL Server version, encryption, and MARS info.
  */
 export async function handleTDSConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 1433, timeout = 10000 } = await request.json<{
       host: string;
@@ -1369,7 +1399,14 @@ export async function handleTDSConnect(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1409,6 +1446,8 @@ export async function handleTDSConnect(request: Request): Promise<Response> {
         }
 
         const payload = await readExact(reader, buf, payloadLength);
+        reader.releaseLock();
+        writer.releaseLock();
         await socket.close();
 
         const preLoginInfo = parsePreLoginResponse(payload);
@@ -1424,7 +1463,9 @@ export async function handleTDSConnect(request: Request): Promise<Response> {
             : 'TDS-compatible server detected',
         };
       } catch (error) {
-        await socket.close();
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { await socket.close(); } catch { /* ignore */ }
         throw error;
       }
     })();

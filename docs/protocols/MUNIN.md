@@ -66,7 +66,7 @@ Client → Server: quit\n
 
 **curl:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/munin/connect \
+curl -s -X POST https://l4.fyi/api/munin/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"munin-node.example.com"}' | jq .
 ```
@@ -153,7 +153,7 @@ Client → Server: quit\n
 
 **curl:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/munin/fetch \
+curl -s -X POST https://l4.fyi/api/munin/fetch \
   -H 'Content-Type: application/json' \
   -d '{"host":"munin-node.example.com","plugin":"cpu"}' | jq .
 ```
@@ -401,7 +401,7 @@ docker run --rm -d -p 4949:4949 \
   aheimsbakk/munin-node
 
 # Verify from Port of Call
-curl -s https://portofcall.ross.gg/api/munin/connect \
+curl -s https://l4.fyi/api/munin/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"YOUR_SERVER_IP"}' | jq .
 ```
@@ -441,7 +441,7 @@ curl -s https://portofcall.ross.gg/api/munin/connect \
 ```bash
 # Discovery script: connect to all nodes, get plugin lists
 for host in node1 node2 node3; do
-  curl -s -X POST https://portofcall.ross.gg/api/munin/connect \
+  curl -s -X POST https://l4.fyi/api/munin/connect \
     -H 'Content-Type: application/json' \
     -d "{\"host\":\"$host.example.com\"}" \
     | jq -r ".plugins[]"
@@ -449,7 +449,7 @@ done > all_plugins.txt
 
 # Fetch all CPU metrics from all nodes
 for host in node1 node2 node3; do
-  curl -s -X POST https://portofcall.ross.gg/api/munin/fetch \
+  curl -s -X POST https://l4.fyi/api/munin/fetch \
     -H 'Content-Type: application/json' \
     -d "{\"host\":\"$host.example.com\",\"plugin\":\"cpu\"}" \
     | jq ".values"

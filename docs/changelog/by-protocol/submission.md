@@ -33,3 +33,8 @@ Created canonical review/spec document for Submission and mapped all implemented
 
 - [Protocol Stub](../../protocols/SUBMISSION.md)
 - [Worker Implementation](../../../src/worker/submission.ts)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -248,27 +248,27 @@ In `/connect`, auth failure is a "successful probe result" (you learned the pass
 
 ```bash
 # Test authentication (check if RCON password is correct)
-curl -s -X POST https://portofcall.ross.gg/api/rcon/connect \
+curl -s -X POST https://l4.fyi/api/rcon/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","port":27015,"password":"mypassword"}' | jq '{authenticated,error}'
 
 # Execute a command
-curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+curl -s -X POST https://l4.fyi/api/rcon/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","port":27015,"password":"mypassword","command":"status"}' | jq -r '.response'
 
 # List all connected players
-curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+curl -s -X POST https://l4.fyi/api/rcon/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","port":27015,"password":"mypassword","command":"users"}' | jq -r '.response'
 
 # Get server hostname
-curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+curl -s -X POST https://l4.fyi/api/rcon/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","port":27015,"password":"mypassword","command":"hostname"}' | jq -r '.response'
 
 # Minecraft RCON (default port 25575, can omit port)
-curl -s -X POST https://portofcall.ross.gg/api/rcon/command \
+curl -s -X POST https://l4.fyi/api/rcon/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"mc.example.com","password":"mypassword","command":"list"}' | jq -r '.response'
 ```

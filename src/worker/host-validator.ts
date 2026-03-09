@@ -15,10 +15,15 @@ const BLOCKED_IPV4_CIDRS: Array<{ addr: number; mask: number }> = [
   { addr: 0xAC100000, mask: 0xFFF00000 },  // 172.16.0.0/12  (RFC 1918)
   { addr: 0xC0A80000, mask: 0xFFFF0000 },  // 192.168.0.0/16 (RFC 1918)
   { addr: 0xA9FE0000, mask: 0xFFFF0000 },  // 169.254.0.0/16 (link-local, incl. cloud metadata)
-  { addr: 0x00000000, mask: 0xFFFFFFFF },  // 0.0.0.0/32     (unspecified)
+  { addr: 0x00000000, mask: 0xFF000000 },  // 0.0.0.0/8      ("this network" — RFC 1122)
   { addr: 0xFFFFFFFF, mask: 0xFFFFFFFF },  // 255.255.255.255/32 (broadcast)
   { addr: 0xC0000000, mask: 0xFFFFFFF8 },  // 192.0.0.0/29   (IANA special)
   { addr: 0x64400000, mask: 0xFFC00000 },  // 100.64.0.0/10  (CGN / shared address space)
+  { addr: 0xC0000200, mask: 0xFFFFFF00 },  // 192.0.2.0/24   (TEST-NET-1, RFC 5737)
+  { addr: 0xC6120000, mask: 0xFFFE0000 },  // 198.18.0.0/15  (benchmarking, RFC 2544)
+  { addr: 0xC6336400, mask: 0xFFFFFF00 },  // 198.51.100.0/24 (TEST-NET-2, RFC 5737)
+  { addr: 0xCB007100, mask: 0xFFFFFF00 },  // 203.0.113.0/24 (TEST-NET-3, RFC 5737)
+  { addr: 0xF0000000, mask: 0xF0000000 },  // 240.0.0.0/4    (reserved / Class E)
 ];
 
 function ipv4ToInt(ip: string): number {
@@ -97,6 +102,22 @@ function isBlockedIPv6(ip: string): boolean {
     }
   }
 
+  // 2002::/16 — 6to4 tunneling (RFC 3056): embedded IPv4 in groups[1]:groups[2]
+  if (first === 0x2002) {
+    const hi = parseInt(groups[1], 16);
+    const lo = parseInt(groups[2], 16);
+    const embeddedIPv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isBlockedIPv4(embeddedIPv4);
+  }
+
+  // 64:ff9b::/96 — NAT64 well-known prefix (RFC 6052): embedded IPv4 in last two groups
+  if (expanded.startsWith('0064:ff9b:0000:0000:0000:0000:')) {
+    const hi = parseInt(groups[6], 16);
+    const lo = parseInt(groups[7], 16);
+    const embeddedIPv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isBlockedIPv4(embeddedIPv4);
+  }
+
   return false;
 }
 
@@ -110,15 +131,29 @@ export function isBlockedHost(host: string): boolean {
 
   // IPv6 (contains colon)
   if (trimmed.includes(':')) {
-    // Strip brackets from [::1] notation
-    const bare = trimmed.startsWith('[') ? trimmed.slice(1, -1) : trimmed;
+    // Strip brackets and optional port from [::1]:port notation
+    let bare = trimmed;
+    if (bare.startsWith('[')) {
+      const closeBracket = bare.indexOf(']');
+      bare = closeBracket !== -1 ? bare.slice(1, closeBracket) : bare.slice(1, -1);
+    }
     return isBlockedIPv6(bare);
   }
 
-  // IPv4
+  // IPv4 (dotted-decimal)
   if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) {
     return isBlockedIPv4(trimmed);
   }
+
+  // Block alternate IP representations that could bypass dotted-decimal detection
+  // Decimal integer (e.g. 2130706433 = 127.0.0.1)
+  if (/^\d+$/.test(trimmed)) return true;
+  // Hex notation (e.g. 0x7f000001 = 127.0.0.1)
+  if (/^0x[0-9a-f]+$/i.test(trimmed)) return true;
+  // Octal or mixed-radix dotted (e.g. 0177.0.0.1 — leading zero triggers octal in some resolvers)
+  if (/^0\d/.test(trimmed) && /^\d+(\.\d+)*$/.test(trimmed)) return true;
+  // Shortened dotted-decimal (e.g. 127.1 = 127.0.0.1, 10.1.1 = 10.1.0.1)
+  if (/^\d{1,3}\.\d{1,3}$/.test(trimmed) || /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) return true;
 
   // Hostname — block known internal names
   const lower = trimmed.toLowerCase();

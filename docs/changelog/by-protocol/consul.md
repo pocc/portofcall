@@ -49,3 +49,8 @@ The implementation includes detailed comments for:
 
 - [Consul API Documentation](https://www.consul.io/api-docs) - Official API reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

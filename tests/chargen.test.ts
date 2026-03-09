@@ -6,7 +6,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
+const API_BASE = (process.env.API_BASE || 'https://l4.fyi/api').replace(/\/api$/, '');
 
 describe('CHARGEN Protocol Integration Tests', () => {
   it('should receive character stream from CHARGEN server', async () => {

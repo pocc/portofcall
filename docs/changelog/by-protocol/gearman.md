@@ -104,3 +104,8 @@ Gearman implementation provides 3 endpoints (connect, command, submit) supportin
 
 - [Gearman Protocol](http://gearman.org/protocol/) - Official protocol specification
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

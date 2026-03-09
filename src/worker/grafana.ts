@@ -60,10 +60,12 @@ interface GrafanaCacheGetRequest extends GrafanaBaseRequest {
 
 /** Build the Authorization header value from the available credentials */
 function buildAuthHeader(token?: string, apiKey?: string, username?: string, password?: string): string | null {
-  if (token) return `Bearer ${token}`;
-  if (apiKey) return `Bearer ${apiKey}`;
+  if (token) return `Bearer ${token.replace(/[\r\n]/g, '')}`;
+  if (apiKey) return `Bearer ${apiKey.replace(/[\r\n]/g, '')}`;
   if (username && password) {
-    const bytes = new TextEncoder().encode(`${username}:${password}`);
+    const safeUser = username.replace(/[\r\n]/g, '');
+    const safePass = password.replace(/[\r\n]/g, '');
+    const bytes = new TextEncoder().encode(`${safeUser}:${safePass}`);
     let binary = '';
     for (const byte of bytes) binary += String.fromCharCode(byte);
     return `Basic ${btoa(binary)}`;
@@ -83,9 +85,11 @@ function buildGetRequest(
   username?: string,
   password?: string,
 ): string {
-  const hostHeader = port === 80 ? hostname : `${hostname}:${port}`;
+  const safeHostname = hostname.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  const hostHeader = port === 80 ? safeHostname : `${safeHostname}:${port}`;
   const lines = [
-    `GET ${path} HTTP/1.1`,
+    `GET ${safePath} HTTP/1.1`,
     `Host: ${hostHeader}`,
     'Connection: close',
     'Accept: application/json',
@@ -124,10 +128,13 @@ async function httpGet(
     let totalBytes = 0;
     const maxBytes = 10 * 1024 * 1024; // 10 MB safety cap
 
-    while (totalBytes < maxBytes) {
+    while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (value) {
+        if (totalBytes + value.length > maxBytes) {
+          throw new Error('Response too large');
+        }
         chunks.push(value);
         totalBytes += value.length;
       }
@@ -185,12 +192,18 @@ function parseHttpResponse(raw: string): {
 function decodeChunked(raw: string): string {
   const parts: string[] = [];
   let pos = 0;
+  let totalDecoded = 0;
+  const MAX_DECODED = 10 * 1024 * 1024;
   while (pos < raw.length) {
     const crlf = raw.indexOf('\r\n', pos);
     if (crlf === -1) break;
     const sizeHex = raw.substring(pos, crlf).trim();
     const size = parseInt(sizeHex, 16);
     if (isNaN(size) || size === 0) break;
+    if (totalDecoded + size > MAX_DECODED) {
+      throw new Error('Chunked response exceeds 10 MB limit');
+    }
+    totalDecoded += size;
     const start = crlf + 2;
     parts.push(raw.substring(start, start + size));
     pos = start + size + 2;
@@ -205,6 +218,9 @@ function parseJsonBody(body: string): unknown {
 
 /** Open a fresh TCP socket with a timeout race */
 async function openSocket(host: string, port: number, timeout: number): Promise<Socket> {
+  if (isNaN(port) || port < 1 || port > 65535) {
+    throw new Error('Port must be between 1 and 65535');
+  }
   const socket = connect({ hostname: host, port });
   await Promise.race([
     socket.opened,
@@ -288,7 +304,7 @@ export async function handleGrafanaHealth(request: Request): Promise<Response> {
     }
   }
 
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaBaseRequest;
   try { body = await request.json() as GrafanaBaseRequest; }
@@ -360,7 +376,7 @@ export async function handleGrafanaDatasources(request: Request): Promise<Respon
     }
   }
 
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaBaseRequest;
   try { body = await request.json() as GrafanaBaseRequest; }
@@ -432,7 +448,7 @@ export async function handleGrafanaDashboards(request: Request): Promise<Respons
     }
   }
 
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaSearchRequest;
   try { body = await request.json() as GrafanaSearchRequest; }
@@ -481,7 +497,7 @@ export async function handleGrafanaDashboards(request: Request): Promise<Respons
  * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaFolders(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaBaseRequest;
   try { body = await request.json() as GrafanaBaseRequest; }
@@ -528,7 +544,7 @@ export async function handleGrafanaFolders(request: Request): Promise<Response> 
  * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaAlertRules(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaBaseRequest;
   try { body = await request.json() as GrafanaBaseRequest; }
@@ -584,7 +600,7 @@ export async function handleGrafanaAlertRules(request: Request): Promise<Respons
  * Body: { host, port?, timeout?, token?, apiKey?, username?, password? }
  */
 export async function handleGrafanaOrg(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaBaseRequest;
   try { body = await request.json() as GrafanaBaseRequest; }
@@ -635,7 +651,7 @@ export async function handleGrafanaOrg(request: Request): Promise<Response> {
  * Body: { host, port?, timeout?, token?, apiKey?, username?, password?, uid }
  */
 export async function handleGrafanaDashboard(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: GrafanaCacheGetRequest;
   try { body = await request.json() as GrafanaCacheGetRequest; }
@@ -684,9 +700,11 @@ function buildPostRequest(
   password?: string,
 ): string {
   const bodyBytes = new TextEncoder().encode(body).length;
-  const hostHeader = port === 80 ? hostname : `${hostname}:${port}`;
+  const safeHostname = hostname.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  const hostHeader = port === 80 ? safeHostname : `${safeHostname}:${port}`;
   const lines = [
-    `POST ${path} HTTP/1.1`,
+    `POST ${safePath} HTTP/1.1`,
     `Host: ${hostHeader}`,
     'Connection: close',
     'Content-Type: application/json',
@@ -718,10 +736,17 @@ async function httpPost(
     await writer.write(new TextEncoder().encode(buildPostRequest(hostname, port, path, body, token, apiKey, username, password)));
     const chunks: Uint8Array[] = [];
     let totalBytes = 0;
-    while (totalBytes < 10 * 1024 * 1024) {
+    const maxBytes = 10 * 1024 * 1024;
+    while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) { chunks.push(value); totalBytes += value.length; }
+      if (value) {
+        if (totalBytes + value.length > maxBytes) {
+          throw new Error('Response too large');
+        }
+        chunks.push(value);
+        totalBytes += value.length;
+      }
     }
     return parseHttpResponse(new TextDecoder().decode(mergeU8(chunks, totalBytes)));
   } finally {

@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('SOCKS5 Protocol Integration Tests', () => {
   describe('SOCKS5 Input Validation', () => {
@@ -29,7 +29,7 @@ describe('SOCKS5 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          proxyHost: '127.0.0.1',
+          proxyHost: 'example.com',
           destPort: 80,
         }),
       });
@@ -44,7 +44,7 @@ describe('SOCKS5 Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          proxyHost: '127.0.0.1',
+          proxyHost: 'example.com',
           destHost: 'example.com',
           destPort: 0,
         }),

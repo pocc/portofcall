@@ -29,6 +29,17 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Cleanup WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) {
+        wsRef.current.close(1000, 'component unmount');
+      }
+      wsRef.current = null;
+      setPassword('');
+    };
+  }, []);
+
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
@@ -51,10 +62,25 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
     setStatusMsg('');
     setHistory([]);
 
-    const params = new URLSearchParams({ host, port, username, password });
+    const params = new URLSearchParams({ host, port });
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${proto}//${window.location.host}/api/imap/session?${params}`);
     wsRef.current = ws;
+
+    // Connection timeout — abort if not connected within 15s
+    const connectTimeout = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        ws.close();
+        setStatus('disconnected');
+        setStatusMsg('Connection timed out after 15 seconds.');
+        addEntry('error', 'Connection timed out.');
+      }
+    }, 15_000);
+
+    ws.onopen = () => {
+      // Send credentials as first message (not in URL)
+      ws.send(JSON.stringify({ type: 'auth', username, password }));
+    };
 
     ws.onmessage = (event) => {
       try {
@@ -69,6 +95,7 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
         };
 
         if (msg.type === 'connected') {
+          clearTimeout(connectTimeout);
           setStatus('connected');
           addEntry('info', `Connected to ${host}:${port} as ${username}`);
           if (msg.capabilities) {
@@ -89,11 +116,13 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
     };
 
     ws.onerror = () => {
+      clearTimeout(connectTimeout);
       addEntry('error', 'WebSocket error');
       setStatus('disconnected');
     };
 
     ws.onclose = (e) => {
+      clearTimeout(connectTimeout);
       addEntry('info', `[closed: ${e.reason || e.code}]`);
       setStatus('disconnected');
       wsRef.current = null;
@@ -179,8 +208,9 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
             <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Host</label>
+                <label htmlFor="imap-host" className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
+                  id="imap-host"
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -190,8 +220,9 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Port</label>
+                <label htmlFor="imap-port" className="block text-sm font-medium text-slate-300 mb-1">Port</label>
                 <select
+                  id="imap-port"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
                   disabled={status === 'connected' || status === 'connecting'}
@@ -202,8 +233,9 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
                 </select>
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Username</label>
+                <label htmlFor="imap-username" className="block text-sm font-medium text-slate-300 mb-1">Username</label>
                 <input
+                  id="imap-username"
                   type="text"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
@@ -213,8 +245,9 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Password</label>
+                <label htmlFor="imap-password" className="block text-sm font-medium text-slate-300 mb-1">Password</label>
                 <input
+                  id="imap-password"
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -223,7 +256,7 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
                 />
               </div>
 
-              {statusMsg && <p className="text-sm text-red-400">{statusMsg}</p>}
+              {statusMsg && <p className="text-sm text-red-400" role="alert">{statusMsg}</p>}
 
               {status !== 'connected' ? (
                 <button

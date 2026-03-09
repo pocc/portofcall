@@ -19,6 +19,8 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 interface X11ConnectRequest {
   host: string;
@@ -29,31 +31,6 @@ interface X11ConnectRequest {
   timeout?: number;
 }
 
-/**
- * Read exactly N bytes from a socket reader
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
-
-  while (offset < length) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) throw new Error('Connection closed unexpectedly');
-
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
-
-    // If we got more data than needed, we can't push it back easily,
-    // but for the setup flow we read in exact chunks so this is fine
-  }
-
-  return buffer;
-}
 
 /**
  * Build X11 connection setup request
@@ -333,7 +310,7 @@ function buildInternAtomRequest(name: string): Uint8Array {
  * Bytes 4-7 contain the additional data length in 4-byte units.
  */
 async function readX11Reply(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutMs: number,
 ): Promise<Uint8Array> {
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -341,7 +318,7 @@ async function readX11Reply(
   });
 
   // Read the 32-byte reply header
-  const header = await readExact(reader, 32, timeoutPromise);
+  const header = await br.readExact(32, timeoutPromise);
 
   if (header[0] !== 1) {
     // Error (0) or event (2+) — return as-is for caller to inspect
@@ -354,7 +331,7 @@ async function readX11Reply(
   if (additionalLen === 0) return header;
   if (additionalLen > 65536) throw new Error('Reply too large');
 
-  const body = await readExact(reader, additionalLen, timeoutPromise);
+  const body = await br.readExact(additionalLen, timeoutPromise);
   const full = new Uint8Array(32 + additionalLen);
   full.set(header, 0);
   full.set(body, 32);
@@ -371,6 +348,11 @@ async function readX11Reply(
  * POST /api/x11/query-tree
  */
 export async function handleX11QueryTree(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as X11ConnectRequest & { maxWindows?: number };
     const { host, display = 0, timeout = 15000 } = body;
@@ -385,10 +367,19 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
 
     if (!port) port = 6000 + display;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckQuery = await checkIfCloudflare(host);
+    if (cfCheckQuery.isCloudflare && cfCheckQuery.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckQuery.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -402,6 +393,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       // --- X11 Setup ---
@@ -413,7 +405,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       }
       await writer.write(buildSetupRequest(authName, authData));
 
-      const header = await readExact(reader, 8, timeoutPromise);
+      const header = await br.readExact(8, timeoutPromise);
       const status = header[0];
 
       if (status !== 1) {
@@ -430,7 +422,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       const fullData = new Uint8Array(6 + additionalDataLength);
       fullData.set(header.subarray(2), 0);
       if (additionalDataLength > 0) {
-        const additionalData = await readExact(reader, additionalDataLength, timeoutPromise);
+        const additionalData = await br.readExact(additionalDataLength, timeoutPromise);
         fullData.set(additionalData, 6);
       }
 
@@ -459,7 +451,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       // Read InternAtom reply
       let netWmNameAtom = 0;
       try {
-        const internReply = await readX11Reply(reader, 5000);
+        const internReply = await readX11Reply(br, 5000);
         if (internReply[0] === 1) {
           netWmNameAtom = new DataView(internReply.buffer, internReply.byteOffset + 8, 4).getUint32(0, true);
         }
@@ -468,7 +460,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       // Read QueryTree reply
       const childWindows: number[] = [];
       try {
-        const qtReply = await readX11Reply(reader, 8000);
+        const qtReply = await readX11Reply(br, 8000);
         if (qtReply[0] === 1 && qtReply.length >= 32) {
           // QueryTree reply layout (after 32-byte header):
           //   bytes 8-9: number of children (CARD16) — actually at reply offset 8
@@ -496,7 +488,7 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
       const windowInfo: Array<{ id: string; name?: string }> = [];
       for (const wid of childWindows) {
         try {
-          const propReply = await readX11Reply(reader, 2000);
+          const propReply = await readX11Reply(br, 2000);
           let name: string | undefined;
           if (propReply[0] === 1 && propReply.length > 32) {
             // GetProperty reply: bytes 16-19 = value length (in format-units)
@@ -554,6 +546,11 @@ export async function handleX11QueryTree(request: Request): Promise<Response> {
  * Handle X11 connection probe
  */
 export async function handleX11Connect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as X11ConnectRequest;
     const { host, display = 0, timeout = 10000 } = body;
@@ -570,7 +567,7 @@ export async function handleX11Connect(request: Request): Promise<Response> {
       port = 6000 + display;
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -598,6 +595,15 @@ export async function handleX11Connect(request: Request): Promise<Response> {
       }
     }
 
+    const cfCheckConnect = await checkIfCloudflare(host);
+    if (cfCheckConnect.isCloudflare && cfCheckConnect.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckConnect.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
@@ -610,6 +616,7 @@ export async function handleX11Connect(request: Request): Promise<Response> {
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       // Send setup request
@@ -617,7 +624,7 @@ export async function handleX11Connect(request: Request): Promise<Response> {
       await writer.write(setupReq);
 
       // Read response header: status(1) + padding/reason-length(1) + major(2) + minor(2) + additional-data-length(2) = 8 bytes
-      const header = await readExact(reader, 8, timeoutPromise);
+      const header = await br.readExact(8, timeoutPromise);
       const status = header[0];
       const rtt = Date.now() - startTime;
 
@@ -635,7 +642,7 @@ export async function handleX11Connect(request: Request): Promise<Response> {
         // Copy version fields from header (bytes 2-7 = major(2) + minor(2) + addl_len(2))
         fullData.set(header.subarray(2), 0);
         if (additionalDataLength > 0) {
-          const additionalData = await readExact(reader, additionalDataLength, timeoutPromise);
+          const additionalData = await br.readExact(additionalDataLength, timeoutPromise);
           fullData.set(additionalData, 6);
         }
 
@@ -684,7 +691,7 @@ export async function handleX11Connect(request: Request): Promise<Response> {
 
         let reason = 'Unknown';
         if (additionalDataLength > 0 && additionalDataLength < 4096) {
-          const reasonData = await readExact(reader, additionalDataLength, timeoutPromise);
+          const reasonData = await br.readExact(additionalDataLength, timeoutPromise);
           reason = new TextDecoder().decode(reasonData.subarray(0, reasonLength)).trim();
         }
 

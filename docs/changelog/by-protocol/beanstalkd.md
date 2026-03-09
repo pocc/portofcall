@@ -89,3 +89,8 @@ Beanstalkd implementation provides 4 endpoints (connect, command, put, reserve) 
 
 - [Beanstalkd Protocol Specification](https://github.com/beanstalkd/beanstalkd/blob/master/doc/protocol.txt) - Official protocol reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols (none for Beanstalkd)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

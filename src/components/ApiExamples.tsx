@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 
 export interface CurlExample {
   title: string;
@@ -12,6 +12,11 @@ interface ApiExamplesProps {
 export default function ApiExamples({ examples }: ApiExamplesProps) {
   const [open, setOpen] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => { clearTimeout(copyTimerRef.current); };
+  }, []);
 
   if (examples.length === 0) return null;
 
@@ -19,7 +24,8 @@ export default function ApiExamples({ examples }: ApiExamplesProps) {
     try {
       await navigator.clipboard.writeText(command);
       setCopiedIndex(index);
-      setTimeout(() => setCopiedIndex(null), 2000);
+      clearTimeout(copyTimerRef.current);
+      copyTimerRef.current = setTimeout(() => setCopiedIndex(null), 2000);
     } catch {
       // Fallback: select text
     }

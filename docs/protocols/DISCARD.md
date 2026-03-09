@@ -136,23 +136,23 @@ If the remote server resets the connection or refuses it, the error surfaces as 
 
 ```bash
 # Basic discard test (localhost)
-curl -s -X POST https://portofcall.ross.gg/api/discard/send \
+curl -s -X POST https://l4.fyi/api/discard/send \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":9,"data":"Hello, Discard!"}' | jq .
 
 # 1KB throughput test
-curl -s -X POST https://portofcall.ross.gg/api/discard/send \
+curl -s -X POST https://l4.fyi/api/discard/send \
   -H 'Content-Type: application/json' \
   -d "{\"host\":\"localhost\",\"port\":9,\"data\":\"$(python3 -c "print('A'*1024)")\"}" | jq .
 
 # Custom port, short timeout
-curl -s -X POST https://portofcall.ross.gg/api/discard/send \
+curl -s -X POST https://l4.fyi/api/discard/send \
   -H 'Content-Type: application/json' \
   -d '{"host":"myserver.example.com","port":9999,"data":"test","timeout":3000}' | jq .
 
 # Generate a large payload and check throughput
 python3 -c "import json; print(json.dumps({'host':'localhost','port':9,'data':'x'*100000}))" \
-  | curl -s -X POST https://portofcall.ross.gg/api/discard/send \
+  | curl -s -X POST https://l4.fyi/api/discard/send \
     -H 'Content-Type: application/json' -d @- | jq '{bytesSent,duration,throughput}'
 ```
 
@@ -165,7 +165,7 @@ python3 -c "import json; print(json.dumps({'host':'localhost','port':9,'data':'x
 - **No server verification** -- Cannot confirm the remote is actually a discard server (versus any TCP listener)
 - **Shared timeout** -- Connect and write share the same timeout budget
 - **Throughput is approximate** -- Includes TCP handshake time; measures client-side write completion, not actual delivery
-- **No Cloudflare detection** -- Does not call `checkIfCloudflare`; probing Cloudflare-protected hosts will connect or fail with a generic error
+- **Cloudflare detection** -- Calls `checkIfCloudflare` before connecting; returns HTTP 403 if the target is behind Cloudflare
 - **Text-only input** -- The API accepts a JSON string field; binary payloads must be representable as UTF-8 text
 
 ---

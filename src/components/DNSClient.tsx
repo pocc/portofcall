@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
 
@@ -54,12 +54,23 @@ export default function DNSClient({ onBack }: DNSClientProps) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<DNSResult[]>([]);
   const [error, setError] = useState('');
+  const controllerRef = useRef<AbortController | null>(null);
+
+  // Abort in-flight request on unmount to prevent stale state updates
+  useEffect(() => {
+    return () => { controllerRef.current?.abort(); };
+  }, []);
 
   const handleQuery = async () => {
     if (!domain.trim()) {
       setError('Domain name is required');
       return;
     }
+
+    // Abort any previous in-flight request
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    controllerRef.current = controller;
 
     setLoading(true);
     setError('');
@@ -73,9 +84,12 @@ export default function DNSClient({ onBack }: DNSClientProps) {
           type: recordType,
           server,
         }),
+        signal: controller.signal,
       });
 
       const data = (await response.json()) as DNSResult;
+
+      if (controller.signal.aborted) return;
 
       if (!response.ok) {
         setError(data.error || 'DNS query failed');
@@ -83,6 +97,7 @@ export default function DNSClient({ onBack }: DNSClientProps) {
         setResults((prev) => [data, ...prev]);
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Network error');
     } finally {
       setLoading(false);
@@ -123,20 +138,23 @@ export default function DNSClient({ onBack }: DNSClientProps) {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Domain</label>
+                <label htmlFor="dns-domain" className="block text-sm font-medium text-slate-300 mb-1">Domain</label>
                 <input
+                  id="dns-domain"
                   type="text"
                   value={domain}
                   onChange={(e) => setDomain(e.target.value)}
                   onKeyDown={handleKeyPress}
                   placeholder="example.com"
+                  aria-required="true"
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Record Type</label>
+                <label htmlFor="dns-record-type" className="block text-sm font-medium text-slate-300 mb-1">Record Type</label>
                 <select
+                  id="dns-record-type"
                   value={recordType}
                   onChange={(e) => setRecordType(e.target.value)}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -150,8 +168,9 @@ export default function DNSClient({ onBack }: DNSClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">DNS Server</label>
+                <label htmlFor="dns-server" className="block text-sm font-medium text-slate-300 mb-1">DNS Server</label>
                 <select
+                  id="dns-server"
                   value={server}
                   onChange={(e) => setServer(e.target.value)}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -223,7 +242,7 @@ export default function DNSClient({ onBack }: DNSClientProps) {
             </div>
 
             {error && (
-              <div className="bg-red-900/30 border border-red-600/50 rounded-lg p-3 mb-4">
+              <div className="bg-red-900/30 border border-red-600/50 rounded-lg p-3 mb-4" role="alert">
                 <p className="text-red-400 text-sm">{error}</p>
               </div>
             )}

@@ -150,3 +150,8 @@ The implementation lacks protocol-level documentation. Should document:
 - [RFC 959 - File Transfer Protocol](https://datatracker.ietf.org/doc/html/rfc959) - Base FTP protocol
 - [Cloudflare Sockets API TLS Limitations](../security-notes/cloudflare-tls-limitations.md) - Platform constraints
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -107,3 +107,8 @@ LSP implementation provides 2 endpoints (connect, session) for Language Server P
 - [JSON-RPC 2.0](https://www.jsonrpc.org/specification) - Underlying RPC protocol
 - [LSP Implementations](https://microsoft.github.io/language-server-protocol/implementors/servers/) - List of LSP servers
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

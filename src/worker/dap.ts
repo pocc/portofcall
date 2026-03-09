@@ -95,6 +95,10 @@ function parseDAPMessages(buffer: Uint8Array<ArrayBuffer>): { messages: DAPMessa
     if (!match) break;
 
     const contentLength = parseInt(match[1], 10);
+    if (contentLength > 10_485_760) {
+      // Skip messages claiming >10 MiB body — prevents OOM from malicious Content-Length
+      break;
+    }
     const bodyStart = headerEnd + 4; // skip \r\n\r\n
 
     if (view.length < bodyStart + contentLength) break;
@@ -147,6 +151,11 @@ function concatBytes(a: Uint8Array<ArrayBuffer>, b: Uint8Array<ArrayBufferLike>)
  * Returns the adapter's capabilities from the initialize response.
  */
 export async function handleDAPHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as DAPRequest;
@@ -159,6 +168,11 @@ export async function handleDAPHealth(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -282,15 +296,27 @@ export async function handleDAPHealth(request: Request): Promise<Response> {
 export async function handleDAPTunnel(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const host = url.searchParams.get('host');
-  const port = url.searchParams.get('port') || '5678';
+  const portStr = url.searchParams.get('port') || '5678';
+  const portNum = parseInt(portStr, 10);
 
   if (!host) {
-    return new Response('Host parameter is required', { status: 400 });
+    return new Response(JSON.stringify({ success: false, error: 'Host parameter is required' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
-    return new Response(getCloudflareErrorMessage(host, cfCheck.ip), { status: 403 });
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+      isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
   const pair = new WebSocketPair();
@@ -302,12 +328,12 @@ export async function handleDAPTunnel(request: Request): Promise<Response> {
     let dapSocket: Socket | null = null;
 
     try {
-      dapSocket = connect(`${host}:${port}`);
+      dapSocket = connect(`${host}:${portNum}`);
       await dapSocket.opened;
 
       server.send(JSON.stringify({
         type: 'connected',
-        message: `DAP tunnel connected to ${host}:${port}`,
+        message: `DAP tunnel connected to ${host}:${portNum}`,
       }));
 
       const wsDecoder = new TextDecoder();
@@ -352,6 +378,10 @@ export async function handleDAPTunnel(request: Request): Promise<Response> {
             if (!value) continue;
 
             rawBuffer = concatBytes(rawBuffer, value);
+            if (rawBuffer.length > 10_485_760) {
+              server.close(1011, 'DAP buffer overflow (>10 MiB unparsed data)');
+              break;
+            }
             const { messages, remaining } = parseDAPMessages(rawBuffer);
             rawBuffer = remaining;
 

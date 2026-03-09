@@ -27,6 +27,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 interface RshRequest {
   host: string;
@@ -76,6 +77,21 @@ export async function handleRshExecute(request: Request): Promise<Response> {
     const command = options.command || 'id';
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // SSRF prevention
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -97,21 +113,21 @@ export async function handleRshExecute(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder('utf-8', { fatal: false });
 
       try {
         // Step 1: Send stderr port (empty = no separate stderr channel)
         // Workers cannot listen for incoming connections, so always send \0
         await writer.write(encoder.encode('\0'));
 
-        // Step 2: Send localUser\0 (the client-side username)
-        await writer.write(encoder.encode(`${localUser}\0`));
+        // Step 2: Send localUser\0 (strip null bytes to prevent framing injection)
+        await writer.write(encoder.encode(`${localUser.replace(/\0/g, '')}\0`));
 
-        // Step 3: Send remoteUser\0 (the server-side username to run as)
-        await writer.write(encoder.encode(`${remoteUser}\0`));
+        // Step 3: Send remoteUser\0
+        await writer.write(encoder.encode(`${remoteUser.replace(/\0/g, '')}\0`));
 
         // Step 4: Send command\0
-        await writer.write(encoder.encode(`${command}\0`));
+        await writer.write(encoder.encode(`${command.replace(/\0/g, '')}\0`));
 
         // Step 5: Read server response
         const readTimeout = new Promise<never>((_, reject) =>
@@ -159,7 +175,7 @@ export async function handleRshExecute(request: Request): Promise<Response> {
             for (let i = 0; i < 10; i++) {
               const result = await Promise.race([reader.read(), outputTimeout]);
               if (result.done || !result.value) break;
-              output += decoder.decode(result.value);
+              output += decoder.decode(result.value, { stream: true });
             }
           } catch {
             // No more data — that's fine
@@ -248,6 +264,16 @@ export async function handleRshProbe(request: Request): Promise<Response> {
     const localUser = body.localUser || 'probe';
     const remoteUser = body.remoteUser || 'probe';
     const timeoutMs = body.timeout || 8000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
 
@@ -345,12 +371,32 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
     const port = parseInt(url.searchParams.get('port') || '514', 10);
-    const localUser = url.searchParams.get('localUser') || 'guest';
-    const remoteUser = url.searchParams.get('remoteUser') || 'guest';
     const command = url.searchParams.get('command') || 'id';
 
     if (!host) {
       return new Response('Host parameter required', { status: 400 });
+    }
+
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const upgradeHeader = request.headers.get('Upgrade');
@@ -363,11 +409,38 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
 
     server.accept();
 
-    const socket = connect(`${host}:${port}`);
+    // Credentials arrive via first WebSocket message (not URL params)
+    const credentialPromise = new Promise<{ localUser: string; remoteUser: string }>((resolve, reject) => {
+      const authTimer = setTimeout(() => {
+        server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+        server.close(4001, 'Auth timeout');
+        reject(new Error('Auth timeout'));
+      }, 15_000);
+
+      server.addEventListener('message', function onAuth(event) {
+        try {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'auth') {
+            clearTimeout(authTimer);
+            server.removeEventListener('message', onAuth);
+            resolve({
+              localUser: msg.localUser || 'guest',
+              remoteUser: msg.remoteUser || 'guest',
+            });
+          }
+        } catch { /* not JSON yet — ignore until auth */ }
+      });
+    });
 
     (async () => {
       try {
-        await socket.opened;
+        const { localUser, remoteUser } = await credentialPromise;
+
+        const socket = connect(`${host}:${port}`);
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+        ]);
 
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
@@ -410,8 +483,7 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
         });
       } catch (error) {
         console.error('RSH WebSocket tunnel error:', error);
-        server.close();
-        socket.close();
+        try { server.close(); } catch { /* already closed */ }
       }
     })();
 
@@ -455,6 +527,9 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
  */
 export async function handleRshTrustScan(request: Request): Promise<Response> {
   const start = Date.now();
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -484,11 +559,25 @@ export async function handleRshTrustScan(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
         success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // Build test pairs (all combinations, capped)
@@ -501,7 +590,7 @@ export async function handleRshTrustScan(request: Request): Promise<Response> {
     }
 
     const enc = new TextEncoder();
-    const dec = new TextDecoder();
+    const dec = new TextDecoder('utf-8', { fatal: false });
 
     /** Try a single localUser→remoteUser pair via a fresh RSH connection. */
     const tryPair = async (localUser: string, remoteUser: string) => {
@@ -545,7 +634,7 @@ export async function handleRshTrustScan(request: Request): Promise<Response> {
                   setTimeout(() => res({ value: undefined, done: true }), Math.max(50, deadline - Date.now()))),
               ]);
               if (d || !v) break;
-              output += dec.decode(v);
+              output += dec.decode(v, { stream: true });
             }
             return { localUser, remoteUser, command, accepted: true, output: output.trim() || undefined, privilegedPortRejection: false, rttMs };
           } else {

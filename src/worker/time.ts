@@ -18,6 +18,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface TimeRequest {
   host: string;
@@ -44,6 +45,12 @@ const TIME_EPOCH_OFFSET = 2208988800;
  * Server sends 4 bytes immediately upon connection - no request needed
  */
 export async function handleTimeGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TimeRequest;
     const { host, port = 37, timeout = 10000 } = body;
@@ -59,7 +66,7 @@ export async function handleTimeGet(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -67,6 +74,15 @@ export async function handleTimeGet(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckTime = await checkIfCloudflare(host);
+    if (cfCheckTime.isCloudflare && cfCheckTime.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckTime.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Record local time before connection

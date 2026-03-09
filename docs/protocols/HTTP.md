@@ -328,12 +328,12 @@ If the status line cannot be parsed, `httpVersion` defaults to `HTTP/?` and `sta
 
 ```bash
 # Simple GET request
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{"host":"example.com"}' | jq .
 
 # GET with custom path and headers
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "httpbin.org",
@@ -342,7 +342,7 @@ curl -s -X POST https://portofcall.ross.gg/api/http/request \
   }' | jq '.body' -r
 
 # POST with body
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "httpbin.org",
@@ -353,33 +353,33 @@ curl -s -X POST https://portofcall.ross.gg/api/http/request \
   }' | jq .
 
 # HTTPS request
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{"host":"example.com","tls":true}' | jq .
 
 # Non-default port
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{"host":"example.com","port":8080,"path":"/health"}' | jq .
 
 # HEAD request — headers only, no body
-curl -s -X POST https://portofcall.ross.gg/api/http/head \
+curl -s -X POST https://l4.fyi/api/http/head \
   -H 'Content-Type: application/json' \
   -d '{"host":"example.com"}' | jq .responseHeaders
 
 # OPTIONS probe — discover allowed methods
-curl -s -X POST https://portofcall.ross.gg/api/http/options \
+curl -s -X POST https://l4.fyi/api/http/options \
   -H 'Content-Type: application/json' \
   -d '{"host":"httpbin.org","tls":true}' \
   | jq '.responseHeaders.allow'
 
 # TRACE request (no body allowed)
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{"host":"example.com","method":"TRACE","path":"/"}' | jq .
 
 # Extract just timing info
-curl -s -X POST https://portofcall.ross.gg/api/http/request \
+curl -s -X POST https://l4.fyi/api/http/request \
   -H 'Content-Type: application/json' \
   -d '{"host":"example.com"}' \
   | jq '{tcpLatency, ttfb, totalTime}'

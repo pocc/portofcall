@@ -32,3 +32,8 @@ Created canonical review/spec document for the TCP utility endpoint and request/
 
 - [Protocol Stub](../../protocols/TCP.md)
 - [Worker Implementation](../../../src/worker/tcp.ts)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

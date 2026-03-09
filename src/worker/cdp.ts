@@ -66,8 +66,10 @@ async function sendHttpRequest(
   const writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
 
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -89,7 +91,12 @@ async function sendHttpRequest(
       const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
       if (done) break;
       if (value) {
-        response += decoder.decode(value, { stream: true });
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
       }
     }
   } finally {
@@ -171,6 +178,11 @@ function decodeChunked(data: string): string {
  * GET /json/version returns browser version info
  */
 export async function handleCDPHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as CDPRequest;
@@ -183,6 +195,12 @@ export async function handleCDPHealth(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -261,6 +279,11 @@ export async function handleCDPHealth(request: Request): Promise<Response> {
  * Supports /json/version, /json/list, /json/protocol, /json/new, /json/close/<id>
  */
 export async function handleCDPQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as CDPQueryRequest;
@@ -279,6 +302,22 @@ export async function handleCDPQuery(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check for Cloudflare protection
+    const cfCheckQuery = await checkIfCloudflare(host);
+    if (cfCheckQuery.isCloudflare && cfCheckQuery.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckQuery.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     // Validate endpoint starts with /
@@ -336,6 +375,11 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
     return new Response('Host parameter is required', { status: 400 });
   }
 
+  const portNum = parseInt(port, 10);
+  if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+    return new Response('Port must be between 1 and 65535', { status: 400 });
+  }
+
   // Check for Cloudflare protection
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -356,7 +400,7 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
 
     try {
       // Connect to Chrome's CDP port
-      cdpSocket = connect(`${host}:${port}`);
+      cdpSocket = connect(`${host}:${portNum}`);
       await cdpSocket.opened;
 
       // Determine WebSocket path
@@ -367,15 +411,16 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
 
       // Perform WebSocket handshake with Chrome
       const wsKey = generateWebSocketKey();
-      const handshakeRequest = buildWebSocketHandshake(host, parseInt(port, 10), wsPath, wsKey);
+      const handshakeRequest = buildWebSocketHandshake(host, portNum, wsPath, wsKey);
 
       cdpWriter = cdpSocket.writable.getWriter();
       await cdpWriter.write(new TextEncoder().encode(handshakeRequest));
       cdpWriter.releaseLock();
 
-      // Read handshake response
+      // Read handshake response (binary-safe to preserve leftover frame data)
       cdpReader = cdpSocket.readable.getReader();
-      const handshakeResponse = await readUntilDoubleNewline(cdpReader);
+      const { response: handshakeResponse, leftover: handshakeLeftover } =
+        await readHttpHeaders(cdpReader);
 
       if (!handshakeResponse.includes('101 Switching Protocols')) {
         throw new Error('WebSocket handshake failed');
@@ -418,20 +463,21 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
       });
 
       // CDP -> Client (Chrome responses/events to browser)
+      // Reuse cdpReader (already holds the readable lock from handshake).
+      // Seed the buffer with any leftover bytes from the handshake response
+      // that may contain the start of the first WebSocket frame.
       let cdpLoopStopped = false;
       server.addEventListener('close', () => { cdpLoopStopped = true; });
 
       (async () => {
-        const reader = cdpSocket!.readable.getReader();
+        let wsBuffer = handshakeLeftover;
         try {
           while (!cdpLoopStopped) {
-            const { value, done } = await reader.read();
+            // Parse all complete frames from the accumulated buffer
+            const { frames, consumed } = parseWebSocketFrames(wsBuffer);
+            wsBuffer = wsBuffer.slice(consumed);
 
-            if (done) break;
-            if (!value) continue;
-
-            // Parse WebSocket frames from CDP
-            const frames = parseWebSocketFrames(value);
+            let shouldBreak = false;
             for (const frame of frames) {
               if (frame.opcode === 0x1 || frame.opcode === 0x2) {
                 // Text or binary frame - forward payload to client
@@ -441,6 +487,7 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
                 // Close frame
                 server.close(1000, 'CDP connection closed');
                 cdpLoopStopped = true;
+                shouldBreak = true;
                 break;
               } else if (frame.opcode === 0x9) {
                 // Ping frame - respond with pong
@@ -453,12 +500,23 @@ export async function handleCDPTunnel(request: Request): Promise<Response> {
                 }
               }
             }
+            if (shouldBreak) break;
+
+            // Read more data from CDP
+            const { value, done } = await cdpReader!.read();
+            if (done) break;
+            if (value) {
+              const merged = new Uint8Array(wsBuffer.length + value.length);
+              merged.set(wsBuffer);
+              merged.set(value, wsBuffer.length);
+              wsBuffer = merged;
+            }
           }
         } catch (error) {
           console.error('Error reading from CDP:', error);
           server.close(1011, 'CDP read error');
         } finally {
-          try { reader.releaseLock(); } catch { /* ignored */ }
+          try { cdpReader!.releaseLock(); } catch { /* ignored */ }
         }
       })();
 
@@ -502,8 +560,10 @@ function generateWebSocketKey(): string {
  * Build WebSocket handshake request
  */
 function buildWebSocketHandshake(host: string, port: number, path: string, wsKey: string): string {
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Upgrade: websocket\r\n`;
   request += `Connection: Upgrade\r\n`;
   request += `Sec-WebSocket-Key: ${wsKey}\r\n`;
@@ -513,21 +573,39 @@ function buildWebSocketHandshake(host: string, port: number, path: string, wsKey
 }
 
 /**
- * Read from socket until \r\n\r\n (end of HTTP headers)
+ * Read from socket until \r\n\r\n (end of HTTP headers).
+ * Works with raw bytes so that any data after the header terminator
+ * (e.g. a WebSocket frame that arrived in the same TCP segment)
+ * is preserved as binary leftover instead of being decoded to string and lost.
  */
-async function readUntilDoubleNewline(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
-  const decoder = new TextDecoder();
-  let data = '';
+async function readHttpHeaders(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+): Promise<{ response: string; leftover: Uint8Array }> {
+  let buf = new Uint8Array(0);
 
-  while (!data.includes('\r\n\r\n')) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (value) {
-      data += decoder.decode(value, { stream: true });
+  while (true) {
+    // Search for \r\n\r\n in accumulated buffer
+    for (let i = 0; i <= buf.length - 4; i++) {
+      if (
+        buf[i] === 0x0d &&
+        buf[i + 1] === 0x0a &&
+        buf[i + 2] === 0x0d &&
+        buf[i + 3] === 0x0a
+      ) {
+        const headerEnd = i + 4;
+        const response = new TextDecoder().decode(buf.slice(0, headerEnd));
+        const leftover = buf.slice(headerEnd);
+        return { response, leftover };
+      }
     }
-  }
 
-  return data;
+    const { value, done } = await reader.read();
+    if (done || !value) throw new Error('Connection closed during HTTP handshake');
+    const merged = new Uint8Array(buf.length + value.length);
+    merged.set(buf);
+    merged.set(value, buf.length);
+    buf = merged;
+  }
 }
 
 /**
@@ -613,7 +691,7 @@ interface WebSocketFrame {
   payload: Uint8Array;
 }
 
-function parseWebSocketFrames(data: Uint8Array): WebSocketFrame[] {
+function parseWebSocketFrames(data: Uint8Array): { frames: WebSocketFrame[]; consumed: number } {
   const frames: WebSocketFrame[] = [];
   let offset = 0;
 
@@ -633,7 +711,7 @@ function parseWebSocketFrames(data: Uint8Array): WebSocketFrame[] {
     } else if (payloadLength === 127) {
       if (offset + 10 > data.length) break;
       // Only handle up to 32-bit lengths
-      payloadLength = 
+      payloadLength =
         (data[offset + 6] << 24) |
         (data[offset + 7] << 16) |
         (data[offset + 8] << 8) |
@@ -665,5 +743,5 @@ function parseWebSocketFrames(data: Uint8Array): WebSocketFrame[] {
     offset += headerLength + payloadLength;
   }
 
-  return frames;
+  return { frames, consumed: offset };
 }

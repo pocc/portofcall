@@ -417,37 +417,37 @@ After the banner exchange, MSGR v2 uses a frame-based protocol with optional TLS
 
 ```bash
 # Quick probe — is this a Ceph monitor?
-curl -s https://portofcall.ross.gg/api/ceph/probe \
+curl -s https://l4.fyi/api/ceph/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mon1.example.com","port":6789}' | jq .
 
 # Full detection with entity address parsing
-curl -s https://portofcall.ross.gg/api/ceph/connect \
+curl -s https://l4.fyi/api/ceph/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mon1.example.com","port":6789,"timeout":10000}' | jq .
 
 # Check msgr2 on port 3300
-curl -s https://portofcall.ross.gg/api/ceph/connect \
+curl -s https://l4.fyi/api/ceph/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mon1.example.com","port":3300}' | jq .
 
 # Full MSGR v1 handshake with CONNECT/CONNECT_REPLY
-curl -s https://portofcall.ross.gg/api/ceph/cluster-info \
+curl -s https://l4.fyi/api/ceph/cluster-info \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mon1.example.com","port":6789}' | jq .
 
 # MGR REST API health (requires credentials)
-curl -s https://portofcall.ross.gg/api/ceph/rest-health \
+curl -s https://l4.fyi/api/ceph/rest-health \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mgr1.example.com","port":8003,"apiKey":"mykey","apiSecret":"mysecret"}' | jq .
 
 # OSD list via MGR REST API
-curl -s https://portofcall.ross.gg/api/ceph/osd-list \
+curl -s https://l4.fyi/api/ceph/osd-list \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mgr1.example.com","port":8003,"apiKey":"mykey","apiSecret":"mysecret"}' | jq .
 
 # Pool list via MGR REST API
-curl -s https://portofcall.ross.gg/api/ceph/pool-list \
+curl -s https://l4.fyi/api/ceph/pool-list \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mgr1.example.com","port":8003,"apiKey":"mykey","apiSecret":"mysecret"}' | jq .
 ```
@@ -498,12 +498,12 @@ Modern Ceph clusters often listen on both 6789 (v1) and 3300 (v2). To probe both
 
 ```bash
 # v1 on legacy port
-curl -s https://portofcall.ross.gg/api/ceph/probe \
+curl -s https://l4.fyi/api/ceph/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mon1.example.com","port":6789}' | jq '{port:.port, version:.msgrVersion, isCeph:.isCeph}'
 
 # v2 on dedicated msgr2 port
-curl -s https://portofcall.ross.gg/api/ceph/probe \
+curl -s https://l4.fyi/api/ceph/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"ceph-mon1.example.com","port":3300}' | jq '{port:.port, version:.msgrVersion, isCeph:.isCeph}'
 ```

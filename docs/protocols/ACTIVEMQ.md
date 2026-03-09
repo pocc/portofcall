@@ -566,13 +566,13 @@ URI-form destinations (`queue://foo`, `topic://foo`) are automatically normalise
 
 ```bash
 # OpenWire probe -- detect broker on native port
-curl -s -X POST https://portofcall.ross.gg/api/activemq/probe \
+curl -s -X POST https://l4.fyi/api/activemq/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"activemq.example.com"}' \
   | jq '{isActiveMQ, openWireVersion, brokerName}'
 
 # STOMP connect -- verify credentials
-curl -s -X POST https://portofcall.ross.gg/api/activemq/connect \
+curl -s -X POST https://l4.fyi/api/activemq/connect \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -581,7 +581,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/connect \
   }' | jq '{stompVersion, server}'
 
 # Send a message to a queue
-curl -s -X POST https://portofcall.ross.gg/api/activemq/send \
+curl -s -X POST https://l4.fyi/api/activemq/send \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -594,7 +594,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/send \
   }' | jq '{receiptReceived, bodyLength}'
 
 # Send using URI-form destination
-curl -s -X POST https://portofcall.ross.gg/api/activemq/send \
+curl -s -X POST https://l4.fyi/api/activemq/send \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -606,7 +606,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/send \
   }' | jq .
 
 # Send with TTL (expires in 60 seconds)
-curl -s -X POST https://portofcall.ross.gg/api/activemq/send \
+curl -s -X POST https://l4.fyi/api/activemq/send \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -618,7 +618,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/send \
   }' | jq .
 
 # Consume up to 5 messages from a queue
-curl -s -X POST https://portofcall.ross.gg/api/activemq/subscribe \
+curl -s -X POST https://l4.fyi/api/activemq/subscribe \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -630,7 +630,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/subscribe \
   }' | jq '.messages[] | {messageId, body}'
 
 # Subscribe with JMS selector
-curl -s -X POST https://portofcall.ross.gg/api/activemq/subscribe \
+curl -s -X POST https://l4.fyi/api/activemq/subscribe \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -642,13 +642,13 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/subscribe \
   }' | jq '.messageCount'
 
 # Broker info (auto-detect broker name)
-curl -s -X POST https://portofcall.ross.gg/api/activemq/info \
+curl -s -X POST https://l4.fyi/api/activemq/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"activemq.example.com"}' \
   | jq '{brokerName, brokerVersion, uptime, totalMessages}'
 
 # Admin: list all queues
-curl -s -X POST https://portofcall.ross.gg/api/activemq/admin \
+curl -s -X POST https://l4.fyi/api/activemq/admin \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -656,7 +656,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/admin \
   }' | jq '.data[] | {name, queueSize, consumerCount}'
 
 # Admin: get stats for a specific queue
-curl -s -X POST https://portofcall.ross.gg/api/activemq/admin \
+curl -s -X POST https://l4.fyi/api/activemq/admin \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -665,7 +665,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/admin \
   }' | jq '.data | {queueSize, enqueueCount, dequeueCount}'
 
 # Durable subscribe to a topic
-curl -s -X POST https://portofcall.ross.gg/api/activemq/durable-subscribe \
+curl -s -X POST https://l4.fyi/api/activemq/durable-subscribe \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -679,7 +679,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/durable-subscribe \
   }' | jq '{subscriptionName, messageCount}'
 
 # Remove a durable subscription
-curl -s -X POST https://portofcall.ross.gg/api/activemq/durable-unsubscribe \
+curl -s -X POST https://l4.fyi/api/activemq/durable-unsubscribe \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",
@@ -690,7 +690,7 @@ curl -s -X POST https://portofcall.ross.gg/api/activemq/durable-unsubscribe \
   }' | jq .
 
 # Round-trip queue test
-curl -s -X POST https://portofcall.ross.gg/api/activemq/queues \
+curl -s -X POST https://l4.fyi/api/activemq/queues \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "activemq.example.com",

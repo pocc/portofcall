@@ -29,6 +29,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 /** Maximum response line length per RFC 1413 (excluding CRLF) */
 const MAX_RESPONSE_LENGTH = 1000;
@@ -250,6 +251,14 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
       });
     }
 
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
 
     // Connect to IDENT server on the specified port (default 113)
@@ -259,14 +268,16 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
+    let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       await Promise.race([
         socket.opened,
         timeoutPromise,
       ]);
 
-      const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      writer = socket.writable.getWriter();
+      reader = socket.readable.getReader();
 
       // Send IDENT query per RFC 1413: <server-port>, <client-port>\r\n
       const query = `${serverPort}, ${clientPort}\r\n`;
@@ -281,7 +292,9 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
 
       // Clean up
       writer.releaseLock();
+      writer = null;
       reader.releaseLock();
+      reader = null;
       socket.close();
 
       const response: IdentResponse = {
@@ -307,6 +320,8 @@ export async function handleIdentQuery(request: Request): Promise<Response> {
       });
 
     } catch (error) {
+      if (writer) { try { writer.releaseLock(); } catch { /* already released */ } }
+      if (reader) { try { reader.releaseLock(); } catch { /* already released */ } }
       socket.close();
       throw error;
     }

@@ -8,22 +8,6 @@ This document tracks protocols that **cannot** be implemented on Cloudflare Work
 
 Cloudflare Workers Sockets API only supports **TCP connections**. All UDP-based protocols are impossible:
 
-#### NTP (Network Time Protocol)
-- **Port**: 123/UDP
-- **Reason**: UDP only, no TCP equivalent
-- **Alternative**: Use browser's `Date()` or HTTP-based time APIs
-
-#### SNMP (Simple Network Management Protocol)
-- **Port**: 161/UDP, 162/UDP
-- **Reason**: Primarily UDP-based
-- **Alternative**: Use SNMP over TCP gateways (rare)
-
-#### DNS (Domain Name System)
-- **Port**: 53/UDP (53/TCP for zone transfers)
-- **Reason**: Standard queries use UDP, TCP rarely used
-- **Alternative**: Use DoH (DNS over HTTPS) via fetch API
-- **Note**: We use DNS for Cloudflare detection via DoH
-
 #### TFTP (Trivial File Transfer Protocol)
 - **Port**: 69/UDP
 - **Reason**: UDP only
@@ -44,22 +28,11 @@ Cloudflare Workers Sockets API only supports **TCP connections**. All UDP-based 
 - **Reason**: UDP only, requires low latency
 - **Alternative**: WebRTC for browser-based real-time media
 
-#### SIP (Session Initiation Protocol)
-- **Port**: 5060/UDP (primary), 5060/TCP (fallback)
-- **Reason**: Primarily UDP, requires bidirectional communication
-- **Alternative**: WebRTC for VoIP
-
 #### SSDP (Simple Service Discovery Protocol / UPnP)
 - **Port**: 1900/UDP (multicast 239.255.255.250)
 - **Reason**: UDP-only protocol; there is no TCP mode for SSDP
 - **Note**: The device description XML (LOCATION header) is fetched over HTTP/TCP, but the discovery protocol itself is UDP multicast only
 - **Alternative**: Fetch device description XML directly via HTTP if the LOCATION URL is known
-
-#### LLMNR (Link-Local Multicast Name Resolution)
-- **Port**: 5355/UDP (multicast 224.0.0.252 / FF02::1:3)
-- **Reason**: Primarily UDP multicast; TCP is theoretically defined in RFC 4795 as a truncation fallback but no real implementation uses it
-- **Note**: Even if TCP LLMNR worked, the protocol is link-local — it only functions on the same network segment. Connecting from Cloudflare's edge would never reach a link-local LLMNR responder
-- **Alternative**: Use DNS or mDNS for local name resolution
 
 #### Mosh (Mobile Shell)
 - **Port**: 60000+/UDP
@@ -170,11 +143,13 @@ These protocols have solid, useful implementations but are blocked from reaching
 
 ## Summary
 
-- **UDP Protocols**: 12 (impossible - no UDP support: NTP, SNMP, DNS, TFTP, BACnet/IP, DHCP, RTP/RTCP, SIP, SSDP, LLMNR, Mosh, StatsD)
+- **UDP Protocols**: 7 (impossible - no UDP support: TFTP, BACnet/IP, DHCP, RTP/RTCP, SSDP, Mosh, StatsD)
 - **Raw Socket Protocols**: 2 (impossible - no raw socket access: ICMP, RAW IP)
 - **TLS ALPN limitation**: 2 (h2 over TLS, gRPC over TLS - ALPN not exposed by sockets API)
 - **Impractical (h2c)**: 2 (h2c, gRPC over h2c - TCP bytes sendable but HTTP/2 framing requires full implementation)
 - **Stuck at ★★★★☆**: 5 (RDP, RSH, mDNS, RIP, TFTP — each blocked by a specific runtime constraint detailed above)
 
-**Total Impossible/Impractical**: 18 protocols
+**Note**: NTP, SNMP, DNS, SIP, and LLMNR were previously listed as impossible but have working TCP implementations in the codebase (NTP over TCP, SNMP over TCP per RFC 3430, DNS over TCP per RFC 7766, SIP over TCP, LLMNR over TCP per RFC 4795).
+
+**Total Impossible/Impractical**: 13 protocols
 **Total implementation-ceiling limited**: 5 protocols

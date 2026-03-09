@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('Icecast Streaming Server - Status Probe', () => {
   test('should validate required host parameter', async () => {

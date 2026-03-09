@@ -413,7 +413,7 @@ function parseAuthResponse(payload: Uint8Array): {
  */
 export async function handleHazelcastProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -433,7 +433,7 @@ export async function handleHazelcastProbe(request: Request): Promise<Response> 
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
@@ -549,7 +549,7 @@ export async function handleHazelcastProbe(request: Request): Promise<Response> 
  */
 export async function handleHazelcastMapGet(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -576,7 +576,7 @@ export async function handleHazelcastMapGet(request: Request): Promise<Response>
   if (!host) return mapError('host is required');
   if (!mapName) return mapError('mapName is required');
   if (!key)     return mapError('key is required');
-  if (port < 1 || port > 65535) return mapError('Port must be between 1 and 65535');
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return mapError('Port must be between 1 and 65535');
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -767,7 +767,7 @@ function decodeValuePayload(payload: Uint8Array): string | null {
  */
 export async function handleHazelcastMapSet(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -797,7 +797,7 @@ export async function handleHazelcastMapSet(request: Request): Promise<Response>
   if (!mapName) return new Response(JSON.stringify({ success: false, error: 'mapName is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
   if (!key) return new Response(JSON.stringify({ success: false, error: 'key is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
   if (value === undefined || value === null) return new Response(JSON.stringify({ success: false, error: 'value is required' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
-  if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } as HazelcastMapSetResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -878,7 +878,7 @@ export async function handleHazelcastMapSet(request: Request): Promise<Response>
  */
 export async function handleHazelcastMapDelete(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -905,7 +905,7 @@ export async function handleHazelcastMapDelete(request: Request): Promise<Respon
   if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
   if (!mapName) return new Response(JSON.stringify({ success: false, error: 'mapName is required' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
   if (!key) return new Response(JSON.stringify({ success: false, error: 'key is required' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
-  if (port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' } as HazelcastMapDeleteResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1023,7 +1023,7 @@ function buildSetFrame(msgType: number, setName: string, value: string, correlat
  */
 export async function handleHazelcastQueueOffer(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -1042,10 +1042,25 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
     });
   }
 
-  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, queueName, value, offerTimeoutMs = 5000 } = body;
+  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, queueName, value, offerTimeoutMs: rawOfferTimeoutMs = 5000 } = body;
+  let offerTimeoutMs = rawOfferTimeoutMs;
+  if (typeof offerTimeoutMs !== 'number' || offerTimeoutMs < 0) offerTimeoutMs = 5000;
   if (!host || !queueName || value === undefined) {
     return new Response(JSON.stringify({ success: false, error: 'host, queueName, and value are required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const cfCheckQ = await checkIfCloudflare(host);
+  if (cfCheckQ.isCloudflare && cfCheckQ.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckQ.ip), isCloudflare: true }), {
+      status: 403, headers: { 'Content-Type': 'application/json' },
     });
   }
 
@@ -1113,7 +1128,7 @@ export async function handleHazelcastQueueOffer(request: Request): Promise<Respo
  */
 export async function handleHazelcastQueuePoll(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -1131,10 +1146,25 @@ export async function handleHazelcastQueuePoll(request: Request): Promise<Respon
     });
   }
 
-  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, queueName, pollTimeoutMs = 1000 } = body;
+  const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, queueName, pollTimeoutMs: rawPollTimeoutMs = 1000 } = body;
+  let pollTimeoutMs = rawPollTimeoutMs;
+  if (typeof pollTimeoutMs !== 'number' || pollTimeoutMs < 0) pollTimeoutMs = 1000;
   if (!host || !queueName) {
     return new Response(JSON.stringify({ success: false, error: 'host and queueName are required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const cfCheckP = await checkIfCloudflare(host);
+  if (cfCheckP.isCloudflare && cfCheckP.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckP.ip), isCloudflare: true }), {
+      status: 403, headers: { 'Content-Type': 'application/json' },
     });
   }
 
@@ -1198,7 +1228,7 @@ async function handleHazelcastSetOp(
   opName: string,
 ): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -1220,6 +1250,19 @@ async function handleHazelcastSetOp(
   if (!host || !setName || value === undefined) {
     return new Response(JSON.stringify({ success: false, error: 'host, setName, and value are required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  const cfCheckS = await checkIfCloudflare(host);
+  if (cfCheckS.isCloudflare && cfCheckS.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckS.ip), isCloudflare: true }), {
+      status: 403, headers: { 'Content-Type': 'application/json' },
     });
   }
 
@@ -1336,7 +1379,7 @@ async function hazelcastConnect(
 }
 
 export async function handleHazelcastTopicPublish(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   interface TopicPublishReq extends HazelcastRequest { topicName: string; message: string; }
   let body: TopicPublishReq;
   try { body = await request.json() as TopicPublishReq; }
@@ -1345,6 +1388,10 @@ export async function handleHazelcastTopicPublish(request: Request): Promise<Res
   const { host, port = 5701, username = '', password = '', clusterName = 'dev', timeout = 12000, topicName, message } = body;
   if (!host || !topicName || message === undefined || message === null) {
     return new Response(JSON.stringify({ success: false, error: 'host, topicName, and message are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
   const cfCheck = await checkIfCloudflare(host);

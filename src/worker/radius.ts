@@ -217,9 +217,7 @@ function hmacMd5(key: Uint8Array, message: Uint8Array): Uint8Array {
  */
 function randomAuthenticator(): Uint8Array {
   const auth = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) {
-    auth[i] = Math.floor(Math.random() * 256);
-  }
+  crypto.getRandomValues(auth);
   return auth;
 }
 
@@ -472,7 +470,7 @@ async function readExactBytes(
  */
 export async function handleRadiusProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -493,7 +491,7 @@ export async function handleRadiusProbe(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -650,7 +648,7 @@ export async function handleRadiusProbe(request: Request): Promise<Response> {
  */
 export async function handleRadiusAuth(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -689,7 +687,7 @@ export async function handleRadiusAuth(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -872,7 +870,9 @@ const ATTR_ACCT_TERMINATE_CAUSE = 49;  // Acct-Terminate-Cause
  *     attributes, connectTimeMs, totalTimeMs }
  */
 export async function handleRadiusAccounting(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; secret: string; timeout?: number;
@@ -897,6 +897,12 @@ export async function handleRadiusAccounting(request: Request): Promise<Response
     if (!secret) return new Response(JSON.stringify({ success: false, error: 'Secret is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {

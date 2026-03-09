@@ -19,6 +19,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface MatrixRequest {
   host: string;
@@ -55,6 +56,10 @@ async function sendHttpRequest(
   authToken?: string,
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
+  }
   const socket = connect(`${host}:${port}`);
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -66,14 +71,16 @@ async function sendHttpRequest(
   const writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
 
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `${method} ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
 
   if (authToken) {
-    request += `Authorization: Bearer ${authToken}\r\n`;
+    request += `Authorization: Bearer ${authToken.replace(/[\r\n]/g, '')}\r\n`;
   }
 
   if (body) {
@@ -99,7 +106,12 @@ async function sendHttpRequest(
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -369,7 +381,7 @@ export async function handleMatrixLogin(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (!username || !password) {
+    if (!username || password == null) {
       return new Response(JSON.stringify({ success: false, error: 'username and password are required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });

@@ -174,7 +174,8 @@ function readString(data: Uint8Array, offset: number): { value: string; newOffse
   return { value, newOffset: offset + len };
 }
 
-function readFieldValue(data: Uint8Array, offset: number, type: number): { value: string; newOffset: number } {
+function readFieldValue(data: Uint8Array, offset: number, type: number, depth = 0): { value: string; newOffset: number } {
+  if (depth > 100) throw new Error('Thrift struct nesting depth exceeded (max 100)');
   switch (type) {
     case T_BOOL: {
       const val = data[offset] !== 0;
@@ -211,7 +212,7 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
         if (fieldType === T_STOP) break;
         const fieldId = readI16(data, offset);
         offset += 2;
-        const nested = readFieldValue(data, offset, fieldType);
+        const nested = readFieldValue(data, offset, fieldType, depth + 1);
         nestedFields.push(`${fieldId}:${nested.value}`);
         offset = nested.newOffset;
       }
@@ -224,7 +225,7 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
       const items: string[] = [];
       const displayLimit = 20;
       for (let i = 0; i < size; i++) {
-        const item = readFieldValue(data, offset, elemType);
+        const item = readFieldValue(data, offset, elemType, depth + 1);
         if (i < displayLimit) {
           items.push(item.value);
         }
@@ -241,9 +242,9 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
       const entries: string[] = [];
       const displayLimit = 20;
       for (let i = 0; i < size; i++) {
-        const key = readFieldValue(data, offset, keyType);
+        const key = readFieldValue(data, offset, keyType, depth + 1);
         offset = key.newOffset;
-        const val = readFieldValue(data, offset, valType);
+        const val = readFieldValue(data, offset, valType, depth + 1);
         offset = val.newOffset;
         if (i < displayLimit) {
           entries.push(`${key.value}=${val.value}`);
@@ -254,12 +255,12 @@ function readFieldValue(data: Uint8Array, offset: number, type: number): { value
     }
     case T_SET: {
       const elemType = data[offset++];
-      const size = readI32(data, offset);
+      const size = Math.min(readI32(data, offset), 10000);
       offset += 4;
       const items: string[] = [];
       const displayLimit = 20;
       for (let i = 0; i < size; i++) {
-        const item = readFieldValue(data, offset, elemType);
+        const item = readFieldValue(data, offset, elemType, depth + 1);
         if (i < displayLimit) {
           items.push(item.value);
         }
@@ -386,6 +387,12 @@ async function readFramedResponse(
 // ─── Handle Thrift probe (connect + call getName) ───────────────
 
 export async function handleThriftProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host?: string;
@@ -397,6 +404,7 @@ export async function handleThriftProbe(request: Request): Promise<Response> {
 
     if (!body.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -409,6 +417,13 @@ export async function handleThriftProbe(request: Request): Promise<Response> {
     const method = body.method || 'getName';
     const timeoutMs = body.timeout || 15000;
     const useFramed = body.transport !== 'buffered';
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -522,6 +537,12 @@ export async function handleThriftProbe(request: Request): Promise<Response> {
 // ─── Handle Thrift RPC call with custom args ────────────────────
 
 export async function handleThriftCall(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host?: string;
@@ -534,6 +555,7 @@ export async function handleThriftCall(request: Request): Promise<Response> {
 
     if (!body.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -543,6 +565,7 @@ export async function handleThriftCall(request: Request): Promise<Response> {
 
     if (!body.method) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: method',
       }), {
         status: 400,
@@ -555,6 +578,13 @@ export async function handleThriftCall(request: Request): Promise<Response> {
     const method = body.method;
     const timeoutMs = body.timeout || 15000;
     const useFramed = body.transport !== 'buffered';
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);

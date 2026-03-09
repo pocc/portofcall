@@ -167,7 +167,7 @@ Use the Extended Query protocol — Parse + Describe + Sync — to inspect a que
 | 700 | float4 | 3802 | jsonb |
 | 701 | float8 | 114 | json |
 | 1043 | varchar | 1007 | int4[] |
-| 26 | oid | 16 | boolean |
+| 26 | oid | | |
 
 Type OIDs above the builtin range belong to user-defined types (enums, domains, composite types). Query `pg_type` to resolve them:
 ```sql

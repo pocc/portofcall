@@ -23,3 +23,8 @@ Full protocol documentation created with endpoint references, wire format specif
 - [Protocol Specification](../../protocols/STOMP.md)
 - [Critical Fixes Summary](../critical-fixes.md)
 - [Medium Fixes Summary](../medium-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

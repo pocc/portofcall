@@ -73,6 +73,9 @@ async function readLines(
     while (total < maxBytes) {
       const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
       if (done || !value) break;
+      if (total + value.length > maxBytes) {
+        throw new Error('GPSD response too large');
+      }
       chunks.push(value);
       total += value.length;
 
@@ -288,7 +291,7 @@ function parseLines(lines: string[]): { objects: Record<string, unknown>[]; erro
  */
 export async function handleGPSDVersion(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -304,7 +307,7 @@ export async function handleGPSDVersion(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -364,7 +367,7 @@ export async function handleGPSDVersion(request: Request): Promise<Response> {
  */
 export async function handleGPSDDevices(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -380,7 +383,7 @@ export async function handleGPSDDevices(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -425,7 +428,7 @@ export async function handleGPSDDevices(request: Request): Promise<Response> {
  */
 export async function handleGPSDPoll(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -441,7 +444,7 @@ export async function handleGPSDPoll(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -508,7 +511,7 @@ export async function handleGPSDPoll(request: Request): Promise<Response> {
  */
 export async function handleGPSDCommand(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -530,14 +533,15 @@ export async function handleGPSDCommand(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     // Safety: only allow read-only query commands (prefixed with ?)
-    const cmd = command.trim();
+    // eslint-disable-next-line no-control-regex
+    const cmd = command.trim().replace(/[\r\n\x00]/g, '');
     if (!cmd.startsWith('?')) {
       return new Response(JSON.stringify({
         success: false,
@@ -588,7 +592,7 @@ interface GPSDWatchRequest {
  */
 export async function handleGPSDWatch(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -603,7 +607,7 @@ export async function handleGPSDWatch(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });

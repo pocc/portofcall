@@ -403,23 +403,23 @@ The label data parser scans for PDUs by looking for version=1 at each byte offse
 
 ```bash
 # Quick LDP peer check
-curl -s -X POST https://portofcall.ross.gg/api/ldp/connect \
+curl -s -X POST https://l4.fyi/api/ldp/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.0.2.1"}' | jq .
 
 # Lightweight probe (no handshake completion)
-curl -s -X POST https://portofcall.ross.gg/api/ldp/probe \
+curl -s -X POST https://l4.fyi/api/ldp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.0.2.1","timeout":5000}' | jq '{isLDP,lsrId,messages}'
 
 # Collect label bindings and addresses
-curl -s -X POST https://portofcall.ross.gg/api/ldp/label-map \
+curl -s -X POST https://l4.fyi/api/ldp/label-map \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.0.2.1","timeout":15000}' \
   | jq '{lsrId,labelCount,addressCount,labels:.labels[:5],addresses}'
 
 # Custom port
-curl -s -X POST https://portofcall.ross.gg/api/ldp/connect \
+curl -s -X POST https://l4.fyi/api/ldp/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"10.0.0.1","port":6460}' | jq .
 ```
@@ -442,7 +442,7 @@ router ldp
 systemctl start frr
 
 # Test against it:
-curl -s -X POST https://portofcall.ross.gg/api/ldp/connect \
+curl -s -X POST https://l4.fyi/api/ldp/connect \
   -d '{"host":"192.168.1.1"}' | jq .
 ```
 

@@ -19,6 +19,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface ElasticsearchRequest {
   host: string;
@@ -55,89 +56,104 @@ async function sendHttpRequest(
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
 
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
 
-  // Build HTTP/1.1 request
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
+    // Sanitize inputs to prevent CRLF injection / request smuggling
+    const safePath = path.replace(/[\r\n]/g, '');
+    const safeHost = host.replace(/[\r\n]/g, '');
 
-  if (authHeader) {
-    request += `Authorization: ${authHeader}\r\n`;
-  }
+    // Build HTTP/1.1 request
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
-  const maxSize = 512000; // 512KB limit
-
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    if (authHeader) {
+      request += `Authorization: ${authHeader.replace(/[\r\n]/g, '')}\r\n`;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
-
-  // Parse HTTP response
-  const headerEnd = response.indexOf('\r\n\r\n');
-  if (headerEnd === -1) {
-    throw new Error('Invalid HTTP response: no header terminator found');
-  }
-
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
-
-  // Parse status line
-  const statusLine = headerSection.split('\r\n')[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-
-  // Parse headers
-  const headers: Record<string, string> = {};
-  const headerLines = headerSection.split('\r\n').slice(1);
-  for (const line of headerLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.substring(0, colonIdx).trim().toLowerCase();
-      const value = line.substring(colonIdx + 1).trim();
-      headers[key] = value;
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
     }
-  }
 
-  // Handle chunked transfer encoding
-  if (headers['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
-  }
+    writer.releaseLock();
 
-  return { statusCode, headers, body: bodySection };
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    let response = '';
+    const maxSize = 512000; // 512KB limit
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+    socket.close();
+
+    // Parse HTTP response
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      throw new Error('Invalid HTTP response: no header terminator found');
+    }
+
+    const headerSection = response.substring(0, headerEnd);
+    let bodySection = response.substring(headerEnd + 4);
+
+    // Parse status line
+    const statusLine = headerSection.split('\r\n')[0];
+    const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+    // Parse headers
+    const headers: Record<string, string> = {};
+    const headerLines = headerSection.split('\r\n').slice(1);
+    for (const line of headerLines) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.substring(0, colonIdx).trim().toLowerCase();
+        const value = line.substring(colonIdx + 1).trim();
+        headers[key] = value;
+      }
+    }
+
+    // Handle chunked transfer encoding
+    if (headers['transfer-encoding']?.includes('chunked')) {
+      bodySection = decodeChunked(bodySection);
+    }
+
+    return { statusCode, headers, body: bodySection };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    try { socket.close(); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -146,6 +162,7 @@ async function sendHttpRequest(
 function decodeChunked(data: string): string {
   let result = '';
   let remaining = data;
+  let lastChunkSize = -1;
 
   while (remaining.length > 0) {
     const lineEnd = remaining.indexOf('\r\n');
@@ -153,6 +170,7 @@ function decodeChunked(data: string): string {
 
     const sizeStr = remaining.substring(0, lineEnd).trim();
     const chunkSize = parseInt(sizeStr, 16);
+    lastChunkSize = isNaN(chunkSize) ? -1 : chunkSize;
     if (isNaN(chunkSize) || chunkSize === 0) break;
 
     const chunkStart = lineEnd + 2;
@@ -160,11 +178,18 @@ function decodeChunked(data: string): string {
     if (chunkEnd > remaining.length) {
       // Incomplete chunk, take what we have
       result += remaining.substring(chunkStart);
+      lastChunkSize = -1; // truncated — terminator not reached
       break;
     }
 
     result += remaining.substring(chunkStart, chunkEnd);
     remaining = remaining.substring(chunkEnd + 2); // skip trailing \r\n
+  }
+
+  // RFC 7230 §4.1: a chunked response MUST be terminated by a zero-length chunk.
+  // If the last processed chunk size was not 0, the response was truncated.
+  if (lastChunkSize !== 0) {
+    console.warn('Incomplete chunked response: missing zero-length terminator chunk');
   }
 
   return result;
@@ -174,8 +199,8 @@ function decodeChunked(data: string): string {
  * Build Basic Auth header from username/password.
  */
 function buildAuthHeader(username?: string, password?: string): string | undefined {
-  if (username && password) {
-    const bytes = new TextEncoder().encode(`${username}:${password}`);
+  if (username != null && username !== '') {
+    const bytes = new TextEncoder().encode(`${username}:${password ?? ''}`);
     let binary = '';
     for (const byte of bytes) binary += String.fromCharCode(byte);
     return `Basic ${btoa(binary)}`;
@@ -189,6 +214,11 @@ function buildAuthHeader(username?: string, password?: string): string | undefin
  * GET /_cluster/health returns cluster health status.
  */
 export async function handleElasticsearchHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ElasticsearchRequest;
     const { host, port = 9200, username, password, timeout = 15000 } = body;
@@ -199,6 +229,24 @@ export async function handleElasticsearchHealth(request: Request): Promise<Respo
         error: 'Host is required',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -267,6 +315,11 @@ export async function handleElasticsearchHealth(request: Request): Promise<Respo
  * Sends an arbitrary HTTP request to the ES server.
  */
 export async function handleElasticsearchQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ElasticsearchRequest;
     const {
@@ -286,6 +339,24 @@ export async function handleElasticsearchQuery(request: Request): Promise<Respon
         error: 'Host is required',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -363,6 +434,11 @@ export async function handleElasticsearchQuery(request: Request): Promise<Respon
  * Body: { host, port?, path?, method?, body?, username?, password?, timeout? }
  */
 export async function handleElasticsearchHTTPS(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ElasticsearchRequest;
     const {
@@ -382,6 +458,24 @@ export async function handleElasticsearchHTTPS(request: Request): Promise<Respon
         error: 'Host is required',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -491,6 +585,11 @@ interface ElasticsearchIndexRequest {
  * Body: { host, port?, index, id?, doc, username?, password?, https?, timeout? }
  */
 export async function handleElasticsearchIndex(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ElasticsearchIndexRequest;
     const {
@@ -521,7 +620,25 @@ export async function handleElasticsearchIndex(request: Request): Promise<Respon
       });
     }
 
-    const docPath = id ? `/${index}/_doc/${encodeURIComponent(id)}` : `/${index}/_doc`;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const docPath = id ? `/${encodeURIComponent(index)}/_doc/${encodeURIComponent(id)}` : `/${encodeURIComponent(index)}/_doc`;
     const httpMethod = id ? 'PUT' : 'POST';
     const docBody = JSON.stringify(doc);
 
@@ -597,6 +714,11 @@ interface ElasticsearchDeleteDocRequest {
  * Body: { host, port?, index, id, username?, password?, https?, timeout? }
  */
 export async function handleElasticsearchDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ElasticsearchDeleteDocRequest;
     const {
@@ -626,7 +748,25 @@ export async function handleElasticsearchDelete(request: Request): Promise<Respo
       });
     }
 
-    const docPath = `/${index}/_doc/${encodeURIComponent(id)}`;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const docPath = `/${encodeURIComponent(index)}/_doc/${encodeURIComponent(id)}`;
 
     if (https) {
       const url = `https://${host}:${port}${docPath}`;
@@ -700,6 +840,11 @@ interface ElasticsearchCreateIndexRequest {
  * Body: { host, port?, index, username?, password?, https?, shards?, replicas?, timeout? }
  */
 export async function handleElasticsearchCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ElasticsearchCreateIndexRequest;
     const {
@@ -722,6 +867,24 @@ export async function handleElasticsearchCreate(request: Request): Promise<Respo
     if (!index) {
       return new Response(JSON.stringify({ success: false, error: 'Index name is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 

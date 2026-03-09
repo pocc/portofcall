@@ -52,3 +52,8 @@ The implementation includes documentation based on community knowledge:
 - [Ventrilo Server Setup](http://www.ventrilo.com/) - Official server downloads
 - [Ventrilo Protocol Notes](https://github.com/topics/ventrilo) - Community reverse-engineering efforts
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

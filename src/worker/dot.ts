@@ -17,6 +17,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 /** DNS record type codes */
 const DNS_RECORD_TYPES: Record<string, number> = {
@@ -359,7 +360,7 @@ function parseDNSResponse(data: Uint8Array) {
 export async function handleDoTQuery(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -383,11 +384,22 @@ export async function handleDoTQuery(request: Request): Promise<Response> {
     const server = body.server || '1.1.1.1';
     const port = body.port || 853;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(server);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(server, cfCheck.ip),
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const domain = body.domain.replace(/\.$/, '');

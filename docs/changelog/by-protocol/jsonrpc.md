@@ -98,3 +98,8 @@ JSON-RPC implementation provides 3 endpoints (call, batch, ws) supporting HTTP/T
 - [RFC 6455](https://datatracker.ietf.org/doc/html/rfc6455) - The WebSocket Protocol
 - [Ethereum JSON-RPC](https://ethereum.org/en/developers/docs/apis/json-rpc/) - Ethereum RPC methods
 - [Bitcoin JSON-RPC](https://developer.bitcoin.org/reference/rpc/) - Bitcoin Core RPC reference
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

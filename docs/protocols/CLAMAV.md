@@ -350,7 +350,7 @@ WDVPIVAlQEFQWzRcUFpYNTQoUF4pN0NDKTd9JEVJQ0FSLVNUQU5EQVJELUFOVElWSVJVUy1URVNULUZJ
 
 **curl example -- scan EICAR test string:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/clamav/scan \
+curl -s -X POST https://l4.fyi/api/clamav/scan \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "clamav.example.com",
@@ -369,29 +369,29 @@ Expected response: `"virusName": "Win.Test.EICAR_HDB-1"` (exact name may vary by
 
 ```bash
 # Liveness check
-curl -s -X POST https://portofcall.ross.gg/api/clamav/ping \
+curl -s -X POST https://l4.fyi/api/clamav/ping \
   -H 'Content-Type: application/json' \
   -d '{"host":"clamav.example.com","port":3310}' | jq .
 
 # Version query
-curl -s -X POST https://portofcall.ross.gg/api/clamav/version \
+curl -s -X POST https://l4.fyi/api/clamav/version \
   -H 'Content-Type: application/json' \
   -d '{"host":"clamav.example.com"}' | jq .
 
 # Daemon statistics
-curl -s -X POST https://portofcall.ross.gg/api/clamav/stats \
+curl -s -X POST https://l4.fyi/api/clamav/stats \
   -H 'Content-Type: application/json' \
   -d '{"host":"clamav.example.com"}' | jq .stats
 
 # Scan a local file (pipe through base64)
 DATA=$(base64 < /path/to/suspicious-file.bin)
-curl -s -X POST https://portofcall.ross.gg/api/clamav/scan \
+curl -s -X POST https://l4.fyi/api/clamav/scan \
   -H 'Content-Type: application/json' \
   -d "{\"host\":\"clamav.example.com\",\"data\":\"$DATA\"}" | jq .
 
 # Scan a clean file (should return clean: true)
 echo "Hello, world" | base64 | xargs -I{} \
-  curl -s -X POST https://portofcall.ross.gg/api/clamav/scan \
+  curl -s -X POST https://l4.fyi/api/clamav/scan \
   -H 'Content-Type: application/json' \
   -d '{"host":"clamav.example.com","data":"{}"}' | jq .clean
 ```

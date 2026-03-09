@@ -528,9 +528,13 @@ async function connectAndAuthenticate(
   username: string,
   password: string,
   database: string,
+  timeoutMs = 30000,
 ): Promise<AuthResult> {
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
 
   const writer = socket.writable.getWriter();
   const reader = new PGReader(socket.readable);
@@ -655,6 +659,7 @@ async function executeQuery(
 ): Promise<QueryResult> {
   await writer.write(buildQueryMessage(query));
 
+  const MAX_ROWS = 10_000;
   const dec = new TextDecoder();
   let columns: string[] = [];
   const rows: (string | null)[][] = [];
@@ -693,6 +698,9 @@ async function executeQuery(
           offset += colLen;
         }
       }
+      if (rows.length >= MAX_ROWS) {
+        throw new Error(`Result set exceeds ${MAX_ROWS} row limit — use LIMIT in your query`);
+      }
       rows.push(row);
     } else if (msg.type === 'C') {
       // CommandComplete: NUL-terminated command tag
@@ -722,7 +730,7 @@ async function executeQuery(
 export async function handlePostgreSQLConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = (await request.json()) as Partial<PostgreSQLConnectionOptions>;
 
@@ -734,11 +742,17 @@ export async function handlePostgreSQLConnect(request: Request): Promise<Respons
     }
 
     const host = options.host;
-    const port = options.port || 5432;
+    const port = options.port ?? 5432;
     const username = options.username || 'postgres';
     const password = options.password || '';
     const database = options.database || username;
-    const timeoutMs = options.timeout || 30000;
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Cloudflare-behind-Cloudflare guard
     const cfCheck = await checkIfCloudflare(host);
@@ -813,7 +827,7 @@ export async function handlePostgreSQLConnect(request: Request): Promise<Respons
 export async function handlePostgreSQLQuery(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
 
@@ -831,12 +845,37 @@ export async function handlePostgreSQLQuery(request: Request): Promise<Response>
     }
 
     const host = options.host;
-    const port = options.port || 5432;
+    const port = options.port ?? 5432;
     const username = options.username || 'postgres';
     const password = options.password || '';
     const database = options.database || username;
     const query = options.query;
-    const timeoutMs = options.timeout || 30000;
+
+    // Enforce read-only queries — block DDL/DML and multi-statement attacks
+    const ALLOWED_PG_PREFIXES = /^\s*(SELECT|SHOW|EXPLAIN|SET|RESET)\b/i;
+    if (!ALLOWED_PG_PREFIXES.test(query)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only queries are allowed (SELECT, SHOW, EXPLAIN, SET, RESET)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+    // Block multi-statement attacks (semicolons outside of string literals)
+    // Simple check: reject queries containing unquoted semicolons
+    const queryWithoutStrings = query.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+    if (queryWithoutStrings.includes(';')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Multi-statement queries are not allowed',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Cloudflare-behind-Cloudflare guard
     const cfCheck = await checkIfCloudflare(host);
@@ -938,7 +977,7 @@ export interface PostgreSQLDescribeResult {
 export async function handlePostgresDescribe(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = (await request.json()) as Partial<PostgreSQLQueryOptions>;
 
@@ -956,12 +995,18 @@ export async function handlePostgresDescribe(request: Request): Promise<Response
     }
 
     const host     = options.host;
-    const port     = options.port || 5432;
+    const port     = options.port ?? 5432;
     const username = options.username || 'postgres';
     const password = options.password || '';
     const database = options.database || username;
     const query    = options.query;
-    const timeoutMs = options.timeout || 30000;
+    const timeoutMs = options.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1121,6 +1166,9 @@ export async function handlePostgresDescribe(request: Request): Promise<Response
  */
 export async function handlePostgresListen(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string; port?: number; username?: string; password?: string;
       database?: string; channel: string; waitMs?: number; timeout?: number;
@@ -1142,6 +1190,21 @@ export async function handlePostgresListen(request: Request): Promise<Response> 
       return new Response(JSON.stringify({
         success: false, error: 'channel must be a simple identifier (letters/digits/underscores, start with letter or underscore)',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -1245,6 +1308,9 @@ export async function handlePostgresListen(request: Request): Promise<Response> 
  */
 export async function handlePostgresNotify(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string; port?: number; username?: string; password?: string;
       database?: string; channel: string; payload?: string; timeout?: number;
@@ -1268,6 +1334,21 @@ export async function handlePostgresNotify(request: Request): Promise<Response> 
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const overallTimeout = new Promise<never>((_, reject) => {
       timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
@@ -1278,9 +1359,11 @@ export async function handlePostgresNotify(request: Request): Promise<Response> 
       const { socket, reader, writer } = await connectAndAuthenticate(host, port, username, password, database);
 
       try {
-        // Use dollar-quoted strings to avoid SQL injection (PostgreSQL 8.0+)
-        // Dollar quotes cannot be nested or escaped, so this is injection-proof
-        const result = await executeQuery(reader, writer, `SELECT pg_notify($$${channel}$$, $$${payload}$$)`);
+        // Use unique dollar-quote tag to prevent injection via payload containing $$
+        if (payload.includes('$pOc$') || channel.includes('$pOc$')) {
+          throw new Error('Input contains reserved delimiter');
+        }
+        const result = await executeQuery(reader, writer, `SELECT pg_notify($pOc$${channel}$pOc$, $pOc$${payload}$pOc$)`);
 
         return new Response(JSON.stringify({
           success: true, host, port, channel, payload,

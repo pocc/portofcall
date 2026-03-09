@@ -44,7 +44,7 @@ interface KubernetesQueryRequest {
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._:-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -123,6 +123,7 @@ async function readHTTPResponse(
   const chunks: Uint8Array[] = [];
   let totalLen = 0;
   const decoder = new TextDecoder();
+  const MAX_RESPONSE_SIZE = 10 * 1024 * 1024; // 10MB
 
   try {
     const deadline = new Promise<never>((_, reject) =>
@@ -134,6 +135,7 @@ async function readHTTPResponse(
     if (done || !value) return '';
     chunks.push(value);
     totalLen += value.length;
+    if (totalLen > MAX_RESPONSE_SIZE) throw new Error('Response too large');
 
     // Keep reading until we get the full HTTP response
     while (true) {
@@ -144,6 +146,7 @@ async function readHTTPResponse(
       if (nextDone || !next) break;
       chunks.push(next);
       totalLen += next.length;
+      if (totalLen > MAX_RESPONSE_SIZE) throw new Error('Response too large');
 
       // Check if we have a complete HTTP response (ends with \r\n\r\n + body)
       const combined = new Uint8Array(totalLen);
@@ -191,27 +194,57 @@ function parseHTTPResponse(raw: string): {
   headers: Record<string, string>;
   body: string;
 } {
-  const lines = raw.split(/\r?\n/);
-  const statusLine = lines[0] || '';
+  // Find header/body separator — prefer \r\n\r\n, fall back to \n\n
+  const crlfSep = raw.indexOf('\r\n\r\n');
+  const lfSep = raw.indexOf('\n\n');
+  const sep = crlfSep >= 0 && lfSep >= 0
+    ? Math.min(crlfSep, lfSep)
+    : crlfSep >= 0 ? crlfSep : lfSep;
+
+  if (sep === -1) {
+    return { statusCode: 0, statusText: '', headers: {}, body: '' };
+  }
+
+  const headerSection = raw.substring(0, sep);
+  // Skip past the separator (\r\n\r\n = 4 bytes, \n\n = 2 bytes)
+  const rawBody = raw.substring(sep + (crlfSep === sep ? 4 : 2));
+
+  const headerLines = headerSection.split(/\r?\n/);
+  const statusLine = headerLines[0] || '';
   const statusMatch = statusLine.match(/HTTP\/[\d.]+ (\d+)\s*(.*)/);
   const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
   const statusText = statusMatch ? statusMatch[2] : '';
 
   const headers: Record<string, string> = {};
-  let bodyStart = 0;
-  for (let i = 1; i < lines.length; i++) {
-    if (lines[i].trim() === '') {
-      bodyStart = i + 1;
-      break;
-    }
-    const colonIdx = lines[i].indexOf(':');
+  for (let i = 1; i < headerLines.length; i++) {
+    const colonIdx = headerLines[i].indexOf(':');
     if (colonIdx > 0) {
-      const key = lines[i].slice(0, colonIdx).trim().toLowerCase();
-      const value = lines[i].slice(colonIdx + 1).trim();
+      const key = headerLines[i].slice(0, colonIdx).trim().toLowerCase();
+      const value = headerLines[i].slice(colonIdx + 1).trim();
       headers[key] = value;
     }
   }
-  const body = lines.slice(bodyStart).join('\n').trim();
+
+  let body = rawBody.trim();
+
+  // Decode chunked transfer encoding (RFC 7230 §4.1)
+  if (headers['transfer-encoding']?.includes('chunked')) {
+    let decoded = '';
+    let remaining = rawBody;
+    while (remaining.length > 0) {
+      const lineEnd = remaining.indexOf('\r\n');
+      if (lineEnd === -1) break;
+      const sizeLine = remaining.substring(0, lineEnd).trim();
+      // Strip chunk extensions (;ext=value) per RFC 7230 §4.1.1
+      const semiIdx = sizeLine.indexOf(';');
+      const chunkSize = parseInt(semiIdx > 0 ? sizeLine.substring(0, semiIdx) : sizeLine, 16);
+      if (isNaN(chunkSize) || chunkSize === 0) break;
+      remaining = remaining.substring(lineEnd + 2);
+      decoded += remaining.substring(0, chunkSize);
+      remaining = remaining.substring(chunkSize + 2); // skip chunk data + trailing \r\n
+    }
+    body = decoded;
+  }
 
   return { statusCode, statusText, headers, body };
 }
@@ -303,7 +336,7 @@ export async function handleKubernetesProbe(request: Request): Promise<Response>
 
       // Build HTTP GET /healthz
       const authHeader = bearerToken
-        ? `Authorization: Bearer ${bearerToken}\r\n`
+        ? `Authorization: Bearer ${bearerToken.replace(/[\r\n]/g, '')}\r\n`
         : '';
       const httpRequest = [
         `GET /healthz HTTP/1.1\r\n`,
@@ -414,6 +447,13 @@ export async function handleKubernetesQuery(request: Request): Promise<Response>
       );
     }
 
+    if (path.includes('..')) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Path traversal not allowed' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     const validationError = validateInput(host, port);
     if (validationError) {
       return new Response(
@@ -449,7 +489,7 @@ export async function handleKubernetesQuery(request: Request): Promise<Response>
       const reader = socket.readable.getReader();
 
       const authHeader = bearerToken
-        ? `Authorization: Bearer ${bearerToken}\r\n`
+        ? `Authorization: Bearer ${bearerToken.replace(/[\r\n]/g, '')}\r\n`
         : '';
 
       // Sanitize path — allow characters valid in Kubernetes API paths and query strings
@@ -565,6 +605,18 @@ export async function handleKubernetesLogs(request: Request): Promise<Response> 
       );
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     if (!namespace) {
       return new Response(
         JSON.stringify({ success: false, error: 'namespace is required' }),
@@ -576,6 +628,15 @@ export async function handleKubernetesLogs(request: Request): Promise<Response> 
         JSON.stringify({ success: false, error: 'pod name is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    // Validate namespace/pod against K8s naming convention to prevent path traversal (C-7)
+    const K8S_NAME_RE = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
+    if (namespace && !K8S_NAME_RE.test(namespace)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid namespace name' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (pod && !K8S_NAME_RE.test(pod)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid pod name' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const params = new URLSearchParams({ tailLines: String(tailLines), timestamps: 'true' });
@@ -595,7 +656,7 @@ export async function handleKubernetesLogs(request: Request): Promise<Response> 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
+      const authHeader = token ? `Authorization: Bearer ${token.replace(/[\r\n]/g, '')}\r\n` : '';
       const safePath = logPath.replace(/[^a-zA-Z0-9/_\-.=?&:,%+()~]/g, '');
 
       const httpRequest = [
@@ -702,6 +763,24 @@ export async function handleKubernetesPodList(request: Request): Promise<Respons
       );
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Validate namespace against K8s naming convention to prevent path traversal (C-7)
+    const K8S_NAME_RE = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
+    if (namespace && !K8S_NAME_RE.test(namespace)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid namespace name' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const basePath = namespace
       ? `/api/v1/namespaces/${namespace}/pods`
       : '/api/v1/pods';
@@ -723,7 +802,7 @@ export async function handleKubernetesPodList(request: Request): Promise<Respons
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
+      const authHeader = token ? `Authorization: Bearer ${token.replace(/[\r\n]/g, '')}\r\n` : '';
       const safePath = fullPath.replace(/[^a-zA-Z0-9/_\-.=?&,:,%+()~!]/g, '');
 
       const httpRequest = [
@@ -858,6 +937,18 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
       );
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+          isCloudflare: true,
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     if (!manifest || typeof manifest !== 'object') {
       return new Response(
         JSON.stringify({ success: false, error: 'manifest must be a JSON object' }),
@@ -875,9 +966,32 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
+
+    // Restrict allowed resource kinds to prevent cluster compromise (C-7, H-12)
+    const ALLOWED_K8S_KINDS = new Set([
+      'configmap', 'deployment', 'service', 'ingress', 'job', 'cronjob',
+      'statefulset', 'daemonset', 'replicaset', 'pod', 'horizontalpodautoscaler',
+      'poddisruptionbudget', 'serviceaccount', 'persistentvolumeclaim',
+    ]);
+    if (!ALLOWED_K8S_KINDS.has(kind.toLowerCase())) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Resource kind '${kind}' is not allowed. Allowed kinds: ${[...ALLOWED_K8S_KINDS].join(', ')}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     if (!name) {
       return new Response(
         JSON.stringify({ success: false, error: 'manifest.metadata.name is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Validate name against K8s naming convention to prevent path traversal (C-7)
+    const K8S_NAME_RE = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
+    if (!K8S_NAME_RE.test(name)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid resource name: must match [a-z0-9][a-z0-9.-]*[a-z0-9]' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -887,6 +1001,14 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
     if (!isClusterScopedKind && !namespace) {
       return new Response(
         JSON.stringify({ success: false, error: 'namespace is required for namespaced resources' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Validate namespace against K8s naming convention to prevent path traversal (C-7)
+    if (namespace && !K8S_NAME_RE.test(namespace)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid namespace name' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }
@@ -920,7 +1042,7 @@ export async function handleKubernetesApply(request: Request): Promise<Response>
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
 
-      const authHeader = token ? `Authorization: Bearer ${token}\r\n` : '';
+      const authHeader = token ? `Authorization: Bearer ${token.replace(/[\r\n]/g, '')}\r\n` : '';
       const safePath = applyPath.replace(/[^a-zA-Z0-9/_\-.=?&:,%+()~]/g, '');
 
       const requestLine =

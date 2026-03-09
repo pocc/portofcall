@@ -169,6 +169,7 @@ export async function handleTorControlProbe(request: Request): Promise<Response>
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -179,6 +180,13 @@ export async function handleTorControlProbe(request: Request): Promise<Response>
     const host = options.host;
     const port = options.port || 9051;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -296,7 +304,7 @@ export async function handleTorControlSignal(request: Request): Promise<Response
     };
 
     if (!options.host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -307,6 +315,7 @@ export async function handleTorControlSignal(request: Request): Promise<Response
     const signal = (options.signal || '').toUpperCase();
     if (!ALLOWED_SIGNALS.includes(signal)) {
       return new Response(JSON.stringify({
+        success: false,
         error: `Invalid signal: ${options.signal}. Allowed: ${ALLOWED_SIGNALS.join(', ')}`,
       }), {
         status: 400,
@@ -318,6 +327,13 @@ export async function handleTorControlSignal(request: Request): Promise<Response
     const port = options.port || 9051;
     const password = options.password || '';
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -340,7 +356,7 @@ export async function handleTorControlSignal(request: Request): Promise<Response
       try {
         // Authenticate
         const authCmd = password
-          ? `AUTHENTICATE "${password.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+          ? `AUTHENTICATE "${password.replace(/[\r\n]/g, '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
           : 'AUTHENTICATE';
         const authResp = await sendTorCommand(writer, reader, authCmd, 3000);
         const authParsed = parseTorResponse(authResp);
@@ -470,6 +486,7 @@ export async function handleTorControlGetInfo(request: Request): Promise<Respons
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -483,10 +500,18 @@ export async function handleTorControlGetInfo(request: Request): Promise<Respons
     const keys = options.keys || ['version', 'config-file', 'traffic/read', 'traffic/written', 'uptime'];
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Validate keys: alphanumeric, hyphens, slashes, dots only
     for (const key of keys) {
       if (!/^[a-zA-Z0-9\-/.]+$/.test(key)) {
         return new Response(JSON.stringify({
+          success: false,
           error: `Invalid GETINFO key: ${key}`,
         }), {
           status: 400,
@@ -519,7 +544,7 @@ export async function handleTorControlGetInfo(request: Request): Promise<Respons
       try {
         // Authenticate
         const authCmd = password
-          ? `AUTHENTICATE "${password.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+          ? `AUTHENTICATE "${password.replace(/[\r\n]/g, '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
           : 'AUTHENTICATE';
         const authResp = await sendTorCommand(writer, reader, authCmd, 3000);
         const authParsed = parseTorResponse(authResp);

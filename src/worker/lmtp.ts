@@ -153,7 +153,8 @@ async function sendLMTPCommand(
   command: string,
   timeoutMs: number
 ): Promise<{ code: number; message: string }> {
-  await writer.write(new TextEncoder().encode(command + '\r\n'));
+  const safeCommand = command.replace(/[\r\n]/g, '');
+  await writer.write(new TextEncoder().encode(safeCommand + '\r\n'));
   const response = await readLMTPResponse(reader, timeoutMs);
   return parseLMTPResponse(response);
 }
@@ -190,6 +191,12 @@ export async function handleLMTPConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 24;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -288,7 +295,7 @@ export async function handleLMTPConnect(request: Request): Promise<Response> {
 export async function handleLMTPSend(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
     return new Response(JSON.stringify({
-      error: 'Method not allowed',
+      success: false, error: 'Method not allowed',
     }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
@@ -308,7 +315,24 @@ export async function handleLMTPSend(request: Request): Promise<Response> {
       });
     }
 
+    // Validate email addresses — reject angle brackets and CRLF to prevent command injection
+    const EMAIL_RE = /^[^\s<>\r\n@]+@[^\s<>\r\n@]+\.[^\s<>\r\n@]+$/;
+    if (!EMAIL_RE.test(options.from!)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Invalid sender email address format',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const recipients = Array.isArray(options.to) ? options.to : [options.to];
+    for (const recipient of recipients) {
+      if (!EMAIL_RE.test(recipient)) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: `Invalid recipient email address format: ${recipient}`,
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
     if (recipients.length === 0) {
       return new Response(JSON.stringify({
         success: false,
@@ -322,6 +346,12 @@ export async function handleLMTPSend(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 24;
     const timeoutMs = options.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);

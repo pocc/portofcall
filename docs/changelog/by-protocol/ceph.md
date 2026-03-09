@@ -53,3 +53,8 @@ The implementation includes comprehensive comments covering:
 - [Ceph Network Protocol](https://docs.ceph.com/en/latest/dev/network-protocol/) - Official MSGR protocol specification
 - [Ceph Architecture](https://docs.ceph.com/en/latest/architecture/) - Understanding monitors, OSDs, and MGR
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

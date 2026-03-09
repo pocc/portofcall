@@ -4,7 +4,7 @@ Guide for running integration tests locally using Docker containers as protocol 
 
 ## Overview
 
-Integration tests default to the production Worker at `https://portofcall.ross.gg`. For local development, you need:
+Integration tests default to the production Worker at `https://l4.fyi`. For local development, you need:
 
 1. **Local Worker** (wrangler dev) — so the Worker can reach `localhost`
 2. **Docker containers** — real servers for protocols that require infrastructure
@@ -39,7 +39,7 @@ curl http://localhost:8787/api/ping \
 # → {"success":true,"rtt":...}
 ```
 
-> **Why is this needed?** The production Worker at `portofcall.ross.gg` runs on Cloudflare's edge network and cannot reach `localhost` on your machine. A local Worker runs on your machine and can connect to Docker containers via `localhost`.
+> **Why is this needed?** The production Worker at `l4.fyi` runs on Cloudflare's edge network and cannot reach `localhost` on your machine. A local Worker runs on your machine and can connect to Docker containers via `localhost`.
 
 ## Docker Servers by Protocol
 
@@ -285,7 +285,7 @@ Some tests are automatically skipped (`it.skip`) when `API_BASE` contains `local
 | Gopher: "should fetch the root menu from Floodgap" | External server may cause wrangler dev restart |
 | Gemini: "should handle connection to a Gemini server" | TLS to external server may cause wrangler dev restart |
 
-These tests run normally against the production Worker (`https://portofcall.ross.gg`).
+These tests run normally against the production Worker (`https://l4.fyi`).
 
 ## Protocol Test Matrix
 
@@ -330,7 +330,7 @@ docker restart testserver-redis
 
 ### Production Tests (default)
 ```
-tests/ → https://portofcall.ross.gg/api → Cloudflare Worker → Internet hosts
+tests/ → https://l4.fyi/api → Cloudflare Worker → Internet hosts
 ```
 - No setup required
 - All tests run; tests requiring local infrastructure connect to real public servers

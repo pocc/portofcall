@@ -64,44 +64,49 @@ export class GaduGaduClient {
 			const reader = this.socket.readable.getReader();
 			const writer = this.socket.writable.getWriter();
 
-			// Step 2: Read GG_WELCOME packet
-			const welcomeStart = Date.now();
-			const welcomePacket = await readPacket(reader, 5000);
-			timing.welcome = Date.now() - welcomeStart;
+			let responsePacket: Awaited<ReturnType<typeof readPacket>>;
+			let seed: number;
 
-			if (welcomePacket.type !== GG_PACKET_TYPES.GG_WELCOME) {
-				throw new Error(
-					`Expected GG_WELCOME (0x0001), got ${getPacketTypeName(welcomePacket.type)}`
+			try {
+				// Step 2: Read GG_WELCOME packet
+				const welcomeStart = Date.now();
+				const welcomePacket = await readPacket(reader, 5000);
+				timing.welcome = Date.now() - welcomeStart;
+
+				if (welcomePacket.type !== GG_PACKET_TYPES.GG_WELCOME) {
+					throw new Error(
+						`Expected GG_WELCOME (0x0001), got ${getPacketTypeName(welcomePacket.type)}`
+					);
+				}
+
+				// Extract seed from welcome packet
+				if (welcomePacket.length < 4) {
+					throw new Error('Invalid GG_WELCOME packet: payload too short');
+				}
+
+				seed = new DataView(welcomePacket.payload.buffer, welcomePacket.payload.byteOffset, welcomePacket.payload.byteLength).getUint32(0, true);
+
+				// Step 3: Build and send GG_LOGIN80 packet
+				const loginStart = Date.now();
+				const loginPayload = await buildLoginPacket(
+					this.config.uin,
+					this.config.password,
+					seed,
+					this.config.hashType
 				);
+
+				const loginPacket = writePacket(GG_PACKET_TYPES.GG_LOGIN80, loginPayload);
+				await writer.write(loginPacket);
+
+				// Step 4: Read response (GG_LOGIN80_OK or GG_LOGIN80_FAILED)
+				responsePacket = await readPacket(reader, 5000);
+				timing.login = Date.now() - loginStart;
+				timing.total = Date.now() - startTime;
+			} finally {
+				// Always release locks regardless of success or error
+				reader.releaseLock();
+				writer.releaseLock();
 			}
-
-			// Extract seed from welcome packet
-			if (welcomePacket.length < 4) {
-				throw new Error('Invalid GG_WELCOME packet: payload too short');
-			}
-
-			const seed = new DataView(welcomePacket.payload.buffer, welcomePacket.payload.byteOffset, welcomePacket.payload.byteLength).getUint32(0, true);
-
-			// Step 3: Build and send GG_LOGIN80 packet
-			const loginStart = Date.now();
-			const loginPayload = await buildLoginPacket(
-				this.config.uin,
-				this.config.password,
-				seed,
-				this.config.hashType
-			);
-
-			const loginPacket = writePacket(GG_PACKET_TYPES.GG_LOGIN80, loginPayload);
-			await writer.write(loginPacket);
-
-			// Step 4: Read response (GG_LOGIN80_OK or GG_LOGIN80_FAILED)
-			const responsePacket = await readPacket(reader, 5000);
-			timing.login = Date.now() - loginStart;
-			timing.total = Date.now() - startTime;
-
-			// Release reader/writer
-			reader.releaseLock();
-			writer.releaseLock();
 
 			// Check response
 			if (responsePacket.type === GG_PACKET_TYPES.GG_LOGIN80_OK) {

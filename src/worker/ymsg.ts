@@ -48,6 +48,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 /**
  * Pure-JS MD5 implementation (RFC 1321).
@@ -290,6 +291,11 @@ function parseYMSGHeader(data: Uint8Array): {
  * Detects YMSG server and version.
  */
 export async function handleYMSGProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as YMSGRequest;
     const { host, port = 5050, timeout = 15000, version = 16 } = body;
@@ -306,7 +312,7 @@ export async function handleYMSGProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -316,6 +322,17 @@ export async function handleYMSGProbe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckProbe = await checkIfCloudflare(host);
+    if (cfCheckProbe.isCloudflare && cfCheckProbe.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheckProbe.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -429,6 +446,11 @@ export async function handleYMSGProbe(request: Request): Promise<Response> {
  * Tests multiple YMSG versions to find supported one.
  */
 export async function handleYMSGVersionDetect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as YMSGRequest;
     const { host, port = 5050, timeout = 10000 } = body;
@@ -533,6 +555,11 @@ function parseYMSGKV(payload: Uint8Array): Map<number, string> {
  * Body: { host, port?, username, version?, timeout? }
  */
 export async function handleYMSGAuth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -544,6 +571,21 @@ export async function handleYMSGAuth(request: Request): Promise<Response> {
     const { host, port = 5050, username = 'testuser', version = 16, timeout = 8000 } = body;
 
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckAuth = await checkIfCloudflare(host);
+    if (cfCheckAuth.isCloudflare && cfCheckAuth.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckAuth.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));
@@ -628,6 +670,11 @@ export async function handleYMSGAuth(request: Request): Promise<Response> {
  * Body: { host, port?, username, password, version?, timeout? }
  */
 export async function handleYMSGLogin(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -640,6 +687,21 @@ export async function handleYMSGLogin(request: Request): Promise<Response> {
     const { host, port = 5050, username = 'testuser', password = '', version = 16, timeout = 12000 } = body;
 
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckLogin = await checkIfCloudflare(host);
+    if (cfCheckLogin.isCloudflare && cfCheckLogin.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckLogin.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));

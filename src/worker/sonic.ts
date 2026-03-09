@@ -153,6 +153,9 @@ function parseInfoLine(line: string): Record<string, string> {
  * POST /api/sonic/probe
  */
 export async function handleSonicProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as SonicRequest;
@@ -168,7 +171,7 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -372,6 +375,9 @@ function validateSonicIdentifier(value: string, name: string): string | null {
  * POST /api/sonic/query
  */
 export async function handleSonicQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
@@ -385,7 +391,7 @@ export async function handleSonicQuery(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -474,6 +480,9 @@ export async function handleSonicQuery(request: Request): Promise<Response> {
  * POST /api/sonic/push
  */
 export async function handleSonicPush(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
@@ -487,7 +496,7 @@ export async function handleSonicPush(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -571,6 +580,9 @@ export async function handleSonicPush(request: Request): Promise<Response> {
  * POST /api/sonic/suggest
  */
 export async function handleSonicSuggest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
@@ -584,7 +596,7 @@ export async function handleSonicSuggest(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
@@ -669,6 +681,9 @@ export async function handleSonicSuggest(request: Request): Promise<Response> {
  * POST /api/sonic/ping
  */
 export async function handleSonicPing(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as SonicRequest;
@@ -684,7 +699,7 @@ export async function handleSonicPing(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',

@@ -21,6 +21,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // RCON packet types
 const SERVERDATA_AUTH = 3;
@@ -183,7 +184,7 @@ function validateRCONInput(host: string, port: number, password: string): string
     return 'Host contains invalid characters';
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 
@@ -209,6 +210,9 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
   let socket: ReturnType<typeof connect>;
 
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = (await request.json()) as RCONConnectRequest;
     const { host, port = 27015, password, timeout = 10000 } = body;
 
@@ -224,6 +228,15 @@ export async function handleRCONConnect(request: Request): Promise<Response> {
           headers: { 'Content-Type': 'application/json' },
         },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -333,6 +346,9 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
   let socket: ReturnType<typeof connect>;
 
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = (await request.json()) as RCONCommandRequest;
     const { host, port = 27015, password, command, timeout = 10000 } = body;
 
@@ -375,6 +391,15 @@ export async function handleRCONCommand(request: Request): Promise<Response> {
           headers: { 'Content-Type': 'application/json' },
         },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) => {

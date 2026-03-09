@@ -126,6 +126,9 @@ async function zkReadPacket(
 
     const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
     const frameLen = view.getInt32(0, false);
+    if (frameLen < 0 || frameLen > 10 * 1024 * 1024) {
+      throw new Error(`ZooKeeper frame too large: ${frameLen} bytes (max 10 MiB)`);
+    }
     const totalNeeded = 4 + frameLen;
 
     while (buffer.length < totalNeeded) {
@@ -324,6 +327,11 @@ function parseMntrOutput(output: string): Record<string, string> {
  * Handle ZooKeeper connection test using 'ruok' command
  */
 export async function handleZooKeeperConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -343,7 +351,7 @@ export async function handleZooKeeperConnect(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -421,6 +429,11 @@ export async function handleZooKeeperConnect(request: Request): Promise<Response
  * Sends any valid 4LW command and returns the raw response
  */
 export async function handleZooKeeperCommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -461,7 +474,7 @@ export async function handleZooKeeperCommand(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -469,6 +482,15 @@ export async function handleZooKeeperCommand(request: Request): Promise<Response
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckCommand = await checkIfCloudflare(host);
+    if (cfCheckCommand.isCloudflare && cfCheckCommand.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckCommand.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -512,6 +534,11 @@ export async function handleZooKeeperCommand(request: Request): Promise<Response
  * POST /api/zookeeper/get
  */
 export async function handleZooKeeperGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -527,6 +554,12 @@ export async function handleZooKeeperGet(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -657,6 +690,11 @@ export async function handleZooKeeperGet(request: Request): Promise<Response> {
  * POST /api/zookeeper/set
  */
 export async function handleZooKeeperSet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -679,6 +717,12 @@ export async function handleZooKeeperSet(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'Path is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -777,6 +821,11 @@ export async function handleZooKeeperSet(request: Request): Promise<Response> {
  * POST /api/zookeeper/create
  */
 export async function handleZooKeeperCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -800,6 +849,12 @@ export async function handleZooKeeperCreate(request: Request): Promise<Response>
       return new Response(JSON.stringify({ success: false, error: 'Path is required' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 

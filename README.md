@@ -2,38 +2,7 @@
 
 Browser-to-TCP bridge via Cloudflare Workers Sockets API. Run SSH, connect to databases, and access any TCP service directly from your browser.
 
-**Live Demo**: [portofcall.ross.gg](https://portofcall.ross.gg)
-
-## GPT-TODO
-
-<!-- GPT-TODO-START -->
-### Protocol Review Scope (2026-02-19)
-- Status: Completed initial expert review pass across all protocol modules in `src/worker/*.ts`.
-- Tracker: `docs/gpt/PROTOCOL-REVIEW-TRACKER.md`
-- Findings: `docs/gpt/FINDINGS-2026-02-19.md`
-- Current follow-up queue (missing protocol docs): `submission`, `tcp`, `tftp`, `torcontrol`, `uwsgi`, `varnish`, `ymsg`.
-
-<details>
-<summary>Protocols reviewed in this pass (238)</summary>
-
-`activemq`, `activeusers`, `adb`, `aerospike`, `afp`, `ajp`, `ami`, `amqp`, `amqps`, `battlenet`, `beanstalkd`, `beats`, `bgp`, `bitcoin`, `bittorrent`, `cassandra`
-`cdp`, `ceph`, `chargen`, `cifs`, `clamav`, `clickhouse`, `coap`, `collectd`, `consul`, `couchbase`, `couchdb`, `cvs`, `dap`, `daytime`, `dcerpc`, `diameter`
-`dicom`, `dict`, `discard`, `dnp3`, `dns`, `docker`, `doh`, `dot`, `drda`, `echo`, `elasticsearch`, `epmd`, `epp`, `etcd`, `ethereum`, `ethernetip`
-`fastcgi`, `finger`, `fins`, `firebird`, `fix`, `fluentd`, `ftp`, `ftps`, `gadugadu`, `ganglia`, `gearman`, `gelf`, `gemini`, `git`, `gopher`, `gpsd`
-`grafana`, `graphite`, `h323`, `haproxy`, `hazelcast`, `hl7`, `hsrp`, `http`, `httpproxy`, `icecast`, `ident`, `iec104`, `ignite`, `ike`, `imap`, `imaps`
-`influxdb`, `informix`, `ipfs`, `ipmi`, `ipp`, `irc`, `ircs`, `iscsi`, `jabber-component`, `jdwp`, `jetdirect`, `jsonrpc`, `jupyter`, `kafka`, `kerberos`, `kibana`
-`kubernetes`, `l2tp`, `ldap`, `ldaps`, `ldp`, `livestatus`, `llmnr`, `lmtp`, `loki`, `lpd`, `lsp`, `managesieve`, `matrix`, `maxdb`, `mdns`, `meilisearch`
-`memcached`, `mgcp`, `minecraft`, `mms`, `modbus`, `mongodb`, `mpd`, `mqtt`, `msn`, `msrp`, `mumble`, `munin`, `mysql`, `napster`, `nats`, `nbd`
-`neo4j`, `netbios`, `nfs`, `ninep`, `nntp`, `nntps`, `node-inspector`, `nomad`, `nrpe`, `nsca`, `nsq`, `ntp`, `opcua`, `openflow`, `opentsdb`, `openvpn`
-`oracle`, `oracle-tns`, `oscar`, `pcep`, `perforce`, `pjlink`, `pop3`, `pop3s`, `portmapper`, `postgres`, `pptp`, `prometheus`, `qotd`, `quake3`, `rabbitmq`, `radius`
-`radsec`, `rcon`, `rdp`, `realaudio`, `redis`, `relp`, `rethinkdb`, `rexec`, `riak`, `rip`, `rlogin`, `rmi`, `rserve`, `rsh`, `rsync`, `rtmp`
-`rtsp`, `s7comm`, `sane`, `sccp`, `scp`, `sentinel`, `sftp`, `shadowsocks`, `shoutcast`, `sip`, `sips`, `slp`, `smb`, `smpp`, `smtp`, `smtps`
-`snmp`, `snpp`, `soap`, `socks4`, `socks5`, `solr`, `sonic`, `spamd`, `spdy`, `spice`, `ssdp`, `ssh`, `stomp`, `stun`, `submission`, `svn`
-`sybase`, `syslog`, `tacacs`, `tarantool`, `tcp`, `tds`, `teamspeak`, `telnet`, `tftp`, `thrift`, `time`, `torcontrol`, `turn`, `uucp`, `uwsgi`, `varnish`
-`vault`, `ventrilo`, `vnc`, `websocket`, `whois`, `winrm`, `x11`, `xmpp`, `xmpp-s2s`, `xmpps2s`, `ymsg`, `zabbix`, `zmtp`, `zookeeper`
-
-</details>
-<!-- GPT-TODO-END -->
+**Live Demo**: [l4.fyi](https://l4.fyi)
 
 ## What is Port of Call?
 
@@ -55,6 +24,8 @@ Port of Call leverages [Cloudflare Workers' Sockets API](https://developers.clou
 - ✅ **WebSocket Tunneling**: Bridge browser WebSockets to TCP sockets
 - ✅ **Smart Placement**: Automatic Worker migration closer to backends
 - ✅ **Cloudflare Detection**: Automatic blocking of Cloudflare-protected hosts
+- ✅ **curl-Friendly Interface**: Short URL routes with plain text output (like wttr.in)
+- ✅ **CLI Tool**: Downloadable `poc` script with protocol auto-detection
 - ✅ **React UI**: Modern TypeScript interface for testing connections
 - ✅ **Zero Configuration**: Works out of the box
 
@@ -137,7 +108,7 @@ const privateKey = `-----BEGIN OPENSSH PRIVATE KEY-----
 ...
 -----END OPENSSH PRIVATE KEY-----`;
 
-const ws = new WebSocket('wss://portofcall.ross.gg/api/ssh/connect?' + new URLSearchParams({
+const ws = new WebSocket('wss://l4.fyi/api/ssh/connect?' + new URLSearchParams({
   host: 'ssh.example.com',
   username: 'admin',
   privateKey: privateKey,
@@ -153,6 +124,59 @@ ws.onmessage = (event) => {
 ```
 
 See [SSH Authentication Guide](docs/SSH_AUTHENTICATION.md) for complete examples with Ed25519, RSA, ECDSA keys.
+
+### curl-Friendly Interface
+
+Port of Call supports short URL routes with plain text output, designed for the command line:
+
+```bash
+# TCP ping
+curl portofcall.ross.gg/synping/example.com:22
+
+# DNS lookup
+curl portofcall.ross.gg/dns/example.com/MX
+
+# HTTP request
+curl portofcall.ross.gg/http/example.com/robots.txt
+
+# SSH key exchange
+curl portofcall.ross.gg/ssh/github.com
+
+# WHOIS lookup
+curl portofcall.ross.gg/whois/example.com
+
+# Force JSON output
+curl -H 'Accept: application/json' portofcall.ross.gg/dns/example.com/A
+```
+
+**Supported short routes:** `synping`, `tcp`, `http`, `https`, `dns`, `ssh`, `ftp`, `redis`, `mysql`, `postgres`, `smtp`, `whois`, `ntp`, `tls`, `ws`
+
+**Pattern:** `/:protocol/:host[:port][/extra]` — default ports are applied automatically.
+
+**Content negotiation:**
+- curl (default `*/*`) → plain text
+- `Accept: application/json` or `?format=json` → JSON
+- Browser (`Accept: text/html`) → redirects to React SPA
+
+### CLI Tool (`poc`)
+
+Install the `poc` CLI for even shorter commands:
+
+```bash
+# Install
+curl -sL portofcall.ross.gg/cli > /usr/local/bin/poc && chmod +x $_
+
+# Auto-detect protocol from port
+poc example.com:22        # → ssh
+poc example.com:6379      # → redis
+
+# Explicit protocol
+poc dns example.com MX
+poc --json ssh github.com
+poc --timeout=5000 synping example.com:80
+```
+
+Features: protocol auto-detection, `--json` flag, ANSI colors (respects `NO_COLOR`), `--timeout=N`, zero dependencies beyond curl.
 
 ## Architecture
 
@@ -185,10 +209,10 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 
 ## 📊 Current Status
 
-- **181 Protocols Implemented** - Including all major databases, messaging, remote access, file transfer, and legacy protocols
+- **244 Protocols Implemented** - Including all major databases, messaging, remote access, file transfer, and legacy protocols
 - **214+ Integration Tests** passing
 - **90+ Protocol Documentation Files** in [docs/protocols/](docs/protocols/)
-- **Live Demo**: [portofcall.ross.gg](https://portofcall.ross.gg)
+- **Live Demo**: [l4.fyi](https://l4.fyi)
 
 ### Supported Protocols
 
@@ -213,7 +237,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 - **[ADD_PROTOCOL Guide](docs/ADD_PROTOCOL.md)** - Step-by-step protocol implementation
 - [Implementation Guide](docs/protocols/IMPLEMENTATION_GUIDE.md) - Patterns and best practices
 - [Protocol Mutex](node_modules/mutex.md) - Track work in progress
-- [Implemented Protocols](docs/IMPLEMENTED.md) - Complete status (181 protocols)
+- [Implemented Protocols](docs/IMPLEMENTED.md) - Complete status (244 protocols)
 
 ### Reference
 - [🔌 Sockets API Reference](docs/SOCKETS_API.md) - API details and examples
@@ -232,7 +256,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 - **Static Assets**: Workers Assets API (serves built React app)
 - **Build**: Vite for bundling, Wrangler for deployment
 - **Deployment**: Cloudflare Workers (not Pages)
-- **Domain**: portofcall.ross.gg
+- **Domain**: l4.fyi
 
 ## Smart Placement
 

@@ -375,6 +375,9 @@ function parseMetadataResponse(view: DataView): {
 
     const hostLen = view.getInt16(offset);
     offset += 2;
+    if (offset + hostLen > view.byteLength) {
+      throw new Error('Malformed response: length field exceeds buffer');
+    }
     const host = decoder.decode(new Uint8Array(view.buffer, view.byteOffset + offset, hostLen));
     offset += hostLen;
 
@@ -409,6 +412,9 @@ function parseMetadataResponse(view: DataView): {
 
     const topicNameLen = view.getInt16(offset);
     offset += 2;
+    if (offset + topicNameLen > view.byteLength) {
+      throw new Error('Malformed response: length field exceeds buffer');
+    }
     const topicName = decoder.decode(
       new Uint8Array(view.buffer, view.byteOffset + offset, topicNameLen)
     );
@@ -521,9 +527,11 @@ export async function handleKafkaApiVersions(request: Request): Promise<Response
 
       const connectTime = Date.now() - startTime;
 
+      let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
-        const writer = socket.writable.getWriter();
-        const reader = socket.readable.getReader();
+        writer = socket.writable.getWriter();
+        reader = socket.readable.getReader();
 
         // Send ApiVersions request
         const request = buildApiVersionsRequest(1, clientId);
@@ -540,6 +548,9 @@ export async function handleKafkaApiVersions(request: Request): Promise<Response
         reader.releaseLock();
         await socket.close();
 
+        // Validate correlation ID — ApiVersions request uses correlation ID 1
+        const correlationIdMismatch = parsed.correlationId !== 1;
+
         return {
           success: true,
           host,
@@ -551,8 +562,14 @@ export async function handleKafkaApiVersions(request: Request): Promise<Response
           apiCount: parsed.apiVersions.length,
           connectTimeMs: connectTime,
           totalTimeMs: totalTime,
+          ...(correlationIdMismatch && {
+            warning: `Response correlation ID (${parsed.correlationId}) does not match request correlation ID (1). The response may belong to a different request.`,
+            correlationIdMismatch: true,
+          }),
         };
       } catch (error) {
+        try { writer?.releaseLock(); } catch { /* ignore */ }
+        try { reader?.releaseLock(); } catch { /* ignore */ }
         try { await socket.close(); } catch { /* ignore */ }
         throw error;
       }
@@ -949,9 +966,11 @@ export async function handleKafkaMetadata(request: Request): Promise<Response> {
 
       const connectTime = Date.now() - startTime;
 
+      let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
-        const writer = socket.writable.getWriter();
-        const reader = socket.readable.getReader();
+        writer = socket.writable.getWriter();
+        reader = socket.readable.getReader();
 
         // Modern Kafka (KRaft mode) requires ApiVersions as the first request
         // on a new connection. Send it and discard the response.
@@ -974,6 +993,9 @@ export async function handleKafkaMetadata(request: Request): Promise<Response> {
         reader.releaseLock();
         await socket.close();
 
+        // Validate correlation ID — Metadata request uses correlation ID 2
+        const correlationIdMismatch = parsed.correlationId !== 2;
+
         return {
           success: true,
           host,
@@ -985,8 +1007,14 @@ export async function handleKafkaMetadata(request: Request): Promise<Response> {
           topicCount: parsed.topics.length,
           connectTimeMs: connectTime,
           totalTimeMs: totalTime,
+          ...(correlationIdMismatch && {
+            warning: `Response correlation ID (${parsed.correlationId}) does not match request correlation ID (2). The response may belong to a different request.`,
+            correlationIdMismatch: true,
+          }),
         };
       } catch (error) {
+        try { writer?.releaseLock(); } catch { /* ignore */ }
+        try { reader?.releaseLock(); } catch { /* ignore */ }
         try { await socket.close(); } catch { /* ignore */ }
         throw error;
       }
@@ -1030,10 +1058,11 @@ function decodeVarint(data: Uint8Array, pos: number): { value: number; bytesRead
   while (pos + bytesRead < data.length) {
     const b = data[pos + bytesRead];
     bytesRead++;
-    raw |= (b & 0x7F) << shift;
+    // Use multiplication instead of bitshift for shifts >= 28 to avoid 32-bit overflow
+    raw += (b & 0x7F) * (1 << shift);
     shift += 7;
     if ((b & 0x80) === 0) break;
-    if (bytesRead >= 5) break; // Zigzag-encoded int32 uses at most 5 bytes; stop to prevent shift overflow
+    if (bytesRead >= 5) break; // Zigzag-encoded int32 uses at most 5 bytes
   }
   // Zigzag decode: (raw >>> 1) XOR -(raw & 1)
   const value = (raw >>> 1) ^ -(raw & 1);

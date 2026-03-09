@@ -1,0 +1,65 @@
+version: '3.8'
+
+# File Sharing Protocols (beyond FTP/SSH)
+# Protocols covered: cifs, smb, nfs, rsync
+#
+# Usage: docker compose -f docker-compose.files.yml up -d
+
+services:
+  # Samba - SMB/CIFS file sharing
+  samba:
+    image: dperson/samba
+    container_name: testserver-samba
+    ports:
+      - "139:139"       # NetBIOS
+      - "445:445"       # SMB
+    command: >
+      -u "testuser;testpass123"
+      -s "testshare;/share;yes;no;no;testuser"
+      -p
+    volumes:
+      - samba_data:/share
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # NFS Server
+  nfs:
+    image: itsthenetwork/nfs-server-alpine
+    container_name: testserver-nfs
+    ports:
+      - "2049:2049"
+    environment:
+      - SHARED_DIRECTORY=/nfsshare
+    volumes:
+      - nfs_data:/nfsshare
+    privileged: true
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Rsync daemon
+  rsync:
+    build:
+      context: ./docker/rsync-server
+      dockerfile: Dockerfile
+    container_name: testserver-rsync
+    ports:
+      - "873:873"
+    volumes:
+      - rsync_data:/data
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  samba_data:
+  nfs_data:
+  rsync_data:

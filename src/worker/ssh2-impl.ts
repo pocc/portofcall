@@ -89,8 +89,10 @@ function ab(u: Uint8Array): Uint8Array<ArrayBuffer> {
 
 /** Read an SSH string (uint32 length + bytes) from buf at offset; returns [data, nextOffset] */
 function readStr(b: Uint8Array, off: number): [Uint8Array, number] {
+  if (off + 4 > b.length) throw new Error('SSH packet truncated (string length field)');
   const len = readU32(b, off);
   off += 4;
+  if (off + len > b.length) throw new Error('SSH packet truncated (string data)');
   return [b.subarray(off, off + len), off + len];
 }
 
@@ -206,9 +208,11 @@ class PacketReader {
     // Verify MAC
     const mac = this.buf.slice(4 + pktLen, totalBytes);
     const expectedMac = new Uint8Array(await crypto.subtle.sign('HMAC', macKey, ab(cat(u32(seqno), plaintext))));
+    let mismatch = 0;
     for (let i = 0; i < 32; i++) {
-      if (mac[i] !== expectedMac[i]) throw new Error('SSH: MAC verification failed');
+      mismatch |= mac[i] ^ expectedMac[i];
     }
+    if (mismatch !== 0) throw new Error('SSH: MAC verification failed');
 
     advanceCounter(counter, Math.ceil((4 + pktLen) / 16));
 
@@ -391,6 +395,8 @@ export interface SSHTerminalOptions {
   password?: string;
   privateKey?: string;
   passphrase?: string;
+  cols?: number;
+  rows?: number;
 }
 
 async function runSSHSession(
@@ -425,13 +431,23 @@ async function runSSHSession(
   let c2sSeqno = 0;
   let s2cSeqno = 0;
 
-  async function sendPayload(payload: Uint8Array): Promise<void> {
-    if (!encrypted || !c2sKey || !c2sMac) {
-      await tcpWriter.write(buildPacket(payload));
-    } else {
-      await tcpWriter.write(await buildEncPacket(payload, c2sSeqno, c2sKey, c2sMac, c2sCounter));
-    }
-    c2sSeqno++;
+  // Serialize all sendPayload calls via a promise chain.
+  // The drain loop and SSH read loop both call sendPayload concurrently;
+  // without serialization, two in-flight buildEncPacket calls would use
+  // the same c2sSeqno and c2sCounter (AES-CTR keystream reuse + duplicate seqno).
+  let sendChain: Promise<void> = Promise.resolve();
+
+  function sendPayload(payload: Uint8Array): Promise<void> {
+    const task = sendChain.then(async () => {
+      if (!encrypted || !c2sKey || !c2sMac) {
+        await tcpWriter.write(buildPacket(payload));
+      } else {
+        await tcpWriter.write(await buildEncPacket(payload, c2sSeqno, c2sKey, c2sMac, c2sCounter));
+      }
+      c2sSeqno++;
+    });
+    sendChain = task.catch(() => {}); // Don't let errors break the chain
+    return task;
   }
 
   async function readPayload(): Promise<Uint8Array> {
@@ -455,10 +471,12 @@ async function runSSHSession(
   // Read bytes until \r\n; some servers send banner lines before SSH-2.0-...
   let serverVersion = '';
   let accumBuf = new Uint8Array(0);
+  const MAX_BANNER_BYTES = 8192; // RFC 4253 §4.2
   while (!serverVersion) {
     const { done, value } = await tcpReader.read();
     if (done) throw new Error('Connection closed during version exchange');
     accumBuf = cat(accumBuf, value);
+    if (accumBuf.length > MAX_BANNER_BYTES) throw new Error('SSH banner exceeds 8192 bytes');
     // Scan for \r\n
     for (let i = 0; i < accumBuf.length - 1; i++) {
       if (accumBuf[i] === 0x0d && accumBuf[i + 1] === 0x0a) {
@@ -625,7 +643,7 @@ async function runSSHSession(
     throw new Error('No credentials provided');
   }
 
-  // Wait for auth result (may get BANNER first)
+  // Wait for auth result (may get BANNER or GLOBAL_REQUEST first)
   while (!authed) {
     const authReply = await readPayload();
     switch (authReply[0]) {
@@ -638,6 +656,14 @@ async function runSSHSession(
         // Show banner to user
         const [bannerBytes] = readStr(authReply, 1);
         wsInfo(dec.decode(bannerBytes).trim());
+        break;
+      }
+      case MSG_GLOBAL_REQUEST: {
+        // e.g. hostkeys-00@openssh.com — respond with failure if want_reply
+        const [, nameEnd] = readStr(authReply, 1);
+        if (authReply[nameEnd]) {
+          try { await sendPayload(new Uint8Array([MSG_REQUEST_FAILURE])); } catch { /* ignore */ }
+        }
         break;
       }
       default:
@@ -661,6 +687,7 @@ async function runSSHSession(
 
   let remoteChannel = 0;
   let remoteWindow = 0;
+  let remoteMaxPktSize!: number; // assigned from MSG_CHANNEL_OPEN_CONFIRMATION
 
   while (true) {
     const p = await readPayload();
@@ -668,16 +695,25 @@ async function runSSHSession(
       // uint32 recipient_channel, uint32 sender_channel, uint32 initial_window, uint32 max_pkt
       remoteChannel = readU32(p, 5);
       remoteWindow = readU32(p, 9);
+      remoteMaxPktSize = readU32(p, 13);
       break;
     }
     if (p[0] === MSG_CHANNEL_OPEN_FAILURE) {
       const [reasonB] = readStr(p, 9);
       throw new Error(`Channel open failed: ${dec.decode(reasonB)}`);
     }
+    if (p[0] === MSG_GLOBAL_REQUEST) {
+      const [, nameEnd] = readStr(p, 1);
+      if (p[nameEnd]) await sendPayload(new Uint8Array([MSG_REQUEST_FAILURE]));
+      continue;
+    }
     // Ignore other packets during channel setup
   }
 
   // ── Step 8: Request PTY ───────────────────────────────────────────────────────
+
+  const ptyCols = opts.cols && opts.cols > 0 ? opts.cols : 80;
+  const ptyRows = opts.rows && opts.rows > 0 ? opts.rows : 24;
 
   await sendPayload(cat(
     new Uint8Array([MSG_CHANNEL_REQUEST]),
@@ -685,7 +721,7 @@ async function runSSHSession(
     sshStr('pty-req'),
     new Uint8Array([1]),       // want_reply
     sshStr('xterm-256color'),  // TERM
-    u32(220), u32(50),         // cols, rows
+    u32(ptyCols), u32(ptyRows), // cols, rows
     u32(0), u32(0),            // pixel width/height
     sshBytes(new Uint8Array(0)), // terminal modes (empty)
   ));
@@ -736,34 +772,96 @@ async function runSSHSession(
   let channelOpen = false; // set true only after 'connected' is sent
   let localWindowRemaining = localWindowSize;
 
+  // Write queue for WS → SSH data (RFC 4254 §5.2 compliant window management).
+  // The WS listener pushes bytes here non-blocking; the drain loop sends them
+  // in chunks that respect remoteWindow and remoteMaxPktSize, waiting for
+  // SSH_MSG_CHANNEL_WINDOW_ADJUST before sending when the window is exhausted.
+  const inputQueue: Uint8Array[] = [];
+  let inputQueueBytes = 0;
+  const INPUT_QUEUE_MAX = 4 * 1024 * 1024; // 4 MiB — prevent OOM if remote stops sending WINDOW_ADJUST
+  let drainWake: (() => void) | null = null;
+
+  function signalDrain(): void {
+    const fn = drainWake;
+    drainWake = null;
+    fn?.();
+  }
+
+  // Drain loop: runs concurrently with the SSH read loop below.
+  const drainDone = (async () => {
+    while (channelOpen) {
+      if (inputQueue.length === 0 || remoteWindow === 0) {
+        // Park until new input arrives or the remote window opens.
+        await new Promise<void>(resolve => { drainWake = resolve; });
+        continue;
+      }
+      const data = inputQueue[0];
+      let offset = 0;
+      while (offset < data.length && remoteWindow > 0 && channelOpen) {
+        const chunkSize = Math.min(data.length - offset, remoteWindow, remoteMaxPktSize);
+        const chunk = data.slice(offset, offset + chunkSize);
+        try {
+          await sendPayload(cat(
+            new Uint8Array([MSG_CHANNEL_DATA]),
+            u32(remoteChannel),
+            sshBytes(chunk),
+          ));
+          remoteWindow -= chunkSize;
+          offset += chunkSize;
+        } catch {
+          channelOpen = false;
+          break;
+        }
+      }
+      if (offset >= data.length) {
+        inputQueue.shift(); // fully consumed
+        inputQueueBytes -= data.length;
+      } else if (offset > 0) {
+        inputQueue[0] = data.slice(offset); // replace with unsent remainder
+        inputQueueBytes -= offset;
+      }
+    }
+  })();
+
   ws.send(JSON.stringify({ type: 'connected' }));
   channelOpen = true;
 
-  // WebSocket → SSH: forward terminal input as channel data
-  ws.addEventListener('message', async (event: MessageEvent) => {
+  // WebSocket → SSH: push input to queue non-blocking; drain loop handles sending.
+  ws.addEventListener('message', (event: MessageEvent) => {
     if (!channelOpen) return;
     const text = typeof event.data === 'string' ? event.data : dec.decode(event.data as ArrayBuffer);
 
-    // Ignore JSON control messages from browser
-    if (text.startsWith('{') && text.includes('"type"')) return;
+    // Handle JSON control messages from browser.
+    // Only intercept messages that are valid JSON with a recognized control type;
+    // unrecognized JSON or parse failures fall through to be sent as terminal input.
+    if (text.startsWith('{"type":"')) {
+      try {
+        const ctrl = JSON.parse(text) as { type?: string; cols?: number; rows?: number };
+        if (ctrl.type === 'resize' && ctrl.cols && ctrl.rows) {
+          // RFC 4254 §6.7 — window-change request
+          const resizePayload = cat(
+            new Uint8Array([MSG_CHANNEL_REQUEST]),
+            u32(remoteChannel),
+            sshStr('window-change'),
+            new Uint8Array([0]), // want_reply = false
+            u32(ctrl.cols), u32(ctrl.rows),
+            u32(0), u32(0), // pixel width/height
+          );
+          sendPayload(resizePayload).catch(() => {});
+          return;
+        }
+      } catch { /* not valid JSON — fall through to send as terminal input */ }
+    }
 
     const data = enc.encode(text);
     if (data.length === 0) return;
 
-    try {
-      // Split data into chunks that fit the available remote window
-      for (let offset = 0; offset < data.length; offset += remoteWindow) {
-        const chunkSize = Math.min(data.length - offset, remoteWindow);
-        if (chunkSize === 0) break;
-        const chunk = data.slice(offset, offset + chunkSize);
-        await sendPayload(cat(
-          new Uint8Array([MSG_CHANNEL_DATA]),
-          u32(remoteChannel),
-          sshBytes(chunk),
-        ));
-        remoteWindow -= chunk.length;
-      }
-    } catch { /* connection may have closed */ }
+    // Backpressure: drop input if the queue is full (remote not consuming)
+    if (inputQueueBytes + data.length > INPUT_QUEUE_MAX) return;
+
+    inputQueue.push(data);
+    inputQueueBytes += data.length;
+    signalDrain(); // wake drain loop if it was waiting for input
   });
 
   // SSH → WebSocket: forward channel output to terminal
@@ -798,13 +896,28 @@ async function runSSHSession(
 
       case MSG_CHANNEL_EXTENDED_DATA: {
         // stderr — send it anyway so it shows in the terminal
+        // RFC 4254 §5.2: extended data also consumes the channel window
         const [data] = readStr(p, 9);
+        localWindowRemaining -= data.length;
         ws.send(data);
+
+        if (localWindowRemaining < 256 * 1024) {
+          const refill = 1 * 1024 * 1024;
+          try {
+            await sendPayload(cat(
+              new Uint8Array([MSG_CHANNEL_WINDOW_ADJUST]),
+              u32(remoteChannel),
+              u32(refill),
+            ));
+            localWindowRemaining += refill;
+          } catch { /* ignore */ }
+        }
         break;
       }
 
       case MSG_CHANNEL_WINDOW_ADJUST:
         remoteWindow += readU32(p, 5);
+        signalDrain(); // unblock drain loop if it was waiting for window space
         break;
 
       case MSG_GLOBAL_REQUEST: {
@@ -816,18 +929,31 @@ async function runSSHSession(
         break;
       }
 
+      case MSG_CHANNEL_REQUEST: {
+        // e.g. exit-status, exit-signal — respond to want_reply
+        const [, afterType] = readStr(p, 5);
+        if (p[afterType]) {
+          try { await sendPayload(cat(new Uint8Array([MSG_CHANNEL_SUCCESS]), u32(remoteChannel))); } catch { /* ignore */ }
+        }
+        break;
+      }
+
       case MSG_CHANNEL_EOF:
         // Half-close from server; wait for CLOSE
         break;
 
       case MSG_CHANNEL_CLOSE:
+        // RFC 4254 §5.3: respond with CHANNEL_CLOSE unless already sent
+        try { await sendPayload(cat(new Uint8Array([MSG_CHANNEL_CLOSE]), u32(remoteChannel))); } catch { /* ignore */ }
         channelOpen = false;
+        signalDrain(); // unblock drain loop so it can exit
         break;
 
       case MSG_DISCONNECT: {
         const [reason] = readStr(p, 5);
         wsError(`Disconnected: ${dec.decode(reason)}`);
         channelOpen = false;
+        signalDrain(); // unblock drain loop so it can exit
         break;
       }
 
@@ -839,6 +965,9 @@ async function runSSHSession(
     }
   }
 
+  channelOpen = false;
+  signalDrain(); // ensure drain loop exits if not already
+  await drainDone;
   ws.send(JSON.stringify({ type: 'disconnected' }));
 }
 
@@ -851,6 +980,8 @@ export interface SSHSubsystemIO {
   readChannelData(): Promise<Uint8Array | null>;
   /** Close the SSH session cleanly. */
   close(): Promise<void>;
+  /** Exit status from exec channel (available after readChannelData returns null). */
+  exitStatus: number | null;
 }
 
 /**
@@ -909,10 +1040,12 @@ export async function openSSHSubsystem(
   // Step 1: Version exchange
   let serverVersion2 = '';
   let accumBuf2 = new Uint8Array(0);
+  const MAX_BANNER_BYTES2 = 8192; // RFC 4253 §4.2
   while (!serverVersion2) {
     const { done, value } = await tcpReader.read();
     if (done) throw new Error('Connection closed during version exchange');
     accumBuf2 = cat(accumBuf2, value);
+    if (accumBuf2.length > MAX_BANNER_BYTES2) throw new Error('SSH banner exceeds 8192 bytes');
     for (let i = 0; i < accumBuf2.length - 1; i++) {
       if (accumBuf2[i] === 0x0d && accumBuf2[i + 1] === 0x0a) {
         const line = dec.decode(accumBuf2.slice(0, i));
@@ -1012,6 +1145,12 @@ export async function openSSHSubsystem(
     const ar = await readPayload2();
     if (ar[0] === MSG_USERAUTH_SUCCESS) break;
     if (ar[0] === MSG_USERAUTH_FAILURE) throw new Error('Authentication failed');
+    if (ar[0] === MSG_GLOBAL_REQUEST) {
+      // e.g. hostkeys-00@openssh.com — respond with failure if want_reply
+      const [, ne] = readStr(ar, 1);
+      if (ar[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
+      continue;
+    }
     // Skip banners (MSG_USERAUTH_BANNER = 53) and other messages
   }
 
@@ -1026,16 +1165,23 @@ export async function openSSHSubsystem(
 
   let remoteCh = 0;
   let remoteWin = 0;
+  let remoteMaxPkt = localMax; // default to our local max; overwritten from server's OPEN_CONFIRMATION
   while (true) {
     const p = await readPayload2();
     if (p[0] === MSG_CHANNEL_OPEN_CONFIRMATION) {
       remoteCh = readU32(p, 5);
       remoteWin = readU32(p, 9);
+      remoteMaxPkt = readU32(p, 13);
       break;
     }
     if (p[0] === MSG_CHANNEL_OPEN_FAILURE) {
       const [rb] = readStr(p, 9);
       throw new Error(`Channel open failed: ${dec.decode(rb)}`);
+    }
+    if (p[0] === MSG_GLOBAL_REQUEST) {
+      const [, ne] = readStr(p, 1);
+      if (p[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
+      continue;
     }
   }
 
@@ -1062,22 +1208,48 @@ export async function openSSHSubsystem(
 
   let localWinRemaining = localWin;
   let chClosed = false;
+  let exitStatus: number | null = null;
+
+  /** Handle MSG_CHANNEL_REQUEST — captures exit-status and responds to want_reply */
+  function handleChannelRequest(p: Uint8Array): void {
+    // Format: uint32 recipient_channel, string request_type, boolean want_reply, ...type-specific
+    const [reqTypeB, afterType] = readStr(p, 5);
+    const wantReply = p[afterType] === 1;
+    const reqType = dec.decode(reqTypeB);
+
+    if (reqType === 'exit-status' && afterType + 1 + 4 <= p.length) {
+      // RFC 4254 §6.10: uint32 exit_status
+      exitStatus = readU32(p, afterType + 1);
+    }
+
+    if (wantReply) {
+      // Acknowledge with CHANNEL_SUCCESS (we accept all channel requests)
+      sendPayload2(cat(new Uint8Array([MSG_CHANNEL_SUCCESS]), u32(remoteCh))).catch(() => {});
+    }
+  }
 
   async function sendChannelData(data: Uint8Array): Promise<void> {
     if (chClosed) throw new Error('Channel closed');
-    for (let off2 = 0; off2 < data.length; off2 += localMax) {
-      const chunk = data.slice(off2, off2 + localMax);
+    const maxPkt = Math.min(localMax, remoteMaxPkt);
+    for (let off2 = 0; off2 < data.length; off2 += maxPkt) {
+      const chunk = data.slice(off2, off2 + maxPkt);
       // Wait for remote window to have enough space for this chunk
       while (chunk.length > remoteWin) {
         const p = await readPayload2();
         if (p[0] === MSG_CHANNEL_WINDOW_ADJUST) {
           remoteWin += readU32(p, 5);
-        } else if (p[0] === MSG_CHANNEL_EOF || p[0] === MSG_CHANNEL_CLOSE) {
+        } else if (p[0] === MSG_CHANNEL_EOF) {
+          throw new Error('Channel EOF while waiting for window');
+        } else if (p[0] === MSG_CHANNEL_CLOSE) {
+          // RFC 4254 §5.3: respond with CHANNEL_CLOSE
+          try { await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_CLOSE]), u32(remoteCh))); } catch { /* ignore */ }
           chClosed = true;
           throw new Error('Channel closed while waiting for window');
         } else if (p[0] === MSG_GLOBAL_REQUEST) {
           const [, ne] = readStr(p, 1);
           if (p[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
+        } else if (p[0] === MSG_CHANNEL_REQUEST) {
+          handleChannelRequest(p);
         }
         // Ignore other message types
       }
@@ -1101,8 +1273,33 @@ export async function openSSHSubsystem(
         }
         return data;
       }
-      if (p[0] === MSG_CHANNEL_EOF || p[0] === MSG_CHANNEL_CLOSE) { chClosed = true; return null; }
+      if (p[0] === MSG_CHANNEL_EXTENDED_DATA) {
+        // stderr — return it as data (exec channels mix stdout/stderr)
+        // RFC 4254 §5.2: extended data also consumes the channel window
+        const [data] = readStr(p, 9);
+        localWinRemaining -= data.length;
+        if (localWinRemaining < 256 * 1024) {
+          const refill = 1 * 1024 * 1024;
+          try {
+            await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_WINDOW_ADJUST]), u32(remoteCh), u32(refill)));
+            localWinRemaining += refill;
+          } catch { /* ignore */ }
+        }
+        return data;
+      }
+      if (p[0] === MSG_CHANNEL_EOF) {
+        // Server won't send more data, but channel is still open.
+        // Don't set chClosed — caller should still call close() to send CHANNEL_CLOSE.
+        return null;
+      }
+      if (p[0] === MSG_CHANNEL_CLOSE) {
+        // RFC 4254 §5.3: respond with CHANNEL_CLOSE unless already sent
+        try { await sendPayload2(cat(new Uint8Array([MSG_CHANNEL_CLOSE]), u32(remoteCh))); } catch { /* ignore */ }
+        chClosed = true;
+        return null;
+      }
       if (p[0] === MSG_CHANNEL_WINDOW_ADJUST) { remoteWin += readU32(p, 5); continue; }
+      if (p[0] === MSG_CHANNEL_REQUEST) { handleChannelRequest(p); continue; }
       if (p[0] === MSG_GLOBAL_REQUEST) {
         const [, ne] = readStr(p, 1);
         if (p[ne]) await sendPayload2(new Uint8Array([MSG_REQUEST_FAILURE]));
@@ -1121,7 +1318,7 @@ export async function openSSHSubsystem(
     try { await tcpSocket.close(); } catch { /* ignore */ }
   }
 
-  return { sendChannelData, readChannelData, close };
+  return { sendChannelData, readChannelData, close, get exitStatus() { return exitStatus; } };
 }
 
 // ─── Public handler ───────────────────────────────────────────────────────────
@@ -1143,13 +1340,44 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
     });
   }
 
+  if (isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ error: 'Port must be between 1 and 65535' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Check Cloudflare early — before accepting the WebSocket — so the client
+  // gets a clean HTTP 403 instead of having to send credentials first.
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+      isCloudflare: true,
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const pair = new WebSocketPair();
   const [client, server] = Object.values(pair);
   server.accept();
 
+  // Close the WebSocket if credentials aren't received within 30 seconds
+  let credentialsReceived = false;
+  const credentialTimeout = setTimeout(() => {
+    if (!credentialsReceived) {
+      try { server.send(JSON.stringify({ type: 'error', message: 'Credentials timeout — no credentials received within 30 seconds' })); } catch { /* ignore */ }
+      try { server.close(1008, 'Credentials timeout'); } catch { /* ignore */ }
+    }
+  }, 30000);
+
   // Wait for the first message containing credentials, then start the SSH session
   server.addEventListener('message', function onCredentials(event: MessageEvent) {
     server.removeEventListener('message', onCredentials);
+    credentialsReceived = true;
+    clearTimeout(credentialTimeout);
 
     (async () => {
       try {
@@ -1159,6 +1387,8 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
           password?: string;
           privateKey?: string;
           passphrase?: string;
+          cols?: number;
+          rows?: number;
         };
 
         if (!creds.username || typeof creds.username !== 'string') {
@@ -1172,18 +1402,14 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
           return;
         }
 
-        const cfCheck = await checkIfCloudflare(host);
-        if (cfCheck.isCloudflare && cfCheck.ip) {
-          server.send(JSON.stringify({ type: 'error', message: getCloudflareErrorMessage(host, cfCheck.ip) }));
-          server.close(1011, 'Cloudflare proxy');
-          return;
-        }
-
         const authMethod = creds.authMethod ?? (creds.privateKey ? 'privateKey' : 'password');
         server.send(JSON.stringify({ type: 'info', message: `Connecting to ${creds.username}@${host}:${port}…` }));
 
         const socket = connect(`${host}:${port}`);
-        await socket.opened;
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+        ]);
 
         await runSSHSession(socket, server, {
           host,
@@ -1193,6 +1419,8 @@ export async function handleSSHTerminal(request: Request): Promise<Response> {
           password: creds.password,
           privateKey: creds.privateKey,
           passphrase: creds.passphrase,
+          cols: creds.cols,
+          rows: creds.rows,
         });
       } catch (err) {
         try {

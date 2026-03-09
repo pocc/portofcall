@@ -39,7 +39,7 @@ Port of Call supports passing all common SSH authentication options to browser-s
 Test SSH connectivity with username/password:
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ssh/connect \
+curl -X POST https://l4.fyi/api/ssh/connect \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ssh.example.com",
@@ -89,7 +89,7 @@ const sshOptions = {
 
 // Create WebSocket tunnel with SSH options
 const params = new URLSearchParams(sshOptions);
-const ws = new WebSocket(`wss://portofcall.ross.gg/api/ssh/connect?${params}`);
+const ws = new WebSocket(`wss://l4.fyi/api/ssh/connect?${params}`);
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
@@ -149,7 +149,7 @@ const sshOptions = {
 Execute commands non-interactively via the SSH exec channel:
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ssh/exec \
+curl -X POST https://l4.fyi/api/ssh/exec \
   -H "Content-Type: application/json" \
   -d '{
     "host": "192.0.2.1",
@@ -187,7 +187,7 @@ myssh() {
         username: "root",
         privateKey: $key,
         command: "hostname"
-      }' | curl -s -X POST https://portofcall.ross.gg/api/ssh/exec \
+      }' | curl -s -X POST https://l4.fyi/api/ssh/exec \
         -H "Content-Type: application/json" \
         -d @-)
 
@@ -212,7 +212,7 @@ myssh() {
           username: "root",
           privateKey: $key,
           command: $cmds
-        }' | curl -s -X POST https://portofcall.ross.gg/api/ssh/exec \
+        }' | curl -s -X POST https://l4.fyi/api/ssh/exec \
           -H "Content-Type: application/json" \
           -d @-)
 
@@ -235,7 +235,7 @@ myssh() {
         username: "root",
         privateKey: $key,
         command: $cmds
-      }' | curl -s -X POST https://portofcall.ross.gg/api/ssh/exec \
+      }' | curl -s -X POST https://l4.fyi/api/ssh/exec \
         -H "Content-Type: application/json" \
         -d @-)
 
@@ -505,7 +505,7 @@ const term = new Terminal();
 term.open(document.getElementById('terminal'));
 
 // Connect to Port of Call WebSocket tunnel
-const ws = new WebSocket('wss://portofcall.ross.gg/api/ssh/connect?host=ssh.example.com&port=22');
+const ws = new WebSocket('wss://l4.fyi/api/ssh/connect?host=ssh.example.com&port=22');
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);

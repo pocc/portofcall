@@ -513,42 +513,42 @@ FINS/TCP connections (often 8-16 depending on model).
 
 ### Connectivity check (discover PLC model)
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/fins/connect \
+curl -s -X POST https://l4.fyi/api/fins/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10"}' | jq .
 ```
 
 ### Read 10 words from DM area starting at address 100
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/fins/memory-read \
+curl -s -X POST https://l4.fyi/api/fins/memory-read \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","memoryArea":"DM","address":100,"itemCount":10}' | jq .
 ```
 
 ### Read CIO area (physical I/O status)
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/fins/memory-read \
+curl -s -X POST https://l4.fyi/api/fins/memory-read \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","memoryArea":"CIO","address":0,"itemCount":20}' | jq .
 ```
 
 ### Write three words to DM area
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/fins/memory-write \
+curl -s -X POST https://l4.fyi/api/fins/memory-write \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","memoryArea":"DM","address":100,"words":[1234,5678,42]}' | jq .
 ```
 
 ### Non-default port with custom timeout
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/fins/connect \
+curl -s -X POST https://l4.fyi/api/fins/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"10.0.0.50","port":9601,"timeout":5000}' | jq .
 ```
 
 ### Specify client node address
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/fins/connect \
+curl -s -X POST https://l4.fyi/api/fins/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","clientNode":10}' | jq .
 ```

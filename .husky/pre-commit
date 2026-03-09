@@ -1,6 +1,9 @@
-# Run lint
-echo "🧹 Running ESLint..."
-npm run lint
+# Lint only staged files
+STAGED_TS=$(git diff --cached --name-only --diff-filter=ACM -- '*.ts' '*.tsx')
+if [ -n "$STAGED_TS" ]; then
+  echo "🧹 Running ESLint on staged files..."
+  npx eslint $STAGED_TS
+fi
 
 # Run type check
 echo "🔍 Running TypeScript type check..."

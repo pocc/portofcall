@@ -35,11 +35,12 @@ async function readPOP3Response(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      response += new TextDecoder().decode(value);
+      response += decoder.decode(value, { stream: true });
       if (response.includes('\r\n')) break;
     }
     return response;
@@ -65,12 +66,19 @@ async function readPOP3MultiLine(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      response += new TextDecoder().decode(value);
+      response += decoder.decode(value, { stream: true });
       if (response.includes('\r\n.\r\n')) break;
+    }
+
+    // Strip the terminator (CRLF.CRLF) from the response
+    const termIdx = response.indexOf('\r\n.\r\n');
+    if (termIdx !== -1) {
+      response = response.substring(0, termIdx + 2); // keep final CRLF before terminator
     }
 
     // RFC 1939 §3: Dot-unstuffing — remove the extra leading "." from
@@ -96,7 +104,8 @@ async function sendPOP3Command(
   command: string,
   timeoutMs: number
 ): Promise<string> {
-  await writer.write(new TextEncoder().encode(command + '\r\n'));
+  const safeCommand = command.replace(/[\r\n]/g, '');
+  await writer.write(new TextEncoder().encode(safeCommand + '\r\n'));
   return await readPOP3Response(reader, timeoutMs);
 }
 
@@ -106,7 +115,7 @@ async function sendPOP3Command(
 export async function handlePOP3SConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const options = await request.json() as {
       host?: string;
@@ -129,6 +138,12 @@ export async function handlePOP3SConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 995;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -259,7 +274,7 @@ export async function handlePOP3SConnect(request: Request): Promise<Response> {
 export async function handlePOP3SList(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -286,6 +301,12 @@ export async function handlePOP3SList(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 995;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -413,7 +434,7 @@ export async function handlePOP3SList(request: Request): Promise<Response> {
 export async function handlePOP3SRetrieve(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -441,6 +462,12 @@ export async function handlePOP3SRetrieve(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 995;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -486,8 +513,12 @@ export async function handlePOP3SRetrieve(request: Request): Promise<Response> {
           throw new Error(`Authentication failed: ${passResp.trim()}`);
         }
 
-        // Retrieve message
-        await writer.write(new TextEncoder().encode(`RETR ${options.messageId}\r\n`));
+        // Retrieve message — validate messageId is a safe integer
+        const msgId = Number(options.messageId);
+        if (!Number.isInteger(msgId) || msgId <= 0) {
+          throw new Error('Invalid messageId: must be a positive integer');
+        }
+        await writer.write(new TextEncoder().encode(`RETR ${msgId}\r\n`));
         const messageResp = await readPOP3MultiLine(reader, 30000);
 
         // Parse message — remove +OK line and terminating .
@@ -546,7 +577,7 @@ export async function handlePOP3SRetrieve(request: Request): Promise<Response> {
 export async function handlePOP3SDele(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -563,6 +594,11 @@ export async function handlePOP3SDele(request: Request): Promise<Response> {
     const port = options.port || 995;
     const timeoutMs = options.timeout || 30000;
     const msgnum = options.msgnum;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -613,7 +649,7 @@ export async function handlePOP3SDele(request: Request): Promise<Response> {
 export async function handlePOP3SUidl(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -629,6 +665,11 @@ export async function handlePOP3SUidl(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 995;
     const timeoutMs = options.timeout || 30000;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -686,7 +727,7 @@ export async function handlePOP3SUidl(request: Request): Promise<Response> {
 export async function handlePOP3STop(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -703,8 +744,25 @@ export async function handlePOP3STop(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 995;
     const timeoutMs = options.timeout || 30000;
-    const msgnum = options.msgnum;
-    const lines = options.lines ?? 0;
+    const msgnum = Number(options.msgnum);
+    const lines = Number(options.lines ?? 0);
+
+    if (!Number.isInteger(msgnum) || msgnum <= 0) {
+      return new Response(JSON.stringify({ success: false, error: 'msgnum must be a positive integer' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!Number.isInteger(lines) || lines < 0) {
+      return new Response(JSON.stringify({ success: false, error: 'lines must be a non-negative integer' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -773,6 +831,11 @@ export async function handlePOP3SCapa(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
     const cfCheck = await checkIfCloudflare(host);

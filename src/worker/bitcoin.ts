@@ -21,6 +21,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // Network magic bytes
 const NETWORK_MAGIC: Record<string, Uint8Array> = {
@@ -96,7 +97,7 @@ async function computeChecksum(payload: Uint8Array): Promise<Uint8Array> {
  * Build the "version" message payload
  */
 function buildVersionPayload(): Uint8Array {
-  const buf = new ArrayBuffer(86 + 14); // base + user agent varint + user agent + relay
+  const buf = new ArrayBuffer(86 + 16); // base + user agent varint + user agent + relay
   const view = new DataView(buf);
   let offset = 0;
 
@@ -217,11 +218,11 @@ function parseVersionPayload(data: Uint8Array): {
 }
 
 /**
- * Read a complete Bitcoin message from the reader
- * Returns { command, payload } or null on connection close
+ * Read a complete Bitcoin message from the BufferedReader.
+ * Returns { command, payload } or null on connection close.
  */
 async function readMessage(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   expectedMagic: Uint8Array,
   timeoutMs: number = 10000
 ): Promise<{ command: string; payload: Uint8Array } | null> {
@@ -229,52 +230,45 @@ async function readMessage(
     setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
   );
 
-  // We need to accumulate data since TCP may fragment
-  let buffer: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
-
-  const appendData = (existing: Uint8Array<ArrayBufferLike>, newData: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBufferLike> => {
-    const combined = new Uint8Array(existing.length + newData.length);
-    combined.set(existing);
-    combined.set(newData, existing.length);
-    return combined;
-  };
-
-  // Read until we have at least 24 bytes (header)
-  while (buffer.length < 24) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) return null;
-    buffer = appendData(buffer, new Uint8Array(value));
+  // Read 24-byte header
+  let header: Uint8Array;
+  try {
+    header = await br.readExact(24, timeoutPromise);
+  } catch {
+    return null;
   }
 
   // Verify magic bytes
-  const magic = buffer.slice(0, 4);
-  let magicMatch = true;
   for (let i = 0; i < 4; i++) {
-    if (magic[i] !== expectedMagic[i]) {
-      magicMatch = false;
-      break;
+    if (header[i] !== expectedMagic[i]) {
+      throw new Error(`Invalid network magic: 0x${Array.from(header.slice(0, 4)).map(b => b.toString(16).padStart(2, '0')).join('')}`);
     }
-  }
-  if (!magicMatch) {
-    throw new Error(`Invalid network magic: 0x${Array.from(magic).map(b => b.toString(16).padStart(2, '0')).join('')}`);
   }
 
   // Parse command
-  const commandBytes = buffer.slice(4, 16);
-  const command = new TextDecoder().decode(commandBytes).replace(/\0+$/, '');
+  const command = new TextDecoder().decode(header.slice(4, 16)).replace(/\0+$/, '');
 
   // Parse payload length
-  const payloadLen = new DataView(buffer.buffer, buffer.byteOffset + 16, 4).getUint32(0, true);
+  const payloadLen = new DataView(header.buffer, header.byteOffset + 16, 4).getUint32(0, true);
 
-  // Read remaining payload
-  const totalLen = 24 + payloadLen;
-  while (buffer.length < totalLen) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done || !value) return null;
-    buffer = appendData(buffer, new Uint8Array(value));
+  // Guard against memory exhaustion
+  const MAX_PAYLOAD_BYTES = 10 * 1024 * 1024;
+  if (payloadLen > MAX_PAYLOAD_BYTES) {
+    throw new Error(`Payload too large: ${payloadLen} bytes exceeds maximum of 10 MiB`);
   }
 
-  const payload = buffer.slice(24, 24 + payloadLen);
+  // Read payload
+  let payload: Uint8Array;
+  if (payloadLen > 0) {
+    try {
+      payload = await br.readExact(payloadLen, timeoutPromise);
+    } catch {
+      return null;
+    }
+  } else {
+    payload = new Uint8Array(0);
+  }
+
   return { command, payload };
 }
 
@@ -320,6 +314,12 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
     const network = options.network || 'mainnet';
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     if (!NETWORK_MAGIC[network]) {
       return new Response(JSON.stringify({
         success: false,
@@ -350,7 +350,7 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
       const socket = connect(`${host}:${port}`);
       await socket.opened;
 
-      const reader = socket.readable.getReader();
+      const br = new BufferedReader(socket.readable.getReader());
       const writer = socket.writable.getWriter();
 
       try {
@@ -367,7 +367,7 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
         await writer.write(versionMsg);
 
         // Read server's version message
-        const serverVersion = await readMessage(reader, magic, 10000);
+        const serverVersion = await readMessage(br, magic, 10000);
         const rtt = Date.now() - startTime;
 
         if (!serverVersion || serverVersion.command !== 'version') {
@@ -393,7 +393,7 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
         // Try to read verack from server (but don't fail if timeout)
         let receivedVerack = false;
         try {
-          const verackResponse = await readMessage(reader, magic, 3000);
+          const verackResponse = await readMessage(br, magic, 3000);
           if (verackResponse?.command === 'verack') {
             receivedVerack = true;
           }
@@ -403,13 +403,13 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
 
         if (!receivedVerack) {
           writer.releaseLock();
-          reader.releaseLock();
+          br.raw.releaseLock();
           socket.close();
           return { success: false, error: 'VERACK not received within timeout' };
         }
 
         writer.releaseLock();
-        reader.releaseLock();
+        br.raw.releaseLock();
         socket.close();
 
         const serviceFlags = decodeServices(versionInfo.services);
@@ -435,7 +435,7 @@ export async function handleBitcoinConnect(request: Request): Promise<Response> 
           note: `Bitcoin P2P protocol (port ${port}). Connected to ${network} node running ${versionInfo.userAgent} at block height ${versionInfo.startHeight}. Services: ${serviceFlags.join(', ')}.`,
         };
       } catch (error) {
-        reader.releaseLock();
+        br.raw.releaseLock();
         writer.releaseLock();
         socket.close();
         throw error;
@@ -635,6 +635,13 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
     const port = options.port || 8333;
     const network = options.network || 'mainnet';
     const timeoutMs = options.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const magic = NETWORK_MAGIC[network] || NETWORK_MAGIC.mainnet;
 
     // Check Cloudflare
@@ -654,7 +661,7 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
       const socket = connect(`${host}:${port}`);
       await socket.opened;
 
-      const reader = socket.readable.getReader();
+      const br = new BufferedReader(socket.readable.getReader());
       const writer = socket.writable.getWriter();
 
       try {
@@ -669,7 +676,7 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
         await writer.write(versionMsg);
 
         // Read server version
-        const serverVersion = await readMessage(reader, magic, 10000);
+        const serverVersion = await readMessage(br, magic, 10000);
         if (!serverVersion || serverVersion.command !== 'version') {
           throw new Error('Version handshake failed');
         }
@@ -688,7 +695,7 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
 
         // Wait for verack
         try {
-          await readMessage(reader, magic, 3000);
+          await readMessage(br, magic, 3000);
         } catch {
           // Continue anyway
         }
@@ -714,7 +721,7 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
         }> = [];
         try {
           for (let i = 0; i < 10; i++) {
-            const msg = await readMessage(reader, magic, 5000);
+            const msg = await readMessage(br, magic, 5000);
             if (!msg) break;
             messages.push({ command: msg.command, payloadSize: msg.payload.length });
             if (msg.command === 'addr') {
@@ -727,7 +734,7 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
         }
 
         writer.releaseLock();
-        reader.releaseLock();
+        br.raw.releaseLock();
         socket.close();
 
         return {
@@ -743,7 +750,7 @@ export async function handleBitcoinGetAddr(request: Request): Promise<Response> 
           messagesReceived: messages,
         };
       } catch (error) {
-        reader.releaseLock();
+        br.raw.releaseLock();
         writer.releaseLock();
         socket.close();
         throw error;
@@ -850,6 +857,15 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
     const timeoutMs = options.timeout || 20000;
     const maxTxIds = Math.min(Math.max(options.maxTxIds || 20, 1), 200);
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      } satisfies Partial<BitcoinMempoolResponse>), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     if (!NETWORK_MAGIC[network]) {
       return new Response(JSON.stringify({
         success: false,
@@ -880,7 +896,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
       const socket = connect(`${host}:${port}`);
       await socket.opened;
 
-      const reader = socket.readable.getReader();
+      const br = new BufferedReader(socket.readable.getReader());
       const writer = socket.writable.getWriter();
 
       try {
@@ -895,7 +911,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
         await writer.write(versionMsg);
 
         // Read server version
-        const serverVersionMsg = await readMessage(reader, magic, 10000);
+        const serverVersionMsg = await readMessage(br, magic, 10000);
         if (!serverVersionMsg || serverVersionMsg.command !== 'version') {
           throw new Error('Version handshake failed');
         }
@@ -912,7 +928,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
 
         // Drain until we see verack or another message from the peer
         try {
-          await readMessage(reader, magic, 3000);
+          await readMessage(br, magic, 3000);
         } catch {
           // Timeout or no verack — proceed anyway
         }
@@ -939,7 +955,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
 
           let invMsg: { command: string; payload: Uint8Array } | null;
           try {
-            invMsg = await readMessage(reader, magic, remaining);
+            invMsg = await readMessage(br, magic, remaining);
           } catch {
             break;
           }
@@ -969,7 +985,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
         try {
           const pongTimeoutMs = 5000;
           while (true) {
-            const pongMsg = await readMessage(reader, magic, pongTimeoutMs);
+            const pongMsg = await readMessage(br, magic, pongTimeoutMs);
             if (!pongMsg) break;
             if (pongMsg.command === 'pong' && pongMsg.payload.length === 8) {
               let nonceMatch = true;
@@ -990,7 +1006,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
         }
 
         writer.releaseLock();
-        reader.releaseLock();
+        br.raw.releaseLock();
         socket.close();
 
         const rtt = Date.now() - startTime;
@@ -1007,7 +1023,7 @@ export async function handleBitcoinMempool(request: Request): Promise<Response> 
         } satisfies BitcoinMempoolResponse;
 
       } catch (error) {
-        reader.releaseLock();
+        br.raw.releaseLock();
         writer.releaseLock();
         socket.close();
         throw error;

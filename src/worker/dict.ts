@@ -45,6 +45,11 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
+/** Strip CR/LF to prevent CRLF command injection in DICT text protocol. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
+
 interface DictDefineRequest {
   host?: string;
   port?: number;
@@ -460,6 +465,11 @@ async function dictSession(
  * Handle DICT DEFINE request - look up word definitions
  */
 export async function handleDictDefine(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DictDefineRequest;
     const {
@@ -514,7 +524,7 @@ export async function handleDictDefine(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -543,7 +553,7 @@ export async function handleDictDefine(request: Request): Promise<Response> {
 
     const { banner, response } = await dictSession(
       host, port,
-      `DEFINE ${database} "${word}"`,
+      `DEFINE ${sanitizeCRLF(database)} "${sanitizeCRLF(word)}"`,
       timeout
     );
 
@@ -610,6 +620,11 @@ export async function handleDictDefine(request: Request): Promise<Response> {
  * Handle DICT MATCH request - find matching words
  */
 export async function handleDictMatch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DictMatchRequest;
     const {
@@ -681,7 +696,7 @@ export async function handleDictMatch(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -711,7 +726,7 @@ export async function handleDictMatch(request: Request): Promise<Response> {
 
     const { response } = await dictSession(
       host, port,
-      `MATCH ${database} ${strategy} "${word}"`,
+      `MATCH ${sanitizeCRLF(database)} ${sanitizeCRLF(strategy)} "${sanitizeCRLF(word)}"`,
       timeout
     );
 
@@ -778,6 +793,11 @@ export async function handleDictMatch(request: Request): Promise<Response> {
  * Handle DICT SHOW DB request - list available databases
  */
 export async function handleDictDatabases(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DictDatabasesRequest;
     const {
@@ -786,7 +806,7 @@ export async function handleDictDatabases(request: Request): Promise<Response> {
       timeout = 15000,
     } = body;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',

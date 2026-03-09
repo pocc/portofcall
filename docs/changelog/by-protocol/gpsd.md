@@ -81,3 +81,8 @@ Recommended documentation should include:
 - [gpsd Client HOWTO](https://gpsd.gitlab.io/gpsd/client-howto.html) - Client implementation guide
 - [NMEA 0183](https://en.wikipedia.org/wiki/NMEA_0183) - GPS sentence format
 - [NTP PPS](https://www.ntp.org/documentation/drivers/driver22/) - GPS/PPS time synchronization
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

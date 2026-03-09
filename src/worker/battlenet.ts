@@ -37,6 +37,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface BattlenetRequest {
   host: string;
@@ -321,7 +322,7 @@ function parseAuthInfoResponse(payload: Uint8Array): {
  * Basic BNCS probe: sends protocol selector + SID_NULL and reports server response.
  */
 export async function handleBattlenetConnect(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as BattlenetRequest;
@@ -332,7 +333,7 @@ export async function handleBattlenetConnect(request: Request): Promise<Response
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -342,6 +343,15 @@ export async function handleBattlenetConnect(request: Request): Promise<Response
       return new Response(JSON.stringify({ success: false, error: 'Protocol ID must be between 1 and 3 (0x01=Game, 0x02=BNFTP, 0x03=Chat)' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const socket = connect(`${host}:${port}`);
@@ -417,7 +427,7 @@ export async function handleBattlenetConnect(request: Request): Promise<Response
  * Response includes: logonType, serverToken, mpqFilename, serverInfo
  */
 export async function handleBattlenetAuthInfo(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let body: BattlenetRequest;
   try {
@@ -435,10 +445,21 @@ export async function handleBattlenetAuthInfo(request: Request): Promise<Respons
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  const cfCheckAuth = await checkIfCloudflare(host);
+  if (cfCheckAuth.isCloudflare && cfCheckAuth.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      host,
+      port,
+      error: getCloudflareErrorMessage(host, cfCheckAuth.ip),
+      isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
   const prod = (productId.toUpperCase() || 'STAR').substring(0, 4).padEnd(4, ' ').trimEnd() || 'STAR';
@@ -547,7 +568,7 @@ export async function handleBattlenetAuthInfo(request: Request): Promise<Respons
  * Body: { timeout? }  — per-realm timeout in ms (default 8000)
  */
 export async function handleBattlenetStatus(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   let realmTimeout = 8000;
   try {

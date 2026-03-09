@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-const WORKER_URL = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace('/api', '');
+const WORKER_URL = (process.env.API_BASE || 'https://l4.fyi/api').replace('/api', '');
 const isLocal = WORKER_URL.includes('localhost');
 const CVS_HOST = isLocal ? 'localhost' : 'cvs.example.com';
 

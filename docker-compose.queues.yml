@@ -1,0 +1,146 @@
+version: '3.8'
+
+# Message Queues & Brokers
+# Protocols covered: activemq, amqp, amqps, beanstalkd, kafka, nats, nsq, rabbitmq, stomp, zmtp, zookeeper
+#
+# Usage: docker compose -f docker-compose.queues.yml up -d
+
+services:
+  # RabbitMQ - AMQP broker with STOMP plugin
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: testserver-rabbitmq
+    ports:
+      - "5672:5672"     # AMQP
+      - "15672:15672"   # Management UI
+      - "61613:61613"   # STOMP
+    environment:
+      - RABBITMQ_DEFAULT_USER=testuser
+      - RABBITMQ_DEFAULT_PASS=testpass123
+    command: >
+      bash -c "
+        rabbitmq-plugins enable --offline rabbitmq_stomp &&
+        rabbitmq-server
+      "
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Apache Kafka (KRaft mode - no ZooKeeper dependency)
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: testserver-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    mem_limit: 1g
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Apache ZooKeeper (for direct ZK protocol testing)
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: testserver-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # NATS - Lightweight messaging
+  nats:
+    image: nats:alpine
+    container_name: testserver-nats
+    ports:
+      - "4222:4222"     # Client connections
+      - "8222:8222"     # HTTP monitoring
+    command: "--user testuser --pass testpass123 --http_port 8222"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # NSQ - Distributed message queue
+  nsqlookupd:
+    image: nsqio/nsq
+    container_name: testserver-nsqlookupd
+    ports:
+      - "4160:4160"     # TCP
+      - "4161:4161"     # HTTP
+    command: /nsqlookupd
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  nsqd:
+    image: nsqio/nsq
+    container_name: testserver-nsqd
+    ports:
+      - "4150:4150"     # TCP
+      - "4151:4151"     # HTTP
+    command: /nsqd --lookupd-tcp-address=nsqlookupd:4160
+    depends_on:
+      - nsqlookupd
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Beanstalkd - Simple job queue
+  beanstalkd:
+    image: schickling/beanstalkd
+    container_name: testserver-beanstalkd
+    ports:
+      - "11300:11300"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Apache ActiveMQ Classic - Multi-protocol broker
+  activemq:
+    image: apache/activemq-classic:6.1.0
+    container_name: testserver-activemq
+    ports:
+      - "61616:61616"   # OpenWire
+      - "8161:8161"     # Web console
+      - "61614:61614"   # STOMP
+    environment:
+      ACTIVEMQ_USERNAME: testuser
+      ACTIVEMQ_PASSWORD: testpass123
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  rabbitmq_data:
+  kafka_data:
+  zookeeper_data:

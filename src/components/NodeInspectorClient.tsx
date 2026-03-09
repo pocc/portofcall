@@ -36,7 +36,7 @@ export default function NodeInspectorClient({ onBack }: NodeInspectorClientProps
   const [method, setMethod] = useState('Runtime.evaluate');
   const [params, setParams] = useState('{"expression": "1 + 1"}');
 
-  const apiBase = import.meta.env.DEV ? 'http://localhost:8787' : '';
+  const apiBase = '';
 
   const addOutput = (type: OutputMessage['type'], message: string, data?: unknown) => {
     setOutput((prev) => [

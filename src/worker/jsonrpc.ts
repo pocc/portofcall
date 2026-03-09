@@ -23,6 +23,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface JsonRpcWorkerRequest {
   host: string;
@@ -63,53 +64,69 @@ async function sendHttpPost(
   authHeader?: string,
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
+  // SSRF protection
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
+  }
+
   const socket = connect(`${host}:${port}`);
 
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
-  const bodyBytes = encoder.encode(body);
-
-  // Build HTTP/1.1 POST request
-  let request = `POST ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Content-Type: application/json\r\n`;
-  request += `Content-Length: ${bodyBytes.length}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-
-  if (authHeader) {
-    request += `Authorization: ${authHeader}\r\n`;
-  }
-
-  request += `\r\n`;
-  await writer.write(encoder.encode(request));
-  await writer.write(bodyBytes);
-
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
   let response = '';
   const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
+    const bodyBytes = encoder.encode(body);
+
+    // Build HTTP/1.1 POST request — sanitize to prevent CRLF injection
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `POST ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Content-Type: application/json\r\n`;
+    request += `Content-Length: ${bodyBytes.length}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+
+    if (authHeader) {
+      request += `Authorization: ${authHeader.replace(/[\r\n]/g, '')}\r\n`;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
+    request += `\r\n`;
+    await writer.write(encoder.encode(request));
+    await writer.write(bodyBytes);
+
+    writer.releaseLock();
+
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* ignore */ }
+  }
 
   // Parse HTTP response
   const headerEnd = response.indexOf('\r\n\r\n');
@@ -208,6 +225,9 @@ function buildJsonRpcRequest(method: string, params?: unknown, id: number = 1): 
  * Handle JSON-RPC call - send a method call and return the response.
  */
 export async function handleJsonRpcCall(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JsonRpcWorkerRequest;
     const {
@@ -238,6 +258,12 @@ export async function handleJsonRpcCall(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -297,6 +323,9 @@ export async function handleJsonRpcCall(request: Request): Promise<Response> {
  * Handle JSON-RPC batch call - send multiple method calls at once.
  */
 export async function handleJsonRpcBatch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -335,6 +364,12 @@ export async function handleJsonRpcBatch(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -402,6 +437,9 @@ export async function handleJsonRpcBatch(request: Request): Promise<Response> {
  * Body: { host, port?, path?, method, params?, username?, password?, timeout? }
  */
 export async function handleJsonRpcWs(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JsonRpcWorkerRequest;
     const {
@@ -426,12 +464,29 @@ export async function handleJsonRpcWs(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck2.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Connection timeout')), timeout),
     );
 
     const socket = connect(`${host}:${port}`);
-    await Promise.race([socket.opened, timeoutPromise]);
+    await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    });
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -443,10 +498,12 @@ export async function handleJsonRpcWs(request: Request): Promise<Response> {
     crypto.getRandomValues(keyBytes);
     const wsKey = btoa(String.fromCharCode(...keyBytes));
 
-    // Build WebSocket upgrade request
+    // Build WebSocket upgrade request — sanitize to prevent CRLF injection
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
-    let upgradeReq = `GET ${normalizedPath} HTTP/1.1\r\n`;
-    upgradeReq += `Host: ${host}:${port}\r\n`;
+    const safeUpgradePath = normalizedPath.replace(/[\r\n]/g, '');
+    const safeUpgradeHost = host.replace(/[\r\n]/g, '');
+    let upgradeReq = `GET ${safeUpgradePath} HTTP/1.1\r\n`;
+    upgradeReq += `Host: ${safeUpgradeHost}:${port}\r\n`;
     upgradeReq += `Upgrade: websocket\r\n`;
     upgradeReq += `Connection: Upgrade\r\n`;
     upgradeReq += `Sec-WebSocket-Key: ${wsKey}\r\n`;
@@ -533,7 +590,11 @@ export async function handleJsonRpcWs(request: Request): Promise<Response> {
       let len = chunk[1] & 0x7f;
       let dataOffset = 2;
       if (len === 126) { len = (chunk[2] << 8) | chunk[3]; dataOffset = 4; }
-      else if (len === 127) { dataOffset = 10; }
+      else if (len === 127) {
+        // 64-bit big-endian length in bytes 2-9; lower 32 bits suffice for any realistic payload
+        len = ((chunk[6] << 24) | (chunk[7] << 16) | (chunk[8] << 8) | chunk[9]) >>> 0;
+        dataOffset = 10;
+      }
       if (masked) dataOffset += 4;
 
       const payload = chunk.slice(dataOffset, dataOffset + len);

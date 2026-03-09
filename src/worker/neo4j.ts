@@ -56,8 +56,12 @@ function packMap(entries: [string, Uint8Array][]): Uint8Array {
 
   if (count < 16) {
     parts.push(new Uint8Array([0xA0 | count]));
-  } else {
+  } else if (count < 256) {
     parts.push(new Uint8Array([0xD8, count]));
+  } else if (count < 65536) {
+    parts.push(new Uint8Array([0xD9, (count >> 8) & 0xFF, count & 0xFF]));
+  } else {
+    parts.push(new Uint8Array([0xDA, (count >> 24) & 0xFF, (count >> 16) & 0xFF, (count >> 8) & 0xFF, count & 0xFF]));
   }
 
   for (const [key, value] of entries) {
@@ -310,7 +314,7 @@ export async function handleNeo4jConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -672,7 +676,7 @@ export async function handleNeo4jQuery(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -912,7 +916,7 @@ export async function handleNeo4jQueryParams(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -1089,8 +1093,12 @@ function packAnyValue(value: unknown): Uint8Array {
     const parts: Uint8Array[] = [];
     if (count < 16) {
       parts.push(new Uint8Array([0x90 | count]));
-    } else {
+    } else if (count < 256) {
       parts.push(new Uint8Array([0xD4, count]));
+    } else if (count < 65536) {
+      parts.push(new Uint8Array([0xD5, (count >> 8) & 0xFF, count & 0xFF]));
+    } else {
+      parts.push(new Uint8Array([0xD6, (count >> 24) & 0xFF, (count >> 16) & 0xFF, (count >> 8) & 0xFF, count & 0xFF]));
     }
     for (const item of value) parts.push(packAnyValue(item));
     const total = parts.reduce((s, p) => s + p.length, 0);
@@ -1118,7 +1126,7 @@ export async function handleNeo4jSchema(request: Request): Promise<Response> {
 
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const body = await request.json() as { host?: string; port?: number; username?: string; password?: string };
     const host = body.host || '';
@@ -1294,7 +1302,7 @@ export async function handleNeo4jCreate(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },

@@ -76,3 +76,8 @@ IPP implementation provides 2 endpoints (probe, print-job) for CUPS printer disc
 - [RFC 8010](https://datatracker.ietf.org/doc/html/rfc8010) - IPP/1.1 Encoding and Transport
 - [RFC 8011](https://datatracker.ietf.org/doc/html/rfc8011) - IPP/1.1 Model and Semantics
 - [CUPS IPP Implementation](https://www.cups.org/doc/spec-ipp.html) - CUPS-specific extensions
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

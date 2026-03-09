@@ -1,0 +1,62 @@
+version: '3.8'
+
+# Web & Proxy Services
+# Protocols covered: haproxy, varnish, solr, meilisearch
+#
+# Usage: docker compose -f docker-compose.web.yml up -d
+
+services:
+  # HAProxy - Load balancer & proxy
+  haproxy:
+    image: haproxy:alpine
+    container_name: testserver-haproxy
+    ports:
+      - "8404:8404"     # Stats page
+    volumes:
+      - ./docker/haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Varnish - HTTP cache
+  varnish:
+    image: varnish:stable
+    container_name: testserver-varnish
+    ports:
+      - "6081:80"
+    volumes:
+      - ./docker/varnish/default.vcl:/etc/varnish/default.vcl:ro
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Apache Solr - Search engine
+  solr:
+    image: solr:9
+    container_name: testserver-solr
+    ports:
+      - "8983:8983"
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Meilisearch - Modern search engine
+  meilisearch:
+    image: getmeili/meilisearch
+    container_name: testserver-meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      - MEILI_ENV=development
+      - MEILI_MASTER_KEY=testkey123
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

@@ -8,7 +8,7 @@ This document outlines the security measures, hardening steps, and threat model 
 
 ## Cloudflare Worker Security
 
-The Worker itself (the production application at portofcall.ross.gg) has these security controls:
+The Worker itself (the production application at l4.fyi) has these security controls:
 
 - **SSRF Prevention:** `src/worker/host-validator.ts` blocks RFC 1918, loopback, link-local, CGN, metadata IPs, and dangerous hostnames (`.internal`, `.local`, `.localhost`). Enforced at the router level before any protocol handler runs.
 - **Cloudflare IP Detection:** `src/worker/cloudflare-detector.ts` blocks connections to Cloudflare-proxied IPs to prevent loop-back attacks through the CDN.

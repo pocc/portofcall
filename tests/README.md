@@ -73,7 +73,7 @@ Override the API base URL for testing:
 API_BASE=http://localhost:8787/api npm test
 
 # Test against production
-API_BASE=https://portofcall.ross.gg/api npm test
+API_BASE=https://l4.fyi/api npm test
 ```
 
 ## Test Coverage
@@ -111,7 +111,7 @@ These tests are designed to run in CI/CD pipelines:
 - name: Run tests
   run: npm test
   env:
-    API_BASE: https://portofcall.ross.gg/api
+    API_BASE: https://l4.fyi/api
 ```
 
 ## Test Results

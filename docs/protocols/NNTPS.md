@@ -659,42 +659,42 @@ Note: NNTPS availability on public servers varies. Many still only offer plainte
 
 ```bash
 # Connect and check TLS handshake + capabilities
-curl -s -X POST https://portofcall.ross.gg/api/nntps/connect \
+curl -s -X POST https://l4.fyi/api/nntps/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","port":563}'
 
 # Browse a group (newest 20 articles)
-curl -s -X POST https://portofcall.ross.gg/api/nntps/group \
+curl -s -X POST https://l4.fyi/api/nntps/group \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","group":"comp.lang.python"}'
 
 # Retrieve an article
-curl -s -X POST https://portofcall.ross.gg/api/nntps/article \
+curl -s -X POST https://l4.fyi/api/nntps/article \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","group":"comp.lang.python","articleNumber":9420}'
 
 # List newsgroups (ACTIVE, first 500)
-curl -s -X POST https://portofcall.ross.gg/api/nntps/list \
+curl -s -X POST https://l4.fyi/api/nntps/list \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","variant":"ACTIVE"}'
 
 # List with descriptions
-curl -s -X POST https://portofcall.ross.gg/api/nntps/list \
+curl -s -X POST https://l4.fyi/api/nntps/list \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","variant":"NEWSGROUPS"}'
 
 # Discover OVER field layout
-curl -s -X POST https://portofcall.ross.gg/api/nntps/list \
+curl -s -X POST https://l4.fyi/api/nntps/list \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","variant":"OVERVIEW.FMT"}'
 
 # Test authentication
-curl -s -X POST https://portofcall.ross.gg/api/nntps/auth \
+curl -s -X POST https://l4.fyi/api/nntps/auth \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.eternal-september.org","username":"myuser","password":"mypass"}'
 
 # Post an article (requires auth + posting permission)
-curl -s -X POST https://portofcall.ross.gg/api/nntps/post \
+curl -s -X POST https://l4.fyi/api/nntps/post \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "news.eternal-september.org",

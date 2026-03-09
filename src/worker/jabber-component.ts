@@ -52,6 +52,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface JabberComponentRequest {
   host: string;
@@ -167,6 +168,9 @@ function parseStreamResponse(data: string): {
  * Opens connection and performs stream initialization to detect component support.
  */
 export async function handleJabberComponentProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JabberComponentRequest;
     const {
@@ -188,7 +192,7 @@ export async function handleJabberComponentProbe(request: Request): Promise<Resp
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -197,6 +201,14 @@ export async function handleJabberComponentProbe(request: Request): Promise<Resp
       } satisfies JabberComponentResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies JabberComponentResponse), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -310,6 +322,9 @@ export async function handleJabberComponentProbe(request: Request): Promise<Resp
  * Requires shared secret for SHA-1 handshake.
  */
 export async function handleJabberComponentHandshake(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JabberComponentRequest;
     const {
@@ -337,6 +352,20 @@ export async function handleJabberComponentHandshake(request: Request): Promise<
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck2.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -531,6 +560,8 @@ async function readWithDeadline(
 
   const deadline = new Promise<null>((resolve) => setTimeout(() => resolve(null), ms));
 
+  const maxBytes = 102400; // 100KB limit
+
   while (true) {
     const result = await Promise.race([
       reader.read().then(r => r),
@@ -539,6 +570,7 @@ async function readWithDeadline(
 
     if (result.done || !result.value) break;
     text += decoder.decode(result.value, { stream: true });
+    if (text.length >= maxBytes) break;
   }
 
   return text;
@@ -559,6 +591,9 @@ async function readWithDeadline(
  * Returns: { handshake, streamId, messageSent, iqPong, rtt }
  */
 export async function handleJabberComponentSend(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as JabberComponentSendRequest;
     const {
@@ -599,6 +634,20 @@ export async function handleJabberComponentSend(request: Request): Promise<Respo
       } satisfies JabberComponentSendResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck3 = await checkIfCloudflare(host);
+    if (cfCheck3.isCloudflare && cfCheck3.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck3.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -764,6 +813,9 @@ export async function handleJabberComponentSend(request: Request): Promise<Respo
  * list for a user or inspect what roster items are known to the server.
  */
 export async function handleJabberComponentRoster(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
@@ -787,6 +839,21 @@ export async function handleJabberComponentRoster(request: Request): Promise<Res
       return new Response(JSON.stringify({ success: false, error: 'componentDomain and secret are required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();

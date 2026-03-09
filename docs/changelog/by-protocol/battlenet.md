@@ -67,3 +67,8 @@ No dedicated protocol documentation file found in `docs/protocols/`. Consider cr
 - [SID_AUTH_INFO Packet](https://bnetdocs.org/packet/164/sid-auth-info) - Auth info packet specification
 - [SID_PING Packet](https://bnetdocs.org/packet/268/sid-ping) - Ping packet specification
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

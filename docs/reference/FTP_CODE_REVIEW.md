@@ -440,7 +440,7 @@ Some FTP servers expect the data connection to be established **before** sending
 
 **Test with curl (bypasses browser):**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/list \
+curl -X POST https://l4.fyi/api/ftp/list \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",

@@ -21,6 +21,12 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+
+/** Strip CR/LF to prevent CRLF header injection in raw MGCP requests. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
 
 interface MGCPRequest {
   host: string;
@@ -174,8 +180,20 @@ export async function handleMGCPAudit(request: Request): Promise<Response> {
       });
     }
 
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const txId = generateTransactionId();
-    const fqEndpoint = endpoint.includes('@') ? endpoint : `${endpoint}@${host}`;
+    const safeEndpoint = sanitizeCRLF(endpoint);
+    const fqEndpoint = safeEndpoint.includes('@') ? safeEndpoint : `${safeEndpoint}@${host}`;
 
     // Include F: (RequestedInfo) to ask for capabilities, requested events,
     // digit map, signal requests, request identifier, notified entity,
@@ -258,6 +276,17 @@ export async function handleMGCPCommand(request: Request): Promise<Response> {
       });
     }
 
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckCmd = await checkIfCloudflare(host);
+    if (cfCheckCmd.isCloudflare && cfCheckCmd.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckCmd.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Validate command verb — CA-to-GW commands only per RFC 3435 Section 2.3.
     // NTFY (Section 2.3.6) and RSIP (Section 2.3.7) are GW-to-CA commands.
     const validVerbs = ['AUEP', 'AUCX', 'CRCX', 'MDCX', 'DLCX', 'RQNT', 'EPCF'];
@@ -273,7 +302,8 @@ export async function handleMGCPCommand(request: Request): Promise<Response> {
     }
 
     const txId = generateTransactionId();
-    const fqEndpoint = endpoint.includes('@') ? endpoint : `${endpoint}@${host}`;
+    const safeEndpoint = sanitizeCRLF(endpoint);
+    const fqEndpoint = safeEndpoint.includes('@') ? safeEndpoint : `${safeEndpoint}@${host}`;
 
     // Build MGCP command
     let mgcpCommand = `${upperVerb} ${txId} ${fqEndpoint} MGCP 1.0\r\n`;
@@ -281,7 +311,7 @@ export async function handleMGCPCommand(request: Request): Promise<Response> {
     // Add parameters
     if (cmdParams) {
       for (const [key, value] of Object.entries(cmdParams)) {
-        mgcpCommand += `${key}: ${value}\r\n`;
+        mgcpCommand += `${sanitizeCRLF(key)}: ${sanitizeCRLF(value)}\r\n`;
       }
     }
 
@@ -369,8 +399,14 @@ export async function handleMGCPCallSetup(request: Request): Promise<Response> {
       });
     }
 
-    const callId = body.callId || generateCallId();
-    const fqEndpoint = endpoint.includes('@') ? endpoint : `${endpoint}@${host}`;
+    const cfCheckSetup = await checkIfCloudflare(host);
+    if (cfCheckSetup.isCloudflare && cfCheckSetup.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckSetup.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const callId = sanitizeCRLF(body.callId || generateCallId());
+    const safeEndpoint = sanitizeCRLF(endpoint);
+    const fqEndpoint = safeEndpoint.includes('@') ? safeEndpoint : `${safeEndpoint}@${host}`;
 
     // Generate two independent transaction IDs
     const txIdCrcx = generateTransactionId();
@@ -382,7 +418,7 @@ export async function handleMGCPCallSetup(request: Request): Promise<Response> {
       `CRCX ${txIdCrcx} ${fqEndpoint} MGCP 1.0\r\n` +
       `C: ${callId}\r\n` +
       `L: p:20, a:PCMU\r\n` +
-      `M: ${connectionMode}\r\n` +
+      `M: ${sanitizeCRLF(connectionMode)}\r\n` +
       `\r\n`;
 
     const start = Date.now();
@@ -435,7 +471,7 @@ export async function handleMGCPCallSetup(request: Request): Promise<Response> {
       const dlcxCommand =
         `DLCX ${txIdDlcx} ${fqEndpoint} MGCP 1.0\r\n` +
         `C: ${callId}\r\n` +
-        `I: ${connectionId}\r\n` +
+        `I: ${sanitizeCRLF(connectionId)}\r\n` +
         `\r\n`;
 
       const dlcxResult = await sendMgcpCommand(host, port, dlcxCommand, timeout);

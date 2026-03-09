@@ -34,13 +34,11 @@ const EXCEPTION_CODES: Record<number, string> = {
   0x06: 'Server Device Busy',
 };
 
-let transactionCounter = 0;
-
 /**
  * Build a Modbus TCP request frame
  */
-function buildModbusFrame(unitId: number, functionCode: number, data: number[]): Uint8Array {
-  const txId = ++transactionCounter & 0xFFFF;
+function buildModbusFrame(unitId: number, functionCode: number, data: number[], transactionId: number): Uint8Array {
+  const txId = transactionId & 0xFFFF;
   const pduLength = 1 + data.length; // function code + data
   const mbapLength = 1 + pduLength;  // Unit ID (1) + PDU — per Modbus TCP spec
   const totalLength = 6 + mbapLength; // MBAP prefix (TxID + ProtoID + Length = 6) + remaining bytes
@@ -167,10 +165,11 @@ function parseCoilsResponse(data: Uint8Array, quantity: number): boolean[] {
  * Parse register response into number array (16-bit values)
  */
 function parseRegistersResponse(data: Uint8Array): number[] {
+  if (data.length < 1) return [];
   const byteCount = data[0];
   const registers: number[] = [];
 
-  for (let i = 0; i < byteCount; i += 2) {
+  for (let i = 0; i + 1 < byteCount && 1 + i + 1 < data.length; i += 2) {
     const value = (data[1 + i] << 8) | data[2 + i];
     registers.push(value);
   }
@@ -186,6 +185,11 @@ function parseRegistersResponse(data: Uint8Array): number[] {
  *           Read Holding Registers (0x03), Read Input Registers (0x04)
  */
 export async function handleModbusRead(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 502, unitId = 1, functionCode, address, quantity = 1, timeout = 10000 } =
       await request.json<{
@@ -236,6 +240,12 @@ export async function handleModbusRead(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -264,11 +274,13 @@ export async function handleModbusRead(request: Request): Promise<Response> {
           quantity & 0xFF,
         ];
 
-        const frame = buildModbusFrame(unitId, functionCode, data);
+        const sentTransactionId = 1;
+        const frame = buildModbusFrame(unitId, functionCode, data, sentTransactionId);
         await writer.write(frame);
 
         const responseBytes = await readModbusResponse(reader, 5000);
         const parsed = parseModbusResponse(responseBytes);
+        const transactionIdMismatch = parsed.transactionId !== sentTransactionId;
 
         await socket.close();
 
@@ -279,6 +291,9 @@ export async function handleModbusRead(request: Request): Promise<Response> {
             functionCode,
             address,
             quantity,
+            ...(transactionIdMismatch && {
+              warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${sentTransactionId}).`,
+            }),
           };
         }
 
@@ -307,6 +322,9 @@ export async function handleModbusRead(request: Request): Promise<Response> {
           quantity,
           format,
           values,
+          ...(transactionIdMismatch && {
+            warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${sentTransactionId}). The response may belong to a different request.`,
+          }),
         };
       } catch (error) {
         await socket.close();
@@ -340,6 +358,11 @@ export async function handleModbusRead(request: Request): Promise<Response> {
  * Tests connectivity by reading holding register 0
  */
 export async function handleModbusConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 502, unitId = 1, timeout = 10000 } = await request.json<{
       host: string;
@@ -352,6 +375,12 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -376,12 +405,14 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
 
       try {
         // Read holding register 0 as a connectivity test
+        const connectTransactionId = 1;
         const data = [0x00, 0x00, 0x00, 0x01]; // Address 0, Quantity 1
-        const frame = buildModbusFrame(unitId, 0x03, data);
+        const frame = buildModbusFrame(unitId, 0x03, data, connectTransactionId);
         await writer.write(frame);
 
         const responseBytes = await readModbusResponse(reader, 5000);
         const parsed = parseModbusResponse(responseBytes);
+        const connectTxIdMismatch = parsed.transactionId !== connectTransactionId;
 
         await socket.close();
 
@@ -394,6 +425,9 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
             port,
             unitId,
             exception: parsed.exceptionMessage,
+            ...(connectTxIdMismatch && {
+              warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${connectTransactionId}).`,
+            }),
           };
         }
 
@@ -405,6 +439,9 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
           port,
           unitId,
           testRegister: registers[0],
+          ...(connectTxIdMismatch && {
+            warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${connectTransactionId}). The response may belong to a different request.`,
+          }),
         };
       } catch (error) {
         await socket.close();
@@ -438,6 +475,11 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
  * Writes a single coil (digital output) ON or OFF.
  */
 export async function handleModbusWriteCoil(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 502, unitId = 1, address, value, timeout = 5000 } =
       await request.json<{
@@ -465,8 +507,19 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
       });
     }
 
+    // Validate address range (H-7)
+    if (!Number.isInteger(address) || address < 0 || address > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Address must be an integer 0-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Coil ON = 0xFF00, OFF = 0x0000
     const coilValue = (value === true || value === 1) ? 0xFF00 : 0x0000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -497,12 +550,14 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
           coilValue & 0xFF,
         ];
 
-        const frame = buildModbusFrame(unitId, FUNCTION_CODES.WRITE_SINGLE_COIL, data);
+        const writeCoilTransactionId = 1;
+        const frame = buildModbusFrame(unitId, FUNCTION_CODES.WRITE_SINGLE_COIL, data, writeCoilTransactionId);
         await writer.write(frame);
 
         const responseBytes = await readModbusResponse(reader, timeout);
         const rtt = Date.now() - startTime;
         const parsed = parseModbusResponse(responseBytes);
+        const writeCoilTxIdMismatch = parsed.transactionId !== writeCoilTransactionId;
 
         await socket.close();
 
@@ -514,6 +569,9 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
             port,
             unitId,
             address,
+            ...(writeCoilTxIdMismatch && {
+              warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${writeCoilTransactionId}).`,
+            }),
           };
         }
 
@@ -530,6 +588,9 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
           coilValue: echoCoilValue,
           written: echoCoilValue === 0xFF00,
           rtt,
+          ...(writeCoilTxIdMismatch && {
+            warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${writeCoilTransactionId}). The response may belong to a different request.`,
+          }),
         };
       } catch (error) {
         await socket.close();
@@ -563,6 +624,11 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
  * Writes one or more holding registers starting at a given address.
  */
 export async function handleModbusWriteRegisters(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 502, unitId = 1, address, values, timeout = 5000 } =
       await request.json<{
@@ -596,6 +662,20 @@ export async function handleModbusWriteRegisters(request: Request): Promise<Resp
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Validate address and values range (H-7)
+    if (!Number.isInteger(address) || address < 0 || address > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Address must be an integer 0-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (!Array.isArray(values) || values.some((v: number) => !Number.isInteger(v) || v < 0 || v > 65535)) {
+      return new Response(JSON.stringify({ success: false, error: 'All register values must be integers 0-65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -637,12 +717,14 @@ export async function handleModbusWriteRegisters(request: Request): Promise<Resp
           data.push(v & 0xFF);
         }
 
-        const frame = buildModbusFrame(unitId, FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS, data);
+        const writeRegsTransactionId = 1;
+        const frame = buildModbusFrame(unitId, FUNCTION_CODES.WRITE_MULTIPLE_REGISTERS, data, writeRegsTransactionId);
         await writer.write(frame);
 
         const responseBytes = await readModbusResponse(reader, timeout);
         const rtt = Date.now() - startTime;
         const parsed = parseModbusResponse(responseBytes);
+        const writeRegsTxIdMismatch = parsed.transactionId !== writeRegsTransactionId;
 
         await socket.close();
 
@@ -654,6 +736,9 @@ export async function handleModbusWriteRegisters(request: Request): Promise<Resp
             port,
             unitId,
             address,
+            ...(writeRegsTxIdMismatch && {
+              warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${writeRegsTransactionId}).`,
+            }),
           };
         }
 
@@ -669,6 +754,9 @@ export async function handleModbusWriteRegisters(request: Request): Promise<Resp
           startAddress,
           quantity: writtenQuantity,
           rtt,
+          ...(writeRegsTxIdMismatch && {
+            warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${writeRegsTransactionId}). The response may belong to a different request.`,
+          }),
         };
       } catch (error) {
         await socket.close();

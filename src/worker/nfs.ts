@@ -79,6 +79,43 @@ const ACCEPT_STAT_NAMES: Record<number, string> = {
   5: 'SYSTEM_ERR',
 };
 
+// NFSv3 status codes (RFC 1813 §2.6)
+const NFS3_STATUS_NAMES: Record<number, string> = {
+  0:     'NFS3_OK',
+  1:     'NFS3ERR_PERM',
+  2:     'NFS3ERR_NOENT',
+  5:     'NFS3ERR_IO',
+  6:     'NFS3ERR_NXIO',
+  13:    'NFS3ERR_ACCES',
+  17:    'NFS3ERR_EXIST',
+  18:    'NFS3ERR_XDEV',
+  19:    'NFS3ERR_NODEV',
+  20:    'NFS3ERR_NOTDIR',
+  21:    'NFS3ERR_ISDIR',
+  22:    'NFS3ERR_INVAL',
+  27:    'NFS3ERR_FBIG',
+  28:    'NFS3ERR_NOSPC',
+  30:    'NFS3ERR_ROFS',
+  31:    'NFS3ERR_MLINK',
+  63:    'NFS3ERR_NAMETOOLONG',
+  66:    'NFS3ERR_NOTEMPTY',
+  69:    'NFS3ERR_DQUOT',
+  70:    'NFS3ERR_STALE',
+  71:    'NFS3ERR_REMOTE',
+  10001: 'NFS3ERR_BADHANDLE',
+  10002: 'NFS3ERR_NOT_SYNC',
+  10003: 'NFS3ERR_BAD_COOKIE',
+  10004: 'NFS3ERR_NOTSUPP',
+  10005: 'NFS3ERR_TOOSMALL',
+  10006: 'NFS3ERR_SERVERFAULT',
+  10007: 'NFS3ERR_BADTYPE',
+  10008: 'NFS3ERR_JUKEBOX',
+};
+
+function nfs3StatusName(status: number): string {
+  return NFS3_STATUS_NAMES[status] ?? `status_${status}`;
+}
+
 /**
  * Build an RPC CALL message (XDR encoded)
  */
@@ -226,14 +263,43 @@ async function sendRpcCall(
 
   await writer.write(framed);
 
+  // Buffer chunks until the Record Marking header is seen and all fragment bytes are received.
+  // RPC over TCP uses Record Marking: 4-byte header (last-fragment bit + 31-bit fragment length)
+  // followed by the fragment data. Large responses (READDIR, READ) span multiple TCP chunks.
   let responseData: Uint8Array | null = null;
   try {
-    const readResult = await Promise.race([reader.read(), timeoutPromise]);
-    if (readResult.value) {
-      responseData = readResult.value;
+    const chunks: Uint8Array[] = [];
+    let totalRead = 0;
+    let expectedSize = -1; // -1 until RM header is parsed
+
+    while (true) {
+      const readResult = await Promise.race([reader.read(), timeoutPromise]);
+      if (readResult.done || !readResult.value) break;
+      chunks.push(readResult.value);
+      totalRead += readResult.value.length;
+
+      // Once we have the 4-byte RM header, extract the fragment length
+      if (expectedSize === -1 && totalRead >= 4) {
+        let off = 0;
+        const combined = new Uint8Array(totalRead);
+        for (const c of chunks) { combined.set(c, off); off += c.length; }
+        const rmHeader = new DataView(combined.buffer).getUint32(0);
+        const fragmentLen = rmHeader & 0x7FFFFFFF;
+        if (fragmentLen === 0 || fragmentLen > 8 * 1024 * 1024) break; // guard: empty or >8 MB
+        expectedSize = 4 + fragmentLen;
+      }
+
+      if (expectedSize !== -1 && totalRead >= expectedSize) break;
+    }
+
+    if (totalRead > 0) {
+      const combined = new Uint8Array(totalRead);
+      let off = 0;
+      for (const c of chunks) { combined.set(c, off); off += c.length; }
+      responseData = combined;
     }
   } catch {
-    // timeout
+    // timeout or connection error
   }
 
   writer.releaseLock();
@@ -345,12 +411,15 @@ function parseMountMntReply(data: Uint8Array): Uint8Array | null {
 }
 
 /**
- * Read an XDR uint64 as two uint32s (high, low) — returns number (approx)
+ * Read an XDR uint64 as two uint32s (high, low).
+ * Returns a string for values that exceed JavaScript's safe integer range (hi > 0).
  */
-function xdrReadUint64(view: DataView, offset: number): number {
+function xdrReadUint64(view: DataView, offset: number): number | string {
   const hi = view.getUint32(offset);
   const lo = view.getUint32(offset + 4);
-  return hi * 0x100000000 + lo;
+  if (hi === 0) return lo;
+  // Use BigInt to avoid precision loss for values > 2^53
+  return (BigInt(hi) * 0x100000000n + BigInt(lo)).toString();
 }
 
 /**
@@ -365,12 +434,12 @@ function parseFattr3(data: Uint8Array, offset: number): {
   nlink: number;
   uid: number;
   gid: number;
-  size: number;
+  size: number | string;
   blocksize: number;
   rdev: number;
   blocks: number;
-  fsid: number;
-  fileid: number;
+  fsid: number | string;
+  fileid: number | string;
   atime: number;
   mtime: number;
   ctime: number;
@@ -483,7 +552,7 @@ export async function handleNFSProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -607,6 +676,12 @@ export async function handleNFSExports(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -714,6 +789,12 @@ export async function handleNFSLookup(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -778,7 +859,7 @@ export async function handleNFSLookup(request: Request): Promise<Response> {
     if (nfsStatus !== 0) {
       return new Response(JSON.stringify({
         success: false,
-        error: `NFSv3 LOOKUP error status: ${nfsStatus}`,
+        error: `NFSv3 LOOKUP error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)})`,
         rtt,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
@@ -872,6 +953,12 @@ export async function handleNFSGetAttr(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -924,7 +1011,7 @@ export async function handleNFSGetAttr(request: Request): Promise<Response> {
     if (nfsStatus2 !== 0) {
       return new Response(JSON.stringify({
         success: false,
-        error: `NFSv3 GETATTR error status: ${nfsStatus2}`,
+        error: `NFSv3 GETATTR error status: ${nfsStatus2} (${nfs3StatusName(nfsStatus2)})`,
         rtt,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
@@ -1066,6 +1153,12 @@ export async function handleNFSRead(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -1116,7 +1209,7 @@ export async function handleNFSRead(request: Request): Promise<Response> {
     if (rdView.getUint32(0) !== 0) {
       return new Response(JSON.stringify({
         success: false,
-        error: `NFSv3 READ error status: ${rdView.getUint32(0)}`,
+        error: `NFSv3 READ error status: ${rdView.getUint32(0)} (${nfs3StatusName(rdView.getUint32(0))})`,
         rtt,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
@@ -1200,6 +1293,12 @@ export async function handleNFSReaddir(request: Request): Promise<Response> {
     if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!exportPath) return new Response(JSON.stringify({ success: false, error: 'exportPath is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -1239,13 +1338,13 @@ export async function handleNFSReaddir(request: Request): Promise<Response> {
 
     if (rd.length < 4) return new Response(JSON.stringify({ success: false, error: 'READDIR reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = rdv.getUint32(rdOff); rdOff += 4;
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 READDIR error status: ${nfsStatus}`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 READDIR error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)})`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     // Skip dir_attributes (post_op_attr)
     if (rdOff + 4 <= rd.length) { const af = rdv.getUint32(rdOff); rdOff += 4; if (af === 1) rdOff += 84; }
     rdOff += 8; // skip cookieverf
 
-    const entries: Array<{ fileid: number; name: string }> = [];
+    const entries: Array<{ fileid: number | string; name: string }> = [];
     let eof = false;
     while (rdOff + 4 <= rd.length) {
       const follows = rdv.getUint32(rdOff); rdOff += 4;
@@ -1253,7 +1352,9 @@ export async function handleNFSReaddir(request: Request): Promise<Response> {
       if (rdOff + 8 > rd.length) break;
       const fileidHi = rdv.getUint32(rdOff); rdOff += 4;
       const fileidLo = rdv.getUint32(rdOff); rdOff += 4;
-      const fileid = fileidHi * 0x100000000 + fileidLo;
+      const fileid: number | string = fileidHi === 0
+        ? fileidLo
+        : (BigInt(fileidHi) * 0x100000000n + BigInt(fileidLo)).toString();
       if (rdOff + 4 > rd.length) break;
       const nameLen = rdv.getUint32(rdOff); rdOff += 4;
       if (nameLen > 256 || rdOff + nameLen > rd.length) break;
@@ -1306,6 +1407,12 @@ export async function handleNFSWrite(request: Request): Promise<Response> {
     }
     if (writeBytes.length > 65536) return new Response(JSON.stringify({ success: false, error: 'data too large (max 65536 bytes)' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -1348,7 +1455,7 @@ export async function handleNFSWrite(request: Request): Promise<Response> {
 
     if (wr.length < 4) return new Response(JSON.stringify({ success: false, error: 'WRITE reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = wrv.getUint32(wrOff); wrOff += 4;
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 WRITE error status: ${nfsStatus} (export may be read-only)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 WRITE error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)}) (export may be read-only)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     // Skip wcc_data (pre_op_attr + post_op_attr)
     if (wrOff + 4 <= wr.length) { const pf = wrv.getUint32(wrOff); wrOff += 4; if (pf === 1) wrOff += 24; }
@@ -1402,6 +1509,12 @@ export async function handleNFSCreate(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -1432,15 +1545,17 @@ export async function handleNFSCreate(request: Request): Promise<Response> {
     const fhEncoded = xdrEncodeFileHandle(parentFH);
     const nameEncoded = xdrEncodeString(filename);
 
-    // Build sattr3 with mode set, others unset
-    const sattr3 = new Uint8Array(24); // 6 fields * 4 bytes each
+    // Build sattr3 with mode set, others unset (RFC 1813 §2.3.13)
+    // set_mode(4+4) + set_uid(4) + set_gid(4) + set_size(4) + set_atime(4) + set_mtime(4) = 28 bytes
+    const sattr3 = new Uint8Array(28);
     const sattr3View = new DataView(sattr3.buffer);
-    sattr3View.setUint32(0, 1); // set mode
+    sattr3View.setUint32(0, 1);    // set_mode = TRUE
     sattr3View.setUint32(4, mode); // mode value
-    sattr3View.setUint32(8, 0); // don't set uid
-    sattr3View.setUint32(12, 0); // don't set gid
-    sattr3View.setUint32(16, 0); // don't set size
-    sattr3View.setUint32(20, 0); // don't set atime
+    sattr3View.setUint32(8, 0);    // set_uid = FALSE (DONT_CHANGE)
+    sattr3View.setUint32(12, 0);   // set_gid = FALSE (DONT_CHANGE)
+    sattr3View.setUint32(16, 0);   // set_size = FALSE (DONT_CHANGE)
+    sattr3View.setUint32(20, 0);   // set_atime = DONT_CHANGE (0)
+    sattr3View.setUint32(24, 0);   // set_mtime = DONT_CHANGE (0)
 
     const createArgs = new Uint8Array(fhEncoded.length + nameEncoded.length + 4 + sattr3.length);
     const av = new DataView(createArgs.buffer);
@@ -1463,7 +1578,7 @@ export async function handleNFSCreate(request: Request): Promise<Response> {
 
     if (cr.length < 4) return new Response(JSON.stringify({ success: false, error: 'CREATE reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = crv.getUint32(crOff); crOff += 4;
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 CREATE error status: ${nfsStatus} (export may be read-only or file exists)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 CREATE error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)}) (export may be read-only or file exists)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     // CREATE3res: status + post_op_fh3 (optional file handle) + post_op_attr + wcc_data
     // post_op_fh3: handle_follows(bool) + [if follows] nfs_fh3
@@ -1564,6 +1679,12 @@ export async function handleNFSRemove(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -1605,7 +1726,7 @@ export async function handleNFSRemove(request: Request): Promise<Response> {
 
     if (rm.length < 4) return new Response(JSON.stringify({ success: false, error: 'REMOVE reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = rmv.getUint32(0);
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 REMOVE error status: ${nfsStatus} (export may be read-only or file not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 REMOVE error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)}) (export may be read-only or file not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     return new Response(JSON.stringify({
       success: true,
@@ -1650,6 +1771,12 @@ export async function handleNFSRename(request: Request): Promise<Response> {
 
     if (!host || !exportPath || !fromPath || !toPath) {
       return new Response(JSON.stringify({ success: false, error: 'host, exportPath, fromPath, and toPath are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -1714,7 +1841,7 @@ export async function handleNFSRename(request: Request): Promise<Response> {
 
     if (rn.length < 4) return new Response(JSON.stringify({ success: false, error: 'RENAME reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = rnv.getUint32(0);
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 RENAME error status: ${nfsStatus} (export may be read-only or file not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 RENAME error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)}) (export may be read-only or file not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     return new Response(JSON.stringify({
       success: true,
@@ -1762,6 +1889,12 @@ export async function handleNFSMkdir(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -1788,15 +1921,17 @@ export async function handleNFSMkdir(request: Request): Promise<Response> {
     const fhEncoded = xdrEncodeFileHandle(parentFH);
     const nameEncoded = xdrEncodeString(dirname);
 
-    // Build sattr3 with mode set, others unset
-    const sattr3 = new Uint8Array(24);
+    // Build sattr3 with mode set, others unset (RFC 1813 §2.3.13)
+    // set_mode(4+4) + set_uid(4) + set_gid(4) + set_size(4) + set_atime(4) + set_mtime(4) = 28 bytes
+    const sattr3 = new Uint8Array(28);
     const sattr3View = new DataView(sattr3.buffer);
-    sattr3View.setUint32(0, 1); // set mode
+    sattr3View.setUint32(0, 1);    // set_mode = TRUE
     sattr3View.setUint32(4, mode); // mode value
-    sattr3View.setUint32(8, 0); // don't set uid
-    sattr3View.setUint32(12, 0); // don't set gid
-    sattr3View.setUint32(16, 0); // don't set size
-    sattr3View.setUint32(20, 0); // don't set atime
+    sattr3View.setUint32(8, 0);    // set_uid = FALSE (DONT_CHANGE)
+    sattr3View.setUint32(12, 0);   // set_gid = FALSE (DONT_CHANGE)
+    sattr3View.setUint32(16, 0);   // set_size = FALSE (DONT_CHANGE)
+    sattr3View.setUint32(20, 0);   // set_atime = DONT_CHANGE (0)
+    sattr3View.setUint32(24, 0);   // set_mtime = DONT_CHANGE (0)
 
     const mkdirArgs = new Uint8Array(fhEncoded.length + nameEncoded.length + sattr3.length);
     let ao = 0;
@@ -1816,7 +1951,7 @@ export async function handleNFSMkdir(request: Request): Promise<Response> {
 
     if (md.length < 4) return new Response(JSON.stringify({ success: false, error: 'MKDIR reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = mdv.getUint32(0);
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 MKDIR error status: ${nfsStatus} (export may be read-only or directory exists)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 MKDIR error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)}) (export may be read-only or directory exists)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     return new Response(JSON.stringify({
       success: true,
@@ -1861,6 +1996,12 @@ export async function handleNFSRmdir(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'host, exportPath, and path are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
@@ -1902,7 +2043,7 @@ export async function handleNFSRmdir(request: Request): Promise<Response> {
 
     if (rd.length < 4) return new Response(JSON.stringify({ success: false, error: 'RMDIR reply too short', rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     const nfsStatus = rdv.getUint32(0);
-    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 RMDIR error status: ${nfsStatus} (export may be read-only, directory not empty, or not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (nfsStatus !== 0) return new Response(JSON.stringify({ success: false, error: `NFSv3 RMDIR error status: ${nfsStatus} (${nfs3StatusName(nfsStatus)}) (export may be read-only, directory not empty, or not found)`, rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 
     return new Response(JSON.stringify({
       success: true,

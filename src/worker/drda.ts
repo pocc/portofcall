@@ -689,12 +689,12 @@ async function doAuth(params: AuthParams, tp: Promise<never>): Promise<
 // ── Public handlers ───────────────────────────────────────────────────────────
 
 export async function handleDRDAConnect(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; timeout?: number };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
   const { host, port = 50000, timeout = 10000 } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
-  if (port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   try {
@@ -720,12 +720,12 @@ export async function handleDRDAConnect(request: Request): Promise<Response> {
 }
 
 export async function handleDRDAProbe(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; timeout?: number };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
   const { host, port = 50000, timeout = 10000 } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
-  if (port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   try {
@@ -745,19 +745,19 @@ export async function handleDRDAProbe(request: Request): Promise<Response> {
 }
 
 export async function handleDRDALogin(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; database?: string; username?: string; password?: string; timeout?: number; ssl?: boolean };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
-  const { host, port = 50000, database = '', username = '', password = '', timeout = 10000, ssl = false } = body;
+  const { host, port = 50000, database, username, password = '', timeout = 10000, ssl = false } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
   if (!database) return errResponse('Missing required parameter: database', 400);
-  if (!username) return errResponse('Missing required parameter: username', 400);
-  if (port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
+  if (username == null || username === '') return errResponse('Missing required parameter: username', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return errResponse('Port must be between 1 and 65535', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   const startTime = Date.now();
   const tp = new Promise<never>((_, rej) => setTimeout(rej, timeout, new Error('Connection timeout')));
-  const auth = await doAuth({ host, port, database, username, password, ssl, timeout }, tp);
+  const auth = await doAuth({ host, port, database: database || '', username, password, ssl, timeout }, tp);
   if (!auth.ok) return auth.response;
   const { writer, reader, excsatrd } = auth;
   writer.releaseLock(); reader.releaseLock();
@@ -765,13 +765,13 @@ export async function handleDRDALogin(request: Request): Promise<Response> {
 }
 
 export async function handleDRDAQuery(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; database?: string; username?: string; password?: string; sql?: string; maxRows?: number; timeout?: number; ssl?: boolean; params?: SqldtaParam[] };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
-  const { host, port = 50000, database = '', username = '', password = '', sql = '', maxRows = 100, timeout = 30000, ssl = false, params } = body;
+  const { host, port = 50000, database, username, password = '', sql = '', maxRows = 100, timeout = 30000, ssl = false, params } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
   if (!database) return errResponse('Missing required parameter: database', 400);
-  if (!username) return errResponse('Missing required parameter: username', 400);
+  if (username == null || username === '') return errResponse('Missing required parameter: username', 400);
   if (!sql) return errResponse('Missing required parameter: sql', 400);
   if (!/^\s*(select|with|explain|values)/i.test(sql)) return errResponse('Only SELECT/WITH/EXPLAIN/VALUES queries are supported by /query. Use /execute for DML.', 400);
   const cfCheck = await checkIfCloudflare(host);
@@ -822,19 +822,19 @@ export async function handleDRDAQuery(request: Request): Promise<Response> {
 }
 
 export async function handleDRDAExecute(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; database?: string; username?: string; password?: string; sql?: string; timeout?: number; ssl?: boolean; params?: SqldtaParam[] };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
-  const { host, port = 50000, database = '', username = '', password = '', sql = '', timeout = 30000, ssl = false, params } = body;
+  const { host, port = 50000, database, username, password = '', sql = '', timeout = 30000, ssl = false, params } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
   if (!database) return errResponse('Missing required parameter: database', 400);
-  if (!username) return errResponse('Missing required parameter: username', 400);
+  if (username == null || username === '') return errResponse('Missing required parameter: username', 400);
   if (!sql) return errResponse('Missing required parameter: sql', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   const startTime = Date.now();
   const tp = new Promise<never>((_, rej) => setTimeout(rej, timeout, new Error('Connection timeout')));
-  const auth = await doAuth({ host, port, database, username, password, ssl, timeout }, tp);
+  const auth = await doAuth({ host, port, database: database || '', username, password, ssl, timeout }, tp);
   if (!auth.ok) return auth.response;
   const { writer, reader } = auth;
   const close = () => { try { writer.releaseLock(); reader.releaseLock(); } catch { /* ignore */ } };
@@ -868,19 +868,19 @@ export async function handleDRDAExecute(request: Request): Promise<Response> {
 }
 
 export async function handleDRDAPreparex(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; database?: string; username?: string; password?: string; sql?: string; timeout?: number; ssl?: boolean };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
-  const { host, port = 50000, database = '', username = '', password = '', sql = '', timeout = 15000, ssl = false } = body;
+  const { host, port = 50000, database, username, password = '', sql = '', timeout = 15000, ssl = false } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
   if (!database) return errResponse('Missing required parameter: database', 400);
-  if (!username) return errResponse('Missing required parameter: username', 400);
+  if (username == null || username === '') return errResponse('Missing required parameter: username', 400);
   if (!sql) return errResponse('Missing required parameter: sql', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   const startTime = Date.now();
   const tp = new Promise<never>((_, rej) => setTimeout(rej, timeout, new Error('Connection timeout')));
-  const auth = await doAuth({ host, port, database, username, password, ssl, timeout }, tp);
+  const auth = await doAuth({ host, port, database: database || '', username, password, ssl, timeout }, tp);
   if (!auth.ok) return auth.response;
   const { writer, reader } = auth;
   const close = () => { try { writer.releaseLock(); reader.releaseLock(); } catch { /* ignore */ } };
@@ -900,20 +900,20 @@ export async function handleDRDAPreparex(request: Request): Promise<Response> {
 }
 
 export async function handleDRDACall(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method Not Allowed', { status: 405 });
+  if (request.method !== 'POST') return errResponse('Method not allowed', 405);
   let body: { host?: string; port?: number; database?: string; username?: string; password?: string; procedure?: string; params?: SqldtaParam[]; timeout?: number; ssl?: boolean; maxRows?: number };
   try { body = await request.json() as typeof body; } catch { return errResponse('Invalid JSON body', 400); }
-  const { host, port = 50000, database = '', username = '', password = '', procedure = '', params, timeout = 30000, ssl = false, maxRows = 100 } = body;
+  const { host, port = 50000, database, username, password = '', procedure = '', params, timeout = 30000, ssl = false, maxRows = 100 } = body;
   if (!host) return errResponse('Missing required parameter: host', 400);
   if (!database) return errResponse('Missing required parameter: database', 400);
-  if (!username) return errResponse('Missing required parameter: username', 400);
+  if (username == null || username === '') return errResponse('Missing required parameter: username', 400);
   if (!procedure) return errResponse('Missing required parameter: procedure', 400);
   if (!/^\s*call\s+/i.test(procedure)) return errResponse('procedure must be a CALL statement (e.g. "CALL schema.proc(?, ?)")', 400);
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) return cfBlockedResponse(host, cfCheck.ip);
   const startTime = Date.now();
   const tp = new Promise<never>((_, rej) => setTimeout(rej, timeout, new Error('Connection timeout')));
-  const auth = await doAuth({ host, port, database, username, password, ssl, timeout }, tp);
+  const auth = await doAuth({ host, port, database: database || '', username, password, ssl, timeout }, tp);
   if (!auth.ok) return auth.response;
   const { writer, reader } = auth;
   const close = () => { try { writer.releaseLock(); reader.releaseLock(); } catch { /* ignore */ } };

@@ -52,3 +52,8 @@ The Daytime protocol had minimal documentation. Created complete reference inclu
 - [Daytime Protocol Specification](../protocols/DAYTIME.md) - Technical reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
 - [RFC 867](https://datatracker.ietf.org/doc/html/rfc867) - Daytime specification
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

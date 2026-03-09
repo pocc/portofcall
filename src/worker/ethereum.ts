@@ -42,7 +42,7 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._:\-[\]]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -216,7 +216,7 @@ async function callRPC(
  */
 export async function handleEthereumProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -336,7 +336,7 @@ export async function handleEthereumProbe(request: Request): Promise<Response> {
  */
 export async function handleEthereumRPC(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -431,7 +431,7 @@ export async function handleEthereumRPC(request: Request): Promise<Response> {
  */
 export async function handleEthereumInfo(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -542,7 +542,7 @@ export async function handleEthereumInfo(request: Request): Promise<Response> {
  */
 export async function handleEthereumP2PProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {

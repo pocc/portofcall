@@ -306,3 +306,8 @@ Siemens security recommendations:
 - [snap7 Library Documentation](http://snap7.sourceforge.net/)
 - [Siemens S7 Protocol Security (Schneider, 2015)](https://www.sciencedirect.com/science/article/pii/S2214212615000083)
 - [CISA S7 PLC Vulnerabilities](https://www.cisa.gov/news-events/ics-advisories)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

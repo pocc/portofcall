@@ -489,7 +489,10 @@ async function ldapsTLSBind(
   writer: WritableStreamDefaultWriter<Uint8Array>;
 }> {
   const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
 
@@ -647,7 +650,7 @@ function extractPagedResultsCookie(data: Uint8Array): Uint8Array {
 export async function handleLDAPSConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const raw = await request.json() as Partial<LDAPSConnectionOptions>;
     const options = { ...raw, bindDN: resolveBindDN(raw) || undefined };
@@ -665,6 +668,12 @@ export async function handleLDAPSConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 636;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -786,7 +795,7 @@ export async function handleLDAPSConnect(request: Request): Promise<Response> {
 export async function handleLDAPSAdd(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -802,6 +811,12 @@ export async function handleLDAPSAdd(request: Request): Promise<Response> {
 
     if (!host || !bindDN || !entry?.dn) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDN, and entry.dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -873,7 +888,7 @@ export async function handleLDAPSAdd(request: Request): Promise<Response> {
 export async function handleLDAPSModify(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -890,6 +905,12 @@ export async function handleLDAPSModify(request: Request): Promise<Response> {
 
     if (!host || !bindDN || !dn || !changes) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDN, dn, and changes are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -966,7 +987,7 @@ export async function handleLDAPSModify(request: Request): Promise<Response> {
 export async function handleLDAPSDelete(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -981,6 +1002,12 @@ export async function handleLDAPSDelete(request: Request): Promise<Response> {
 
     if (!host || !bindDN || !dn) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDN, and dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1080,6 +1107,12 @@ export async function handleLDAPSSearch(request: Request): Promise<Response> {
     const scope = options.scope ?? 2;
     const sizeLimit = options.sizeLimit ?? 100;
     const attributes = options.attributes || [];
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -1190,7 +1223,7 @@ export async function handleLDAPSSearch(request: Request): Promise<Response> {
 export async function handleLDAPSPagedSearch(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1238,6 +1271,12 @@ export async function handleLDAPSPagedSearch(request: Request): Promise<Response
         JSON.stringify({ success: false, error: 'baseDN is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);

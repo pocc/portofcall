@@ -268,3 +268,8 @@ Should document:
 - [RFC 7617 - Basic Authentication](https://datatracker.ietf.org/doc/html/rfc7617)
 - [Open Proxy Risks](../security-notes/open-proxy-security.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -111,3 +111,8 @@ Ganglia implementation provides 2 endpoints (connect, probe) for the gmond XML d
 - [Ganglia gmond](http://ganglia.sourceforge.net/) - gmond daemon documentation
 - [Ganglia XML Format](https://github.com/ganglia/monitor-core/blob/master/gmond/gmond.c) - XML generator source code
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols (none for Ganglia)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

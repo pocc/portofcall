@@ -189,16 +189,60 @@ const OPCODE_NAMES: Record<number, string> = {
 };
 
 /**
- * Read data from socket with timeout
+ * Find the end of HTTP headers (\r\n\r\n) in a byte buffer.
+ * Returns the index just past the \r\n\r\n sequence, or -1 if not found.
+ */
+function findHeaderEnd(data: Uint8Array): number {
+  for (let i = 0; i <= data.length - 4; i++) {
+    if (data[i] === 0x0d && data[i + 1] === 0x0a && data[i + 2] === 0x0d && data[i + 3] === 0x0a) {
+      return i + 4;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Read data from socket with timeout, accumulating chunks until the full
+ * HTTP response headers have arrived (ends with \r\n\r\n). This handles
+ * the case where TCP segments the response across multiple reads.
  */
 async function readWithTimeout(reader: ReadableStreamDefaultReader<Uint8Array>, timeout: number): Promise<Uint8Array | null> {
-  const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), timeout));
-  const readPromise = reader.read().then(({ value, done }) => {
-    if (done) return null;
-    return value || null;
-  });
+  const chunks: Uint8Array[] = [];
+  let totalLen = 0;
+  const deadline = Date.now() + timeout;
 
-  return Promise.race([readPromise, timeoutPromise]);
+  while (true) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+
+    const timeoutPromise = new Promise<null>((resolve) => setTimeout(() => resolve(null), remaining));
+    const readPromise = reader.read().then(({ value, done }) => {
+      if (done) return null;
+      return value || null;
+    });
+
+    const chunk = await Promise.race([readPromise, timeoutPromise]);
+    if (!chunk) break; // timeout or stream ended
+
+    chunks.push(chunk);
+    totalLen += chunk.length;
+
+    // Merge and check for end of HTTP headers
+    const merged = new Uint8Array(totalLen);
+    let off = 0;
+    for (const c of chunks) { merged.set(c, off); off += c.length; }
+
+    if (findHeaderEnd(merged) !== -1) return merged;
+
+    // Safety cap: if we've read more than 16 KiB without finding headers, return what we have
+    if (totalLen > 16384) return merged;
+  }
+
+  if (chunks.length === 0) return null;
+  const merged = new Uint8Array(totalLen);
+  let off = 0;
+  for (const c of chunks) { merged.set(c, off); off += c.length; }
+  return merged;
 }
 
 /**
@@ -225,12 +269,13 @@ export async function handleWebSocketProbe(request: Request): Promise<Response> 
     }
 
     const port = body.port || 80;
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
     const path = body.path || '/';
-    const timeout = body.timeout || 10000;
+    const MAX_TIMEOUT = 30000;
+    const timeout = Math.min(Math.max(body.timeout || 10000, 1000), MAX_TIMEOUT);
 
     // Check for Cloudflare
     const cfCheck = await checkIfCloudflare(body.host);
@@ -244,7 +289,10 @@ export async function handleWebSocketProbe(request: Request): Promise<Response> 
 
     const connectStart = Date.now();
     const socket = connect(`${body.host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     const connectTimeMs = Date.now() - connectStart;
 
     try {
@@ -255,16 +303,18 @@ export async function handleWebSocketProbe(request: Request): Promise<Response> 
         // Generate WebSocket key
         const wsKey = generateWebSocketKey();
 
-        // Build HTTP Upgrade request
-        let httpRequest = `GET ${path} HTTP/1.1\r\n`;
-        httpRequest += `Host: ${body.host}${port !== 80 && port !== 443 ? ':' + port : ''}\r\n`;
+        // Build HTTP Upgrade request — sanitize to prevent CRLF injection
+        const safeHost = (body.host || '').replace(/[\r\n]/g, '');
+        const safePath = path.replace(/[\r\n]/g, '');
+        let httpRequest = `GET ${safePath} HTTP/1.1\r\n`;
+        httpRequest += `Host: ${safeHost}${port !== 80 && port !== 443 ? ':' + port : ''}\r\n`;
         httpRequest += `Upgrade: websocket\r\n`;
         httpRequest += `Connection: Upgrade\r\n`;
         httpRequest += `Sec-WebSocket-Key: ${wsKey}\r\n`;
         httpRequest += `Sec-WebSocket-Version: 13\r\n`;
-        httpRequest += `Origin: http://${body.host}\r\n`;
+        httpRequest += `Origin: http://${safeHost}\r\n`;
         if (body.protocols) {
-          httpRequest += `Sec-WebSocket-Protocol: ${body.protocols}\r\n`;
+          httpRequest += `Sec-WebSocket-Protocol: ${(body.protocols as string).replace(/[\r\n]/g, '')}\r\n`;
         }
         httpRequest += `\r\n`;
 

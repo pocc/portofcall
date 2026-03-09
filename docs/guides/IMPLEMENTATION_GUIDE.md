@@ -75,41 +75,39 @@ This guide provides patterns and best practices for implementing TCP protocols w
 Every protocol follows this pattern:
 
 ```typescript
-// src/worker/protocols/{protocol}/client.ts
+// src/worker/{protocol}.ts
+// NOTE: Handlers are flat files in src/worker/, NOT in subdirectories.
+// Each protocol exports handler functions directly.
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isPrivateIP } from './host-validator';
 
-export interface ProtocolConfig {
-  host: string;
-  port: number;
-  // Protocol-specific auth/config
-}
-
-export class ProtocolClient {
-  private socket: Socket;
-
-  async connect(): Promise<void> {
-    this.socket = connect(`${this.config.host}:${this.config.port}`);
-    await this.socket.opened;
-
-    // Protocol-specific handshake
-    await this.performHandshake();
+export async function handleProtocolTest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response('Method not allowed', { status: 405 });
   }
 
-  async sendCommand(cmd: string): Promise<Response> {
-    // Protocol-specific command encoding
-    const encoded = this.encodeCommand(cmd);
+  const { host, port = DEFAULT_PORT, timeout = 10000 } = await request.json();
 
-    const writer = this.socket.writable.getWriter();
-    await writer.write(encoded);
-    writer.releaseLock();
+  // Validate inputs
+  if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
 
-    // Read response
-    return this.readResponse();
+  // Cloudflare detection
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare) {
+    return Response.json({ success: false, error: getCloudflareErrorMessage(host) }, { status: 403 });
   }
 
-  async close(): Promise<void> {
-    await this.socket.close();
+  const socket = connect({ hostname: host, port });
+  try {
+    await socket.opened;
+    // Protocol-specific logic...
+    return Response.json({ success: true, /* results */ });
+  } catch (error) {
+    return Response.json({ success: false, error: error.message }, { status: 500 });
+  } finally {
+    socket.close();
   }
 }
 ```
@@ -119,7 +117,7 @@ export class ProtocolClient {
 For interactive sessions:
 
 ```typescript
-// src/worker/protocols/{protocol}/tunnel.ts
+// WebSocket tunnel pattern (in the same src/worker/{protocol}.ts file)
 
 export async function protocolTunnel(
   request: Request,
@@ -254,22 +252,16 @@ export function ProtocolClient() {
 
 ## Key Implementation Decisions
 
-### When to Use External Libraries
+### External Libraries
 
-| Protocol | Library | Rationale |
-|----------|---------|-----------|
-| ECHO | None | Too simple |
-| WHOIS | None | Simple parsing |
-| REDIS | None | RESP is simple enough |
-| MySQL | `mysql2` | Binary protocol is complex |
-| SSH | `ssh2` | Crypto/terminal too complex |
-| MQTT | `mqtt.js` | Save time on tested code |
-| IRC | None | Line-based, easy to parse |
+All 240+ protocol handlers in Port of Call are implemented **from scratch** with no external protocol libraries. This keeps the Worker bundle small and avoids compatibility issues with the Cloudflare Workers runtime.
 
-**Rule of thumb**: Use library if protocol involves:
-- Binary framing (MySQL, PostgreSQL)
-- Cryptography (SSH, TLS)
-- Complex state machines (FTP, SMTP)
+| Protocol | Library | Notes |
+|----------|---------|-------|
+| All protocols | None | Custom implementations using `cloudflare:sockets` API |
+| SSH | `bcrypt-pbkdf` | Only exception — used for encrypted private key support |
+
+**Why no libraries:** The Workers runtime doesn't support Node.js `net` or `tls` modules that most protocol libraries depend on. All TCP is done via `connect()` from `cloudflare:sockets`.
 
 ### Text vs Binary Protocols
 
@@ -339,7 +331,7 @@ For every protocol implementation:
 ### Unit Tests
 
 ```typescript
-// tests/protocols/{protocol}.test.ts
+// tests/{protocol}.test.ts
 
 describe('Protocol Client', () => {
   it('should connect successfully', async () => {
@@ -372,7 +364,7 @@ describe('Protocol Client', () => {
 ### Integration Tests
 
 ```typescript
-// tests/integration/{protocol}.test.ts
+// tests/{protocol}.test.ts
 
 describe('Protocol API Endpoints', () => {
   it('should handle /api/{protocol}/exec', async () => {
@@ -540,7 +532,7 @@ When stuck:
 
 ## Next Steps
 
-1. Review [TCP_PROTOCOLS.md](../TCP_PROTOCOLS.md) for full protocol list
+1. Review [TCP_PROTOCOLS.md](../reference/TCP_PROTOCOLS.md) for full protocol list
 2. Choose a protocol from the roadmap above
 3. Read the specific implementation plan
 4. Set up local test server (Docker)

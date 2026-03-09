@@ -4,7 +4,7 @@ This guide provides curl commands to test all Port of Call API endpoints.
 
 ## Local vs Production Testing
 
-All examples below use the production URL `https://portofcall.ross.gg/api`. For local development:
+All examples below use the production URL `https://l4.fyi/api`. For local development:
 
 ```bash
 # Set this environment variable to test against a local Worker
@@ -27,12 +27,12 @@ All FTP operations have been implemented and tested against public FTP test serv
 
 **Using Query Parameters (GET)**:
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/connect?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N"
+curl "https://l4.fyi/api/ftp/connect?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N"
 ```
 
 **Using JSON Body (POST)**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/connect \
+curl -X POST https://l4.fyi/api/ftp/connect \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",
@@ -55,12 +55,12 @@ curl -X POST https://portofcall.ross.gg/api/ftp/connect \
 
 **Using Query Parameters (GET)**:
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/list?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N&path=/"
+curl "https://l4.fyi/api/ftp/list?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N&path=/"
 ```
 
 **Using JSON Body (POST)**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/list \
+curl -X POST https://l4.fyi/api/ftp/list \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",
@@ -91,7 +91,7 @@ curl -X POST https://portofcall.ross.gg/api/ftp/list \
 
 **Using curl with file upload**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/upload \
+curl -X POST https://l4.fyi/api/ftp/upload \
   -F "host=ftp.dlptest.com" \
   -F "port=21" \
   -F "username=dlpuser@dlptest.com" \
@@ -111,7 +111,7 @@ formData.append('password', 'SzMf7rTE4pCrf9dV286GuNe4N');
 formData.append('remotePath', '/test-upload.txt');
 formData.append('file', fs.createReadStream('./test.txt'));
 
-fetch('https://portofcall.ross.gg/api/ftp/upload', {
+fetch('https://l4.fyi/api/ftp/upload', {
   method: 'POST',
   body: formData
 }).then(r => r.json()).then(console.log);
@@ -130,13 +130,13 @@ fetch('https://portofcall.ross.gg/api/ftp/upload', {
 
 **Using Query Parameters (GET)**:
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/download?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N&remotePath=/test.txt" \
+curl "https://l4.fyi/api/ftp/download?host=ftp.dlptest.com&port=21&username=dlpuser@dlptest.com&password=SzMf7rTE4pCrf9dV286GuNe4N&remotePath=/test.txt" \
   -o downloaded-file.txt
 ```
 
 **Using JSON Body (POST)**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/download \
+curl -X POST https://l4.fyi/api/ftp/download \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",
@@ -153,7 +153,7 @@ curl -X POST https://portofcall.ross.gg/api/ftp/download \
 ### Delete File from FTP Server
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/delete \
+curl -X POST https://l4.fyi/api/ftp/delete \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",
@@ -175,7 +175,7 @@ curl -X POST https://portofcall.ross.gg/api/ftp/delete \
 ### Create Directory on FTP Server
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/mkdir \
+curl -X POST https://l4.fyi/api/ftp/mkdir \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",
@@ -197,7 +197,7 @@ curl -X POST https://portofcall.ross.gg/api/ftp/mkdir \
 ### Rename File or Directory
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ftp/rename \
+curl -X POST https://l4.fyi/api/ftp/rename \
   -H "Content-Type: application/json" \
   -d '{
     "host": "ftp.dlptest.com",
@@ -223,12 +223,12 @@ curl -X POST https://portofcall.ross.gg/api/ftp/rename \
 
 **Using Query Parameters (GET)**:
 ```bash
-curl "https://portofcall.ross.gg/api/ssh/connect?host=test.rebex.net&port=22"
+curl "https://l4.fyi/api/ssh/connect?host=test.rebex.net&port=22"
 ```
 
 **Using JSON Body (POST)**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ssh/connect \
+curl -X POST https://l4.fyi/api/ssh/connect \
   -H "Content-Type: application/json" \
   -d '{
     "host": "test.rebex.net",
@@ -254,10 +254,10 @@ For interactive SSH sessions, use WebSocket:
 
 ```bash
 # Using websocat tool
-websocat "wss://portofcall.ross.gg/api/ssh/connect?host=test.rebex.net&port=22"
+websocat "wss://l4.fyi/api/ssh/connect?host=test.rebex.net&port=22"
 
 # Using wscat tool
-wscat -c "wss://portofcall.ross.gg/api/ssh/connect?host=test.rebex.net&port=22"
+wscat -c "wss://l4.fyi/api/ssh/connect?host=test.rebex.net&port=22"
 ```
 
 ## TCP Ping Endpoint
@@ -265,7 +265,7 @@ wscat -c "wss://portofcall.ross.gg/api/ssh/connect?host=test.rebex.net&port=22"
 Test basic TCP connectivity:
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ping \
+curl -X POST https://l4.fyi/api/ping \
   -H "Content-Type: application/json" \
   -d '{
     "host": "google.com",
@@ -289,7 +289,7 @@ curl -X POST https://portofcall.ross.gg/api/ping \
 ### Lookup Domain Registration
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/whois/lookup \
+curl -X POST https://l4.fyi/api/whois/lookup \
   -H "Content-Type: application/json" \
   -d '{
     "domain": "google.com",
@@ -309,7 +309,7 @@ curl -X POST https://portofcall.ross.gg/api/whois/lookup \
 
 **With explicit server override**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/whois/lookup \
+curl -X POST https://l4.fyi/api/whois/lookup \
   -H "Content-Type: application/json" \
   -d '{
     "domain": "wikipedia.org",
@@ -326,7 +326,7 @@ curl -X POST https://portofcall.ross.gg/api/whois/lookup \
 ### Send Syslog Message (RFC 5424)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/syslog/send \
+curl -X POST https://l4.fyi/api/syslog/send \
   -H "Content-Type: application/json" \
   -d '{
     "host": "syslog.example.com",
@@ -354,7 +354,7 @@ curl -X POST https://portofcall.ross.gg/api/syslog/send \
 
 **Legacy BSD format (RFC 3164)**:
 ```bash
-curl -X POST https://portofcall.ross.gg/api/syslog/send \
+curl -X POST https://l4.fyi/api/syslog/send \
   -H "Content-Type: application/json" \
   -d '{
     "host": "syslog.example.com",
@@ -372,7 +372,7 @@ curl -X POST https://portofcall.ross.gg/api/syslog/send \
 ### Test SOCKS4 Proxy Connection
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/socks4/connect \
+curl -X POST https://l4.fyi/api/socks4/connect \
   -H "Content-Type: application/json" \
   -d '{
     "proxyHost": "proxy.example.com",
@@ -402,7 +402,7 @@ curl -X POST https://portofcall.ross.gg/api/socks4/connect \
 ### Get Human-Readable Time
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/daytime/get \
+curl -X POST https://l4.fyi/api/daytime/get \
   -H "Content-Type: application/json" \
   -d '{
     "host": "time.nist.gov",
@@ -427,7 +427,7 @@ curl -X POST https://portofcall.ross.gg/api/daytime/get \
 ### Query User Information
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/finger/query \
+curl -X POST https://l4.fyi/api/finger/query \
   -H "Content-Type: application/json" \
   -d '{
     "host": "finger.example.com",
@@ -448,7 +448,7 @@ curl -X POST https://portofcall.ross.gg/api/finger/query \
 
 **With remote host forwarding** (user@host):
 ```bash
-curl -X POST https://portofcall.ross.gg/api/finger/query \
+curl -X POST https://l4.fyi/api/finger/query \
   -H "Content-Type: application/json" \
   -d '{
     "host": "gateway.example.com",
@@ -462,7 +462,7 @@ curl -X POST https://portofcall.ross.gg/api/finger/query \
 ### Get Binary Time
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/time/get \
+curl -X POST https://l4.fyi/api/time/get \
   -H "Content-Type: application/json" \
   -d '{
     "host": "time.nist.gov",
@@ -491,7 +491,7 @@ The `raw` field is seconds since 1900-01-01 (RFC 868 epoch). `unixTimestamp` sub
 ### Test TCP Echo
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/echo/test \
+curl -X POST https://l4.fyi/api/echo/test \
   -H "Content-Type: application/json" \
   -d '{
     "host": "tcpbin.com",
@@ -517,17 +517,17 @@ curl -X POST https://portofcall.ross.gg/api/echo/test \
 
 ```bash
 # A record via Google DNS
-curl -X POST https://portofcall.ross.gg/api/dns/query \
+curl -X POST https://l4.fyi/api/dns/query \
   -H "Content-Type: application/json" \
   -d '{"domain": "google.com", "type": "A", "server": "8.8.8.8"}'
 
 # MX records via Cloudflare DNS
-curl -X POST https://portofcall.ross.gg/api/dns/query \
+curl -X POST https://l4.fyi/api/dns/query \
   -H "Content-Type: application/json" \
   -d '{"domain": "gmail.com", "type": "MX", "server": "1.1.1.1"}'
 
 # TXT records (SPF)
-curl -X POST https://portofcall.ross.gg/api/dns/query \
+curl -X POST https://l4.fyi/api/dns/query \
   -H "Content-Type: application/json" \
   -d '{"domain": "google.com", "type": "TXT", "server": "9.9.9.9"}'
 ```
@@ -535,7 +535,7 @@ curl -X POST https://portofcall.ross.gg/api/dns/query \
 ## Gopher Protocol Endpoint (RFC 1436)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/gopher/fetch \
+curl -X POST https://l4.fyi/api/gopher/fetch \
   -H "Content-Type: application/json" \
   -d '{"host": "gopher.floodgap.com", "port": 70, "selector": ""}'
 ```
@@ -543,7 +543,7 @@ curl -X POST https://portofcall.ross.gg/api/gopher/fetch \
 ## Gemini Protocol Endpoint
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/gemini/fetch \
+curl -X POST https://l4.fyi/api/gemini/fetch \
   -H "Content-Type: application/json" \
   -d '{"url": "gemini://geminiprotocol.net/"}'
 ```
@@ -551,7 +551,7 @@ curl -X POST https://portofcall.ross.gg/api/gemini/fetch \
 ## IRC Protocol Endpoint (RFC 2812)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/irc/connect \
+curl -X POST https://l4.fyi/api/irc/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "irc.libera.chat", "port": 6667, "nickname": "portofcall_test"}'
 ```
@@ -560,12 +560,12 @@ curl -X POST https://portofcall.ross.gg/api/irc/connect \
 
 ```bash
 # Connect
-curl -X POST https://portofcall.ross.gg/api/nntp/connect \
+curl -X POST https://l4.fyi/api/nntp/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "nntp.aioe.org", "port": 119}'
 
 # Select newsgroup
-curl -X POST https://portofcall.ross.gg/api/nntp/group \
+curl -X POST https://l4.fyi/api/nntp/group \
   -H "Content-Type: application/json" \
   -d '{"host": "nntp.aioe.org", "group": "comp.lang.python"}'
 ```
@@ -574,17 +574,17 @@ curl -X POST https://portofcall.ross.gg/api/nntp/group \
 
 ```bash
 # Connection test
-curl -X POST https://portofcall.ross.gg/api/memcached/connect \
+curl -X POST https://l4.fyi/api/memcached/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "memcached.example.com", "port": 11211}'
 
 # Run command
-curl -X POST https://portofcall.ross.gg/api/memcached/command \
+curl -X POST https://l4.fyi/api/memcached/command \
   -H "Content-Type: application/json" \
   -d '{"host": "memcached.example.com", "command": "stats"}'
 
 # Get stats
-curl -X POST https://portofcall.ross.gg/api/memcached/stats \
+curl -X POST https://l4.fyi/api/memcached/stats \
   -H "Content-Type: application/json" \
   -d '{"host": "memcached.example.com"}'
 ```
@@ -593,12 +593,12 @@ curl -X POST https://portofcall.ross.gg/api/memcached/stats \
 
 ```bash
 # Connect to broker
-curl -X POST https://portofcall.ross.gg/api/stomp/connect \
+curl -X POST https://l4.fyi/api/stomp/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "broker.example.com", "port": 61613}'
 
 # Send message
-curl -X POST https://portofcall.ross.gg/api/stomp/send \
+curl -X POST https://l4.fyi/api/stomp/send \
   -H "Content-Type: application/json" \
   -d '{"host": "broker.example.com", "destination": "/queue/test", "body": "Hello"}'
 ```
@@ -606,7 +606,7 @@ curl -X POST https://portofcall.ross.gg/api/stomp/send \
 ## SOCKS5 Proxy Endpoint (RFC 1928)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/socks5/connect \
+curl -X POST https://l4.fyi/api/socks5/connect \
   -H "Content-Type: application/json" \
   -d '{
     "proxyHost": "proxy.example.com",
@@ -620,12 +620,12 @@ curl -X POST https://portofcall.ross.gg/api/socks5/connect \
 
 ```bash
 # Connection test
-curl -X POST https://portofcall.ross.gg/api/modbus/connect \
+curl -X POST https://l4.fyi/api/modbus/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "plc.example.com", "port": 502, "unitId": 1}'
 
 # Read holding registers
-curl -X POST https://portofcall.ross.gg/api/modbus/read \
+curl -X POST https://l4.fyi/api/modbus/read \
   -H "Content-Type: application/json" \
   -d '{"host": "plc.example.com", "functionCode": 3, "address": 0, "quantity": 10}'
 ```
@@ -634,12 +634,12 @@ curl -X POST https://portofcall.ross.gg/api/modbus/read \
 
 ```bash
 # Connection test
-curl -X POST https://portofcall.ross.gg/api/mongodb/connect \
+curl -X POST https://l4.fyi/api/mongodb/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "mongo.example.com", "port": 27017}'
 
 # Ping
-curl -X POST https://portofcall.ross.gg/api/mongodb/ping \
+curl -X POST https://l4.fyi/api/mongodb/ping \
   -H "Content-Type: application/json" \
   -d '{"host": "mongo.example.com", "port": 27017}'
 ```
@@ -647,7 +647,7 @@ curl -X POST https://portofcall.ross.gg/api/mongodb/ping \
 ## Graphite (Carbon) Protocol Endpoint
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/graphite/send \
+curl -X POST https://l4.fyi/api/graphite/send \
   -H "Content-Type: application/json" \
   -d '{
     "host": "graphite.example.com",
@@ -663,12 +663,12 @@ curl -X POST https://portofcall.ross.gg/api/graphite/send \
 
 ```bash
 # Authenticate
-curl -X POST https://portofcall.ross.gg/api/rcon/connect \
+curl -X POST https://l4.fyi/api/rcon/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "mc.example.com", "port": 25575, "password": "rcon_password"}'
 
 # Execute command
-curl -X POST https://portofcall.ross.gg/api/rcon/command \
+curl -X POST https://l4.fyi/api/rcon/command \
   -H "Content-Type: application/json" \
   -d '{"host": "mc.example.com", "password": "rcon_password", "command": "list"}'
 ```
@@ -676,7 +676,7 @@ curl -X POST https://portofcall.ross.gg/api/rcon/command \
 ## Git Protocol Endpoint
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/git/refs \
+curl -X POST https://l4.fyi/api/git/refs \
   -H "Content-Type: application/json" \
   -d '{"host": "git.savannah.gnu.org", "port": 9418, "repo": "emacs.git"}'
 ```
@@ -685,12 +685,12 @@ curl -X POST https://portofcall.ross.gg/api/git/refs \
 
 ```bash
 # Health check (ruok)
-curl -X POST https://portofcall.ross.gg/api/zookeeper/connect \
+curl -X POST https://l4.fyi/api/zookeeper/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "zk.example.com", "port": 2181}'
 
 # Four-letter word command
-curl -X POST https://portofcall.ross.gg/api/zookeeper/command \
+curl -X POST https://l4.fyi/api/zookeeper/command \
   -H "Content-Type: application/json" \
   -d '{"host": "zk.example.com", "command": "srvr"}'
 ```
@@ -698,7 +698,7 @@ curl -X POST https://portofcall.ross.gg/api/zookeeper/command \
 ## Cassandra Protocol Endpoint
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/cassandra/connect \
+curl -X POST https://l4.fyi/api/cassandra/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "cassandra.example.com", "port": 9042}'
 ```
@@ -706,7 +706,7 @@ curl -X POST https://portofcall.ross.gg/api/cassandra/connect \
 ## AMQP Protocol Endpoint (RabbitMQ)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/amqp/connect \
+curl -X POST https://l4.fyi/api/amqp/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "rabbitmq.example.com", "port": 5672, "vhost": "/"}'
 ```
@@ -715,12 +715,12 @@ curl -X POST https://portofcall.ross.gg/api/amqp/connect \
 
 ```bash
 # API versions
-curl -X POST https://portofcall.ross.gg/api/kafka/versions \
+curl -X POST https://l4.fyi/api/kafka/versions \
   -H "Content-Type: application/json" \
   -d '{"host": "kafka.example.com", "port": 9092}'
 
 # Metadata
-curl -X POST https://portofcall.ross.gg/api/kafka/metadata \
+curl -X POST https://l4.fyi/api/kafka/metadata \
   -H "Content-Type: application/json" \
   -d '{"host": "kafka.example.com", "port": 9092, "topics": ["test-topic"]}'
 ```
@@ -729,12 +729,12 @@ curl -X POST https://portofcall.ross.gg/api/kafka/metadata \
 
 ```bash
 # OPTIONS
-curl -X POST https://portofcall.ross.gg/api/rtsp/options \
+curl -X POST https://l4.fyi/api/rtsp/options \
   -H "Content-Type: application/json" \
   -d '{"host": "camera.example.com", "port": 554, "path": "/stream1"}'
 
 # DESCRIBE
-curl -X POST https://portofcall.ross.gg/api/rtsp/describe \
+curl -X POST https://l4.fyi/api/rtsp/describe \
   -H "Content-Type: application/json" \
   -d '{"host": "camera.example.com", "port": 554, "path": "/stream1"}'
 ```
@@ -743,12 +743,12 @@ curl -X POST https://portofcall.ross.gg/api/rtsp/describe \
 
 ```bash
 # Connect (list modules)
-curl -X POST https://portofcall.ross.gg/api/rsync/connect \
+curl -X POST https://l4.fyi/api/rsync/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "rsync.kernel.org", "port": 873}'
 
 # Get module details
-curl -X POST https://portofcall.ross.gg/api/rsync/module \
+curl -X POST https://l4.fyi/api/rsync/module \
   -H "Content-Type: application/json" \
   -d '{"host": "rsync.kernel.org", "module": "pub"}'
 ```
@@ -756,7 +756,7 @@ curl -X POST https://portofcall.ross.gg/api/rsync/module \
 ## TDS Protocol Endpoint (SQL Server)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/tds/connect \
+curl -X POST https://l4.fyi/api/tds/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "sqlserver.example.com", "port": 1433}'
 ```
@@ -764,7 +764,7 @@ curl -X POST https://portofcall.ross.gg/api/tds/connect \
 ## VNC Protocol Endpoint (RFB)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/vnc/connect \
+curl -X POST https://l4.fyi/api/vnc/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "vnc.example.com", "port": 5900}'
 ```
@@ -772,7 +772,7 @@ curl -X POST https://portofcall.ross.gg/api/vnc/connect \
 ## CHARGEN Protocol Endpoint (RFC 864)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/chargen/stream \
+curl -X POST https://l4.fyi/api/chargen/stream \
   -H "Content-Type: application/json" \
   -d '{"host": "chargen.example.com", "port": 19, "maxBytes": 1024}'
 ```
@@ -780,7 +780,7 @@ curl -X POST https://portofcall.ross.gg/api/chargen/stream \
 ## Neo4j Protocol Endpoint (Bolt)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/neo4j/connect \
+curl -X POST https://l4.fyi/api/neo4j/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "neo4j.example.com", "port": 7687}'
 ```
@@ -788,7 +788,7 @@ curl -X POST https://portofcall.ross.gg/api/neo4j/connect \
 ## RTMP Protocol Endpoint
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/rtmp/connect \
+curl -X POST https://l4.fyi/api/rtmp/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "live.twitch.tv", "port": 1935}'
 ```
@@ -797,12 +797,12 @@ curl -X POST https://portofcall.ross.gg/api/rtmp/connect \
 
 ```bash
 # Probe (connectivity test)
-curl -X POST https://portofcall.ross.gg/api/tacacs/probe \
+curl -X POST https://l4.fyi/api/tacacs/probe \
   -H "Content-Type: application/json" \
   -d '{"host": "tacacs.example.com", "port": 49}'
 
 # Authenticate
-curl -X POST https://portofcall.ross.gg/api/tacacs/authenticate \
+curl -X POST https://l4.fyi/api/tacacs/authenticate \
   -H "Content-Type: application/json" \
   -d '{"host": "tacacs.example.com", "username": "admin", "password": "pass", "secret": "shared_key"}'
 ```
@@ -811,12 +811,12 @@ curl -X POST https://portofcall.ross.gg/api/tacacs/authenticate \
 
 ```bash
 # Connection test
-curl -X POST https://portofcall.ross.gg/api/hl7/connect \
+curl -X POST https://l4.fyi/api/hl7/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "hl7.example.com", "port": 2575}'
 
 # Send ADT^A01 message
-curl -X POST https://portofcall.ross.gg/api/hl7/send \
+curl -X POST https://l4.fyi/api/hl7/send \
   -H "Content-Type: application/json" \
   -d '{
     "host": "hl7.example.com",
@@ -830,12 +830,12 @@ curl -X POST https://portofcall.ross.gg/api/hl7/send \
 
 ```bash
 # Cluster health
-curl -X POST https://portofcall.ross.gg/api/elasticsearch/health \
+curl -X POST https://l4.fyi/api/elasticsearch/health \
   -H "Content-Type: application/json" \
   -d '{"host": "es.example.com", "port": 9200}'
 
 # Query
-curl -X POST https://portofcall.ross.gg/api/elasticsearch/query \
+curl -X POST https://l4.fyi/api/elasticsearch/query \
   -H "Content-Type: application/json" \
   -d '{"host": "es.example.com", "index": "my-index", "query": {"match_all": {}}}'
 ```
@@ -843,7 +843,7 @@ curl -X POST https://portofcall.ross.gg/api/elasticsearch/query \
 ## AJP Protocol Endpoint (Apache JServ)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/ajp/connect \
+curl -X POST https://l4.fyi/api/ajp/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "tomcat.example.com", "port": 8009}'
 ```
@@ -851,7 +851,7 @@ curl -X POST https://portofcall.ross.gg/api/ajp/connect \
 ## RDP Protocol Endpoint (Remote Desktop)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/rdp/connect \
+curl -X POST https://l4.fyi/api/rdp/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "rdp.example.com", "port": 3389}'
 ```
@@ -859,7 +859,7 @@ curl -X POST https://portofcall.ross.gg/api/rdp/connect \
 ## JetDirect Protocol Endpoint (PJL)
 
 ```bash
-curl -X POST https://portofcall.ross.gg/api/jetdirect/connect \
+curl -X POST https://l4.fyi/api/jetdirect/connect \
   -H "Content-Type: application/json" \
   -d '{"host": "printer.example.com", "port": 9100}'
 ```
@@ -962,19 +962,19 @@ Domains with stable, well-known WHOIS records:
 
 ### Missing Parameters
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/connect?host=ftp.example.com"
+curl "https://l4.fyi/api/ftp/connect?host=ftp.example.com"
 # Returns 400 Bad Request
 ```
 
 ### Invalid Credentials
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/connect?host=ftp.dlptest.com&port=21&username=wrong&password=wrong"
+curl "https://l4.fyi/api/ftp/connect?host=ftp.dlptest.com&port=21&username=wrong&password=wrong"
 # Returns 500 with error message
 ```
 
 ### Connection Timeout
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/connect?host=nonexistent.example.com&port=21&username=user&password=pass"
+curl "https://l4.fyi/api/ftp/connect?host=nonexistent.example.com&port=21&username=user&password=pass"
 # Returns 500 with connection error
 ```
 
@@ -982,7 +982,7 @@ curl "https://portofcall.ross.gg/api/ftp/connect?host=nonexistent.example.com&po
 
 ### Measure Round-Trip Time
 ```bash
-time curl -X POST https://portofcall.ross.gg/api/ping \
+time curl -X POST https://l4.fyi/api/ping \
   -H "Content-Type: application/json" \
   -d '{"host": "google.com", "port": 443}'
 ```
@@ -993,10 +993,10 @@ Connect to servers in different regions to test Smart Placement migration:
 
 ```bash
 # US East server
-curl "https://portofcall.ross.gg/api/ftp/connect?host=ftp.us-east.example.com&..."
+curl "https://l4.fyi/api/ftp/connect?host=ftp.us-east.example.com&..."
 
 # Europe server
-curl "https://portofcall.ross.gg/api/ftp/connect?host=ftp.eu-west.example.com&..."
+curl "https://l4.fyi/api/ftp/connect?host=ftp.eu-west.example.com&..."
 ```
 
 After repeated requests to the same region, workers migrate closer, reducing latency.
@@ -1005,17 +1005,17 @@ After repeated requests to the same region, workers migrate closer, reducing lat
 
 ### View Response Headers
 ```bash
-curl -i "https://portofcall.ross.gg/api/ftp/connect?host=ftp.dlptest.com&..."
+curl -i "https://l4.fyi/api/ftp/connect?host=ftp.dlptest.com&..."
 ```
 
 ### Verbose Output
 ```bash
-curl -v "https://portofcall.ross.gg/api/ftp/connect?host=ftp.dlptest.com&..."
+curl -v "https://l4.fyi/api/ftp/connect?host=ftp.dlptest.com&..."
 ```
 
 ### Pretty Print JSON
 ```bash
-curl "https://portofcall.ross.gg/api/ftp/connect?host=ftp.dlptest.com&..." | jq
+curl "https://l4.fyi/api/ftp/connect?host=ftp.dlptest.com&..." | jq
 ```
 
 ## Rate Limiting

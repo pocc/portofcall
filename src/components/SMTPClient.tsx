@@ -10,7 +10,7 @@ interface SMTPClientProps {
 
 export default function SMTPClient({ onBack }: SMTPClientProps) {
   const [host, setHost] = useState('');
-  const [port, setPort] = useState('587');
+  const [port, setPort] = useState('25');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [from, setFrom] = useState('');

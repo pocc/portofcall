@@ -104,11 +104,13 @@ function createConnectPacket(host: string, port: number, serviceName: string, si
 
   // Connect data length (will be calculated)
   // Connect data format: (DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=...)(PORT=...))(CONNECT_DATA=(SERVICE_NAME=...)))
+  // Sanitize TNS descriptor values to prevent descriptor injection via parentheses
+  const sanitizeTNS = (v: string) => v.replace(/[()]/g, '');
   let connectData: string;
   if (sid) {
-    connectData = `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SID=${sid})))`;
+    connectData = `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${sanitizeTNS(host)})(PORT=${port}))(CONNECT_DATA=(SID=${sanitizeTNS(sid)})))`;
   } else {
-    connectData = `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SERVICE_NAME=${serviceName})))`;
+    connectData = `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${sanitizeTNS(host)})(PORT=${port}))(CONNECT_DATA=(SERVICE_NAME=${sanitizeTNS(serviceName)})))`;
   }
 
   const connectDataBytes = new TextEncoder().encode(connectData);
@@ -386,6 +388,30 @@ export async function handleOracleConnect(request: Request): Promise<Response> {
     const serviceName = options.serviceName || '';
     const sid = options.sid;
 
+    // Validate TNS string parameters to prevent descriptor injection
+    const tnsParamPattern = /^[a-zA-Z0-9._-]+$/;
+    if (!tnsParamPattern.test(host)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid host: only alphanumeric, dot, hyphen, and underscore characters are allowed',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (serviceName && !tnsParamPattern.test(serviceName)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid serviceName: only alphanumeric, dot, hyphen, and underscore characters are allowed',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (sid && !tnsParamPattern.test(sid)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid sid: only alphanumeric, dot, hyphen, and underscore characters are allowed',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -412,8 +438,33 @@ export async function handleOracleConnect(request: Request): Promise<Response> {
         const connectPacket = createConnectPacket(host, port, serviceName, sid);
         await writer.write(connectPacket);
 
-        // Read response packet
-        const { value, done } = await reader.read();
+        // Read response packet (accumulate to handle fragmented TCP)
+        const responseChunks: Uint8Array[] = [];
+        let responseTotalLen = 0;
+        const MAX_ORACLE_RESPONSE = 65536;
+        while (responseTotalLen < MAX_ORACLE_RESPONSE) {
+          const { value: chunk, done: chunkDone } = await Promise.race([
+            reader.read(),
+            new Promise<{value: undefined, done: true}>((resolve) =>
+              setTimeout(() => resolve({ value: undefined, done: true }), 5000)
+            ),
+          ]);
+          if (chunkDone || !chunk) break;
+          responseChunks.push(chunk);
+          responseTotalLen += chunk.length;
+          // Oracle TNS: 2-byte big-endian length at offset 0
+          if (responseTotalLen >= 2) {
+            const partial = new Uint8Array(responseTotalLen);
+            let off = 0;
+            for (const c of responseChunks) { partial.set(c, off); off += c.length; }
+            const expectedLen = (partial[0] << 8) | partial[1];
+            if (expectedLen > 0 && responseTotalLen >= expectedLen) break;
+          }
+        }
+        const value = new Uint8Array(responseTotalLen);
+        let off = 0;
+        for (const c of responseChunks) { value.set(c, off); off += c.length; }
+        const done = responseTotalLen === 0;
 
         if (done || !value || value.length < 8) {
           throw new Error('Invalid TNS response');
@@ -497,9 +548,10 @@ export async function handleOracleConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
+    });
 
     try {
       const result = await Promise.race([connectionPromise, timeoutPromise]);
@@ -514,6 +566,8 @@ export async function handleOracleConnect(request: Request): Promise<Response> {
         status: 500,
         headers: { 'Content-Type': 'application/json' },
       });
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -553,8 +607,13 @@ export async function handleOracleTNSServices(request: Request): Promise<Respons
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!/^[a-zA-Z0-9._-]+$/.test(host)) {
+      return new Response(JSON.stringify({ success: false, error: 'Invalid host: only alphanumeric, dot, hyphen, and underscore characters are allowed' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -665,14 +724,19 @@ export async function handleOracleTNSServices(request: Request): Promise<Respons
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
-    return new Response(JSON.stringify(result), {
-      headers: { 'Content-Type': 'application/json' },
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
+
+    try {
+      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      return new Response(JSON.stringify(result), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
 
   } catch (error) {
     return new Response(JSON.stringify({

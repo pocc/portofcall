@@ -123,3 +123,8 @@ Prometheus implementation provides 4 endpoints (health, query, metrics, range) f
 - [PromQL Query Language](https://prometheus.io/docs/prometheus/latest/querying/basics/) - Query syntax
 - [Prometheus Exposition Format](https://prometheus.io/docs/instrumenting/exposition_formats/) - Metrics format specification
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

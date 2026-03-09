@@ -27,88 +27,101 @@ async function sendHttpRequest(
   method: string,
   path: string,
   body?: string,
-  apiKey?: string,
+  headers?: Record<string, string>,
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
-
+  let timeoutHandle: any;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
 
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (apiKey) {
-    request += `Authorization: Bearer ${apiKey}\r\n`;
-  }
-
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
-  const maxSize = 512000;
-
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    if (headers) {
+      for (const [key, value] of Object.entries(headers)) {
+        request += `${key.replace(/[\r\n]/g, '')}: ${value.replace(/[\r\n]/g, '')}\r\n`;
+      }
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
-
-  const headerEnd = response.indexOf('\r\n\r\n');
-  if (headerEnd === -1) {
-    throw new Error('Invalid HTTP response: no header terminator found');
-  }
-
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
-
-  const statusLine = headerSection.split('\r\n')[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-
-  const headers: Record<string, string> = {};
-  const headerLines = headerSection.split('\r\n').slice(1);
-  for (const line of headerLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.substring(0, colonIdx).trim().toLowerCase();
-      const value = line.substring(colonIdx + 1).trim();
-      headers[key] = value;
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
     }
-  }
 
-  if (headers['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
-  }
+    writer.releaseLock();
 
-  return { statusCode, headers, body: bodySection };
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    let response = '';
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      throw new Error('Invalid HTTP response: no header terminator found');
+    }
+
+    const headerSection = response.substring(0, headerEnd);
+    let bodySection = response.substring(headerEnd + 4);
+
+    const statusLine = headerSection.split('\r\n')[0];
+    const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+    const resHeaders: Record<string, string> = {};
+    const headerLines = headerSection.split('\r\n').slice(1);
+    for (const line of headerLines) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.substring(0, colonIdx).trim().toLowerCase();
+        const value = line.substring(colonIdx + 1).trim();
+        resHeaders[key] = value;
+      }
+    }
+
+    if (resHeaders['transfer-encoding']?.includes('chunked')) {
+      bodySection = decodeChunked(bodySection);
+    }
+
+    return { statusCode, headers: resHeaders, body: bodySection };
+  } finally {
+    clearTimeout(timeoutHandle);
+    try { socket.close(); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -149,6 +162,11 @@ function decodeChunked(data: string): string {
  * Returns health status, version info, and global stats
  */
 export async function handleMeilisearchHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 7700, apiKey, timeout = 15000 } = await request.json<{
       host: string;
@@ -164,6 +182,12 @@ export async function handleMeilisearchHealth(request: Request): Promise<Respons
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -176,10 +200,11 @@ export async function handleMeilisearchHealth(request: Request): Promise<Respons
       });
     }
 
+    const headers = apiKey ? { 'Authorization': `Bearer ${apiKey}` } : undefined;
     const start = Date.now();
 
     // GET /health
-    const healthResult = await sendHttpRequest(host, port, 'GET', '/health', undefined, apiKey, timeout);
+    const healthResult = await sendHttpRequest(host, port, 'GET', '/health', undefined, headers, timeout);
     let health: unknown;
     try {
       health = JSON.parse(healthResult.body);
@@ -190,7 +215,7 @@ export async function handleMeilisearchHealth(request: Request): Promise<Respons
     // GET /version
     let version: unknown;
     try {
-      const versionResult = await sendHttpRequest(host, port, 'GET', '/version', undefined, apiKey, timeout);
+      const versionResult = await sendHttpRequest(host, port, 'GET', '/version', undefined, headers, timeout);
       if (versionResult.statusCode === 200) {
         version = JSON.parse(versionResult.body);
       }
@@ -201,7 +226,7 @@ export async function handleMeilisearchHealth(request: Request): Promise<Respons
     // GET /stats
     let stats: unknown;
     try {
-      const statsResult = await sendHttpRequest(host, port, 'GET', '/stats', undefined, apiKey, timeout);
+      const statsResult = await sendHttpRequest(host, port, 'GET', '/stats', undefined, headers, timeout);
       if (statsResult.statusCode === 200) {
         stats = JSON.parse(statsResult.body);
       }
@@ -212,7 +237,7 @@ export async function handleMeilisearchHealth(request: Request): Promise<Respons
     // GET /indexes
     let indexes: unknown;
     try {
-      const indexesResult = await sendHttpRequest(host, port, 'GET', '/indexes', undefined, apiKey, timeout);
+      const indexesResult = await sendHttpRequest(host, port, 'GET', '/indexes', undefined, headers, timeout);
       if (indexesResult.statusCode === 200) {
         indexes = JSON.parse(indexesResult.body);
       }
@@ -255,6 +280,11 @@ export async function handleMeilisearchHealth(request: Request): Promise<Respons
  * Searches a specific index
  */
 export async function handleMeilisearchSearch(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const {
       host,
@@ -290,6 +320,12 @@ export async function handleMeilisearchSearch(request: Request): Promise<Respons
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -302,6 +338,7 @@ export async function handleMeilisearchSearch(request: Request): Promise<Respons
       });
     }
 
+    const headers = apiKey ? { 'Authorization': `Bearer ${apiKey}` } : undefined;
     const start = Date.now();
 
     const searchBody = JSON.stringify({
@@ -312,7 +349,7 @@ export async function handleMeilisearchSearch(request: Request): Promise<Respons
 
     const encodedIndex = encodeURIComponent(index);
     const searchResult = await sendHttpRequest(
-      host, port, 'POST', `/indexes/${encodedIndex}/search`, searchBody, apiKey, timeout,
+      host, port, 'POST', `/indexes/${encodedIndex}/search`, searchBody, headers, timeout,
     );
 
     const latencyMs = Date.now() - start;
@@ -354,6 +391,11 @@ export async function handleMeilisearchSearch(request: Request): Promise<Respons
  * POST /indexes/{uid}/documents (upsert by primary key)
  */
 export async function handleMeilisearchDocuments(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; index: string;
@@ -368,6 +410,12 @@ export async function handleMeilisearchDocuments(request: Request): Promise<Resp
     const host = body.host;
     const port = body.port || 7700;
     const timeout = body.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -384,7 +432,8 @@ export async function handleMeilisearchDocuments(request: Request): Promise<Resp
     const qs = body.primaryKey ? ('?primaryKey=' + encodeURIComponent(body.primaryKey)) : '';
     const path = '/indexes/' + encodeURIComponent(body.index) + '/documents' + qs;
 
-    const result = await sendHttpRequest(host, port, 'POST', path, JSON.stringify(body.documents), body.apiKey, timeout);
+    const authHeaders = body.apiKey ? { Authorization: `Bearer ${body.apiKey}` } : undefined;
+    const result = await sendHttpRequest(host, port, 'POST', path, JSON.stringify(body.documents), authHeaders, timeout);
     const ok = result.statusCode >= 200 && result.statusCode < 300;
 
     let parsed: Record<string, unknown> = {};
@@ -414,6 +463,11 @@ export async function handleMeilisearchDocuments(request: Request): Promise<Resp
  * Deletes documents by ID list or deletes all documents.
  */
 export async function handleMeilisearchDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; index: string;
@@ -428,6 +482,12 @@ export async function handleMeilisearchDelete(request: Request): Promise<Respons
     const host = body.host;
     const port = body.port || 7700;
     const timeout = body.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -454,7 +514,8 @@ export async function handleMeilisearchDelete(request: Request): Promise<Respons
       reqBody = JSON.stringify(body.ids);
     }
 
-    const result = await sendHttpRequest(host, port, method, path, reqBody, body.apiKey, timeout);
+    const delHeaders = body.apiKey ? { Authorization: `Bearer ${body.apiKey}` } : undefined;
+    const result = await sendHttpRequest(host, port, method, path, reqBody, delHeaders, timeout);
     const ok = result.statusCode >= 200 && result.statusCode < 300;
 
     let parsed: Record<string, unknown> = {};

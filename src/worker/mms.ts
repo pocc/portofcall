@@ -912,6 +912,7 @@ async function readTPKT(
     if (buffer.length >= 4) {
       // TPKT length is big-endian 16-bit unsigned
       const pktLen = ((buffer[2] & 0xFF) << 8) | (buffer[3] & 0xFF);
+      if (pktLen > 65535) { throw new Error('TPKT packet length exceeds maximum'); }
       if (pktLen >= 4 && buffer.length >= pktLen) {
         return buffer.subarray(0, pktLen);
       }
@@ -1000,6 +1001,11 @@ function toHex(data: Uint8Array, maxBytes = 64): string {
  * Default TSAPs: callingTSAP=0001, calledTSAP=0001 (common for IEC 61850 servers)
  */
 export async function handleMMSProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as MMSRequest;
     const { host, port = 102, timeout = 15000 } = body;
@@ -1012,7 +1018,7 @@ export async function handleMMSProbe(request: Request): Promise<Response> {
         { status: 400 },
       );
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json(
         { success: false, host, port, error: 'Port must be between 1 and 65535' } satisfies MMSProbeResponse,
         { status: 400 },
@@ -1147,6 +1153,11 @@ export async function handleMMSProbe(request: Request): Promise<Response> {
  * Body: { host, port?, timeout?, callingTSAP?, calledTSAP?, objectClass?, domainId?, continueAfter? }
  */
 export async function handleMMSNameList(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as MMSNameListRequest;
     const { host, port = 102, timeout = 15000 } = body;
@@ -1157,6 +1168,10 @@ export async function handleMMSNameList(request: Request): Promise<Response> {
 
     if (!host) {
       return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -1259,6 +1274,11 @@ export async function handleMMSNameList(request: Request): Promise<Response> {
  * Body: { host, port?, timeout?, callingTSAP?, calledTSAP?, domainId?, variableName }
  */
 export async function handleMMSRead(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as MMSReadRequest;
     const { host, port = 102, timeout = 15000, variableName } = body;
@@ -1271,6 +1291,10 @@ export async function handleMMSRead(request: Request): Promise<Response> {
     }
     if (!variableName) {
       return Response.json({ success: false, error: 'variableName is required' }, { status: 400 });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -1371,6 +1395,11 @@ export async function handleMMSRead(request: Request): Promise<Response> {
  * Body: { host, port?, timeout?, callingTSAP?, calledTSAP? }
  */
 export async function handleMMSDescribe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as MMSRequest;
     const { host, port = 102, timeout = 15000 } = body;
@@ -1379,6 +1408,10 @@ export async function handleMMSDescribe(request: Request): Promise<Response> {
 
     if (!host) {
       return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
     const cfCheck = await checkIfCloudflare(host);

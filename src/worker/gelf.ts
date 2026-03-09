@@ -112,7 +112,7 @@ export async function handleGelfSend(request: Request): Promise<Response> {
 
     // Validate parameters
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -120,6 +120,7 @@ export async function handleGelfSend(request: Request): Promise<Response> {
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: messages (array of GELF messages)',
       }), {
         status: 400,
@@ -130,6 +131,7 @@ export async function handleGelfSend(request: Request): Promise<Response> {
     // Limit batch size
     if (messages.length > 100) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Maximum 100 messages per batch',
       }), {
         status: 400,
@@ -140,6 +142,7 @@ export async function handleGelfSend(request: Request): Promise<Response> {
     // Validate timeout parameter
     if (timeout < 100 || timeout > 300000) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Timeout must be between 100ms and 300000ms (5 minutes)',
       }), {
         status: 400,
@@ -148,8 +151,9 @@ export async function handleGelfSend(request: Request): Promise<Response> {
     }
 
     // Validate port parameter
-    if (isNaN(port) || port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Invalid port number. Must be 1-65535.',
       }), {
         status: 400,
@@ -209,9 +213,13 @@ export async function handleGelfSend(request: Request): Promise<Response> {
 
         try {
           // Send each message as null-terminated JSON
+          const MAX_MSG_SIZE = 262144; // 256 KB per message
           for (const msg of messages) {
             const json = JSON.stringify(msg);
             const payload = json + '\0'; // Null-byte terminator
+            if (payload.length > MAX_MSG_SIZE) {
+              throw new Error(`GELF message too large: ${payload.length} bytes (max ${MAX_MSG_SIZE})`);
+            }
             await writer.write(encoder.encode(payload));
           }
 
@@ -262,7 +270,7 @@ export async function handleGelfProbe(request: Request): Promise<Response> {
     const timeout = parseInt(url.searchParams.get('timeout') || '5000', 10);
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });

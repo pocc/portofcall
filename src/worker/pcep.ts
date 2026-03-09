@@ -41,6 +41,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // PCEP version
 const PCEP_VERSION = 1;
@@ -127,39 +128,6 @@ function buildKeepaliveMessage(): Uint8Array {
   const view = new DataView(msg.buffer);
   view.setUint16(2, 4, false); // Length = 4 (header only)
   return msg;
-}
-
-/**
- * Read exactly `needed` bytes from a reader with timeout.
- * The timeoutHandle parameter is unused but kept for API compatibility.
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  needed: number,
-  _timeoutHandle: { id: ReturnType<typeof setTimeout> | null },
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  while (total < needed) {
-    const result = await reader.read();
-    if (result.done || !result.value) {
-      throw new Error(`Connection closed after ${total} bytes (expected ${needed})`);
-    }
-    chunks.push(result.value);
-    total += result.value.length;
-  }
-
-  // Combine chunks and return exactly `needed` bytes
-  const combined = new Uint8Array(needed);
-  let offset = 0;
-  for (const chunk of chunks) {
-    const toCopy = Math.min(chunk.length, needed - offset);
-    combined.set(chunk.subarray(0, toCopy), offset);
-    offset += toCopy;
-    if (offset >= needed) break;
-  }
-  return combined;
 }
 
 /**
@@ -275,7 +243,7 @@ export async function handlePCEPConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -317,6 +285,7 @@ export async function handlePCEPConnect(request: Request): Promise<Response> {
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Send OPEN message
@@ -324,7 +293,7 @@ export async function handlePCEPConnect(request: Request): Promise<Response> {
       await writer.write(openMsg);
 
       // Read response header (4 bytes minimum)
-      const headerData = await readExact(reader, 4, timeoutHandle);
+      const headerData = await br.readExact(4, timeoutPromise);
       const header = parsePCEPHeader(headerData);
 
       let isPCEP = false;
@@ -338,7 +307,7 @@ export async function handlePCEPConnect(request: Request): Promise<Response> {
 
         // If the response is an OPEN message, read the rest and parse
         if (header.messageType === MSG_OPEN && header.messageLength > 4) {
-          const bodyData = await readExact(reader, header.messageLength - 4, timeoutHandle);
+          const bodyData = await br.readExact(header.messageLength - 4, timeoutPromise);
           rawBytesReceived += bodyData.length;
 
           // Combine header + body for parsing
@@ -433,7 +402,7 @@ export async function handlePCEPProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -474,6 +443,7 @@ export async function handlePCEPProbe(request: Request): Promise<Response> {
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Send OPEN
@@ -481,7 +451,7 @@ export async function handlePCEPProbe(request: Request): Promise<Response> {
       await writer.write(openMsg);
 
       // Read response header only
-      const headerData = await readExact(reader, 4, timeoutHandle);
+      const headerData = await br.readExact(4, timeoutPromise);
       const rtt = Date.now() - startTime;
       const header = parsePCEPHeader(headerData);
 
@@ -694,6 +664,12 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -725,13 +701,14 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Step 1: Send client OPEN
       await writer.write(buildOpenMessage());
 
       // Step 2: Read server OPEN
-      const openHdrData = await readExact(reader, 4, timeoutHandle);
+      const openHdrData = await br.readExact(4, timeoutPromise);
       const openHdr = parsePCEPHeader(openHdrData);
 
       if (!openHdr || openHdr.version !== 1) {
@@ -739,7 +716,7 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       }
 
       if (openHdr.messageType === MSG_OPEN && openHdr.messageLength > 4) {
-        await readExact(reader, openHdr.messageLength - 4, timeoutHandle);
+        await br.readExact(openHdr.messageLength - 4, timeoutPromise);
       }
 
       // Step 3: Send Keepalive to confirm session
@@ -751,12 +728,12 @@ export async function handlePCEPCompute(request: Request): Promise<Response> {
       // Step 5: Read response, skipping any intervening Keepalives
       let pcrepData: Uint8Array | null = null;
       for (let attempts = 0; attempts < 4; attempts++) {
-        const hdrBytes = await readExact(reader, 4, timeoutHandle);
+        const hdrBytes = await br.readExact(4, timeoutPromise);
         const hdrParsed = parsePCEPHeader(hdrBytes);
         if (!hdrParsed) break;
 
         if (hdrParsed.messageLength > 4) {
-          const bodyBytes = await readExact(reader, hdrParsed.messageLength - 4, timeoutHandle);
+          const bodyBytes = await br.readExact(hdrParsed.messageLength - 4, timeoutPromise);
           if (hdrParsed.messageType === MSG_PCREP) {
             pcrepData = new Uint8Array(hdrParsed.messageLength);
             pcrepData.set(hdrBytes, 0);

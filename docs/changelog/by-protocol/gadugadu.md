@@ -80,3 +80,8 @@ Recommended documentation should include:
 - [libgadu Protocol Docs](https://toxygen.net/libgadu/protocol/) - Community protocol documentation
 - [Gadu-Gadu History](https://en.wikipedia.org/wiki/Gadu-Gadu) - Polish instant messenger history
 - [GG Packet Types](./protocols/gadugadu/types.ts) - Packet type constants (if exists)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -37,3 +37,8 @@ Created canonical review/spec document clarifying that this module is a TCP-comp
 
 - [Protocol Stub](../../protocols/TFTP.md)
 - [Worker Implementation](../../../src/worker/tftp.ts)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

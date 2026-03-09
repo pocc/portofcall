@@ -51,6 +51,12 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+
+/** Strip CR/LF to prevent CRLF header injection in raw SIP requests. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
 
 interface SipsRequest {
   host: string;
@@ -115,7 +121,10 @@ function encodeSipsRequest(params: {
   fromTag: string;
   localAddress: string;
 }): string {
-  const { method, requestUri, fromUri, toUri, callId, branch, fromTag, localAddress } = params;
+  const { method, callId, branch, fromTag, localAddress } = params;
+  const requestUri = sanitizeCRLF(params.requestUri);
+  const fromUri = sanitizeCRLF(params.fromUri);
+  const toUri = sanitizeCRLF(params.toUri);
 
   const request = [
     `${method} ${requestUri} SIP/2.0`,
@@ -196,6 +205,9 @@ function parseSipsResponse(data: string): {
  * Send a SIPS OPTIONS request to probe server capabilities.
  */
 export async function handleSipsOptions(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SipsRequest;
     const {
@@ -231,7 +243,7 @@ export async function handleSipsOptions(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -241,6 +253,11 @@ export async function handleSipsOptions(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckOptions = await checkIfCloudflare(host);
+    if (cfCheckOptions.isCloudflare && cfCheckOptions.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheckOptions.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -450,6 +467,9 @@ function buildToHeaderWithTag(toUri: string, toTag?: string): string {
  * - Other non-2xx (3xx-6xx): send ACK to complete the transaction
  */
 export async function handleSipsInvite(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SipsRequest & { to?: string };
     const { host, port = 5061, fromUri, timeout = 15000 } = body;
@@ -463,10 +483,20 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
         { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, host, port, error: 'Port must be between 1 and 65535' } satisfies SipsResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheckInvite = await checkIfCloudflare(host);
+    if (cfCheckInvite.isCloudflare && cfCheckInvite.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheckInvite.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const callId = generateCallId();
     const branch = generateBranch();
     const fromTag = generateTag();
-    const toUri = body.toUri || `sips:${host}`;
+    const safeFromUri = sanitizeCRLF(fromUri);
+    const toUri = sanitizeCRLF(body.toUri || `sips:${host}`);
 
     // Minimal SDP offer for audio
     const sdp = [
@@ -483,12 +513,12 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
     const inviteLines = [
       `INVITE ${toUri} SIP/2.0`,
       `Via: SIP/2.0/TLS ${host}:${port};branch=${branch}`,
-      `From: <${fromUri}>;tag=${fromTag}`,
+      `From: <${safeFromUri}>;tag=${fromTag}`,
       `To: <${toUri}>`,
       `Call-ID: ${callId}`,
       `CSeq: 1 INVITE`,
       `Max-Forwards: 70`,
-      `Contact: <${fromUri}>`,
+      `Contact: <${safeFromUri}>`,
       `Content-Type: application/sdp`,
       `Content-Length: ${sdpBytes}`,
       '',
@@ -541,7 +571,7 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
           const cancel = [
             `CANCEL ${toUri} SIP/2.0`,
             `Via: SIP/2.0/TLS ${host}:${port};branch=${branch}`,
-            `From: <${fromUri}>;tag=${fromTag}`,
+            `From: <${safeFromUri}>;tag=${fromTag}`,
             `To: ${buildToHeaderWithTag(toUri, toTag)}`,
             `Call-ID: ${callId}`,
             `CSeq: 1 CANCEL`,
@@ -556,7 +586,7 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
           const ack = [
             `ACK ${toUri} SIP/2.0`,
             `Via: SIP/2.0/TLS ${host}:${port};branch=${ackBranch}`,
-            `From: <${fromUri}>;tag=${fromTag}`,
+            `From: <${safeFromUri}>;tag=${fromTag}`,
             `To: ${buildToHeaderWithTag(toUri, toTag)}`,
             `Call-ID: ${callId}`,
             `CSeq: 1 ACK`,
@@ -571,7 +601,7 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
           const bye = [
             `BYE ${toUri} SIP/2.0`,
             `Via: SIP/2.0/TLS ${host}:${port};branch=${byeBranch}`,
-            `From: <${fromUri}>;tag=${fromTag}`,
+            `From: <${safeFromUri}>;tag=${fromTag}`,
             `To: ${buildToHeaderWithTag(toUri, toTag)}`,
             `Call-ID: ${callId}`,
             `CSeq: 2 BYE`,
@@ -586,7 +616,7 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
           const ack = [
             `ACK ${toUri} SIP/2.0`,
             `Via: SIP/2.0/TLS ${host}:${port};branch=${branch}`,
-            `From: <${fromUri}>;tag=${fromTag}`,
+            `From: <${safeFromUri}>;tag=${fromTag}`,
             `To: ${buildToHeaderWithTag(toUri, toTag)}`,
             `Call-ID: ${callId}`,
             `CSeq: 1 ACK`,
@@ -629,6 +659,9 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
  * Handle SIPS REGISTER probe - test registration and auth requirements
  */
 export async function handleSipsRegister(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as SipsRequest;
     const {
@@ -653,6 +686,15 @@ export async function handleSipsRegister(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, host, port, error: 'Port must be between 1 and 65535' } satisfies SipsResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheckReg = await checkIfCloudflare(host);
+    if (cfCheckReg.isCloudflare && cfCheckReg.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheckReg.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const start = Date.now();
 
     // Generate SIP identifiers
@@ -661,17 +703,18 @@ export async function handleSipsRegister(request: Request): Promise<Response> {
     const fromTag = generateTag();
 
     const requestUri = `sips:${host}`;
+    const safeFromUri = sanitizeCRLF(fromUri);
 
     // Build REGISTER request
     const registerLines = [
       `REGISTER ${requestUri} SIP/2.0`,
       `Via: SIP/2.0/TLS portofcall.invalid:5061;branch=${branch}`,
-      `From: <${fromUri}>;tag=${fromTag}`,
-      `To: <${fromUri}>`,
+      `From: <${safeFromUri}>;tag=${fromTag}`,
+      `To: <${safeFromUri}>`,
       `Call-ID: ${callId}`,
       `CSeq: 1 REGISTER`,
       `Max-Forwards: 70`,
-      `Contact: <${fromUri}>`,
+      `Contact: <${safeFromUri}>`,
       `Expires: 3600`,
       `User-Agent: PortOfCall/1.0`,
       `Content-Length: 0`,
@@ -754,18 +797,18 @@ export async function handleSipsRegister(request: Request): Promise<Response> {
           // Build authenticated REGISTER
           const branch2 = generateBranch();
           const authHeaderName = parsed.statusCode === 407 ? 'Proxy-Authorization' : 'Authorization';
-          let authVal = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
+          let authVal = `Digest username="${sanitizeCRLF(username || '')}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
           if (useQop === 'auth') authVal += `, qop=auth, nc=${nc}, cnonce="${cnonce}"`;
 
           const reg2 = [
             `REGISTER ${requestUri} SIP/2.0`,
             `Via: SIP/2.0/TLS portofcall.invalid:5061;branch=${branch2}`,
-            `From: <${fromUri}>;tag=${fromTag}`,
-            `To: <${fromUri}>`,
+            `From: <${safeFromUri}>;tag=${fromTag}`,
+            `To: <${safeFromUri}>`,
             `Call-ID: ${callId}`,
             `CSeq: 2 REGISTER`,
             `Max-Forwards: 70`,
-            `Contact: <${fromUri}>`,
+            `Contact: <${safeFromUri}>`,
             `Expires: 3600`,
             `${authHeaderName}: ${authVal}`,
             `User-Agent: PortOfCall/1.0`,
@@ -937,6 +980,9 @@ async function readSipsResponseText(
  * 5. Return final status + auth result
  */
 export async function handleSipsDigestAuth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -961,13 +1007,22 @@ export async function handleSipsDigestAuth(request: Request): Promise<Response> 
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheckDigest = await checkIfCloudflare(host);
+    if (cfCheckDigest.isCloudflare && cfCheckDigest.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckDigest.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const startTime = Date.now();
     const registerUri = `sips:${sipDomain}`;
     const digestUri = `sips:${sipDomain}`;
     const callId = generateCallId();
     const branch1 = generateBranch();
     const fromTag = generateTag();
-    const fromUri = `sips:${username}@${sipDomain}`;
+    const fromUri = sanitizeCRLF(`sips:${username}@${sipDomain}`);
 
     // Step 1: initial REGISTER with no credentials to get 401 challenge
     const reg1 = [
@@ -1046,7 +1101,7 @@ export async function handleSipsDigestAuth(request: Request): Promise<Response> 
     // Step 2: authenticated REGISTER
     const branch2 = generateBranch();
     const authHeaderName = parsed1.statusCode === 407 ? 'Proxy-Authorization' : 'Authorization';
-    let authVal = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
+    let authVal = `Digest username="${sanitizeCRLF(username)}", realm="${realm}", nonce="${nonce}", uri="${digestUri}", algorithm=${algorithm}, response="${digestResp}"`;
     if (useQop === 'auth') authVal += `, qop=auth, nc=${nc}, cnonce="${cnonce}"`;
 
     const reg2 = [

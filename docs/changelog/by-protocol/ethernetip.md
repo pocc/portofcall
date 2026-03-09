@@ -214,3 +214,8 @@ CIP Security (Vol 8) defines:
 - [ODVA CIP Specification](https://www.odva.org/technology-standards/key-technologies/common-industrial-protocol-cip/)
 - [CIP Security Vol 8](https://www.odva.org/technology-standards/key-technologies/cip-security/)
 - [EtherNet/IP Adaptation of CIP Vol 2](https://www.odva.org/technology-standards/key-technologies/ethernet-ip/)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

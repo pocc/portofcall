@@ -29,6 +29,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const onDataRef = useRef<IDisposable | null>(null);
+  const onResizeRef = useRef<IDisposable | null>(null);
 
   // Close WebSocket and clear sensitive state on unmount
   useEffect(() => {
@@ -67,7 +68,10 @@ export default function SSHClient({ onBack }: SSHClientProps) {
     termRef.current = term;
     fitRef.current = fit;
 
-    const handleResize = () => fit.fit();
+    const handleResize = () => {
+      fit.fit();
+      // Resize event is sent to server via term.onResize listener (registered on connect)
+    };
     window.addEventListener('resize', handleResize);
 
     return () => {
@@ -103,13 +107,25 @@ export default function SSHClient({ onBack }: SSHClientProps) {
 
     const term = termRef.current!;
 
+    // Connection timeout — abort if not connected within 15s
+    const connectTimeout = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        ws.close();
+        setStatus('disconnected');
+        setStatusMsg('Connection timed out after 15 seconds.');
+        term.writeln('\x1b[1;31m✗ Connection timed out.\x1b[0m');
+      }
+    }, 15_000);
+
     ws.onopen = () => {
-      // Send credentials as the first message (never in the URL)
+      // Send credentials + terminal dimensions as the first message (never in the URL)
       ws.send(JSON.stringify({
         username,
         authMethod,
         ...(authMethod === 'password' ? { password } : { privateKey }),
         ...(passphrase ? { passphrase } : {}),
+        cols: term.cols,
+        rows: term.rows,
       }));
       term.writeln('\x1b[90mWebSocket open — performing SSH handshake…\x1b[0m');
     };
@@ -126,6 +142,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
             setStatus('disconnected');
             setStatusMsg(msg.message ?? 'Error');
           } else if (msg.type === 'connected') {
+            clearTimeout(connectTimeout);
             setStatus('connected');
             setStatusMsg('');
             term.writeln('\x1b[1;32m✓ Connected\x1b[0m\r\n');
@@ -134,6 +151,13 @@ export default function SSHClient({ onBack }: SSHClientProps) {
             onDataRef.current = term.onData((data) => {
               if (wsRef.current?.readyState === WebSocket.OPEN) {
                 wsRef.current.send(data);
+              }
+            });
+            // Wire up terminal resize → server notification
+            onResizeRef.current?.dispose();
+            onResizeRef.current = term.onResize(({ cols, rows }) => {
+              if (wsRef.current?.readyState === WebSocket.OPEN) {
+                wsRef.current.send(JSON.stringify({ type: 'resize', cols, rows }));
               }
             });
           } else if (msg.type === 'disconnected') {
@@ -151,11 +175,13 @@ export default function SSHClient({ onBack }: SSHClientProps) {
     };
 
     ws.onerror = () => {
+      clearTimeout(connectTimeout);
       term.writeln('\x1b[1;31m✗ WebSocket error\x1b[0m');
       setStatus('disconnected');
     };
 
     ws.onclose = (event) => {
+      clearTimeout(connectTimeout);
       setStatus(prev => {
         if (prev !== 'disconnected') {
           term.writeln(`\r\n\x1b[90m[closed: ${event.reason || event.code}]\x1b[0m`);
@@ -192,7 +218,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
       <ApiExamples examples={apiExamples.SSH || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${statusDot}`} />
+            <div className={`w-2 h-2 rounded-full ${statusDot}`} aria-hidden="true" />
             <span className="text-sm text-slate-300">
               {status === 'connected'
                 ? `${username}@${host}`
@@ -210,7 +236,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
             <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
 
-            <div className="space-y-4">
+            <form onSubmit={(e) => { e.preventDefault(); if (status !== 'connected' && status !== 'connecting') handleConnect(); }} className="space-y-4">
               <div>
                 <label htmlFor="ssh-host" className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
@@ -294,7 +320,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                     />
                     <input
                       type="file"
-                      accept=".pem,.key"
+                      aria-label="Upload private key file"
                       onChange={(e) => {
                         const file = e.target.files?.[0];
                         if (file) {
@@ -329,13 +355,15 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                 </>
               )}
 
-              {statusMsg && (
-                <p className="text-sm text-red-400">{statusMsg}</p>
-              )}
+              <div aria-live="polite" aria-atomic="true">
+                {statusMsg && (
+                  <p className="text-sm text-red-400">{statusMsg}</p>
+                )}
+              </div>
 
               {status !== 'connected' ? (
                 <button
-                  onClick={handleConnect}
+                  type="submit"
                   disabled={status === 'connecting'}
                   className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -343,6 +371,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={handleDisconnect}
                   className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                 >
@@ -354,7 +383,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                 <p>Supports Ed25519 private keys.</p>
                 <p>RSA/ECDSA keys: convert with <code className="font-mono">ssh-keygen -t ed25519</code>.</p>
               </div>
-            </div>
+            </form>
           </div>
         </div>
 
@@ -371,7 +400,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
               </button>
             </div>
             {/* xterm.js mounts here — give it a fixed height */}
-            <div ref={termDivRef} className="h-[480px] rounded overflow-hidden" />
+            <div ref={termDivRef} role="application" aria-label="SSH terminal" className="h-[480px] rounded overflow-hidden" />
           </div>
         </div>
       </div>

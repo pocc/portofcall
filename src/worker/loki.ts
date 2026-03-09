@@ -45,8 +45,10 @@ async function sendHttpGet(
 
   const writer = socket.writable.getWriter();
 
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json, text/plain\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -66,8 +68,12 @@ async function sendHttpGet(
         timeoutPromise.then(() => ({ value: undefined, done: true as const })),
       ]);
       if (done || !value) break;
-      response += decoder.decode(value, { stream: true });
-      if (response.length > 512_000) break;
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > 512_000) {
+        response += chunk.substring(0, 512_000 - response.length);
+        break;
+      }
+      response += chunk;
     }
   } catch {
     // Connection closed or timeout
@@ -474,6 +480,11 @@ export async function handleLokiRangeQuery(request: Request): Promise<Response> 
     const end = body.end || String(now) + '000000';
     const limit = body.limit || 100;
     const direction = body.direction || 'backward';
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const params = new URLSearchParams({ query: body.query, start, end, limit: String(limit), direction });
     const path = '/loki/api/v1/query_range?' + params.toString();

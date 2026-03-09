@@ -20,6 +20,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface EPMDNamesRequest {
   host: string;
@@ -200,6 +201,11 @@ function parsePortResponse(data: Uint8Array): {
  * List all registered Erlang nodes (NAMES_REQ).
  */
 export async function handleEPMDNames(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as EPMDNamesRequest;
     const { host, port = 4369, timeout = 10000 } = body;
@@ -216,7 +222,7 @@ export async function handleEPMDNames(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -225,6 +231,20 @@ export async function handleEPMDNames(request: Request): Promise<Response> {
           error: 'Port must be between 1 and 65535',
         } satisfies EPMDNamesResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          host,
+          port,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+        } satisfies EPMDNamesResponse),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
       );
     }
 
@@ -317,6 +337,11 @@ export async function handleEPMDNames(request: Request): Promise<Response> {
  * Look up a specific Erlang node (PORT_PLEASE2_REQ).
  */
 export async function handleEPMDPort(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as EPMDPortRequest;
     const { host, port = 4369, nodeName, timeout = 10000 } = body;
@@ -346,6 +371,36 @@ export async function handleEPMDPort(request: Request): Promise<Response> {
           error: 'Node name is required',
         } satisfies EPMDPortResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          host,
+          port,
+          nodeName,
+          found: false,
+          error: 'Port must be between 1 and 65535',
+        } satisfies EPMDPortResponse),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          host,
+          port,
+          nodeName,
+          found: false,
+          error: getCloudflareErrorMessage(host, cfCheck.ip),
+        } satisfies EPMDPortResponse),
+        { status: 403, headers: { 'Content-Type': 'application/json' } },
       );
     }
 

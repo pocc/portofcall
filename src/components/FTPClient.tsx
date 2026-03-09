@@ -9,11 +9,15 @@ interface FTPClientProps {
 interface FTPFile {
   name: string;
   size: number;
-  type: 'file' | 'directory';
+  type: 'file' | 'directory' | 'link' | 'other';
   modified: string;
+  permissions?: string;
+  owner?: string;
+  group?: string;
+  target?: string;
 }
 
-type CommandModal = 'upload' | 'download' | 'delete' | 'rename' | 'mkdir' | null;
+type CommandModal = 'upload' | 'download' | 'delete' | 'rename' | 'mkdir' | 'rmdir' | null;
 
 export default function FTPClient({ onBack }: FTPClientProps) {
   const [host, setHost] = useState('');
@@ -28,6 +32,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
   const [showCommands, setShowCommands] = useState(false);
   const [activeModal, setActiveModal] = useState<CommandModal>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
 
   // File selection state
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
@@ -41,6 +46,26 @@ export default function FTPClient({ onBack }: FTPClientProps) {
       setPassword('');
     };
   }, []);
+
+  // Close modals on Escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && activeModal) {
+        setActiveModal(null);
+        setSelectedFiles([]);
+        setSelectedFile('');
+        setNewName('');
+        setDirName('');
+      }
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [activeModal]);
+
+  // Auto-scroll logs to bottom when new entries are added
+  useEffect(() => {
+    logsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs]);
 
   const addLog = (message: string) => {
     setLogs(prev => {
@@ -167,18 +192,19 @@ export default function FTPClient({ onBack }: FTPClientProps) {
   };
 
   const handleDownloadFiles = async () => {
-    if (selectedFiles.length === 0) return;
+    if (selectedFiles.length === 0 || loading) return;
 
+    setLoading(true);
     for (const fileName of selectedFiles) {
-      await handleDownloadFile(fileName);
+      await handleDownloadSingleFile(fileName);
     }
+    setLoading(false);
 
     setSelectedFiles([]);
     setActiveModal(null);
   };
 
-  const handleDownloadFile = async (fileName: string) => {
-    setLoading(true);
+  const handleDownloadSingleFile = async (fileName: string) => {
     const downloadPath = `${currentPath === '/' ? '' : currentPath}/${fileName}`;
     addLog(`⬇️  Downloading ${fileName}...`);
 
@@ -214,8 +240,6 @@ export default function FTPClient({ onBack }: FTPClientProps) {
       }
     } catch (error) {
       addLog(`❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -336,6 +360,46 @@ export default function FTPClient({ onBack }: FTPClientProps) {
     }
   };
 
+  const handleRmdir = async () => {
+    if (selectedFiles.length === 0) return;
+
+    setLoading(true);
+    addLog(`🗑️  Removing ${selectedFiles.length} directory(ies)...`);
+
+    for (const dirNameItem of selectedFiles) {
+      const dirPath = `${currentPath === '/' ? '' : currentPath}/${dirNameItem}`;
+
+      try {
+        const response = await fetch('/api/ftp/rmdir', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            host,
+            port: parseInt(port, 10),
+            username,
+            password,
+            dirPath,
+          }),
+        });
+
+        const data = await response.json() as { error?: string };
+
+        if (response.ok) {
+          addLog(`✅ Removed directory ${dirNameItem}`);
+        } else {
+          addLog(`❌ Remove directory ${dirNameItem} failed: ${data.error}`);
+        }
+      } catch (error) {
+        addLog(`❌ Error removing ${dirNameItem}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+
+    setLoading(false);
+    setSelectedFiles([]);
+    setActiveModal(null);
+    await handleListDirectory(currentPath);
+  };
+
   const openCommandModal = (command: CommandModal) => {
     setActiveModal(command);
     setShowCommands(false);
@@ -357,8 +421,27 @@ export default function FTPClient({ onBack }: FTPClientProps) {
     setNewName(fileName);
   };
 
-  // Get only files (not directories) for operations
-  const filesOnly = files.filter(f => f.type === 'file');
+  // Files (not directories) for download operations
+  const downloadable = files.filter(f => f.type === 'file' || f.type === 'link');
+  // Files and symlinks for delete (DELE works on both)
+  const deletable = files.filter(f => f.type === 'file' || f.type === 'link');
+  // All items are renameable (RNFR/RNTO works on files and directories)
+  const renameable = files.filter(f => f.type !== 'other');
+  // Get only directories for rmdir
+  const dirsOnly = files.filter(f => f.type === 'directory');
+
+  // Navigate to parent directory
+  const navigateUp = () => {
+    if (currentPath === '/') return;
+    const parent = currentPath.replace(/\/[^/]+\/?$/, '') || '/';
+    handleListDirectory(parent);
+  };
+
+  // Build a clean path avoiding double slashes
+  const buildPath = (base: string, child: string): string => {
+    if (base === '/') return `/${child}`;
+    return `${base}/${child}`;
+  };
 
   return (
     <div className="max-w-6xl mx-auto">      {/* Header */}
@@ -442,6 +525,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && !connected && !loading && host && username) handleConnect(); }}
                   placeholder="password"
                   disabled={connected}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
@@ -476,21 +560,21 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                       </button>
                       <button
                         onClick={() => openCommandModal('download')}
-                        disabled={filesOnly.length === 0}
+                        disabled={downloadable.length === 0}
                         className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         ⬇️ Download Files
                       </button>
                       <button
                         onClick={() => openCommandModal('rename')}
-                        disabled={filesOnly.length === 0}
+                        disabled={renameable.length === 0}
                         className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        ✏️  Rename File
+                        ✏️  Rename
                       </button>
                       <button
                         onClick={() => openCommandModal('delete')}
-                        disabled={filesOnly.length === 0}
+                        disabled={deletable.length === 0}
                         className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         🗑️  Delete Files
@@ -500,6 +584,13 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                         className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors"
                       >
                         📁 Create Directory
+                      </button>
+                      <button
+                        onClick={() => openCommandModal('rmdir')}
+                        disabled={dirsOnly.length === 0}
+                        className="w-full text-left px-4 py-2 text-white hover:bg-slate-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        📂 Remove Directory
                       </button>
                       <button
                         onClick={() => {
@@ -536,6 +627,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                   </div>
                 ))
               )}
+              <div ref={logsEndRef} />
             </div>
           </div>
         </div>
@@ -545,7 +637,18 @@ export default function FTPClient({ onBack }: FTPClientProps) {
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-semibold text-white">File Browser</h2>
-              <div className="text-sm text-slate-400 font-mono">{currentPath}</div>
+              <div className="flex items-center gap-2">
+                {connected && currentPath !== '/' && (
+                  <button
+                    onClick={navigateUp}
+                    aria-label="Navigate to parent directory"
+                    className="text-sm bg-slate-700 hover:bg-slate-600 text-white px-2 py-1 rounded transition-colors"
+                  >
+                    ↑ Up
+                  </button>
+                )}
+                <div className="text-sm text-slate-400 font-mono">{currentPath}</div>
+              </div>
             </div>
 
             {!connected ? (
@@ -562,16 +665,25 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                   files.map((file, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between bg-slate-700 hover:bg-slate-600 rounded-lg p-3 transition-colors cursor-pointer"
+                      role={file.type === 'directory' ? 'button' : 'listitem'}
+                      tabIndex={file.type === 'directory' ? 0 : undefined}
+                      aria-label={file.type === 'directory' ? `Open directory ${file.name}` : `${file.name}, ${(file.size / 1024).toFixed(1)} KB`}
+                      className={`flex items-center justify-between bg-slate-700 hover:bg-slate-600 rounded-lg p-3 transition-colors ${file.type === 'directory' ? 'cursor-pointer' : ''}`}
                       onClick={() => {
                         if (file.type === 'directory') {
-                          handleListDirectory(`${currentPath}/${file.name}`);
+                          handleListDirectory(buildPath(currentPath, file.name));
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (file.type === 'directory' && (e.key === 'Enter' || e.key === ' ')) {
+                          e.preventDefault();
+                          handleListDirectory(buildPath(currentPath, file.name));
                         }
                       }}
                     >
                       <div className="flex items-center gap-3">
-                        <div className="text-2xl">
-                          {file.type === 'directory' ? '📁' : '📄'}
+                        <div className="text-2xl" aria-hidden="true">
+                          {file.type === 'directory' ? '📁' : file.type === 'link' ? '🔗' : '📄'}
                         </div>
                         <div>
                           <div className="text-white font-medium">{file.name}</div>
@@ -594,7 +706,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
 
       {/* Upload Modal */}
       {activeModal === 'upload' && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md w-full mx-4">
             <h3 className="text-xl font-semibold text-white mb-4">Upload File</h3>
             <p className="text-slate-400 text-sm mb-4">
@@ -631,18 +743,18 @@ export default function FTPClient({ onBack }: FTPClientProps) {
 
       {/* Download Modal - Multiple Selection with Checkboxes */}
       {activeModal === 'download' && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
             <h3 className="text-xl font-semibold text-white mb-2">Download Files</h3>
             <p className="text-slate-400 text-sm mb-4">
               Select files to download from {currentPath}
             </p>
             <div className="overflow-y-auto flex-1 mb-4">
-              {filesOnly.length === 0 ? (
-                <div className="text-slate-500 text-center py-8">No files in directory</div>
+              {downloadable.length === 0 ? (
+                <div className="text-slate-500 text-center py-8">No downloadable files in directory</div>
               ) : (
                 <div className="space-y-2">
-                  {filesOnly.map((file) => (
+                  {downloadable.map((file) => (
                     <label
                       key={file.name}
                       className="flex items-center gap-3 bg-slate-700 hover:bg-slate-600 rounded-lg p-3 cursor-pointer transition-colors"
@@ -653,7 +765,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                         onChange={() => toggleFileSelection(file.name)}
                         className="w-4 h-4"
                       />
-                      <div className="text-2xl">📄</div>
+                      <div className="text-2xl" aria-hidden="true">{file.type === 'link' ? '🔗' : '📄'}</div>
                       <div className="flex-1">
                         <div className="text-white font-medium">{file.name}</div>
                         <div className="text-xs text-slate-400">{(file.size / 1024).toFixed(1)} KB</div>
@@ -666,10 +778,10 @@ export default function FTPClient({ onBack }: FTPClientProps) {
             <div className="flex gap-2">
               <button
                 onClick={handleDownloadFiles}
-                disabled={selectedFiles.length === 0}
+                disabled={loading || selectedFiles.length === 0}
                 className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                Download {selectedFiles.length > 0 && `(${selectedFiles.length})`}
+                {loading ? 'Downloading...' : `Download${selectedFiles.length > 0 ? ` (${selectedFiles.length})` : ''}`}
               </button>
               <button
                 onClick={() => {
@@ -687,18 +799,18 @@ export default function FTPClient({ onBack }: FTPClientProps) {
 
       {/* Delete Modal - Multiple Selection with Checkboxes */}
       {activeModal === 'delete' && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
             <h3 className="text-xl font-semibold text-white mb-2">Delete Files</h3>
             <p className="text-slate-400 text-sm mb-4">
               Select files to delete from {currentPath}
             </p>
             <div className="overflow-y-auto flex-1 mb-4">
-              {filesOnly.length === 0 ? (
+              {deletable.length === 0 ? (
                 <div className="text-slate-500 text-center py-8">No files in directory</div>
               ) : (
                 <div className="space-y-2">
-                  {filesOnly.map((file) => (
+                  {deletable.map((file) => (
                     <label
                       key={file.name}
                       className="flex items-center gap-3 bg-slate-700 hover:bg-slate-600 rounded-lg p-3 cursor-pointer transition-colors"
@@ -709,7 +821,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                         onChange={() => toggleFileSelection(file.name)}
                         className="w-4 h-4"
                       />
-                      <div className="text-2xl">📄</div>
+                      <div className="text-2xl" aria-hidden="true">{file.type === 'link' ? '🔗' : '📄'}</div>
                       <div className="flex-1">
                         <div className="text-white font-medium">{file.name}</div>
                         <div className="text-xs text-slate-400">{(file.size / 1024).toFixed(1)} KB</div>
@@ -722,7 +834,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
             <div className="flex gap-2">
               <button
                 onClick={handleDeleteFiles}
-                disabled={selectedFiles.length === 0}
+                disabled={loading || selectedFiles.length === 0}
                 className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Delete {selectedFiles.length > 0 && `(${selectedFiles.length})`}
@@ -743,18 +855,18 @@ export default function FTPClient({ onBack }: FTPClientProps) {
 
       {/* Rename Modal - Single Selection with Radio Buttons */}
       {activeModal === 'rename' && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
-            <h3 className="text-xl font-semibold text-white mb-2">Rename File</h3>
+            <h3 className="text-xl font-semibold text-white mb-2">Rename</h3>
             <p className="text-slate-400 text-sm mb-4">
-              Select a file to rename from {currentPath}
+              Select an item to rename in {currentPath}
             </p>
             <div className="overflow-y-auto flex-1 mb-4">
-              {filesOnly.length === 0 ? (
-                <div className="text-slate-500 text-center py-8">No files in directory</div>
+              {renameable.length === 0 ? (
+                <div className="text-slate-500 text-center py-8">No items in directory</div>
               ) : (
                 <div className="space-y-2 mb-4">
-                  {filesOnly.map((file) => (
+                  {renameable.map((file) => (
                     <label
                       key={file.name}
                       className="flex items-center gap-3 bg-slate-700 hover:bg-slate-600 rounded-lg p-3 cursor-pointer transition-colors"
@@ -766,10 +878,14 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                         onChange={() => selectFileForRename(file.name)}
                         className="w-4 h-4"
                       />
-                      <div className="text-2xl">📄</div>
+                      <div className="text-2xl" aria-hidden="true">
+                        {file.type === 'directory' ? '📁' : file.type === 'link' ? '🔗' : '📄'}
+                      </div>
                       <div className="flex-1">
                         <div className="text-white font-medium">{file.name}</div>
-                        <div className="text-xs text-slate-400">{(file.size / 1024).toFixed(1)} KB</div>
+                        <div className="text-xs text-slate-400">
+                          {file.type === 'directory' ? 'Directory' : `${(file.size / 1024).toFixed(1)} KB`}
+                        </div>
                       </div>
                     </label>
                   ))}
@@ -785,7 +901,9 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                     type="text"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && selectedFile && newName && newName !== selectedFile) handleRename(); }}
                     placeholder="New filename"
+                    autoFocus
                     className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white"
                   />
                 </div>
@@ -816,14 +934,16 @@ export default function FTPClient({ onBack }: FTPClientProps) {
 
       {/* Create Directory Modal */}
       {activeModal === 'mkdir' && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-md w-full mx-4">
             <h3 className="text-xl font-semibold text-white mb-4">Create Directory</h3>
             <input
               type="text"
               value={dirName}
               onChange={(e) => setDirName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && dirName) handleMkdir(); }}
               placeholder="Directory name"
+              autoFocus
               className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white mb-4"
             />
             <div className="flex gap-2">
@@ -838,6 +958,61 @@ export default function FTPClient({ onBack }: FTPClientProps) {
                 onClick={() => {
                   setActiveModal(null);
                   setDirName('');
+                }}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Remove Directory Modal - Multiple Selection with Checkboxes */}
+      {activeModal === 'rmdir' && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" role="dialog" aria-modal="true">
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
+            <h3 className="text-xl font-semibold text-white mb-2">Remove Directories</h3>
+            <p className="text-slate-400 text-sm mb-4">
+              Select directories to remove from {currentPath}. Directories must be empty.
+            </p>
+            <div className="overflow-y-auto flex-1 mb-4">
+              {dirsOnly.length === 0 ? (
+                <div className="text-slate-500 text-center py-8">No directories in listing</div>
+              ) : (
+                <div className="space-y-2">
+                  {dirsOnly.map((file) => (
+                    <label
+                      key={file.name}
+                      className="flex items-center gap-3 bg-slate-700 hover:bg-slate-600 rounded-lg p-3 cursor-pointer transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedFiles.includes(file.name)}
+                        onChange={() => toggleFileSelection(file.name)}
+                        className="w-4 h-4"
+                      />
+                      <div className="text-2xl" aria-hidden="true">📁</div>
+                      <div className="flex-1">
+                        <div className="text-white font-medium">{file.name}</div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleRmdir}
+                disabled={selectedFiles.length === 0}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                Remove {selectedFiles.length > 0 && `(${selectedFiles.length})`}
+              </button>
+              <button
+                onClick={() => {
+                  setActiveModal(null);
+                  setSelectedFiles([]);
                 }}
                 className="flex-1 bg-slate-700 hover:bg-slate-600 text-white py-2 rounded-lg"
               >

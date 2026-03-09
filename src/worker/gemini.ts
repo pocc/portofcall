@@ -26,6 +26,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface GeminiRequest {
   url: string;
@@ -68,7 +69,11 @@ function parseGeminiUrl(url: string): { host: string; port: number; path: string
   let port = 1965;
   const colonIndex = host.indexOf(':');
   if (colonIndex !== -1) {
-    port = parseInt(host.substring(colonIndex + 1), 10);
+    const parsedPort = parseInt(host.substring(colonIndex + 1), 10);
+    if (isNaN(parsedPort) || parsedPort < 1 || parsedPort > 65535) {
+      return null; // Invalid port in URL
+    }
+    port = parsedPort;
     host = host.substring(0, colonIndex);
   }
 
@@ -111,6 +116,12 @@ export async function handleGeminiFetch(request: Request): Promise<Response> {
     }
 
     const { host, port, path } = parsed;
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     // Build full Gemini URL for request
     const geminiUrl = `gemini://${host}${path}`;

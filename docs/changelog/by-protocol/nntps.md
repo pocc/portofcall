@@ -411,3 +411,8 @@ Should document:
 - [RFC 5536 - Netnews Article Format](https://datatracker.ietf.org/doc/html/rfc5536) - Header folding rules
 - [Cloudflare Sockets TLS Limitations](../security-notes/cloudflare-tls-limitations.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

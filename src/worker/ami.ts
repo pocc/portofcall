@@ -39,6 +39,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface AMIProbeRequest {
   host: string;
@@ -101,6 +102,7 @@ class AMIReader {
   private reader: ReadableStreamDefaultReader<Uint8Array>;
   private decoder = new TextDecoder();
   private buffer = '';
+  private static readonly MAX_BUFFER_SIZE = 1_048_576; // 1 MiB cap to prevent OOM
 
   constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
     this.reader = reader;
@@ -149,6 +151,9 @@ class AMIReader {
 
       if (value) {
         this.buffer += this.decoder.decode(value, { stream: true });
+        if (this.buffer.length > AMIReader.MAX_BUFFER_SIZE) {
+          throw new Error('AMI response too large (exceeds 1 MiB buffer limit)');
+        }
 
         const splitIdx = predicate(this.buffer);
         if (splitIdx !== -1) {
@@ -380,6 +385,7 @@ async function loginWithMD5(
 
 /**
  * Send an AMI action to the server.
+ * Keys and values are stripped of CR/LF to prevent protocol injection.
  */
 async function sendAMIAction(
   writer: WritableStreamDefaultWriter<Uint8Array>,
@@ -387,9 +393,10 @@ async function sendAMIAction(
   params: Record<string, string> = {},
 ): Promise<void> {
   const encoder = new TextEncoder();
-  let msg = `Action: ${action}\r\n`;
+  const sanitize = (s: string) => s.replace(/[\r\n]/g, '');
+  let msg = `Action: ${sanitize(action)}\r\n`;
   for (const [key, value] of Object.entries(params)) {
-    msg += `${key}: ${value}\r\n`;
+    msg += `${sanitize(key)}: ${sanitize(value)}\r\n`;
   }
   msg += '\r\n';
   await writer.write(encoder.encode(msg));
@@ -425,6 +432,11 @@ function parseAMIVersion(banner: string): string | undefined {
  * Probe an AMI server - connect and read the banner.
  */
 export async function handleAMIProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as AMIProbeRequest;
     const { host, port = DEFAULT_PORT, timeout = 10000 } = body;
@@ -441,7 +453,7 @@ export async function handleAMIProbe(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -463,6 +475,19 @@ export async function handleAMIProbe(request: Request): Promise<Response> {
         } satisfies AMIProbeResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const start = Date.now();
@@ -527,6 +552,11 @@ export async function handleAMIProbe(request: Request): Promise<Response> {
  * Execute an AMI action - login, run action, logoff.
  */
 export async function handleAMICommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as AMICommandRequest;
     const {
@@ -606,7 +636,7 @@ export async function handleAMICommand(request: Request): Promise<Response> {
       );
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({
           success: false,
@@ -630,6 +660,20 @@ export async function handleAMICommand(request: Request): Promise<Response> {
         } satisfies AMICommandResponse),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        transcript: [],
+        error: getCloudflareErrorMessage(host, cfCheck2.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const start = Date.now();
@@ -862,8 +906,13 @@ async function withAMISession<T>(
   if (!host) throw new Error('Host is required');
   if (!username) throw new Error('Username is required');
   if (!secret) throw new Error('Secret is required');
-  if (port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
   if (!/^[a-zA-Z0-9._:-]+$/.test(host)) throw new Error('Invalid host format');
+
+  const cfCheckSession = await checkIfCloudflare(host);
+  if (cfCheckSession.isCloudflare && cfCheckSession.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheckSession.ip));
+  }
 
   const socket = connect(`${host}:${port}`);
   const transcript: string[] = [];
@@ -951,6 +1000,11 @@ async function withAMISession<T>(
  * POST /api/ami/originate
  */
 export async function handleAMIOriginate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as AMIOriginateRequest;
     const {
@@ -1008,6 +1062,11 @@ export async function handleAMIOriginate(request: Request): Promise<Response> {
  * POST /api/ami/hangup
  */
 export async function handleAMIHangup(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as AMIHangupRequest;
     const { host, port = DEFAULT_PORT, username, secret, channel, timeout = 15000 } = body;
@@ -1043,6 +1102,11 @@ export async function handleAMIHangup(request: Request): Promise<Response> {
  * POST /api/ami/clicommand
  */
 export async function handleAMICliCommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as AMICliCommandRequest;
     const { host, port = DEFAULT_PORT, username, secret, command, timeout = 15000 } = body;
@@ -1108,6 +1172,11 @@ export async function handleAMICliCommand(request: Request): Promise<Response> {
  * POST /api/ami/sendtext
  */
 export async function handleAMISendText(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = (await request.json()) as AMISendTextRequest;
     const { host, port = DEFAULT_PORT, username, secret, channel, message, timeout = 15000 } = body;

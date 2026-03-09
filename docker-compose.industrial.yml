@@ -1,0 +1,41 @@
+version: '3.8'
+
+# Industrial Control Protocol Simulators
+# Protocols covered: modbus, opcua
+#
+# Usage: docker compose -f docker-compose.industrial.yml up -d
+#
+# Note: CoAP excluded — standard CoAP uses UDP (port 5683). While RFC 8323
+# defines CoAP-over-TCP, the aiocoap simulator only supports UDP. The worker
+# handler uses TCP connect() and remains available for CoAP-over-TCP servers.
+
+services:
+  # Modbus TCP Simulator
+  modbus-sim:
+    build:
+      context: ./docker/modbus-sim
+      dockerfile: Dockerfile
+    container_name: testserver-modbus
+    ports:
+      - "502:502"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # OPC UA Server Simulator
+  opcua-sim:
+    build:
+      context: ./docker/opcua-sim
+      dockerfile: Dockerfile
+    container_name: testserver-opcua
+    ports:
+      - "4840:4840"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

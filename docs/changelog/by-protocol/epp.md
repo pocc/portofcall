@@ -80,3 +80,8 @@ Recommended documentation should include:
 - [RFC 5730](https://datatracker.ietf.org/doc/html/rfc5730) - EPP base protocol
 - [RFC 5731](https://datatracker.ietf.org/doc/html/rfc5731) - EPP domain mapping
 - [RFC 5734](https://datatracker.ietf.org/doc/html/rfc5734) - EPP TCP transport
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

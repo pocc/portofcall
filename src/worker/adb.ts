@@ -167,7 +167,7 @@ export async function handleADBCommand(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -304,6 +304,16 @@ export async function handleADBVersion(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -411,6 +421,16 @@ export async function handleADBDevices(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false,
         error: 'Host is required',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -571,8 +591,17 @@ export async function handleADBShell(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Reject serial numbers containing characters that could inject into the ADB command stream
+    // (newlines, null bytes, colons — the colon is used as a command delimiter in ADB protocol)
+    if (serial.trim() && /[\r\n\0]/.test(serial)) {
+      return new Response(JSON.stringify({ success: false, error: 'Serial number contains invalid characters' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -677,14 +706,17 @@ export async function handleADBShell(request: Request): Promise<Response> {
       }
 
       // Step 3: Drain remaining output (leftover bytes + anything still incoming)
+      const MAX_SHELL_OUTPUT = 4_194_304; // 4 MiB cap to prevent OOM
       const outputChunks: Uint8Array[] = leftover.length > 0 ? [leftover] : [];
       leftover = new Uint8Array(0);
+      let outputSize = outputChunks.reduce((s, c) => s + c.length, 0);
 
-      while (true) {
+      while (outputSize < MAX_SHELL_OUTPUT) {
         try {
           const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
           if (done || !value) break;
           outputChunks.push(value);
+          outputSize += value.length;
         } catch {
           break;
         }

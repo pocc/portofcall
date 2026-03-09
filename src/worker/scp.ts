@@ -118,7 +118,7 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
     }
 
     if (!options.host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -127,6 +127,10 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 22;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -153,6 +157,7 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
         const bannerLine = raw.split('\n').find(l => l.startsWith('SSH-')) ?? '';
         const isSsh = bannerLine.startsWith('SSH-');
 
+        reader.releaseLock();
         await socket.close();
 
         if (!isSsh) {
@@ -178,6 +183,7 @@ export async function handleSCPConnect(request: Request): Promise<Response> {
           message: 'SSH server reachable — SCP is available. Use /api/scp/list or /api/scp/get with credentials.',
         };
       } catch (err) {
+        try { reader.releaseLock(); } catch { /* ignore */ }
         try { await socket.close(); } catch { /* ignore */ }
         throw err;
       }
@@ -289,6 +295,9 @@ function parseLsOutput(raw: string): Array<{
  */
 export async function handleSCPList(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
       username: string; password?: string; privateKey?: string; passphrase?: string;
@@ -306,6 +315,10 @@ export async function handleSCPList(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'password or privateKey is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -384,6 +397,9 @@ export async function handleSCPList(request: Request): Promise<Response> {
  */
 export async function handleSCPGet(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
       username: string; password?: string; privateKey?: string; passphrase?: string;
@@ -407,6 +423,10 @@ export async function handleSCPGet(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ success: false, error: 'password or privateKey is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -535,6 +555,7 @@ export async function handleSCPGet(request: Request): Promise<Response> {
         const fileData = new Uint8Array(fileSize);
         let bytesRead = 0;
 
+        let leftover: Uint8Array | null = null;
         while (bytesRead < fileSize && Date.now() < deadline) {
           const chunk = await Promise.race([
             readChannelData(),
@@ -545,17 +566,24 @@ export async function handleSCPGet(request: Request): Promise<Response> {
           const toCopy = Math.min(chunk.length, fileSize - bytesRead);
           fileData.set(chunk.subarray(0, toCopy), bytesRead);
           bytesRead += toCopy;
+          // Preserve any trailing bytes (may contain EOF marker)
+          if (toCopy < chunk.length) {
+            leftover = chunk.subarray(toCopy);
+          }
         }
 
         if (bytesRead !== fileSize) {
           throw new Error(`Incomplete file transfer: expected ${fileSize} bytes, got ${bytesRead}`);
         }
 
-        // Step 6: Wait for EOF marker from server
-        const eofMarker = await Promise.race([
-          readChannelData(),
-          new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout waiting for EOF')), 1000)),
-        ]).catch(() => null);
+        // Step 6: Check for EOF marker — may already be in leftover from final chunk
+        let eofMarker = leftover;
+        if (!eofMarker) {
+          eofMarker = await Promise.race([
+            readChannelData(),
+            new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout waiting for EOF')), 1000)),
+          ]).catch(() => null);
+        }
 
         if (eofMarker && eofMarker[0] !== 0x00) {
           throw new Error('Server did not send EOF marker (0x00)');
@@ -607,6 +635,9 @@ export async function handleSCPGet(request: Request): Promise<Response> {
  */
 export async function handleSCPPut(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
       username: string; password?: string; privateKey?: string; passphrase?: string;
@@ -664,6 +695,10 @@ export async function handleSCPPut(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
@@ -691,11 +726,14 @@ export async function handleSCPPut(request: Request): Promise<Response> {
       try {
         const deadline = Date.now() + Math.min(timeout - (Date.now() - startTime), 25000);
 
-        // Read optional initial ready from server (some servers send \0 on start)
-        await Promise.race([
+        // Read initial byte from server — \0 = ready, \1/\2 = error
+        const initByte = await Promise.race([
           readChannelData(),
           new Promise<null>(resolve => setTimeout(() => resolve(null), 500)),
         ]).catch(() => null);
+        if (initByte !== null && initByte[0] !== 0x00) {
+          throw new Error(`SCP server error: ${dec.decode(initByte).slice(1).trim()}`);
+        }
 
         // Send control message
         const controlMsg = `C${mode} ${fileData.length} ${filename}\n`;
@@ -706,7 +744,10 @@ export async function handleSCPPut(request: Request): Promise<Response> {
           readChannelData(),
           new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout waiting for ACK')), deadline - Date.now())),
         ]);
-        if (ack1 !== null && ack1[0] !== 0) {
+        if (ack1 === null) {
+          throw new Error('SCP channel closed while waiting for ACK');
+        }
+        if (ack1[0] !== 0) {
           throw new Error(`SCP error: ${dec.decode(ack1).slice(1).trim()}`);
         }
 

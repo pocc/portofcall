@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('SOCKS4 Protocol Integration Tests', () => {
   // Note: These tests will fail without a configured SOCKS4 proxy
@@ -113,7 +113,7 @@ describe('SOCKS4 Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        proxyHost: 'localhost',
+        proxyHost: 'example.com',
         destHost: '',
         destPort: 80,
         timeout: 5000,
@@ -132,7 +132,7 @@ describe('SOCKS4 Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        proxyHost: 'localhost',
+        proxyHost: 'example.com',
         destHost: 'example.com',
         destPort: 0,
         timeout: 5000,
@@ -151,7 +151,7 @@ describe('SOCKS4 Protocol Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        proxyHost: 'localhost',
+        proxyHost: 'example.com',
         proxyPort: 99999,
         destHost: 'example.com',
         destPort: 80,

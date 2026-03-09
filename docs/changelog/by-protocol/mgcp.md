@@ -52,3 +52,8 @@ The implementation includes comprehensive documentation:
 - [RFC 3435](https://datatracker.ietf.org/doc/html/rfc3435) - Media Gateway Control Protocol specification
 - [RFC 4566](https://datatracker.ietf.org/doc/html/rfc4566) - SDP: Session Description Protocol
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

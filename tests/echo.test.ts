@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 // Use local Docker echo server (port 7) when running against localhost
 const isLocal = API_BASE.includes('localhost');
 const ECHO_HOST = isLocal ? 'localhost' : 'tcpbin.com';

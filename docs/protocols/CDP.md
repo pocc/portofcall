@@ -185,7 +185,7 @@ Establishes a bidirectional WebSocket tunnel between the client browser and Chro
 
 **Connection sequence:**
 
-1. Client opens WebSocket to `wss://portofcall.ross.gg/api/cdp/tunnel?host=...&port=9222&targetId=...`
+1. Client opens WebSocket to `wss://l4.fyi/api/cdp/tunnel?host=...&port=9222&targetId=...`
 2. Worker opens raw TCP to `host:port`
 3. Worker sends WebSocket upgrade handshake to Chrome (random 16-byte `Sec-WebSocket-Key`)
 4. Worker reads HTTP headers until `\r\n\r\n`, checks for `101 Switching Protocols`
@@ -270,22 +270,22 @@ Both `/health` and `/query` use the same internal HTTP helper:
 
 ```bash
 # Health probe (browser version + target list)
-curl -s -X POST https://portofcall.ross.gg/api/cdp/health \
+curl -s -X POST https://l4.fyi/api/cdp/health \
   -H 'Content-Type: application/json' \
   -d '{"host":"chrome.internal","port":9222}' | jq '{success,statusCode,latencyMs,version:.parsed.version.Browser,targetCount:.parsed.targetCount}'
 
 # List all targets (tabs, workers, extensions)
-curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
+curl -s -X POST https://l4.fyi/api/cdp/query \
   -H 'Content-Type: application/json' \
   -d '{"host":"chrome.internal","port":9222,"endpoint":"/json/list"}' | jq '.parsed[] | {id,type,title,url}'
 
 # Open a new tab
-curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
+curl -s -X POST https://l4.fyi/api/cdp/query \
   -H 'Content-Type: application/json' \
   -d '{"host":"chrome.internal","port":9222,"endpoint":"/json/new?https://example.com"}' | jq '.parsed.webSocketDebuggerUrl'
 
 # Get webSocketDebuggerUrl for tunneling
-curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
+curl -s -X POST https://l4.fyi/api/cdp/query \
   -H 'Content-Type: application/json' \
   -d '{"host":"chrome.internal","port":9222,"endpoint":"/json/version"}' | jq '.parsed.webSocketDebuggerUrl'
 ```
@@ -294,10 +294,10 @@ curl -s -X POST https://portofcall.ross.gg/api/cdp/query \
 
 ```bash
 # Connect to browser-level target (no targetId)
-wscat -c 'wss://portofcall.ross.gg/api/cdp/tunnel?host=chrome.internal&port=9222'
+wscat -c 'wss://l4.fyi/api/cdp/tunnel?host=chrome.internal&port=9222'
 
 # Connect to specific page target
-wscat -c 'wss://portofcall.ross.gg/api/cdp/tunnel?host=chrome.internal&port=9222&targetId=E4F8...'
+wscat -c 'wss://l4.fyi/api/cdp/tunnel?host=chrome.internal&port=9222&targetId=E4F8...'
 
 # Once connected, send CDP commands as JSON:
 # > {"id":1,"method":"Runtime.evaluate","params":{"expression":"document.title"}}

@@ -133,3 +133,8 @@ Full protocol documentation created with endpoint references, wire format specif
 - [VarInt Encoding](https://wiki.vg/Protocol#VarInt_and_VarLong) - Variable-length integer format
 - [Protocol Specification](../../protocols/MINECRAFT.md)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

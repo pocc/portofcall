@@ -109,7 +109,7 @@ function parseBoundAddress(data: Uint8Array, offset: number): { address: string;
 export async function handleSocks5Connect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -148,6 +148,13 @@ export async function handleSocks5Connect(request: Request): Promise<Response> {
       );
     }
 
+    if (isNaN(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Proxy port must be between 1 and 65535' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     // SSRF: block private/internal destination hosts
     if (isBlockedHost(destHost)) {
       return new Response(
@@ -169,6 +176,11 @@ export async function handleSocks5Connect(request: Request): Promise<Response> {
       );
     }
 
+    const cfCheckDest = await checkIfCloudflare(destHost);
+    if (cfCheckDest.isCloudflare && cfCheckDest.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(destHost, cfCheckDest.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Connection timeout')), timeout)
     );
@@ -187,7 +199,7 @@ export async function handleSocks5Connect(request: Request): Promise<Response> {
         const reader = socket.readable.getReader();
 
         // Step 2: Send greeting (authentication methods)
-        const hasAuth = username && password;
+        const hasAuth = username != null && password != null;
         const methods = hasAuth ? [AUTH_NONE, AUTH_USERPASS] : [AUTH_NONE];
         const greeting = new Uint8Array([0x05, methods.length, ...methods]);
         await writer.write(greeting);
@@ -334,7 +346,9 @@ export async function handleSocks5Connect(request: Request): Promise<Response> {
  */
 export async function handleSocks5Relay(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
   }
 
   try {
@@ -366,6 +380,18 @@ export async function handleSocks5Relay(request: Request): Promise<Response> {
       });
     }
 
+    if (isNaN(proxyPort) || proxyPort < 1 || proxyPort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Proxy port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isNaN(destPort) || destPort < 1 || destPort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Destination port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // SSRF: block private/internal destination hosts
     if (isBlockedHost(destHost)) {
       return new Response(JSON.stringify({
@@ -380,6 +406,11 @@ export async function handleSocks5Relay(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
+    const cfCheckDest = await checkIfCloudflare(destHost);
+    if (cfCheckDest.isCloudflare && cfCheckDest.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(destHost, cfCheckDest.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('Connection timeout')), timeout));
 
@@ -391,22 +422,34 @@ export async function handleSocks5Relay(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
 
+      let leftover: Uint8Array | null = null;
       async function readBytes(n: number): Promise<Uint8Array> {
         const buf = new Uint8Array(n);
         let off = 0;
+        // Consume any leftover bytes from a previous read
+        if (leftover && leftover.length > 0) {
+          const take = Math.min(n - off, leftover.length);
+          buf.set(leftover.subarray(0, take), off);
+          off += take;
+          leftover = take < leftover.length ? leftover.subarray(take) : null;
+        }
         while (off < n) {
           const { value, done } = await reader.read();
           if (done || !value) throw new Error('Connection closed');
           const take = Math.min(n - off, value.length);
           buf.set(value.subarray(0, take), off);
           off += take;
+          if (take < value.length) {
+            leftover = value.subarray(take);
+          }
         }
         return buf;
       }
 
       try {
         // Step 1: Client greeting — offer NO_AUTH and optionally USERPASS
-        const methods = username ? [AUTH_NONE, AUTH_USERPASS] : [AUTH_NONE];
+        const hasAuth = username != null && password != null;
+        const methods = hasAuth ? [AUTH_NONE, AUTH_USERPASS] : [AUTH_NONE];
         const greeting = new Uint8Array([0x05, methods.length, ...methods]);
         await writer.write(greeting);
 
@@ -449,7 +492,9 @@ export async function handleSocks5Relay(request: Request): Promise<Response> {
         const tunnelTime = Date.now() - startTime;
 
         // Step 6: Send HTTP/1.0 GET through the tunnel
-        const httpReq = `GET ${path} HTTP/1.0\r\nHost: ${destHost}\r\nConnection: close\r\n\r\n`;
+        const safeDestHost = destHost.replace(/[\r\n]/g, '');
+        const safePath = path.replace(/[\r\n]/g, '');
+        const httpReq = `GET ${safePath} HTTP/1.0\r\nHost: ${safeDestHost}\r\nConnection: close\r\n\r\n`;
         await writer.write(new TextEncoder().encode(httpReq));
 
         // Step 7: Read HTTP response (up to 4KB)

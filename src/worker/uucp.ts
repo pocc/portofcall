@@ -31,7 +31,7 @@ interface UUCPProbeRequest {
 function validateUUCPInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -214,6 +214,11 @@ export async function handleUUCPProbe(request: Request): Promise<Response> {
  * Request body: { host, port=540, timeout=10000 }
  */
 export async function handleUUCPHandshake(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 540, timeout = 10000 } = body;
@@ -225,7 +230,7 @@ export async function handleUUCPHandshake(request: Request): Promise<Response> {
     }
 
     // Validate port range
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, banner: '', loginRequired: false, latencyMs: 0, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });

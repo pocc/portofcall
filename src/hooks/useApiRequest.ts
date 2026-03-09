@@ -32,6 +32,7 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
   const [loading, setLoading] = useState(false);
   const controllerRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelledRef = useRef(false);
 
   // Abort on unmount
   useEffect(() => {
@@ -42,6 +43,7 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
   }, []);
 
   const cancel = useCallback(() => {
+    cancelledRef.current = true;
     controllerRef.current?.abort();
     controllerRef.current = null;
     setLoading(false);
@@ -52,6 +54,7 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
     controllerRef.current?.abort();
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
 
+    cancelledRef.current = false;
     const controller = new AbortController();
     controllerRef.current = controller;
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -63,7 +66,12 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
 
     try {
       const response = await fetch(url, { ...fetchOptions, signal: controller.signal });
-      const result = await response.json() as T;
+      let result: T;
+      try {
+        result = await response.json() as T;
+      } catch {
+        throw new Error(`Server returned an invalid response (HTTP ${response.status})`);
+      }
 
       if (!controller.signal.aborted) {
         if (!response.ok) {
@@ -77,8 +85,8 @@ export function useApiRequest<T = unknown>(options: UseApiRequestOptions = {}): 
       return null;
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
-        // Distinguish timeout-triggered abort from user-initiated cancel
-        if (controller.signal.aborted) {
+        // Only show timeout error if this was NOT a user-initiated cancel
+        if (!cancelledRef.current) {
           setError('Request timed out — the server did not respond in time');
         }
       } else if (!controller.signal.aborted) {

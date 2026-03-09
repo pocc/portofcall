@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('JSON-RPC 2.0 Integration Tests', () => {
   describe('POST /api/jsonrpc/call', () => {

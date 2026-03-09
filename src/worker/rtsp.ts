@@ -212,6 +212,9 @@ async function collectRtpFrames(
  */
 export async function handleRtspOptions(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RtspOptionsRequest;
     const { host, port = 554, path = '/', timeout = 10000, username, password } = body;
 
@@ -223,6 +226,10 @@ export async function handleRtspOptions(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -252,7 +259,9 @@ export async function handleRtspOptions(request: Request): Promise<Response> {
       const decoder = new TextDecoder();
 
       try {
-        const rtspUrl = `rtsp://${host}:${port}${path}`;
+        const safeHost = host.replace(/[\r\n]/g, '');
+        const safePath = path.replace(/[\r\n]/g, '');
+        const rtspUrl = `rtsp://${safeHost}:${port}${safePath}`;
         let requestStr = `OPTIONS ${rtspUrl} RTSP/1.0\r\n`;
         requestStr += `CSeq: 1\r\n`;
         requestStr += `User-Agent: PortOfCall/1.0\r\n`;
@@ -321,6 +330,9 @@ export async function handleRtspOptions(request: Request): Promise<Response> {
  */
 export async function handleRtspDescribe(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RtspOptionsRequest;
     const { host, port = 554, path = '/', timeout = 10000, username, password } = body;
 
@@ -332,6 +344,10 @@ export async function handleRtspDescribe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -360,7 +376,9 @@ export async function handleRtspDescribe(request: Request): Promise<Response> {
       const decoder = new TextDecoder();
 
       try {
-        const rtspUrl = `rtsp://${host}:${port}${path}`;
+        const safeHost = host.replace(/[\r\n]/g, '');
+        const safePath = path.replace(/[\r\n]/g, '');
+        const rtspUrl = `rtsp://${safeHost}:${port}${safePath}`;
         let requestStr = `DESCRIBE ${rtspUrl} RTSP/1.0\r\n`;
         requestStr += `CSeq: 1\r\n`;
         requestStr += `Accept: application/sdp\r\n`;
@@ -462,6 +480,9 @@ export async function handleRtspDescribe(request: Request): Promise<Response> {
  */
 export async function handleRTSPSession(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RtspOptionsRequest;
     const {
       host,
@@ -485,6 +506,10 @@ export async function handleRTSPSession(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -503,7 +528,9 @@ export async function handleRTSPSession(request: Request): Promise<Response> {
 
     const sessionPromise = (async () => {
       const startTime = Date.now();
-      const rtspUrl = explicitUrl || `rtsp://${host}:${port}${path}`;
+      const safeHost = host.replace(/[\r\n]/g, '');
+      const safePath = (path || '/').replace(/[\r\n]/g, '');
+      const rtspUrl = explicitUrl || `rtsp://${safeHost}:${port}${safePath}`;
 
       const socket = connect(`${host}:${port}`);
       await socket.opened;

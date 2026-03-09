@@ -267,7 +267,7 @@ export async function handleNTPQuery(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -372,6 +372,9 @@ export async function handleNTPSync(request: Request): Promise<Response> {
  * Returns min/max/avg offset, jitter (std dev of offsets), and all samples
  */
 export async function handleNTPPoll(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as NTPRequest & { count?: number; intervalMs?: number };
     const { host, port = 123, timeout = 10000 } = body;
@@ -380,6 +383,10 @@ export async function handleNTPPoll(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);

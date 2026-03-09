@@ -37,10 +37,10 @@ These were identified in the 13th pass findings and remain tracked:
 
 | Protocol | Issue | Severity | Status |
 |----------|-------|----------|--------|
-| MySQL | Query execution returns HTTP 501 (disabled) | CRITICAL | Known |
-| SFTP | All operations return HTTP 501 (not deployed) | CRITICAL | Known |
-| SSH | Window exhaustion silently drops terminal input (RFC 4254 §5.2) | CRITICAL | Known |
-| SMTP/SMTPS/Submission | Dot-stuffing regex fails on first-line dots | CRITICAL | Known |
+| MySQL | Query execution returns HTTP 501 (disabled) | CRITICAL | **Fixed** — read-only queries (SELECT, SHOW, DESCRIBE, EXPLAIN, USE) fully functional |
+| SFTP | All operations return HTTP 501 (not deployed) | CRITICAL | Known — architectural limitation: SFTP requires stateful bidirectional SSH channel; HTTP request/response model incompatible; needs WebSocket-based session handler |
+| SSH | Window exhaustion silently drops terminal input (RFC 4254 §5.2) | CRITICAL | **Fixed** — drain loop with `inputQueue` respects remote window, waits for `WINDOW_ADJUST`; 4 MiB backpressure cap added |
+| SMTP/SMTPS/Submission | Dot-stuffing regex fails on first-line dots | CRITICAL | **Fixed** — regex `/(^|\r\n)\./g` correctly handles first body line (preceded by `\r\n` from header/body separator); line-ending normalization ensures CRLF |
 | DNP3, IEC 104, S7comm | No SELECT/operation validation before industrial writes | CRITICAL | Known |
 
 ## Data Plane Certification
@@ -78,33 +78,41 @@ The WebSocket-to-TCP tunnel was certified "Industrial Grade" after 19 audit pass
 | Reader/writer objects | 512 B | 512 B |
 | `writeChain` promise | 512 B | 64 B |
 | TCP read buffer (one `reader.read()`) | 65,536 B | 65,536 B |
-| `ws.bufferedAmount` (capped by gate) | 1,048,576 B | 0 B |
+| `ws.bufferedAmount` outbound (capped at 1 MiB HWM) | 1,048,576 B | 0 B |
+| Inbound write queue (capped at 4 MiB HWM) | 4,194,304 B | 0 B |
 | Event listener closures | 1,024 B | 1,024 B |
-| **Total per connection** | **~1.1 MiB** | **~67 KB** |
+| **Total per connection (outbound only)** | **~1.1 MiB** | **~67 KB** |
+| **Total per connection (bidirectional worst case)** | **~5.1 MiB** | **~67 KB** |
 
 | Workload | Per connection | Max concurrent (128 MiB isolate) |
 |----------|---------------|----------------------------------|
-| Bulk transfer (backpressure active) | ~1.1 MiB | ~102 |
+| Bulk transfer (bidirectional worst case) | ~5.1 MiB | ~25 |
+| Bulk transfer (unidirectional) | ~1.1 MiB | ~102 |
 | Interactive SSH/Redis (no backpressure) | ~67 KB | ~1,700 |
 | Mixed (80% interactive, 20% bulk) | ~274 KB | ~410 |
 
-## Non-TCP Protocols (Not Implementable)
+## Non-TCP Protocols (Not Implementable on Workers)
 
 These protocols require UDP, raw sockets, or TLS ALPN — none of which are available in the Cloudflare Workers Sockets API:
 
-| Protocol | Reason |
-|----------|--------|
-| gRPC | Requires HTTP/2 + TLS ALPN |
-| HTTP/2 | Requires TLS ALPN negotiation |
-| QUIC | UDP-based |
-| NTP | UDP-based |
-| mDNS | UDP multicast |
-| OSPF, RIP, HSRP | Routing protocols (raw sockets) |
-| IPsec / IKE | UDP + raw sockets |
-| MOSH | UDP-based |
-| CoAP | UDP-based |
+| Protocol | Reason | TCP Variant? |
+|----------|--------|-------------|
+| gRPC | Requires HTTP/2 + TLS ALPN | No |
+| HTTP/2 | Requires TLS ALPN negotiation | No |
+| QUIC | UDP-based | No |
+| NTP (UDP) | UDP-based | Yes — implemented over TCP (RFC 5905 §7.2) |
+| SNMP (UDP) | UDP-based | Yes — implemented over TCP (RFC 3430) |
+| mDNS | UDP multicast | Yes — implemented over TCP (unicast DNS wire format) |
+| CoAP | UDP-based | Yes — implemented over TCP (RFC 8323) |
+| STUN / TURN | UDP-based | Yes — implemented over TCP (RFC 5389 §7.2.2) |
+| RIP | Uses UDP | Yes — implemented over TCP |
+| HSRP | Routing protocol (raw sockets) | Yes — implemented over TCP |
+| IKE / IPsec | UDP + raw sockets | Yes — IKE implemented over TCP (RFC 8229) |
+| L2TP | UDP-based | Yes — implemented over TCP (RFC 3931) |
+| OSPF | Layer 3 routing, requires raw IP access | No |
+| MOSH | UDP-based | No |
 
-See `docs/protocols/non-tcp/` for detailed specs on why each cannot be implemented.
+See `docs/protocols/non-tcp/` for detailed specs on why the native forms cannot be implemented.
 
 ## Audit Trail
 

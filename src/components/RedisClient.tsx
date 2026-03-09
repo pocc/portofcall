@@ -13,6 +13,37 @@ interface HistoryEntry {
   text: string;
 }
 
+/** Parse a Redis command string, respecting double and single quotes. */
+function parseRedisArgs(input: string): string[] {
+  const args: string[] = [];
+  let i = 0;
+  while (i < input.length) {
+    // Skip whitespace
+    while (i < input.length && /\s/.test(input[i])) i++;
+    if (i >= input.length) break;
+    const ch = input[i];
+    if (ch === '"' || ch === "'") {
+      // Quoted string
+      const quote = ch;
+      i++;
+      let arg = '';
+      while (i < input.length && input[i] !== quote) {
+        if (input[i] === '\\' && i + 1 < input.length) { arg += input[++i]; }
+        else { arg += input[i]; }
+        i++;
+      }
+      if (i < input.length) i++; // skip closing quote
+      args.push(arg);
+    } else {
+      // Unquoted token
+      let arg = '';
+      while (i < input.length && !/\s/.test(input[i])) { arg += input[i]; i++; }
+      args.push(arg);
+    }
+  }
+  return args;
+}
+
 export default function RedisClient({ onBack }: RedisClientProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('6379');
@@ -70,6 +101,16 @@ export default function RedisClient({ onBack }: RedisClientProps) {
     const ws = new WebSocket(`${proto}//${window.location.host}/api/redis/session?${params}`);
     wsRef.current = ws;
 
+    // Connection timeout — abort if not connected within 15s
+    const connectTimeout = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        ws.close();
+        setStatus('disconnected');
+        setStatusMsg('Connection timed out after 15 seconds.');
+        addEntry('error', 'Connection timed out.');
+      }
+    }, 15_000);
+
     ws.onopen = () => {
       // Send credentials as the first message (never in query params)
       ws.send(JSON.stringify({
@@ -90,6 +131,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
         };
 
         if (msg.type === 'connected') {
+          clearTimeout(connectTimeout);
           setStatus('connected');
           setVersion(msg.version ?? '');
           addEntry('info', `Connected to ${host}:${port} — Redis ${msg.version ?? 'unknown'}`);
@@ -108,11 +150,13 @@ export default function RedisClient({ onBack }: RedisClientProps) {
     };
 
     ws.onerror = () => {
+      clearTimeout(connectTimeout);
       addEntry('error', 'WebSocket error');
       setStatus('disconnected');
     };
 
     ws.onclose = (e) => {
+      clearTimeout(connectTimeout);
       setStatus(prev => {
         if (prev !== 'disconnected') {
           addEntry('info', `[closed: ${e.reason || e.code}]`);
@@ -134,7 +178,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
     const trimmed = input.trim();
     if (!trimmed || wsRef.current?.readyState !== WebSocket.OPEN) return;
 
-    const args = trimmed.split(/\s+/);
+    const args = parseRedisArgs(trimmed);
     addEntry('command', trimmed);
     wsRef.current.send(JSON.stringify({ type: 'command', command: args }));
 
@@ -196,7 +240,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
         <div className="lg:col-span-1">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
             <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
-            <div className="space-y-4">
+            <form className="space-y-4" onSubmit={(e) => { e.preventDefault(); if (status !== 'connected' && status !== 'connecting' && host) handleConnect(); }}>
               <div>
                 <label htmlFor="redis-host" className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
@@ -249,11 +293,11 @@ export default function RedisClient({ onBack }: RedisClientProps) {
                 />
               </div>
 
-              {statusMsg && <p className="text-sm text-red-400">{statusMsg}</p>}
+              {statusMsg && <p className="text-sm text-red-400" role="alert">{statusMsg}</p>}
 
               {status !== 'connected' ? (
                 <button
-                  onClick={handleConnect}
+                  type="submit"
                   disabled={status === 'connecting' || !host}
                   className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
@@ -261,6 +305,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
                 </button>
               ) : (
                 <button
+                  type="button"
                   onClick={handleDisconnect}
                   className="w-full bg-slate-600 hover:bg-slate-500 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                 >
@@ -273,7 +318,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
                 <p>↑↓ arrow keys for command history.</p>
                 <p>Examples: PING · SET k v · GET k · KEYS * · INFO server</p>
               </div>
-            </div>
+            </form>
           </div>
         </div>
 

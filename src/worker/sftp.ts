@@ -105,8 +105,8 @@
  */
 
 import { connect } from 'cloudflare:sockets';
-import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 import { openSSHSubsystem, SSHSubsystemIO, SSHTerminalOptions } from './ssh2-impl';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // ─── SFTP packet types (draft-ietf-secsh-filexfer-02) ────────────────────────
 
@@ -174,8 +174,13 @@ class SFTPSession {
 
   constructor(private io: SSHSubsystemIO) {}
 
+  private static readonly MAX_BUFFER = 8 * 1024 * 1024; // 8 MiB
+
   /** Append incoming channel data to internal buffer. */
   private append(chunk: Uint8Array): void {
+    if (this.buf.length + chunk.length > SFTPSession.MAX_BUFFER) {
+      throw new Error('SFTP buffer exceeded 8 MiB limit');
+    }
     const nb = new Uint8Array(this.buf.length + chunk.length);
     nb.set(this.buf); nb.set(chunk, this.buf.length);
     this.buf = nb;
@@ -254,7 +259,7 @@ class SFTPSession {
 // ─── SFTP operation helpers ───────────────────────────────────────────────────
 
 interface SFTPAttrs {
-  size?: number;
+  size?: string;
   uid?: number;
   gid?: number;
   permissions?: number;
@@ -268,7 +273,7 @@ interface SFTPAttrs {
 function parseAttrs(b: Uint8Array, off: number): SFTPAttrs & { consumed: number } {
   if (b.length < off + 4) return { isDirectory: false, isSymlink: false, consumed: 0 };
   const flags = readU32BE(b, off); off += 4;
-  let size: number | undefined;
+  let size: string | undefined;
   let uid: number | undefined;
   let gid: number | undefined;
   let permissions: number | undefined;
@@ -279,7 +284,7 @@ function parseAttrs(b: Uint8Array, off: number): SFTPAttrs & { consumed: number 
     // Read as two 32-bit values; combine into a JS number (safe up to ~4GB)
     const hi = readU32BE(b, off);
     const lo = readU32BE(b, off + 4);
-    size = hi > 0 ? hi * 0x100000000 + lo : lo;
+    size = ((BigInt(hi) << 32n) | BigInt(lo)).toString();
     off += 8;
   }
   if (flags & 0x00000002) { // UIDGID
@@ -359,7 +364,7 @@ async function openSFTP(body: {
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
-    throw Object.assign(new Error(getCloudflareErrorMessage(host, cfCheck.ip)), { isCloudflare: true });
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
   }
 
   const opts: SSHTerminalOptions = {
@@ -371,15 +376,30 @@ async function openSFTP(body: {
   };
 
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000)),
+  ]);
 
-  const io = await openSSHSubsystem(socket, opts, 'sftp');
+  let io: SSHSubsystemIO;
+  try {
+    io = await openSSHSubsystem(socket, opts, 'sftp');
+  } catch (err) {
+    await socket.close().catch(() => {});
+    throw err;
+  }
 
   // SFTP handshake: SSH_FXP_INIT → SSH_FXP_VERSION
   const sftp = new SFTPSession(io);
-  await sftp.send(sftpPkt(SSH_FXP_INIT, null, u32BE(3)));
-  const { type: verType } = await sftp.recv();
-  if (verType !== SSH_FXP_VERSION) throw new Error(`Expected SSH_FXP_VERSION, got ${verType}`);
+  try {
+    await sftp.send(sftpPkt(SSH_FXP_INIT, null, u32BE(3)));
+    const { type: verType } = await sftp.recv();
+    if (verType !== SSH_FXP_VERSION) throw new Error(`Expected SSH_FXP_VERSION, got ${verType}`);
+  } catch (err) {
+    io.close();
+    await socket.close().catch(() => {});
+    throw err;
+  }
 
   return { session: sftp, io };
 }
@@ -396,32 +416,22 @@ function requireFields(body: Record<string, unknown>, ...fields: string[]): stri
 
 /**
  * POST /api/sftp/connect
- * SSH banner grab — no credentials needed.
+ * SSH banner grab — no credentials needed, just host and optional port.
  * Body: { host, port? }
  */
 export async function handleSFTPConnect(request: Request): Promise<Response> {
   try {
-    let body: { host?: string; port?: number; username?: string };
-    if (request.method === 'POST') {
-      body = await request.json();
-    } else {
-      const url = new URL(request.url);
-      body = {
-        host: url.searchParams.get('host') ?? '',
-        port: url.searchParams.has('port') ? parseInt(url.searchParams.get('port')!, 10) : undefined,
-        username: url.searchParams.get('username') ?? undefined
-      };
-    }
-
-    if (!body.host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
-        status: 400,
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
-    if (!body.username) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: username' }), {
+    const body = await request.json() as { host?: string; port?: number };
+
+    if (!body.host) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -430,22 +440,37 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
     const host = body.host;
     const port = body.port ?? 22;
 
-    const cfCheck = await checkIfCloudflare(host);
-    if (cfCheck.isCloudflare && cfCheck.ip) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
       return new Response(JSON.stringify({
         success: false,
-        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        error: getCloudflareErrorMessage(host, cfCheck2.ip),
         isCloudflare: true,
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000)),
+    ]);
+
+    let banner = '';
     const reader = socket.readable.getReader();
-    const { value } = await reader.read();
-    const banner = value ? new TextDecoder().decode(value).trim() : '';
-    reader.releaseLock();
-    await socket.close();
+    try {
+      const { value } = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Banner read timeout')), 10000)),
+      ]);
+      banner = value ? new TextDecoder().decode(value).trim() : '';
+    } finally {
+      reader.releaseLock();
+      await socket.close().catch(() => {});
+    }
 
     const sshLine = banner.split('\n').find(l => l.startsWith('SSH-')) ?? '';
     const isSsh = sshLine.startsWith('SSH-');
@@ -483,6 +508,7 @@ export async function handleSFTPConnect(request: Request): Promise<Response> {
  */
 export async function handleSFTPList(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
+    success: false,
     error: 'Not Implemented',
     message: 'SFTP list operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
     details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
@@ -499,6 +525,7 @@ export async function handleSFTPList(_request: Request): Promise<Response> {
  */
 export async function handleSFTPDownload(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
+    success: false,
     error: 'Not Implemented',
     message: 'SFTP download operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
     details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
@@ -515,6 +542,7 @@ export async function handleSFTPDownload(_request: Request): Promise<Response> {
  */
 export async function handleSFTPUpload(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
+    success: false,
     error: 'Not Implemented',
     message: 'SFTP upload operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
     details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
@@ -531,6 +559,7 @@ export async function handleSFTPUpload(_request: Request): Promise<Response> {
  */
 export async function handleSFTPDelete(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
+    success: false,
     error: 'Not Implemented',
     message: 'SFTP delete operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
     details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
@@ -547,6 +576,7 @@ export async function handleSFTPDelete(_request: Request): Promise<Response> {
  */
 export async function handleSFTPMkdir(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
+    success: false,
     error: 'Not Implemented',
     message: 'SFTP mkdir operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
     details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
@@ -563,6 +593,7 @@ export async function handleSFTPMkdir(_request: Request): Promise<Response> {
  */
 export async function handleSFTPRename(_request: Request): Promise<Response> {
   return new Response(JSON.stringify({
+    success: false,
     error: 'Not Implemented',
     message: 'SFTP rename operation requires WebSocket tunnel for bidirectional SSH channel communication. HTTP request/response model cannot support the stateful SFTP protocol.',
     details: 'See sftp.ts documentation for architectural requirements and implementation steps.',
@@ -590,10 +621,13 @@ export async function handleSFTPRename(_request: Request): Promise<Response> {
  * operations. Keep this HTTP endpoint for debugging/testing only.
  */
 export async function handleSFTPStat(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as Record<string, unknown>;
     const err = requireFields(body, 'host', 'username', 'path');
-    if (err) return new Response(JSON.stringify({ error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (err) return new Response(JSON.stringify({ success: false, error: err }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const path = body.path as string;
     const { session, io } = await openSFTP(body as Parameters<typeof openSFTP>[0]);
@@ -625,9 +659,16 @@ export async function handleSFTPStat(request: Request): Promise<Response> {
     }
   } catch (err) {
     const e = err as Error & { isCloudflare?: boolean };
+    // Map SFTP/SSH errors to appropriate HTTP status codes
+    let status = 500;
+    if (e.isCloudflare) status = 403;
+    else if (e.message.includes('PERMISSION_DENIED') || e.message.includes('auth') || e.message.includes('Authentication')) status = 403;
+    else if (e.message.includes('NO_SUCH_FILE')) status = 404;
+    else if (e.message.includes('Connection timeout') || e.message.includes('Connection refused')) status = 502;
+
     return new Response(JSON.stringify({
       success: false,
       error: e.message,
-    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+    }), { status, headers: { 'Content-Type': 'application/json' } });
   }
 }

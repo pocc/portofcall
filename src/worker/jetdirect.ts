@@ -33,6 +33,9 @@ const PJL_UEL = '\x1B%-12345X';
  * Handle JetDirect connection test with optional PJL status query
  */
 export async function handleJetDirectConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -52,7 +55,7 @@ export async function handleJetDirectConnect(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -82,7 +85,10 @@ export async function handleJetDirectConnect(request: Request): Promise<Response
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    });
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
@@ -168,6 +174,9 @@ export async function handleJetDirectConnect(request: Request): Promise<Response
  * knows where the job starts and ends.
  */
 export async function handleJetDirectPrint(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -199,7 +208,7 @@ export async function handleJetDirectPrint(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -273,7 +282,10 @@ export async function handleJetDirectPrint(request: Request): Promise<Response> 
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    });
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();

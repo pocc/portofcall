@@ -1,0 +1,77 @@
+version: '3.8'
+
+# DNS & Network Services
+# Protocols covered: dns, bgp, snmp, syslog
+#
+# Usage: docker compose -f docker-compose.dns-network.yml up -d
+#
+# Note: Ports are remapped to avoid conflicts with host services.
+# Note: NTP (chrony) excluded — NTP is UDP-only, Workers connect() is TCP-only.
+# Note: RIP excluded from BIRD — RIP is UDP-only. BGP is TCP and works fine.
+
+services:
+  # BIND9 - DNS server
+  bind9:
+    image: ubuntu/bind9:latest
+    container_name: testserver-bind9
+    ports:
+      - "5354:53/tcp"
+      - "5354:53/udp"
+    environment:
+      - BIND9_USER=bind
+      - TZ=UTC
+    volumes:
+      - ./docker/bind9/named.conf:/etc/bind/named.conf:ro
+      - ./docker/bind9/zones:/etc/bind/zones:ro
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # BIRD - BGP routing daemon (TCP only)
+  bird:
+    build:
+      context: ./docker/bird
+      dockerfile: Dockerfile
+    container_name: testserver-bird
+    ports:
+      - "1179:179"      # BGP (remapped)
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Net-SNMP - SNMP agent (TCP via RFC 3430)
+  snmpd:
+    build:
+      context: ./docker/snmpd
+      dockerfile: Dockerfile
+    container_name: testserver-snmpd
+    ports:
+      - "1161:161/tcp"   # SNMP over TCP (remapped)
+      - "1161:161/udp"   # SNMP over UDP (for standard tools)
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Rsyslog - Syslog receiver
+  syslog:
+    build:
+      context: ./docker/syslog-server
+      dockerfile: Dockerfile
+    container_name: testserver-syslog
+    ports:
+      - "1514:514/tcp"  # Syslog TCP (remapped)
+      - "1514:514/udp"  # Syslog UDP (remapped)
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

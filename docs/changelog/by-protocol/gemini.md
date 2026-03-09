@@ -80,3 +80,8 @@ Recommended documentation should include:
 - [Gemini Specification](https://gemini.circumlunar.space/docs/specification.html) - Official protocol spec
 - [Gemtext Markup](https://gemini.circumlunar.space/docs/gemtext.html) - Line-oriented markup format
 - [Project Gemini](https://gemini.circumlunar.space/) - Protocol homepage
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

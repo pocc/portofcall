@@ -80,7 +80,7 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
       // Validate required fields
       if (!options.host) {
         return new Response(JSON.stringify({
-          error: 'Missing required parameter: host',
+          success: false, error: 'Missing required parameter: host',
         }), {
           status: 400,
           headers: { 'Content-Type': 'application/json' },
@@ -89,6 +89,12 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
       const host = options.host;
       const port = options.port || 22;
+
+      if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+        return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+          status: 400, headers: { 'Content-Type': 'application/json' },
+        });
+      }
 
       // Check if the target is behind Cloudflare
       const cfCheck = await checkIfCloudflare(host);
@@ -105,7 +111,10 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
       // Test connection
       const socket = connect(`${host}:${port}`);
-      await socket.opened;
+      await Promise.race([
+        socket.opened,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000)),
+      ]);
 
       // Read SSH banner
       const reader = socket.readable.getReader();
@@ -145,10 +154,16 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({
-        error: 'Missing required parameter: host',
+        success: false, error: 'Missing required parameter: host',
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -174,11 +189,24 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
     // Connect to SSH server
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+    ]);
 
     // Wait for the first message containing credentials & connection options.
     // Echo back non-sensitive options only, then start bidirectional piping.
     let credentialsReceived = false;
+
+    // Close the TCP socket if credentials aren't received within 30 seconds
+    const credentialTimeout = setTimeout(() => {
+      if (!credentialsReceived) {
+        try { server.send(JSON.stringify({ type: 'error', message: 'Credentials timeout — no credentials received within 30 seconds' })); } catch { /* ignore */ }
+        try { server.close(1008, 'Credentials timeout'); } catch { /* ignore */ }
+        socket.close().catch(() => {});
+      }
+    }, 30000);
+
     server.addEventListener('message', function onCredentials(event: MessageEvent) {
       if (credentialsReceived) return;
 
@@ -202,16 +230,19 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
         if (!msg.username || typeof msg.username !== 'string') {
           server.send(JSON.stringify({ type: 'error', message: 'Missing required field: username' }));
           server.close(1008, 'Missing username');
+          socket.close().catch(() => {});
           return;
         }
-        const validAuthMethods = ['password', 'publickey', 'privateKey', 'keyboard-interactive', 'hostbased'];
+        const validAuthMethods = ['password', 'publickey', 'keyboard-interactive', 'hostbased'];
         if (msg.authMethod && !validAuthMethods.includes(msg.authMethod)) {
           server.send(JSON.stringify({ type: 'error', message: 'Invalid authMethod' }));
           server.close(1008, 'Invalid authMethod');
+          socket.close().catch(() => {});
           return;
         }
 
         credentialsReceived = true;
+        clearTimeout(credentialTimeout);
         server.removeEventListener('message', onCredentials);
 
         // Confirm connection to the client — no credentials in this message
@@ -272,7 +303,7 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
  */
 export async function handleSSHExecute(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -298,14 +329,14 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
 
     // Validate required fields
     if (!body.host) {
-      return new Response(JSON.stringify({ error: 'Missing required field: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required field: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     if (!body.username) {
-      return new Response(JSON.stringify({ error: 'Missing required field: username' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required field: username' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -317,25 +348,25 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
       authMethod = body.authMethod;
     } else if (body.privateKey) {
       authMethod = 'privateKey';
-    } else if (body.password) {
+    } else if (body.password != null) {
       authMethod = 'password';
     } else {
-      return new Response(JSON.stringify({ error: 'Either password or privateKey must be provided' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Either password or privateKey must be provided' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     // Validate credentials match auth method
-    if (authMethod === 'password' && !body.password) {
-      return new Response(JSON.stringify({ error: 'Password required for password authentication' }), {
+    if (authMethod === 'password' && body.password == null) {
+      return new Response(JSON.stringify({ success: false, error: 'Password required for password authentication' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
     if (authMethod === 'privateKey' && !body.privateKey) {
-      return new Response(JSON.stringify({ error: 'Private key required for publickey authentication' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Private key required for publickey authentication' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -344,7 +375,7 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
     // Get command/script to execute
     const commandToExec = body.command || body.script;
     if (!commandToExec) {
-      return new Response(JSON.stringify({ error: 'Missing required field: command or script' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required field: command or script' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -353,6 +384,12 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
     const host = body.host;
     const port = body.port || 22;
     const timeout = Math.min(body.timeout || 30000, 120000); // Max 2 minutes
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -369,7 +406,10 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
 
     // Open TCP socket
     socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     // Build SSH options
     const sshOpts: SSHTerminalOptions = {
@@ -388,6 +428,8 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
     // Read all output until EOF or timeout
     const chunks: Uint8Array[] = [];
     const deadline = Date.now() + timeout;
+    let totalSize = 0;
+    const MAX_OUTPUT = 10 * 1024 * 1024; // 10 MB
 
     while (true) {
       const remaining = deadline - Date.now();
@@ -407,6 +449,11 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
 
       if (chunk === null) {
         break; // EOF or timeout
+      }
+
+      totalSize += chunk.length;
+      if (totalSize > MAX_OUTPUT) {
+        throw new Error('Command output exceeds maximum size (10 MB)');
       }
 
       chunks.push(chunk);
@@ -430,6 +477,7 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
       success: true,
       stdout,
       stderr: '', // SSH exec channel doesn't separate stderr by default
+      exitCode: subsystem.exitStatus,
       executionTime,
       colo: request.cf?.colo || 'unknown',
       note: 'SSH exec channel combines stdout and stderr. Use pty-req for separate streams.',
@@ -471,29 +519,36 @@ export async function handleSSHDisconnect(_request: Request): Promise<Response> 
 
 /**
  * Pipe WebSocket messages to TCP socket.
- * Registers event listeners (returns synchronously). Handles cleanup of
- * the writer lock and TCP socket on close or error.
+ * Registers event listeners (returns synchronously). Uses a promise-chain
+ * (writeChain) to serialize writes in strict FIFO order, matching the
+ * pattern in index.ts.
  */
 function pipeWebSocketToSocket(ws: WebSocket, socket: Socket): void {
   const writer = socket.writable.getWriter();
+  let writeChain: Promise<void> = Promise.resolve();
 
-  ws.addEventListener('message', async (event) => {
-    try {
-      if (typeof event.data === 'string') {
-        await writer.write(new TextEncoder().encode(event.data));
-      } else if (event.data instanceof ArrayBuffer) {
-        await writer.write(new Uint8Array(event.data));
-      }
-    } catch {
-      try { writer.releaseLock(); } catch { /* already released */ }
-      try { await socket.close(); } catch { /* already closed */ }
-      try { ws.close(); } catch { /* already closed */ }
+  const cleanup = () => {
+    writer.close().catch(() => {});
+    socket.close().catch(() => {});
+  };
+
+  ws.addEventListener('message', (event) => {
+    let data: Uint8Array | null = null;
+    if (typeof event.data === 'string') {
+      data = new TextEncoder().encode(event.data);
+    } else if (event.data instanceof ArrayBuffer) {
+      data = new Uint8Array(event.data);
     }
+    if (!data) return;
+
+    writeChain = writeChain.then(
+      () => writer.write(data),
+      cleanup,
+    );
   });
 
   ws.addEventListener('close', () => {
-    writer.close().catch(() => {});
-    socket.close().catch(() => {});
+    writeChain.then(cleanup, cleanup);
   });
 
   ws.addEventListener('error', () => {
@@ -504,21 +559,38 @@ function pipeWebSocketToSocket(ws: WebSocket, socket: Socket): void {
 
 /**
  * Pipe TCP socket data to WebSocket.
- * Runs a reader loop (async, fire-and-forget). Releases the reader lock
- * and closes both sides in all exit paths via finally.
+ * Runs a reader loop (async, fire-and-forget). Implements backpressure
+ * via bufferedAmount gating (1 MiB HWM) matching the pattern in index.ts.
+ * Releases the reader lock and closes both sides in all exit paths via finally.
  */
 async function pipeSocketToWebSocket(socket: Socket, ws: WebSocket): Promise<void> {
   const reader = socket.readable.getReader();
+  const HWM = 1024 * 1024; // 1 MiB high-water mark
+  const WS_MAX_MESSAGE = 1024 * 1024; // 1 MiB WebSocket message limit
 
   try {
     while (true) {
+      // Backpressure: pause reading if the WebSocket outbound buffer is full
+      // Check readyState to avoid livelock if WebSocket closes while buffer is full
+      while (ws.bufferedAmount > HWM && ws.readyState === WebSocket.OPEN) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      if (ws.readyState !== WebSocket.OPEN) break;
+
       const { done, value } = await reader.read();
 
       if (done) {
         break;
       }
 
-      ws.send(value);
+      // Chunk oversized payloads to stay within WebSocket message limit
+      if (value.length > WS_MAX_MESSAGE) {
+        for (let i = 0; i < value.length; i += WS_MAX_MESSAGE) {
+          ws.send(value.subarray(i, Math.min(i + WS_MAX_MESSAGE, value.length)));
+        }
+      } else {
+        ws.send(value);
+      }
     }
   } catch {
     // Socket read error or WebSocket send error — fall through to cleanup
@@ -565,10 +637,10 @@ function encodeNameList(names: string): Uint8Array {
 /** Decode an SSH name-list at the given offset in a DataView.
  *  Returns the list of names and the number of bytes consumed. */
 function decodeNameList(view: DataView, offset: number): { names: string[]; consumed: number } {
-  if (offset + 4 > view.byteLength) return { names: [], consumed: 4 };
+  if (offset + 4 > view.byteLength) return { names: [], consumed: 0 };
   const len = view.getUint32(offset, false);
   const end = offset + 4 + len;
-  if (end > view.byteLength) return { names: [], consumed: 4 + len };
+  if (end > view.byteLength) return { names: [], consumed: 0 };
   const bytes = new Uint8Array(view.buffer, view.byteOffset + offset + 4, len);
   const str = new TextDecoder().decode(bytes);
   const names = str.length > 0 ? str.split(',') : [];
@@ -814,6 +886,11 @@ async function readSSHBanner(
     const safeEnd = buf.length - 1;
     for (let i = 0; i < safeEnd; i++) bannerBytes.push(buf[i]);
     buf = buf.subarray(safeEnd);
+
+    // Guard against unbounded banner length (max 8 KiB per RFC 4253 §4.2)
+    if (bannerBytes.length > 8192) {
+      throw new Error('SSH banner too long (exceeds 8192 bytes)');
+    }
   }
 }
 
@@ -827,10 +904,12 @@ async function readSSHBanner(
  * Body: { host, port?, timeout? }
  */
 export async function handleSSHKeyExchange(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   const startTime = Date.now();
   let socket: ReturnType<typeof connect> | null = null;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
 
   try {
     const body = await request.json() as { host?: string; port?: number; timeout?: number };
@@ -844,11 +923,27 @@ export async function handleSSHKeyExchange(request: Request): Promise<Response> 
       });
     }
 
-    socket = connect(`${host}:${port}`);
-    await socket.opened;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
-    const reader = socket.readable.getReader();
-    const writer = socket.writable.getWriter();
+    const cfCheckKex = await checkIfCloudflare(host);
+    if (cfCheckKex.isCloudflare && cfCheckKex.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckKex.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    socket = connect(`${host}:${port}`);
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
+
+    reader = socket.readable.getReader();
+    writer = socket.writable.getWriter();
 
     const { banner: serverBanner, remaining } = await readSSHBanner(
       reader, timeout - (Date.now() - startTime)
@@ -868,10 +963,6 @@ export async function handleSSHKeyExchange(request: Request): Promise<Response> 
 
     const parsed = parseKexInitPayload(serverKexPayload);
 
-    reader.releaseLock();
-    writer.releaseLock();
-    await socket.close();
-
     const result: SSHKeyExchangeResult = {
       success: true,
       serverBanner,
@@ -883,11 +974,17 @@ export async function handleSSHKeyExchange(request: Request): Promise<Response> 
       latencyMs: Date.now() - startTime,
     };
 
+    try { reader!.releaseLock(); } catch { /* ignore */ }
+    try { writer!.releaseLock(); } catch { /* ignore */ }
+    await socket.close();
+
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
+    try { reader?.releaseLock(); } catch { /* ignore */ }
+    try { writer?.releaseLock(); } catch { /* ignore */ }
     if (socket) try { await socket.close(); } catch { /* ignore */ }
     const result: SSHKeyExchangeResult = {
       success: false,
@@ -916,9 +1013,11 @@ export async function handleSSHKeyExchange(request: Request): Promise<Response> 
  * Body: { host, port?, timeout? }
  */
 export async function handleSSHAuth(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   const startTime = Date.now();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let writer: WritableStreamDefaultWriter<Uint8Array> | null = null;
   let socket: ReturnType<typeof connect> | null = null;
 
   try {
@@ -933,11 +1032,27 @@ export async function handleSSHAuth(request: Request): Promise<Response> {
       });
     }
 
-    socket = connect(`${host}:${port}`);
-    await socket.opened;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
-    const reader = socket.readable.getReader();
-    const writer = socket.writable.getWriter();
+    const cfCheckAuth = await checkIfCloudflare(host);
+    if (cfCheckAuth.isCloudflare && cfCheckAuth.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckAuth.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    socket = connect(`${host}:${port}`);
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
+
+    reader = socket.readable.getReader();
+    writer = socket.writable.getWriter();
 
     // ── Banner exchange ──────────────────────────────────────────────────────
     const { banner: serverBanner, remaining: afterBanner } = await readSSHBanner(
@@ -1016,21 +1131,24 @@ export async function handleSSHAuth(request: Request): Promise<Response> {
       authMethods = ['none'];
     }
 
-    reader.releaseLock();
-    writer.releaseLock();
-    await socket.close();
-
     const result: SSHAuthResult = {
       success: true,
       serverBanner,
       authMethods,
       latencyMs: Date.now() - startTime,
     };
+
+    try { reader!.releaseLock(); } catch { /* ignore */ }
+    try { writer!.releaseLock(); } catch { /* ignore */ }
+    await socket.close();
+
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
 
   } catch (error) {
+    try { reader?.releaseLock(); } catch { /* ignore */ }
+    try { writer?.releaseLock(); } catch { /* ignore */ }
     if (socket) try { await socket.close(); } catch { /* ignore */ }
     const result: SSHAuthResult = {
       success: false,

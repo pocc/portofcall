@@ -146,9 +146,9 @@ Bandwidth is `(bytes * 8) / (durationMs / 1000)`, displayed in human-readable un
 
 If the timeout fires during reads but some data was already received, the handler returns what it has rather than failing. Only if zero data was received does the timeout propagate as an error.
 
-### No Cloudflare detection
+### Cloudflare detection
 
-Unlike some other Port of Call endpoints, the CHARGEN handler does not call `checkIfCloudflare`. Probing Cloudflare-protected hosts will silently connect or fail with a generic error.
+The CHARGEN handler calls `checkIfCloudflare` before connecting. If the target host is behind Cloudflare, the request returns HTTP 403 with a descriptive error message.
 
 ### No data sent to server
 
@@ -160,23 +160,23 @@ RFC 864 says the server discards any data it receives from the client. This impl
 
 ```bash
 # Basic CHARGEN stream (10 KB default)
-curl -s -X POST https://portofcall.ross.gg/api/chargen/stream \
+curl -s -X POST https://l4.fyi/api/chargen/stream \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost"}' | jq .
 
 # Just the stats, no data
-curl -s -X POST https://portofcall.ross.gg/api/chargen/stream \
+curl -s -X POST https://l4.fyi/api/chargen/stream \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","maxBytes":5120}' \
   | jq '{bytes,lines,duration,bandwidth}'
 
 # Non-standard port, larger read
-curl -s -X POST https://portofcall.ross.gg/api/chargen/stream \
+curl -s -X POST https://l4.fyi/api/chargen/stream \
   -H 'Content-Type: application/json' \
   -d '{"host":"myserver.example.com","port":1919,"maxBytes":102400,"timeout":15000}' | jq .
 
 # Maximum allowed read (1 MB)
-curl -s -X POST https://portofcall.ross.gg/api/chargen/stream \
+curl -s -X POST https://l4.fyi/api/chargen/stream \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","maxBytes":1048576,"timeout":30000}' \
   | jq '{bytes,lines,duration,bandwidth}'
@@ -189,7 +189,7 @@ curl -s -X POST https://portofcall.ross.gg/api/chargen/stream \
 - **No WebSocket tunnel** -- unlike ECHO, there is no persistent WebSocket mode for interactive streaming; the endpoint does a single connect-read-close cycle
 - **No GET form** -- `/api/chargen/stream` is POST-only
 - **No pattern validation** -- the response includes raw data but does not verify whether the server's output follows the RFC 864 pattern
-- **No Cloudflare detection** -- connecting to Cloudflare-fronted hosts may produce misleading results
+- **Cloudflare detection** -- handler blocks connections to Cloudflare-protected hosts (returns HTTP 403)
 - **Shared timeout** -- connect and read share a single timeout budget
 - **maxBytes overshoot** -- the actual byte count may slightly exceed the requested limit by one TCP segment
 

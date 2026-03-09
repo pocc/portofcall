@@ -44,7 +44,7 @@ const ROUTER_CLOUDFLARE_GUARD_PROTOCOLS = new Set([
   'msn',
   'msrp',
   'napster',
-  'ninep',
+  '9p',
   'nntp',
   'nsca',
   'oscar',

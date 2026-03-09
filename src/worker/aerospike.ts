@@ -293,9 +293,10 @@ async function sendFramedRequest(
   timeout: number,
 ): Promise<Uint8Array> {
   const socket = connect(`${host}:${port}`);
-
+  let timeoutHandle: any;
+  
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
   try {
@@ -330,6 +331,10 @@ async function sendFramedRequest(
           if (pos >= 8) break;
         }
         const bodyLen = readUint48BE(hdrBuf, 2);
+        // Cap at 10 MiB to prevent OOM from malicious servers
+        if (bodyLen > 10_485_760) {
+          throw new Error('Aerospike response too large (exceeds 10 MiB limit)');
+        }
         expectedTotal = 8 + bodyLen;
       }
 
@@ -340,7 +345,6 @@ async function sendFramedRequest(
 
     writer.releaseLock();
     reader.releaseLock();
-    socket.close();
 
     // Combine chunks
     const combined = new Uint8Array(totalBytes);
@@ -351,9 +355,9 @@ async function sendFramedRequest(
     }
 
     return combined;
-  } catch (error) {
-    socket.close();
-    throw error;
+  } finally {
+    clearTimeout(timeoutHandle);
+    try { socket.close(); } catch { /* ignore */ }
   }
 }
 
@@ -368,6 +372,7 @@ async function sendInfoCommand(
   host: string,
   port: number,
   command: string,
+  _auth: { user: string; password?: string } | undefined,
   timeout: number,
 ): Promise<string> {
   // Build the info request: proto header + command text + newline
@@ -427,10 +432,12 @@ export async function handleAerospikeConnect(request: Request): Promise<Response
     const body = await request.json() as {
       host: string;
       port?: number;
+      user?: string;
+      password?: string;
       timeout?: number;
     };
 
-    const { host, port = 3000, timeout = 10000 } = body;
+    const { host, port = 3000, user, password, timeout = 10000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({
@@ -442,7 +449,7 @@ export async function handleAerospikeConnect(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -468,7 +475,8 @@ export async function handleAerospikeConnect(request: Request): Promise<Response
     const startTime = Date.now();
 
     // Query build version to verify connectivity
-    const buildResponse = await sendInfoCommand(host, port, 'build', timeout);
+    const auth = user ? { user, password } : undefined;
+    const buildResponse = await sendInfoCommand(host, port, 'build', auth, timeout);
 
     // Parse the build version (format: "build\t6.0.0" or just "6.0.0")
     const buildVersion = buildResponse.includes('\t')
@@ -483,27 +491,27 @@ export async function handleAerospikeConnect(request: Request): Promise<Response
     let namespaces: string[] = [];
 
     try {
-      const statusResp = await sendInfoCommand(host, port, 'status', timeout);
+      const statusResp = await sendInfoCommand(host, port, 'status', auth, timeout);
       status = statusResp.includes('\t') ? statusResp.split('\t')[1] : statusResp;
     } catch { /* optional */ }
 
     try {
-      const nodeResp = await sendInfoCommand(host, port, 'node', timeout);
+      const nodeResp = await sendInfoCommand(host, port, 'node', auth, timeout);
       nodeId = nodeResp.includes('\t') ? nodeResp.split('\t')[1] : nodeResp;
     } catch { /* optional */ }
 
     try {
-      const editionResp = await sendInfoCommand(host, port, 'edition', timeout);
+      const editionResp = await sendInfoCommand(host, port, 'edition', auth, timeout);
       edition = editionResp.includes('\t') ? editionResp.split('\t')[1] : editionResp;
     } catch { /* optional */ }
 
     try {
-      const clusterResp = await sendInfoCommand(host, port, 'cluster-name', timeout);
+      const clusterResp = await sendInfoCommand(host, port, 'cluster-name', auth, timeout);
       clusterName = clusterResp.includes('\t') ? clusterResp.split('\t')[1] : clusterResp;
     } catch { /* optional */ }
 
     try {
-      const nsResp = await sendInfoCommand(host, port, 'namespaces', timeout);
+      const nsResp = await sendInfoCommand(host, port, 'namespaces', auth, timeout);
       const nsData = nsResp.includes('\t') ? nsResp.split('\t')[1] : nsResp;
       namespaces = nsData ? nsData.split(';').filter(Boolean) : [];
     } catch { /* optional */ }
@@ -568,6 +576,8 @@ const AS_FIELD_NAMESPACE   = 0;
 const AS_FIELD_SET         = 1;
 const AS_FIELD_KEY         = 2;
 const AS_FIELD_DIGEST      = 4;
+const AS_FIELD_USER        = 10;
+const AS_FIELD_PASSWORD    = 11;
 
 // Op type codes
 const AS_OP_READ  = 1;
@@ -577,6 +587,8 @@ const AS_OP_WRITE = 2;
 const AS_PARTICLE_TYPE_INTEGER = 1;
 const AS_PARTICLE_TYPE_STRING  = 3;
 const AS_PARTICLE_TYPE_BLOB    = 4;
+const AS_PARTICLE_TYPE_LIST    = 7;
+const AS_PARTICLE_TYPE_MAP     = 8;
 
 /**
  * Encode a single Aerospike field (namespace, set, digest, or key).
@@ -793,7 +805,13 @@ function parseAsResponse(data: Uint8Array): {
         if (valueBytes.length >= 8) {
           const hi = readUint32BE(valueBytes, 0);
           const lo = readUint32BE(valueBytes, 4);
-          binValue = hi * 0x100000000 + lo;
+          const bigVal = (BigInt(hi) << 32n) | BigInt(lo);
+          // Return as number if safe, else string to preserve precision in JSON
+          if (bigVal <= Number.MAX_SAFE_INTEGER && bigVal >= Number.MIN_SAFE_INTEGER) {
+            binValue = Number(bigVal);
+          } else {
+            binValue = bigVal.toString();
+          }
         } else {
           binValue = 0;
         }
@@ -801,6 +819,16 @@ function parseAsResponse(data: Uint8Array): {
       }
       case AS_PARTICLE_TYPE_STRING:
         binValue = new TextDecoder().decode(valueBytes);
+        break;
+      case AS_PARTICLE_TYPE_LIST:
+      case AS_PARTICLE_TYPE_MAP:
+        try {
+          const str = new TextDecoder().decode(valueBytes);
+          if (/^[\x20-\x7E]*$/.test(str)) binValue = str;
+          else binValue = Array.from(valueBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        } catch {
+          binValue = Array.from(valueBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
         break;
       case AS_PARTICLE_TYPE_BLOB: {
         // Try to parse as JSON, otherwise return hex
@@ -839,10 +867,12 @@ export async function handleAerospikeKVGet(request: Request): Promise<Response> 
       namespace: string;
       set: string;
       key: string;
+      user?: string;
+      password?: string;
       bins?: string[];
     };
 
-    const { host, port = 3000, timeout = 10000, namespace, set, key } = body;
+    const { host, port = 3000, timeout = 10000, namespace, set, key, user, password } = body;
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
@@ -889,6 +919,14 @@ export async function handleAerospikeKVGet(request: Request): Promise<Response> 
     fields.push(encodeDigestField(setName, key));
     // Also send the user key so the server stores/returns it
     fields.push(encodeKeyField(key));
+
+    // Add authentication fields if provided
+    if (user) {
+      fields.push(encodeAsField(AS_FIELD_USER, new TextEncoder().encode(user)));
+      if (password) {
+        fields.push(encodeAsField(AS_FIELD_PASSWORD, new TextEncoder().encode(password)));
+      }
+    }
 
     // Build ops and info1 flags
     let info1 = AS_MSG_INFO1_READ;
@@ -969,10 +1007,12 @@ export async function handleAerospikeKVPut(request: Request): Promise<Response> 
       namespace: string;
       set: string;
       key: string;
+      user?: string;
+      password?: string;
       bins: Record<string, unknown>;
     };
 
-    const { host, port = 3000, timeout = 10000, namespace, set, key, bins } = body;
+    const { host, port = 3000, timeout = 10000, namespace, set, key, bins, user, password } = body;
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
@@ -1025,6 +1065,14 @@ export async function handleAerospikeKVPut(request: Request): Promise<Response> 
     fields.push(encodeDigestField(setName, key));
     // Also send the user key so the server stores it
     fields.push(encodeKeyField(key));
+
+    // Add authentication fields
+    if (user) {
+      fields.push(encodeAsField(AS_FIELD_USER, new TextEncoder().encode(user)));
+      if (password) {
+        fields.push(encodeAsField(AS_FIELD_PASSWORD, new TextEncoder().encode(password)));
+      }
+    }
 
     // Build write ops for each bin
     const ops: Uint8Array[] = Object.entries(bins).map(([name, value]) => encodeWriteOp(name, value));
@@ -1086,10 +1134,12 @@ export async function handleAerospikeInfo(request: Request): Promise<Response> {
       host: string;
       port?: number;
       command: string;
+      user?: string;
+      password?: string;
       timeout?: number;
     };
 
-    const { host, port = 3000, command, timeout = 10000 } = body;
+    const { host, port = 3000, command, user, password, timeout = 10000 } = body;
 
     if (!host) {
       return new Response(JSON.stringify({
@@ -1113,7 +1163,10 @@ export async function handleAerospikeInfo(request: Request): Promise<Response> {
 
     // Validate command against allowed list (also allow namespace/<ns> pattern)
     const isNamespaceQuery = /^namespace\/[a-zA-Z0-9_-]+$/.test(command);
-    if (!VALID_COMMANDS.includes(command) && !isNamespaceQuery) {
+    const isStatQuery = /^(statistics|statistics\/)/.test(command);
+    const isLatencyQuery = /^latency:/.test(command);
+    
+    if (!VALID_COMMANDS.includes(command) && !isNamespaceQuery && !isStatQuery && !isLatencyQuery) {
       return new Response(JSON.stringify({
         success: false,
         error: `Invalid command: "${command}". Valid commands: ${VALID_COMMANDS.join(', ')}, namespace/<name>`,
@@ -1123,7 +1176,7 @@ export async function handleAerospikeInfo(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -1147,7 +1200,8 @@ export async function handleAerospikeInfo(request: Request): Promise<Response> {
     }
 
     const startTime = Date.now();
-    const response = await sendInfoCommand(host, port, command, timeout);
+    const auth = user ? { user, password } : undefined;
+    const response = await sendInfoCommand(host, port, command, auth, timeout);
     const rtt = Date.now() - startTime;
 
     // Parse structured data

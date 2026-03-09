@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 describe('Battle.net BNCS Protocol Integration Tests', () => {
-  const API_BASE = (process.env.API_BASE || 'https://portofcall.ross.gg/api').replace(/\/api$/, '');
+  const API_BASE = (process.env.API_BASE || 'https://l4.fyi/api').replace(/\/api$/, '');
 
   describe('POST /api/battlenet/connect', () => {
     it('should validate missing host', async () => {

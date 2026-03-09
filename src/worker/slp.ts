@@ -418,7 +418,7 @@ async function readResponse(reader: ReadableStreamDefaultReader<Uint8Array>, tim
  */
 export async function handleSLPServiceTypes(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -436,7 +436,7 @@ export async function handleSLPServiceTypes(request: Request): Promise<Response>
     }
 
     const port = body.port || 427;
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
@@ -457,7 +457,10 @@ export async function handleSLPServiceTypes(request: Request): Promise<Response>
 
     const connectStart = Date.now();
     const socket = connect(`${body.host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     const connectTimeMs = Date.now() - connectStart;
 
     try {
@@ -535,7 +538,7 @@ export async function handleSLPServiceTypes(request: Request): Promise<Response>
  */
 export async function handleSLPServiceFind(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -558,7 +561,7 @@ export async function handleSLPServiceFind(request: Request): Promise<Response> 
     }
 
     const port = body.port || 427;
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
@@ -579,7 +582,10 @@ export async function handleSLPServiceFind(request: Request): Promise<Response> 
 
     const connectStart = Date.now();
     const socket = connect(`${body.host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     const connectTimeMs = Date.now() - connectStart;
 
     try {
@@ -657,7 +663,7 @@ export async function handleSLPServiceFind(request: Request): Promise<Response> 
  */
 export async function handleSLPAttributes(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -680,7 +686,7 @@ export async function handleSLPAttributes(request: Request): Promise<Response> {
     }
 
     const port = body.port || 427;
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
     }
 
@@ -701,7 +707,10 @@ export async function handleSLPAttributes(request: Request): Promise<Response> {
 
     const connectStart = Date.now();
     const socket = connect(`${body.host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     const connectTimeMs = Date.now() - connectStart;
 
     try {

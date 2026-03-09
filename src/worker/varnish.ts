@@ -346,6 +346,15 @@ export async function handleVarnishCommand(request: Request): Promise<Response> 
 
     // Validate command - only allow safe read-only commands
     const safeCommands = ['ping', 'status', 'banner', 'backend.list', 'vcl.list', 'param.show', 'panic.show', 'storage.list', 'help'];
+    if (/[\r\n]/.test(command)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Command must not contain newline characters',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
     const cmdBase = command.trim().split(/\s+/)[0].toLowerCase();
     if (!safeCommands.includes(cmdBase)) {
       return new Response(JSON.stringify({

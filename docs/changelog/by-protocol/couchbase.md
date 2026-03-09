@@ -238,3 +238,8 @@ return new Response(JSON.stringify({
 - [Memcached Binary Protocol Spec](https://github.com/memcached/memcached/wiki/BinaryProtocolRevised)
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
 - [Couchbase SDK Auth](https://docs.couchbase.com/server/current/learn/security/authentication.html)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

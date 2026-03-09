@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 const isLocal = API_BASE.includes('localhost');
 
 // Real GG server at 91.214.237.10 silently filters connections when unreachable,

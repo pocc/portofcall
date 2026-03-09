@@ -1,0 +1,44 @@
+dn: ou=Users,dc=test,dc=local
+objectClass: organizationalUnit
+ou: Users
+
+dn: ou=Groups,dc=test,dc=local
+objectClass: organizationalUnit
+ou: Groups
+
+dn: uid=testuser,ou=Users,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+cn: Test User
+sn: User
+givenName: Test
+uid: testuser
+uidNumber: 1000
+gidNumber: 1000
+homeDirectory: /home/testuser
+loginShell: /bin/bash
+mail: testuser@test.local
+userPassword: testpass123
+
+dn: uid=alice,ou=Users,dc=test,dc=local
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+cn: Alice Johnson
+sn: Johnson
+givenName: Alice
+uid: alice
+uidNumber: 1001
+gidNumber: 1000
+homeDirectory: /home/alice
+loginShell: /bin/bash
+mail: alice@test.local
+userPassword: alicepass123
+
+dn: cn=testgroup,ou=Groups,dc=test,dc=local
+objectClass: posixGroup
+cn: testgroup
+gidNumber: 1000
+memberUid: testuser
+memberUid: alice

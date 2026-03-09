@@ -355,7 +355,7 @@ function validateMinecraftInput(host: string, port: number): string | null {
     return 'Host contains invalid characters';
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 

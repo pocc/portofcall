@@ -361,3 +361,8 @@ Created `docs/SSH_BUGS_FOUND.md` (comprehensive bug report, 300+ lines):
 No changes made to `SSH.md` itself — the existing documentation is accurate and comprehensive. The window flow control limitation at line 307 should be updated to indicate it is a **bug** (data loss) rather than a design limitation, but this requires Edit permission.
 
 **Recommendation:** Fix critical bugs #1 and #2 immediately. Update SSH.md line 307 to clarify window exhaustion causes data loss (not just "drops input"). Add medium bugs to known limitations section. Reference SSH_BUGS_FOUND.md for technical details.
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

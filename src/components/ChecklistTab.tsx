@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
 import { protocols } from './ProtocolSelector';
 
@@ -24,6 +24,11 @@ export default function ChecklistTab() {
   const [saving, setSaving] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'incomplete' | 'complete'>('all');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => { clearTimeout(errorTimerRef.current); };
+  }, []);
 
   useEffect(() => {
     fetch('/api/checklist')
@@ -54,7 +59,8 @@ export default function ChecklistTab() {
         [protocolId]: { ...(prev[protocolId] ?? {}), [item]: !checked },
       }));
       setSaveError('Failed to save — change was reverted');
-      setTimeout(() => setSaveError(null), 4000);
+      clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = setTimeout(() => setSaveError(null), 4000);
     } finally {
       setSaving(null);
     }

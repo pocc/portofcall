@@ -442,3 +442,8 @@ Should document:
 - [RFC 6455 - WebSocket Protocol](https://datatracker.ietf.org/doc/html/rfc6455)
 - [WebSocket Frame Format](https://datatracker.ietf.org/doc/html/rfc6455#section-5.2)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

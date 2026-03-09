@@ -18,6 +18,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface FingerRequest {
   host: string;
@@ -55,6 +56,11 @@ function validateFingerQuery(username?: string, remoteHost?: string): string | n
  * Perform Finger query
  */
 export async function handleFingerQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as FingerRequest;
     const { host, port = 79, username, remoteHost, timeout = 10000 } = body;
@@ -70,7 +76,7 @@ export async function handleFingerQuery(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -88,6 +94,18 @@ export async function handleFingerQuery(request: Request): Promise<Response> {
         error: validationError,
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -111,6 +129,7 @@ export async function handleFingerQuery(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
     try {
       // Wait for connection with timeout
       await Promise.race([
@@ -119,7 +138,7 @@ export async function handleFingerQuery(request: Request): Promise<Response> {
       ]);
 
       const writer = socket.writable.getWriter();
-      const reader = socket.readable.getReader();
+      reader = socket.readable.getReader();
 
       // Send query
       const queryBytes = new TextEncoder().encode(queryString);
@@ -172,6 +191,7 @@ export async function handleFingerQuery(request: Request): Promise<Response> {
 
       // Clean up
       reader.releaseLock();
+      reader = null;
       socket.close();
 
       const result: FingerResponse = {
@@ -186,7 +206,8 @@ export async function handleFingerQuery(request: Request): Promise<Response> {
       });
 
     } catch (error) {
-      // Connection or read error
+      // Connection or read error — release any held locks before closing
+      if (reader) { try { reader.releaseLock(); } catch { /* already released */ } }
       socket.close();
       throw error;
     }

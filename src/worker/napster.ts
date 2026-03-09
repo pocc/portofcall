@@ -48,6 +48,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // Default OpenNap port (Napster's original was 8875/6699, OpenNap standardized on 8888)
 // Using 6699 as default since it's the more common historical Napster port
@@ -242,7 +243,7 @@ async function performLogin(
         loginError = msg.data;
       } else if (msg.type === OPENNAP_MSG.USER_COUNT) {
         const parts = msg.data.trim().split(/\s+/);
-        serverUserCount = parseInt(parts[0], 10) || undefined;
+        serverUserCount = parts[0] != null ? parseInt(parts[0], 10) : undefined;
       }
       // EMAIL (type 6) is informational, ignored
     }
@@ -298,9 +299,9 @@ function parseSearchResult(data: string): { filename: string; size: number; bitr
 function parseStatsData(data: string): { users?: number; files?: number; gigabytes?: number } {
   const parts = data.trim().split(/\s+/);
   return {
-    users: parts[0] ? (parseInt(parts[0], 10) || undefined) : undefined,
-    files: parts[1] ? (parseInt(parts[1], 10) || undefined) : undefined,
-    gigabytes: parts[2] ? (parseInt(parts[2], 10) || undefined) : undefined,
+    users: parts[0] != null ? parseInt(parts[0], 10) : undefined,
+    files: parts[1] != null ? parseInt(parts[1], 10) : undefined,
+    gigabytes: parts[2] != null ? parseInt(parts[2], 10) : undefined,
   };
 }
 
@@ -335,7 +336,7 @@ export async function handleNapsterConnect(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -345,6 +346,15 @@ export async function handleNapsterConnect(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -450,7 +460,7 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -460,6 +470,15 @@ export async function handleNapsterLogin(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck2.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -576,6 +595,15 @@ export async function handleNapsterStats(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck3 = await checkIfCloudflare(host);
+    if (cfCheck3.isCloudflare && cfCheck3.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck3.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -801,7 +829,7 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false, host, port, targetUser, count: 0, files: [],
         error: 'Port must be between 1 and 65535',
@@ -809,6 +837,15 @@ export async function handleNapsterBrowse(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck4 = await checkIfCloudflare(host);
+    if (cfCheck4.isCloudflare && cfCheck4.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck4.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -1015,7 +1052,7 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false, host, port, count: 0, results: [],
         error: 'Port must be between 1 and 65535',
@@ -1023,6 +1060,15 @@ export async function handleNapsterSearch(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck5 = await checkIfCloudflare(host);
+    if (cfCheck5.isCloudflare && cfCheck5.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck5.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();

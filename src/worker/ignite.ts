@@ -342,7 +342,7 @@ export async function handleIgniteConnect(request: Request): Promise<Response> {
     const { host, port = 10800, timeout = 10000 } = body;
 
     if (!host) return igniteError('Host is required', 400);
-    if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -434,7 +434,7 @@ export async function handleIgniteProbe(request: Request): Promise<Response> {
     const port    = body.port || 10800;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -457,7 +457,10 @@ export async function handleIgniteProbe(request: Request): Promise<Response> {
     for (const ver of versions) {
       try {
         const socket = connect(`${host}:${port}`);
-        await socket.opened;
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+        ]);
 
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
@@ -525,7 +528,7 @@ export async function handleIgniteListCaches(request: Request): Promise<Response
 
   const { host, port = 10800, timeout = 12000 } = body;
   if (!host) return igniteError('host is required', 400);
-  if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -539,10 +542,14 @@ export async function handleIgniteListCaches(request: Request): Promise<Response
 
     try {
       // OP_CACHE_GET_NAMES: no payload
-      await writer.write(buildRequest(OP_CACHE_GET_NAMES, BigInt(1), new Uint8Array(0)));
+      const listCachesRequestId = BigInt(1);
+      await writer.write(buildRequest(OP_CACHE_GET_NAMES, listCachesRequestId, new Uint8Array(0)));
       const resp = await readResponse(reader, Math.min(timeout, 6000));
 
       const header = parseResponseHeader(resp);
+
+      // Validate the response request ID matches what we sent
+      const listCachesIdMismatch = header.requestId !== listCachesRequestId;
 
       if (header.status !== 0) {
         return new Response(JSON.stringify({
@@ -579,6 +586,9 @@ export async function handleIgniteListCaches(request: Request): Promise<Response
         port,
         caches,
         count: caches.length,
+        ...(listCachesIdMismatch && {
+          warning: `Response request ID (${header.requestId}) does not match sent request ID (${listCachesRequestId}). The response may belong to a different request.`,
+        }),
       }), { headers: { 'Content-Type': 'application/json' } });
 
     } finally {
@@ -617,7 +627,7 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
   if (!host)      return igniteError('host is required', 400);
   if (!cacheName) return igniteError('cacheName is required', 400);
   if (!key)       return igniteError('key is required', 400);
-  if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -631,16 +641,23 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
 
     try {
       // Step 1: OP_CACHE_GET_OR_CREATE_WITH_NAME to ensure cache exists
+      const cacheGetCreateRequestId = BigInt(1);
       const cacheNamePayload = encodeCacheName(cacheName);
-      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, BigInt(1), cacheNamePayload));
+      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, cacheGetCreateRequestId, cacheNamePayload));
       const createResp = await readResponse(reader, Math.min(timeout, 5000));
 
       const createHeader = parseResponseHeader(createResp);
+      if (createHeader.requestId !== cacheGetCreateRequestId) {
+        // Warning only — do not abort, the server may still have processed correctly
+      }
       if (createHeader.status !== 0) {
         return new Response(JSON.stringify({
           success: false,
           error: `Failed to access cache '${cacheName}': status ${createHeader.status}`,
           host, port, cacheName, key,
+          ...(createHeader.requestId !== cacheGetCreateRequestId && {
+            warning: `Response request ID (${createHeader.requestId}) does not match sent request ID (${cacheGetCreateRequestId}).`,
+          }),
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -649,6 +666,7 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
 
       // Step 2: OP_CACHE_GET
       // Payload: [cache_id: int32 LE] [flags: 1 byte (0)] [key: typed value]
+      const cacheGetRequestId = BigInt(2);
       const keyEncoded = encodeString(key);
       const getPayload = new Uint8Array(4 + 1 + keyEncoded.length);
       const getView    = new DataView(getPayload.buffer);
@@ -656,15 +674,19 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
       getPayload[4] = 0; // flags
       getPayload.set(keyEncoded, 5);
 
-      await writer.write(buildRequest(OP_CACHE_GET, BigInt(2), getPayload));
+      await writer.write(buildRequest(OP_CACHE_GET, cacheGetRequestId, getPayload));
       const getResp   = await readResponse(reader, Math.min(timeout, 5000));
       const getHeader = parseResponseHeader(getResp);
+      const getIdMismatch = getHeader.requestId !== cacheGetRequestId;
 
       if (getHeader.status !== 0) {
         return new Response(JSON.stringify({
           success: false,
           error: `Cache GET failed: status ${getHeader.status}`,
           host, port, cacheName, key, cacheId,
+          ...(getIdMismatch && {
+            warning: `Response request ID (${getHeader.requestId}) does not match sent request ID (${cacheGetRequestId}).`,
+          }),
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -699,6 +721,9 @@ export async function handleIgniteCacheGet(request: Request): Promise<Response> 
         key,
         value,
         found: value !== null,
+        ...(getIdMismatch && {
+          warning: `Response request ID (${getHeader.requestId}) does not match sent request ID (${cacheGetRequestId}). The response may belong to a different request.`,
+        }),
       }), { headers: { 'Content-Type': 'application/json' } });
 
     } finally {
@@ -736,7 +761,7 @@ export async function handleIgniteCachePut(request: Request): Promise<Response> 
   if (!cacheName) return igniteError('cacheName is required', 400);
   if (key === undefined || key === null) return igniteError('key is required', 400);
   if (value === undefined || value === null) return igniteError('value is required', 400);
-  if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -750,14 +775,19 @@ export async function handleIgniteCachePut(request: Request): Promise<Response> 
 
     try {
       // Step 1: Ensure cache exists (OP_CACHE_GET_OR_CREATE_WITH_NAME)
-      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, BigInt(1), encodeCacheName(cacheName)));
+      const putCreateRequestId = BigInt(1);
+      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, putCreateRequestId, encodeCacheName(cacheName)));
       const createResp = await readResponse(reader, Math.min(timeout, 5000));
       const createHeader = parseResponseHeader(createResp);
+      const putCreateIdMismatch = createHeader.requestId !== putCreateRequestId;
       if (createHeader.status !== 0) {
         return new Response(JSON.stringify({
           success: false,
           error: `Failed to access cache '${cacheName}': status ${createHeader.status}`,
           host, port, cacheName, key,
+          ...(putCreateIdMismatch && {
+            warning: `Response request ID (${createHeader.requestId}) does not match sent request ID (${putCreateRequestId}).`,
+          }),
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -765,6 +795,7 @@ export async function handleIgniteCachePut(request: Request): Promise<Response> 
       const cacheId = cacheNameToId(cacheName);
 
       // Step 2: OP_CACHE_PUT — payload: [cache_id: int32 LE][flags: 1 byte][key: typed][value: typed]
+      const putRequestId = BigInt(2);
       const keyEncoded   = encodeString(key);
       const valueEncoded = encodeString(value);
       const putPayload   = new Uint8Array(4 + 1 + keyEncoded.length + valueEncoded.length);
@@ -773,20 +804,27 @@ export async function handleIgniteCachePut(request: Request): Promise<Response> 
       putPayload.set(keyEncoded, 5);
       putPayload.set(valueEncoded, 5 + keyEncoded.length);
 
-      await writer.write(buildRequest(OP_CACHE_PUT, BigInt(2), putPayload));
+      await writer.write(buildRequest(OP_CACHE_PUT, putRequestId, putPayload));
       const putResp   = await readResponse(reader, Math.min(timeout, 5000));
       const putHeader = parseResponseHeader(putResp);
+      const putIdMismatch = putHeader.requestId !== putRequestId;
 
       if (putHeader.status !== 0) {
         return new Response(JSON.stringify({
           success: false,
           error: `Cache PUT failed: status ${putHeader.status}`,
           host, port, cacheName, key, cacheId,
+          ...(putIdMismatch && {
+            warning: `Response request ID (${putHeader.requestId}) does not match sent request ID (${putRequestId}).`,
+          }),
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
       return new Response(JSON.stringify({
         success: true, host, port, cacheName, cacheId, key, value,
+        ...(putIdMismatch && {
+          warning: `Response request ID (${putHeader.requestId}) does not match sent request ID (${putRequestId}). The response may belong to a different request.`,
+        }),
       }), { headers: { 'Content-Type': 'application/json' } });
 
     } finally {
@@ -821,7 +859,7 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
   if (!host)      return igniteError('host is required', 400);
   if (!cacheName) return igniteError('cacheName is required', 400);
   if (key === undefined || key === null) return igniteError('key is required', 400);
-  if (port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return igniteError('Port must be between 1 and 65535', 400);
 
   const cfCheck = await checkIfCloudflare(host);
   if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -835,14 +873,19 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
 
     try {
       // Ensure cache exists first
-      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, BigInt(1), encodeCacheName(cacheName)));
+      const removeCreateRequestId = BigInt(1);
+      await writer.write(buildRequest(OP_CACHE_GET_OR_CREATE_WITH_NAME, removeCreateRequestId, encodeCacheName(cacheName)));
       const createResp   = await readResponse(reader, Math.min(timeout, 5000));
       const createHeader = parseResponseHeader(createResp);
+      const removeCreateIdMismatch = createHeader.requestId !== removeCreateRequestId;
       if (createHeader.status !== 0) {
         return new Response(JSON.stringify({
           success: false,
           error: `Failed to access cache '${cacheName}': status ${createHeader.status}`,
           host, port, cacheName, key,
+          ...(removeCreateIdMismatch && {
+            warning: `Response request ID (${createHeader.requestId}) does not match sent request ID (${removeCreateRequestId}).`,
+          }),
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -850,21 +893,26 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
       const cacheId = cacheNameToId(cacheName);
 
       // OP_CACHE_REMOVE — payload: [cache_id: int32 LE][flags: 1 byte][key: typed]
+      const removeRequestId = BigInt(2);
       const keyEncoded    = encodeString(key);
       const removePayload = new Uint8Array(4 + 1 + keyEncoded.length);
       new DataView(removePayload.buffer).setInt32(0, cacheId, true);
       removePayload[4] = 0; // flags
       removePayload.set(keyEncoded, 5);
 
-      await writer.write(buildRequest(OP_CACHE_REMOVE, BigInt(2), removePayload));
+      await writer.write(buildRequest(OP_CACHE_REMOVE, removeRequestId, removePayload));
       const removeResp   = await readResponse(reader, Math.min(timeout, 5000));
       const removeHeader = parseResponseHeader(removeResp);
+      const removeIdMismatch = removeHeader.requestId !== removeRequestId;
 
       if (removeHeader.status !== 0) {
         return new Response(JSON.stringify({
           success: false,
           error: `Cache REMOVE failed: status ${removeHeader.status}`,
           host, port, cacheName, key, cacheId,
+          ...(removeIdMismatch && {
+            warning: `Response request ID (${removeHeader.requestId}) does not match sent request ID (${removeRequestId}).`,
+          }),
         }), { headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -883,6 +931,9 @@ export async function handleIgniteCacheRemove(request: Request): Promise<Respons
 
       return new Response(JSON.stringify({
         success: true, host, port, cacheName, cacheId, key, removed,
+        ...(removeIdMismatch && {
+          warning: `Response request ID (${removeHeader.requestId}) does not match sent request ID (${removeRequestId}). The response may belong to a different request.`,
+        }),
       }), { headers: { 'Content-Type': 'application/json' } });
 
     } finally {

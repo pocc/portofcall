@@ -135,3 +135,8 @@ This pattern appears at lines 242-257 (connect) and 428-441 (fetch).
 - [Munin Node Protocol](https://guide.munin-monitoring.org/en/latest/reference/munin-node.html) - Official protocol reference
 - [Munin Plugin Protocol](https://guide.munin-monitoring.org/en/latest/plugin/protocol.html) - Plugin command formats
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

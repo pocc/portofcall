@@ -267,3 +267,8 @@ function readColumnValue(
 - [ClickHouse Native Protocol Specification](../protocols/CLICKHOUSE.md) - Wire format reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
 - [RFC 7617 (HTTP Basic Auth)](https://datatracker.ietf.org/doc/html/rfc7617) - Secure auth standard
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

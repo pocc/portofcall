@@ -67,7 +67,7 @@ export async function handleGaduGaduConnect(request: Request): Promise<Response>
 
 		// Validate port
 		const port = body.port || 8074;
-		if (port < 1 || port > 65535) {
+		if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
 			return Response.json(
 				{ success: false, error: 'Port must be between 1 and 65535' },
 				{ status: 400 }
@@ -223,6 +223,9 @@ export async function handleGaduGaduSendMessage(request: Request): Promise<Respo
 		const timeout = Math.min(body.timeout ?? 15000, 30000);
 		const messageText = body.message;
 
+		if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+			return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
+		}
 		if (!validateUIN(senderUin)) return Response.json({ success: false, error: 'Invalid senderUin' }, { status: 400 });
 		if (!validateUIN(recipientUin)) return Response.json({ success: false, error: 'Invalid recipientUin' }, { status: 400 });
 
@@ -322,6 +325,9 @@ export async function handleGaduGaduContacts(request: Request): Promise<Response
 		const hashType = body.hashType ?? 'sha1';
 		const timeout = Math.min(body.timeout ?? 15000, 30000);
 
+		if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+			return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
+		}
 		if (!validateUIN(uin)) return Response.json({ success: false, error: 'Invalid UIN' }, { status: 400 });
 
 		const cfCheck = await checkIfCloudflare(host);

@@ -479,32 +479,32 @@ Beanstalkd has three response shapes:
 
 ```bash
 # Stats probe
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/connect \
+curl -s -X POST https://l4.fyi/api/beanstalkd/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","port":11300}' | jq
 
 # List all tubes
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/command \
+curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","command":"list-tubes"}' | jq .response
 
 # Tube statistics
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/command \
+curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","command":"stats-tube emails"}' | jq .response
 
 # Peek at next ready job
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/command \
+curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","command":"peek-ready"}' | jq
 
 # Peek at a specific job by ID
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/command \
+curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","command":"peek 42"}' | jq
 
 # Put a job into the "emails" tube (priority 1024, no delay, 120s TTR)
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/put \
+curl -s -X POST https://l4.fyi/api/beanstalkd/put \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"beanstalkd.example.com",
@@ -516,7 +516,7 @@ curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/put \
   }' | jq
 
 # Put a delayed job (30 second delay)
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/put \
+curl -s -X POST https://l4.fyi/api/beanstalkd/put \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"beanstalkd.example.com",
@@ -526,7 +526,7 @@ curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/put \
   }' | jq
 
 # Put a high-priority job (priority 0 = most urgent)
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/put \
+curl -s -X POST https://l4.fyi/api/beanstalkd/put \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"beanstalkd.example.com",
@@ -536,12 +536,12 @@ curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/put \
   }' | jq
 
 # Reserve (dequeue) a job from "emails" tube
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/reserve \
+curl -s -X POST https://l4.fyi/api/beanstalkd/reserve \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","tube":"emails","reserveTimeout":5}' | jq
 
 # Reserve from default tube
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/reserve \
+curl -s -X POST https://l4.fyi/api/beanstalkd/reserve \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com"}' | jq
 ```
@@ -583,13 +583,13 @@ Tube names are limited to 200 bytes and cannot contain whitespace.
 
 ```bash
 # Check how many jobs are buried in a tube
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/command \
+curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","command":"stats-tube emails"}' \
   | jq -r '.response' | grep buried
 
 # Peek at the next buried job
-curl -s -X POST https://portofcall.ross.gg/api/beanstalkd/command \
+curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"beanstalkd.example.com","command":"peek-buried"}'
 ```

@@ -52,3 +52,8 @@ The implementation includes detailed comments for:
 - [HAProxy Management Guide](https://www.haproxy.org/download/2.8/doc/management.txt) - Official Runtime API documentation
 - [HAProxy Configuration Manual](https://www.haproxy.org/download/2.8/doc/configuration.txt) - stats socket configuration
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

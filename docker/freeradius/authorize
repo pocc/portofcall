@@ -1,0 +1,13 @@
+# FreeRADIUS test users
+
+testuser    Cleartext-Password := "testpass123"
+    Reply-Message := "Hello, %{User-Name}",
+    Framed-Protocol = PPP,
+    Framed-IP-Address = 10.0.0.100,
+    Framed-IP-Netmask = 255.255.255.0
+
+alice       Cleartext-Password := "alicepass123"
+    Reply-Message := "Hello, %{User-Name}",
+    Framed-Protocol = PPP,
+    Framed-IP-Address = 10.0.0.101,
+    Framed-IP-Netmask = 255.255.255.0

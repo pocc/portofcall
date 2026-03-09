@@ -78,14 +78,16 @@ async function sendHttpRequest(
   const writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
 
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `${method} ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
 
   if (headers) {
     for (const [key, value] of Object.entries(headers)) {
-      request += `${key}: ${value}\r\n`;
+      request += `${key.replace(/[\r\n]/g, '')}: ${value.replace(/[\r\n]/g, '')}\r\n`;
     }
   }
 
@@ -322,7 +324,7 @@ export async function handleWinRMIdentify(request: Request): Promise<Response> {
     });
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -645,13 +647,14 @@ function decodeReceiveStreams(xml: string): { stdout: string; stderr: string; do
   let stdout = '';
   let stderr = '';
 
-  // Extract all stdout stream segments (base64 encoded)
+  // Extract all stdout stream segments (base64 encoded UTF-8)
   const stdoutPattern = /<rsp:Stream[^>]*Name="stdout"[^>]*>([^<]*)<\/rsp:Stream>/gi;
   let match: RegExpExecArray | null;
   while ((match = stdoutPattern.exec(xml)) !== null) {
     if (match[1].trim()) {
       try {
-        stdout += atob(match[1].trim());
+        const bytes = Uint8Array.from(atob(match[1].trim()), c => c.charCodeAt(0));
+        stdout += new TextDecoder('utf-8', { fatal: false }).decode(bytes);
       } catch {
         stdout += match[1].trim();
       }
@@ -663,7 +666,8 @@ function decodeReceiveStreams(xml: string): { stdout: string; stderr: string; do
   while ((match = stderrPattern.exec(xml)) !== null) {
     if (match[1].trim()) {
       try {
-        stderr += atob(match[1].trim());
+        const bytes = Uint8Array.from(atob(match[1].trim()), c => c.charCodeAt(0));
+        stderr += new TextDecoder('utf-8', { fatal: false }).decode(bytes);
       } catch {
         stderr += match[1].trim();
       }
@@ -729,7 +733,7 @@ export async function handleWinRMExec(request: Request): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (!username || !password) {
+  if (!username || password == null) {
     return new Response(JSON.stringify({ success: false, error: 'Username and password are required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -741,7 +745,13 @@ export async function handleWinRMExec(request: Request): Promise<Response> {
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (port < 1 || port > 65535) {
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -927,7 +937,7 @@ export async function handleWinRMAuth(request: Request): Promise<Response> {
     });
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },

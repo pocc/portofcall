@@ -136,12 +136,11 @@ function buildSMB2NegotiateRequest(): Uint8Array {
  * Used only as a fallback banner grab when the server doesn't speak SMB2.
  */
 function buildSMB1NegotiateRequest(): Uint8Array {
-  const dialect = new TextEncoder().encode('\x02NT LM 0.12\x00');
-  // Dialect block: word(count=1) + dialect string
-  const dialectBlock = new Uint8Array(3 + dialect.length);
+  const dialectName = new TextEncoder().encode('NT LM 0.12\x00');
+  // Dialect block: BufferFormat(1) + dialect string (null-terminated)
+  const dialectBlock = new Uint8Array(1 + dialectName.length);
   dialectBlock[0] = 0x02; // BufferFormat: dialect
-  // Copy dialect string
-  dialectBlock.set(dialect, 1);
+  dialectBlock.set(dialectName, 1);
 
   const bodyLen = 3 + dialectBlock.length; // WordCount(1) + ByteCount(2) + dialects
   const body = new Uint8Array(bodyLen);
@@ -492,7 +491,8 @@ export async function handleSMBNegotiate(request: Request): Promise<Response> {
           // Difference: 11644473600 seconds
           const ftLow  = bv.getUint32(40, true);
           const ftHigh = bv.getUint32(44, true);
-          const ftMs = (ftHigh * 0x100000000 + ftLow) / 10000;
+          const ftBig = (BigInt(ftHigh) << 32n) | BigInt(ftLow);
+          const ftMs = Number(ftBig / 10000n);
           const systemTimeMs = ftMs - 11644473600000;
           const systemTime = (systemTimeMs > 0 && systemTimeMs < 2e12)
             ? new Date(systemTimeMs).toISOString()

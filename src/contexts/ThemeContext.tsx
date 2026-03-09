@@ -11,12 +11,16 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [theme, setTheme] = useState<Theme>(() => {
-    const saved = localStorage.getItem('portofcall-theme');
-    return (saved as Theme) || 'retro'; // Retro is default
+    try {
+      const saved = localStorage.getItem('portofcall-theme');
+      return saved === 'retro' || saved === 'modern' ? saved : 'retro';
+    } catch {
+      return 'retro';
+    }
   });
 
   useEffect(() => {
-    localStorage.setItem('portofcall-theme', theme);
+    try { localStorage.setItem('portofcall-theme', theme); } catch { /* quota or private browsing */ }
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 

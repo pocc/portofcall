@@ -29,6 +29,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // ─── RESP Protocol Helpers ───────────────────────────────────────────────
 
@@ -320,6 +321,9 @@ const DEFAULT_PORT = 26379;
 // ─── Handlers ────────────────────────────────────────────────────────────
 
 export async function handleSentinelProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelProbeRequest;
   const { host, port: rawPort, password, timeout: rawTimeout } = body;
 
@@ -347,7 +351,7 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -360,7 +364,8 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
   }
 
   // Cloudflare detection
-  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -376,7 +381,10 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
   try {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -472,6 +480,9 @@ export async function handleSentinelProbe(request: Request): Promise<Response> {
 }
 
 export async function handleSentinelQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelQueryRequest;
   const { host, port: rawPort, password, command, masterName, timeout: rawTimeout } = body;
 
@@ -512,7 +523,7 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -540,7 +551,8 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
   }
 
   // Cloudflare detection
-  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -578,7 +590,10 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
   try {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     transcript.push(`Connected to ${host}:${port}`);
 
     const reader = socket.readable.getReader();
@@ -682,6 +697,9 @@ export async function handleSentinelQuery(request: Request): Promise<Response> {
  * SENTINEL masters probe.
  */
 export async function handleSentinelGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelGetRequest;
   const { host, port: rawPort, timeout: rawTimeout, masterName } = body;
 
@@ -740,7 +758,7 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -754,7 +772,8 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
   }
 
   // Cloudflare detection
-  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -771,7 +790,10 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
   try {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -861,6 +883,9 @@ export async function handleSentinelGet(request: Request): Promise<Response> {
  * instance is currently the master and whether a failover would succeed.
  */
 export async function handleSentinelGetMasterAddr(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelGetMasterAddrRequest;
   const { host, port: rawPort, timeout: rawTimeout, masterName } = body;
 
@@ -919,7 +944,7 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -933,7 +958,8 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
   }
 
   // Cloudflare detection
-  if (host.endsWith('.workers.dev') || host.includes('cloudflare')) {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
     return new Response(JSON.stringify({
       success: false,
       host,
@@ -950,7 +976,10 @@ export async function handleSentinelGetMasterAddr(request: Request): Promise<Res
   try {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();
@@ -1055,7 +1084,10 @@ async function sentinelWriteCommand(
 ): Promise<{ result: unknown; rtt: number }> {
   const startTime = Date.now();
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+  ]);
 
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
@@ -1092,6 +1124,9 @@ async function sentinelWriteCommand(
  * POST /api/sentinel/failover
  */
 export async function handleSentinelFailover(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelWriteRequest;
   const { host, port: rawPort, password, timeout: rawTimeout, masterName } = body;
 
@@ -1108,6 +1143,15 @@ export async function handleSentinelFailover(request: Request): Promise<Response
 
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 15000, 30000);
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const cfCheckFailover = await checkIfCloudflare(host);
+  if (cfCheckFailover.isCloudflare && cfCheckFailover.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckFailover.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
 
   try {
     const { result, rtt } = await sentinelWriteCommand(host, port, password, timeout, [
@@ -1143,6 +1187,9 @@ export async function handleSentinelFailover(request: Request): Promise<Response
  * POST /api/sentinel/reset
  */
 export async function handleSentinelReset(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelWriteRequest;
   const { host, port: rawPort, password, timeout: rawTimeout, masterName } = body;
 
@@ -1159,6 +1206,15 @@ export async function handleSentinelReset(request: Request): Promise<Response> {
 
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const cfCheckReset = await checkIfCloudflare(host);
+  if (cfCheckReset.isCloudflare && cfCheckReset.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckReset.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
 
   try {
     const { result, rtt } = await sentinelWriteCommand(host, port, password, timeout, [
@@ -1193,6 +1249,9 @@ export async function handleSentinelReset(request: Request): Promise<Response> {
  * POST /api/sentinel/set
  */
 export async function handleSentinelSet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   const body = await request.json() as SentinelWriteRequest;
   const { host, port: rawPort, password, timeout: rawTimeout, masterName, key, value } = body;
 
@@ -1219,6 +1278,15 @@ export async function handleSentinelSet(request: Request): Promise<Response> {
 
   const port = rawPort || DEFAULT_PORT;
   const timeout = Math.min(rawTimeout || 10000, 30000);
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const cfCheckSet = await checkIfCloudflare(host);
+  if (cfCheckSet.isCloudflare && cfCheckSet.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckSet.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
 
   try {
     const { result, rtt } = await sentinelWriteCommand(host, port, password, timeout, [

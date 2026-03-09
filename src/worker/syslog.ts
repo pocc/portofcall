@@ -17,6 +17,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface SyslogRequest {
   host: string;
@@ -150,6 +151,11 @@ function formatRFC3164Message(
  * Send syslog message to remote server
  */
 export async function handleSyslogSend(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SyslogRequest;
     const {
@@ -222,6 +228,13 @@ export async function handleSyslogSend(request: Request): Promise<Response> {
     const formattedMessage = format === 'rfc5424'
       ? formatRFC5424Message(priority, hostname, appName, message)
       : formatRFC3164Message(priority, hostname, appName, message);
+
+    const cfCheckSyslog = await checkIfCloudflare(host);
+    if (cfCheckSyslog.isCloudflare && cfCheckSyslog.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckSyslog.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Connect to syslog server
     const socket = connect(`${host}:${port}`);

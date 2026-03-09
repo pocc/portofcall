@@ -26,6 +26,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 interface NodeInspectorRequest {
   host: string;
@@ -66,8 +67,10 @@ async function sendHttpRequest(
   const writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
 
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -85,7 +88,12 @@ async function sendHttpRequest(
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -165,6 +173,20 @@ export async function handleNodeInspectorHealth(request: Request): Promise<Respo
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF prevention
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -260,6 +282,19 @@ export async function handleNodeInspectorQuery(request: Request): Promise<Respon
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const normalizedEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
     const start = Date.now();
 
@@ -317,6 +352,20 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
 
   if (!host) {
     return new Response('Host parameter is required', { status: 400 });
+  }
+
+  const portNum = parseInt(port, 10);
+  if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  if (isBlockedHost(host)) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: `Connections to private/internal addresses are not allowed: ${host}`,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
   const cfCheck = await checkIfCloudflare(host);
@@ -432,6 +481,9 @@ export async function handleNodeInspectorTunnel(request: Request): Promise<Respo
             if (done) break;
             if (value) {
               // Append new data to buffer
+              if (frameBuffer.length + value.length > 10 * 1024 * 1024) {
+                throw new Error('Frame buffer exceeds maximum size');
+              }
               const combined = new Uint8Array(frameBuffer.length + value.length);
               combined.set(frameBuffer, 0);
               combined.set(value, frameBuffer.length);
@@ -502,8 +554,10 @@ function generateWebSocketKey(): string {
 }
 
 function buildWebSocketHandshake(host: string, port: number, path: string, wsKey: string): string {
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Upgrade: websocket\r\n`;
   request += `Connection: Upgrade\r\n`;
   request += `Sec-WebSocket-Key: ${wsKey}\r\n`;

@@ -1,0 +1,52 @@
+version: '3.8'
+
+# Chat & Messaging Protocols
+# Protocols covered: xmpp, xmpp-s2s, xmpps2s, jabber-component, matrix
+#
+# Usage: docker compose -f docker-compose.chat.yml up -d
+
+services:
+  # Prosody - XMPP server (c2s, s2s, component)
+  prosody:
+    image: prosody/prosody
+    container_name: testserver-prosody
+    ports:
+      - "5222:5222"     # XMPP client-to-server
+      - "5269:5269"     # XMPP server-to-server
+      - "5347:5347"     # XMPP component
+    environment:
+      - DOMAIN=test.local
+      - PROSODY_ADMINS=admin@test.local
+    volumes:
+      - ./docker/prosody/prosody.cfg.lua:/etc/prosody/prosody.cfg.lua:ro
+      - prosody_data:/var/lib/prosody
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Matrix Synapse - Decentralized messaging homeserver
+  synapse:
+    image: matrixdotorg/synapse
+    container_name: testserver-synapse
+    ports:
+      - "8008:8008"     # Client-server API
+      - "8448:8448"     # Federation
+    environment:
+      - SYNAPSE_SERVER_NAME=test.local
+      - SYNAPSE_REPORT_STATS=no
+      - SYNAPSE_NO_TLS=1
+    volumes:
+      - synapse_data:/data
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  prosody_data:
+  synapse_data:

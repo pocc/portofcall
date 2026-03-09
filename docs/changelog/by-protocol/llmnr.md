@@ -58,3 +58,8 @@ The implementation includes detailed documentation:
 - [RFC 4795 - Link-Local Multicast Name Resolution](https://www.rfc-editor.org/rfc/rfc4795)
 - [RFC 1035 - DNS Domain Names](https://www.rfc-editor.org/rfc/rfc1035)
 - [Responder - LLMNR/NBT-NS Poisoning Tool](https://github.com/lgandx/Responder)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -46,7 +46,7 @@ import { handleMaxDBConnect, handleMaxDBInfo, handleMaxDBSession } from './maxdb
 import { handleRedisConnect, handleRedisCommand, handleRedisSession } from './redis';
 import { handleMQTTConnect, handleMQTTPublish, handleMQTTSession } from './mqtt';
 import { handleLDAPConnect, handleLDAPSearch, handleLDAPAdd, handleLDAPModify, handleLDAPDelete, handleLDAPPagedSearch } from './ldap';
-import { handleLDAPSConnect, handleLDAPSSearch, handleLDAPSAdd, handleLDAPSModify, handleLDAPSDelete } from './ldaps';
+import { handleLDAPSConnect, handleLDAPSSearch, handleLDAPSPagedSearch, handleLDAPSAdd, handleLDAPSModify, handleLDAPSDelete } from './ldaps';
 import { handleSMBConnect, handleSMBNegotiate, handleSMBSession, handleSMBTreeConnect, handleSMBStat } from './smb';
 import { handleEchoTest, handleEchoWebSocket } from './echo';
 import { handleTcpSend } from './tcp';
@@ -332,7 +332,7 @@ export default {
 
       // --- Request body size limit (1 MB) ---
       // Fast-reject via Content-Length header, then stream-check for chunked bodies.
-      if (url.pathname.startsWith('/api/') && request.method === 'POST') {
+      if (url.pathname.startsWith('/api/') && request.method !== 'GET' && request.body) {
         const MAX_BODY = 1_048_576;
         const contentLength = request.headers.get('Content-Length');
         if (contentLength && parseInt(contentLength, 10) > MAX_BODY) {
@@ -465,7 +465,13 @@ export default {
         }
 
         // Plain text output for curl
-        const json = await jsonResponse.json();
+        let json: unknown;
+        try {
+          json = await jsonResponse.json();
+        } catch {
+          // Handler returned non-JSON (e.g. plain text error) — pass through as-is
+          return jsonResponse;
+        }
         const text = formatResponse(shortRoute.protocol, json, shortRoute.rawTarget, url.host);
         return new Response(text, {
           status: jsonResponse.status,
@@ -1067,6 +1073,9 @@ export default {
     }
     if (url.pathname === '/api/ldaps/modify') {
       return handleLDAPSModify(request);
+    }
+    if (url.pathname === '/api/ldaps/paged-search') {
+      return handleLDAPSPagedSearch(request);
     }
     if (url.pathname === '/api/ldaps/delete') {
       return handleLDAPSDelete(request);
@@ -4320,7 +4329,7 @@ export default {
         if (!data[body.protocolId]) data[body.protocolId] = {};
         data[body.protocolId][body.item] = body.checked;
         await env.CHECKLIST.put('state', JSON.stringify(data));
-        return new Response(JSON.stringify({ ok: true }), {
+        return new Response(JSON.stringify({ success: true }), {
           headers: { 'Content-Type': 'application/json' },
         });
       }

@@ -81,3 +81,8 @@ Recommended documentation should include:
 - [MLLP Specification](https://www.hl7.org/documentcenter/public/wg/inm/mllp_transport_specification.PDF) - TCP transport framing
 - [HL7 v2 Messaging](https://hl7-definition.caristix.com/v2/hl7v2.5/Messages) - Message type reference
 - [Healthcare Integration](https://en.wikipedia.org/wiki/Health_Level_7) - HL7 background
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

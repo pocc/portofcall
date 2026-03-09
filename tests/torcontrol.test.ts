@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 const TOR_BASE = `${API_BASE}/torcontrol`;
 
 // Note: Tor control port must be accessible for these tests

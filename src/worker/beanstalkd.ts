@@ -157,7 +157,7 @@ function parseBeanstalkdResponse(raw: string): { status: string; body: string } 
  */
 export async function handleBeanstalkdConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -181,7 +181,7 @@ export async function handleBeanstalkdConnect(request: Request): Promise<Respons
     const port = body.port || 11300;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -282,7 +282,7 @@ export async function handleBeanstalkdConnect(request: Request): Promise<Respons
  */
 export async function handleBeanstalkdCommand(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -315,7 +315,14 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
     const command = body.command.trim();
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (/[\r\n]/.test(command)) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Command must not contain newline characters' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -440,7 +447,7 @@ export async function handleBeanstalkdCommand(request: Request): Promise<Respons
 export async function handleBeanstalkdPut(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -461,7 +468,13 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (/[\r\n]/.test(tube)) {
+      return new Response(JSON.stringify({ success: false, error: 'Tube name must not contain newline characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -576,7 +589,7 @@ export async function handleBeanstalkdPut(request: Request): Promise<Response> {
 export async function handleBeanstalkdReserve(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -594,11 +607,17 @@ export async function handleBeanstalkdReserve(request: Request): Promise<Respons
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    if (/[\r\n]/.test(tube)) {
+      return new Response(JSON.stringify({ success: false, error: 'Tube name must not contain newline characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);

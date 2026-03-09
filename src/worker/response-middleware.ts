@@ -13,7 +13,7 @@ export function addSecurityHeaders(request: Request, response: Response): Respon
   wrapped.headers.set('X-Content-Type-Options', 'nosniff');
   wrapped.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   // API responses: no-store (connections carry credentials / are unique)
-  if (request.url.includes('/api/')) {
+  if (new URL(request.url).pathname.startsWith('/api/')) {
     wrapped.headers.set('Cache-Control', 'no-store');
   }
   return wrapped;
@@ -26,12 +26,17 @@ export async function sanitizeErrors(request: Request, response: Response): Prom
   const pathname = new URL(request.url).pathname;
   if (response.status !== 500 || !pathname.startsWith('/api/')) return response;
 
-  // Pass through SSH/protocol endpoint errors as-is
-  if (pathname.startsWith('/api/ssh/') || pathname.startsWith('/api/connect') || pathname.startsWith('/api/tcp')) return response;
+  // Pass through protocol endpoint errors as-is — users own their target
+  // servers and need to see real error messages for debugging.
+  // Only sanitize internal/infrastructure routes (checklist, config, etc.).
+  const INTERNAL_PREFIXES = ['/api/checklist'];
+  const isInternal = INTERNAL_PREFIXES.some(p => pathname.startsWith(p));
+  if (!isInternal) return response;
 
   // Sanitize portofcall internal errors (checklist, config, etc.)
+  // Clone first so the original response body is available on parse failure
   try {
-    const body = await response.json() as Record<string, unknown>;
+    const body = await response.clone().json() as Record<string, unknown>;
     if (body && body.error) {
       console.error(`[${pathname}]`, body.error);
       body.error = 'Internal server error';

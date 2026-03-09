@@ -395,7 +395,6 @@ export default function IRCSClient({ onBack }: IRCSClientProps) {
       host,
       port,
       nickname,
-      ...(password && { password }),
       ...(autoJoinChannels && { channels: autoJoinChannels }),
     });
 
@@ -404,6 +403,13 @@ export default function IRCSClient({ onBack }: IRCSClientProps) {
 
     websocket.onopen = () => {
       ws.current = websocket;
+      // Send credentials as first message (not in URL)
+      websocket.send(JSON.stringify({
+        type: 'auth',
+        password: password || '',
+        saslUsername: '',
+        saslPassword: '',
+      }));
     };
 
     websocket.onmessage = (event) => {

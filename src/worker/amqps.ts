@@ -44,18 +44,46 @@ const FRAME_END    = 0xce;
 const CONNECTION_START_CLASS  = 10;
 const CONNECTION_START_METHOD = 10;
 
-/** Read exactly N bytes from a socket */
-async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number): Promise<Uint8Array> {
-  const buffer = new Uint8Array(n);
-  let offset = 0;
-  while (offset < n) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed unexpectedly');
-    const toCopy = Math.min(n - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
+/**
+ * Buffered reader that preserves leftover bytes between sequential reads.
+ * Without buffering, readExact silently discards excess bytes when TCP delivers
+ * more data than a single read requests.
+ */
+class BufferedReader {
+  private leftover = new Uint8Array(0);
+  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
+
+  async readExact(n: number, deadline: number): Promise<Uint8Array> {
+    const buffer = new Uint8Array(n);
+    let offset = 0;
+
+    if (this.leftover.length > 0) {
+      const take = Math.min(this.leftover.length, n);
+      buffer.set(this.leftover.subarray(0, take), 0);
+      this.leftover = this.leftover.subarray(take);
+      offset = take;
+    }
+
+    while (offset < n) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Read timeout');
+      const { value, done } = await Promise.race([
+        this.reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Read timeout')), remaining)
+        ),
+      ]);
+      if (done || !value) throw new Error('Connection closed unexpectedly');
+      const toCopy = Math.min(n - offset, value.length);
+      buffer.set(value.subarray(0, toCopy), offset);
+      offset += toCopy;
+
+      if (value.length > toCopy) {
+        this.leftover = value.slice(toCopy);
+      }
+    }
+    return buffer;
   }
-  return buffer;
 }
 
 /** Parse an AMQP short string (1-byte length prefix) */
@@ -82,7 +110,8 @@ function readLongString(data: Uint8Array, offset: number): { value: string; byte
  * For genuinely unknown types, bails out of the table rather than advancing by
  * 1 byte, which would corrupt subsequent field reads for multi-byte types.
  */
-function readFieldTable(data: Uint8Array, offset: number): { value: Record<string, string>; bytesRead: number } {
+function readFieldTable(data: Uint8Array, offset: number, depth = 0): { value: Record<string, string>; bytesRead: number } {
+  if (depth > 50) throw new Error('AMQP field table nesting depth exceeded (max 50)');
   const view = new DataView(data.buffer, data.byteOffset + offset, 4);
   const tableLen = view.getUint32(0, false);
   const table: Record<string, string> = {};
@@ -110,7 +139,7 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
         break;
       }
       case 'F': {
-        const nestedResult = readFieldTable(data, pos);
+        const nestedResult = readFieldTable(data, pos, depth + 1);
         table[nameResult.value] = JSON.stringify(nestedResult.value);
         pos += nestedResult.bytesRead;
         break;
@@ -185,13 +214,17 @@ function readFieldTable(data: Uint8Array, offset: number): { value: Record<strin
  */
 export async function handleAMQPSConnect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' }),
+      { status: 405, headers: { 'Content-Type': 'application/json' } }
+    );
   }
 
   try {
-    const { host, port = 5671 } = await request.json<{
+    const { host, port = 5671, timeout = 10000 } = await request.json<{
       host: string;
       port?: number;
+      timeout?: number;
     }>();
 
     if (!host || typeof host !== 'string' || host.trim() === '') {
@@ -220,6 +253,8 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
       );
     }
 
+    const deadline = Date.now() + timeout;
+
     const socket = connect(`${host}:${port}`, {
       secureTransport: 'on',
       allowHalfOpen: false,
@@ -227,13 +262,14 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Send AMQP protocol header
       await writer.write(AMQP_PROTOCOL_HEADER);
 
       // Read frame header (7 bytes: type + channel + size)
-      const frameHeader = await readExact(reader, 7);
+      const frameHeader = await br.readExact(7, deadline);
       const frameType   = frameHeader[0];
       const frameSize   = (frameHeader[3] << 24) | (frameHeader[4] << 16) | (frameHeader[5] << 8) | frameHeader[6];
 
@@ -241,10 +277,15 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
         throw new Error(`Expected METHOD frame (1), got ${frameType}`);
       }
 
+      // Cap at 1 MiB — AMQP 0-9-1 negotiated frame_max is typically 128 KB
+      if (frameSize > 1_048_576) {
+        throw new Error(`AMQP frame too large: ${frameSize} bytes (max 1 MiB)`);
+      }
+
       // Read frame payload, then frame-end byte separately so the payload
       // slice used for parsing does not include the frame-end sentinel.
-      const framePayload = await readExact(reader, frameSize);
-      const frameEndBuf  = await readExact(reader, 1);
+      const framePayload = await br.readExact(frameSize, deadline);
+      const frameEndBuf  = await br.readExact(1, deadline);
 
       if (frameEndBuf[0] !== FRAME_END) {
         throw new Error(`Expected frame-end marker (0xCE), got 0x${frameEndBuf[0].toString(16)}`);
@@ -284,8 +325,8 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
           secure: true,
           protocol:         `AMQP ${versionMajor}.${versionMinor}`,
           serverProperties: serverPropsResult.value,
-          mechanisms:       mechanismsResult.value,
-          locales:          localesResult.value,
+          mechanisms:       mechanismsResult.value.trim().split(/\s+/),
+          locales:          localesResult.value.trim().split(/\s+/),
           product:          serverPropsResult.value['product']  || 'Unknown',
           version:          serverPropsResult.value['version']  || 'Unknown',
           platform:         serverPropsResult.value['platform'] || 'Unknown',
@@ -320,7 +361,10 @@ export async function handleAMQPSConnect(request: Request): Promise<Response> {
  */
 export async function handleAMQPSPublish(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' }),
+      { status: 405, headers: { 'Content-Type': 'application/json' } }
+    );
   }
 
   try {
@@ -355,6 +399,13 @@ export async function handleAMQPSPublish(request: Request): Promise<Response> {
     if (!host || typeof host !== 'string' || host.trim() === '') {
       return new Response(
         JSON.stringify({ success: false, error: 'Host is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid port number' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -410,7 +461,10 @@ export async function handleAMQPSPublish(request: Request): Promise<Response> {
  */
 export async function handleAMQPSConsume(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(
+      JSON.stringify({ success: false, error: 'Method not allowed' }),
+      { status: 405, headers: { 'Content-Type': 'application/json' } }
+    );
   }
 
   try {
@@ -450,7 +504,13 @@ export async function handleAMQPSConsume(request: Request): Promise<Response> {
       );
     }
 
-    // Use the already-imported checkIfCloudflare from the static import at the top.
+    if (typeof port !== 'number' || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Invalid port number' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(

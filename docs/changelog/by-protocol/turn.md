@@ -100,3 +100,8 @@ This same fix must be applied to all four transaction ID generation sites (alloc
 ### Conclusion
 
 The TURN implementation is a **functional proof-of-concept** for basic TURN allocation and permission management, correctly implementing core RFC 5766/5389 requirements. However, the **critical transaction ID security vulnerability** makes it unsuitable for production use without the `crypto.getRandomValues()` fix. Once fixed, it is appropriate for **testing TURN server connectivity** and **validating TURN credentials**, but not for production WebRTC relay due to lack of persistent allocation support (Refresh, Send/Data, ChannelBind).
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

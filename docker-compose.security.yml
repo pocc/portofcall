@@ -1,0 +1,39 @@
+version: '3.8'
+
+# Security & VPN Protocols
+# Protocols covered: socks5, torcontrol
+#
+# Usage: docker compose -f docker-compose.security.yml up -d
+
+services:
+  # Dante - SOCKS5 proxy server
+  dante:
+    build:
+      context: ./docker/dante
+      dockerfile: Dockerfile
+    container_name: testserver-socks5
+    ports:
+      - "1080:1080"
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Tor - SOCKS proxy + control port
+  tor:
+    image: dperson/torproxy
+    container_name: testserver-tor
+    ports:
+      - "9050:9050"     # SOCKS proxy
+      - "9051:9051"     # Control port
+    environment:
+      - TOR_NewCircuitPeriod=15
+      - PASSWORD=testpass123
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

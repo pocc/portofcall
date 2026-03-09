@@ -345,6 +345,7 @@ async function readOPCUAResponse(
       newBuffer.set(buffer);
       newBuffer.set(value, buffer.length);
       buffer = newBuffer;
+      if (buffer.length > 1000000) { throw new Error('OPC UA response too large'); }
 
       // Need at least 8 bytes to read message header
       if (buffer.length >= 8) {
@@ -408,6 +409,12 @@ export async function handleOPCUAHello(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -571,6 +578,12 @@ export async function handleOPCUAEndpoints(request: Request): Promise<Response> 
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -913,6 +926,24 @@ export async function handleOPCUARead(request: Request): Promise<Response> {
     if (!host) {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
       });
     }
 

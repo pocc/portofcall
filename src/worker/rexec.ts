@@ -20,6 +20,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 interface RexecRequest {
   host: string;
@@ -68,6 +69,23 @@ export async function handleRexecExecute(request: Request): Promise<Response> {
     const command = options.command || 'id';
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF prevention
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -89,21 +107,21 @@ export async function handleRexecExecute(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       const encoder = new TextEncoder();
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder('utf-8', { fatal: false });
 
       try {
         // Step 1: Send stderr port (empty = no separate stderr channel)
         // We send \0 meaning no stderr port (Workers can't listen for incoming connections)
         await writer.write(encoder.encode('\0'));
 
-        // Step 2: Send username\0
-        await writer.write(encoder.encode(`${username}\0`));
+        // Step 2: Send username\0 (strip null bytes to prevent framing injection)
+        await writer.write(encoder.encode(`${username.replace(/\0/g, '')}\0`));
 
         // Step 3: Send password\0
-        await writer.write(encoder.encode(`${password}\0`));
+        await writer.write(encoder.encode(`${password.replace(/\0/g, '')}\0`));
 
         // Step 4: Send command\0
-        await writer.write(encoder.encode(`${command}\0`));
+        await writer.write(encoder.encode(`${command.replace(/\0/g, '')}\0`));
 
         // Step 5: Read server response
         const readTimeout = new Promise<never>((_, reject) =>
@@ -148,7 +166,7 @@ export async function handleRexecExecute(request: Request): Promise<Response> {
             for (let i = 0; i < 10; i++) {
               const result = await Promise.race([reader.read(), outputTimeout]);
               if (result.done || !result.value) break;
-              output += decoder.decode(result.value);
+              output += decoder.decode(result.value, { stream: true });
             }
           } catch {
             // No more data — that's fine
@@ -219,12 +237,38 @@ export async function handleRexecWebSocket(request: Request): Promise<Response> 
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
     const port = parseInt(url.searchParams.get('port') || '512', 10);
-    const username = url.searchParams.get('username') || 'guest';
-    const password = url.searchParams.get('password') || '';
     const command = url.searchParams.get('command') || 'id';
 
     if (!host) {
       return new Response('Host parameter required', { status: 400 });
+    }
+
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const upgradeHeader = request.headers.get('Upgrade');
@@ -237,11 +281,38 @@ export async function handleRexecWebSocket(request: Request): Promise<Response> 
 
     server.accept();
 
-    const socket = connect(`${host}:${port}`);
+    // Credentials arrive via first WebSocket message (not URL params)
+    const credentialPromise = new Promise<{ username: string; password: string }>((resolve, reject) => {
+      const authTimer = setTimeout(() => {
+        server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+        server.close(4001, 'Auth timeout');
+        reject(new Error('Auth timeout'));
+      }, 15_000);
+
+      server.addEventListener('message', function onAuth(event) {
+        try {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'auth') {
+            clearTimeout(authTimer);
+            server.removeEventListener('message', onAuth);
+            resolve({
+              username: msg.username || 'guest',
+              password: msg.password || '',
+            });
+          }
+        } catch { /* not JSON yet — ignore until auth */ }
+      });
+    });
 
     (async () => {
       try {
-        await socket.opened;
+        const { username, password } = await credentialPromise;
+
+        const socket = connect(`${host}:${port}`);
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+        ]);
 
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
@@ -284,8 +355,7 @@ export async function handleRexecWebSocket(request: Request): Promise<Response> 
         });
       } catch (error) {
         console.error('Rexec WebSocket tunnel error:', error);
-        server.close();
-        socket.close();
+        try { server.close(); } catch { /* already closed */ }
       }
     })();
 

@@ -96,7 +96,7 @@ The `namespace/<name>` pattern is dynamically validated (alphanumeric, hyphens, 
 
 **curl example:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/info \
+curl -s -X POST https://l4.fyi/api/aerospike/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com","command":"statistics"}' \
   | jq '.parsed'
@@ -497,37 +497,37 @@ For multi-node clusters, you can use the `services` info command to discover pee
 
 ```bash
 # Connection probe
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/connect \
+curl -s -X POST https://l4.fyi/api/aerospike/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com"}' | jq .
 
 # Check server version
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/info \
+curl -s -X POST https://l4.fyi/api/aerospike/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com","command":"build"}' | jq -r '.parsed._value'
 
 # List namespaces
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/info \
+curl -s -X POST https://l4.fyi/api/aerospike/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com","command":"namespaces"}' | jq -r '.response'
 
 # Get namespace details
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/info \
+curl -s -X POST https://l4.fyi/api/aerospike/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com","command":"namespace/test"}' | jq '.parsed'
 
 # Full server statistics
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/info \
+curl -s -X POST https://l4.fyi/api/aerospike/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com","command":"statistics"}' | jq '.parsed'
 
 # Discover cluster peers
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/info \
+curl -s -X POST https://l4.fyi/api/aerospike/info \
   -H 'Content-Type: application/json' \
   -d '{"host":"aerospike.example.com","command":"services"}' | jq -r '.response'
 
 # Write a record
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/kv-put \
+curl -s -X POST https://l4.fyi/api/aerospike/kv-put \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "aerospike.example.com",
@@ -538,7 +538,7 @@ curl -s -X POST https://portofcall.ross.gg/api/aerospike/kv-put \
   }' | jq .
 
 # Read a record (all bins)
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/kv-get \
+curl -s -X POST https://l4.fyi/api/aerospike/kv-get \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "aerospike.example.com",
@@ -548,7 +548,7 @@ curl -s -X POST https://portofcall.ross.gg/api/aerospike/kv-get \
   }' | jq .
 
 # Read specific bins only
-curl -s -X POST https://portofcall.ross.gg/api/aerospike/kv-get \
+curl -s -X POST https://l4.fyi/api/aerospike/kv-get \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "aerospike.example.com",

@@ -24,7 +24,7 @@ import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detec
 export async function handleLPDProbe(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -49,7 +49,7 @@ export async function handleLPDProbe(request: Request): Promise<Response> {
     const printer = body.printer || 'lp';
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -73,7 +73,10 @@ export async function handleLPDProbe(request: Request): Promise<Response> {
 
     // Connect to LPD server
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     const connectTime = Date.now() - startTime;
 
@@ -162,7 +165,7 @@ export async function handleLPDProbe(request: Request): Promise<Response> {
 export async function handleLPDPrint(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -205,7 +208,7 @@ export async function handleLPDPrint(request: Request): Promise<Response> {
     const jobName = body.jobName || 'portofcall-job';
     const user = body.user || 'portofcall';
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -355,7 +358,7 @@ export async function handleLPDPrint(request: Request): Promise<Response> {
 export async function handleLPDQueue(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -382,7 +385,7 @@ export async function handleLPDQueue(request: Request): Promise<Response> {
     const users = body.users || [];
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -406,7 +409,10 @@ export async function handleLPDQueue(request: Request): Promise<Response> {
 
     // Connect to LPD server
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     // Send long queue state command: \x04<printer> [user1 user2 ...]\n
     // Command 0x04 = "Send queue state (long)"
@@ -531,7 +537,7 @@ export async function handleLPDQueue(request: Request): Promise<Response> {
 export async function handleLPDRemove(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -566,7 +572,7 @@ export async function handleLPDRemove(request: Request): Promise<Response> {
     const agent = body.agent || 'root';
     const jobIds = (body.jobIds || []).map(String);
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -588,7 +594,10 @@ export async function handleLPDRemove(request: Request): Promise<Response> {
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
 
     // RFC 1179 §6.5: \x05<queue> <agent> [job-id ...]\n
     let command = `\x05${queue} ${agent}`;

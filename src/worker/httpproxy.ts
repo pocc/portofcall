@@ -96,6 +96,19 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
     const proxyAuth = options.proxyAuth || '';
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // eslint-disable-next-line no-control-regex
+    if (proxyAuth && /[\r\n\x00]/.test(proxyAuth)) {
+      return new Response(JSON.stringify({ success: false, error: 'proxyAuth contains invalid characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -110,12 +123,14 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
     }
 
     // Parse the target URL to get the Host header
-    let targetHost = 'example.com';
+    let targetHost: string;
     try {
       const parsedUrl = new URL(targetUrl);
       targetHost = parsedUrl.hostname;
     } catch {
-      // Use default
+      return new Response(JSON.stringify({ success: false, error: 'Invalid targetUrl: must be a fully-qualified URL' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // SSRF: block private/internal target hosts
@@ -129,6 +144,11 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
       });
     }
 
+    const cfCheckDest = await checkIfCloudflare(targetHost);
+    if (cfCheckDest.isCloudflare && cfCheckDest.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(targetHost, cfCheckDest.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const connectionPromise = (async () => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
@@ -140,9 +160,11 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
       const decoder = new TextDecoder();
 
       try {
-        // Build forward proxy HTTP request
-        let httpRequest = `GET ${targetUrl} HTTP/1.1\r\n`;
-        httpRequest += `Host: ${targetHost}\r\n`;
+        // Build forward proxy HTTP request — sanitize to prevent CRLF injection
+        const safeTargetUrl = targetUrl.replace(/[\r\n]/g, '');
+        const safeTargetHost = targetHost.replace(/[\r\n]/g, '');
+        let httpRequest = `GET ${safeTargetUrl} HTTP/1.1\r\n`;
+        httpRequest += `Host: ${safeTargetHost}\r\n`;
         httpRequest += `User-Agent: PortOfCall/1.0 (Proxy Probe)\r\n`;
         httpRequest += `Accept: */*\r\n`;
         httpRequest += `Connection: close\r\n`;
@@ -164,14 +186,15 @@ export async function handleHTTPProxyProbe(request: Request): Promise<Response> 
           const result = await Promise.race([reader.read(), readTimeout]);
           if (result.done || !result.value) break;
           responseData += decoder.decode(result.value);
+          if (responseData.length > 1048576) break; // 1 MiB limit
           // Stop if we have enough response headers
           if (responseData.includes('\r\n\r\n') && responseData.length > 500) break;
         }
 
         const rtt = Date.now() - startTime;
 
-        writer.releaseLock();
-        reader.releaseLock();
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
         socket.close();
 
         if (!responseData) {
@@ -298,6 +321,25 @@ export async function handleHTTPProxyConnect(request: Request): Promise<Response
     const proxyAuth = options.proxyAuth || '';
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof targetPort !== 'number' || isNaN(targetPort) || targetPort < 1 || targetPort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Target port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // eslint-disable-next-line no-control-regex
+    if (proxyAuth && /[\r\n\x00]/.test(proxyAuth)) {
+      return new Response(JSON.stringify({ success: false, error: 'proxyAuth contains invalid characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // SSRF: block private/internal destination hosts
     if (isBlockedHost(targetHost)) {
       return new Response(JSON.stringify({
@@ -322,6 +364,11 @@ export async function handleHTTPProxyConnect(request: Request): Promise<Response
       });
     }
 
+    const cfCheckDest = await checkIfCloudflare(targetHost);
+    if (cfCheckDest.isCloudflare && cfCheckDest.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(targetHost, cfCheckDest.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const connectionPromise = (async () => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
@@ -333,9 +380,17 @@ export async function handleHTTPProxyConnect(request: Request): Promise<Response
       const decoder = new TextDecoder();
 
       try {
-        // Build CONNECT request
-        let connectRequest = `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n`;
-        connectRequest += `Host: ${targetHost}:${targetPort}\r\n`;
+        // Build CONNECT request — sanitize to prevent CRLF injection
+        // eslint-disable-next-line no-control-regex
+        const safeConnectHost = targetHost.replace(/[\r\n\x00]/g, '');
+        // eslint-disable-next-line no-useless-escape
+        if (!/^[a-zA-Z0-9._:\[\]-]+$/.test(safeConnectHost) || safeConnectHost.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Invalid targetHost' }), {
+            status: 400, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        let connectRequest = `CONNECT ${safeConnectHost}:${targetPort} HTTP/1.1\r\n`;
+        connectRequest += `Host: ${safeConnectHost}:${targetPort}\r\n`;
         connectRequest += `User-Agent: PortOfCall/1.0\r\n`;
         if (proxyAuth) {
           const encoded = btoa(proxyAuth);
@@ -360,8 +415,8 @@ export async function handleHTTPProxyConnect(request: Request): Promise<Response
 
         const rtt = Date.now() - startTime;
 
-        writer.releaseLock();
-        reader.releaseLock();
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
         socket.close();
 
         if (!responseData) {

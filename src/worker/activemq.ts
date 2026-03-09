@@ -152,8 +152,8 @@ function parseWireFormatOptions(
         break;
       case 0x06: // long
         if (pos + 8 > mapEnd) break;
-        // Read as two 32-bit ints (avoid BigInt for simplicity)
-        result[key] = dv.getInt32(pos, false) * 0x100000000 + dv.getUint32(pos + 4, false);
+        // Use BigInt to reconstruct full 64-bit value, then stringify to preserve precision above 2^53
+        result[key] = ((BigInt(dv.getInt32(pos, false)) << 32n) | BigInt(dv.getUint32(pos + 4, false))).toString();
         pos += 8;
         break;
       case 0x09: { // string

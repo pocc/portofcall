@@ -19,12 +19,15 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 interface EPPConfig {
   host: string;
   port: number;
   clid?: string;     // Client ID (registrar username)
   pw?: string;       // Password
+  timeout?: number;  // Connection + read timeout in ms (default: 15000)
 }
 
 interface EPPResponse {
@@ -49,7 +52,7 @@ function escapeXml(str: string): string {
 }
 
 /**
- * Reads an EPP frame from the socket.
+ * Reads an EPP frame from the socket, with a per-read deadline.
  *
  * RFC 5734 Section 4: Each EPP data unit is preceded by 4 bytes containing the
  * total length of the data unit (in network byte order). The total length includes
@@ -60,28 +63,21 @@ function escapeXml(str: string): string {
  * - First chunk containing header + partial/full payload
  * - First chunk containing data beyond this frame (clamp to payloadLength)
  * - Multiple subsequent reads to fill the payload
+ *
+ * @param reader - The readable stream reader
+ * @param deadline - Absolute ms timestamp; each read races against this deadline
  */
-async function readEPPFrame(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
-  // Accumulate exactly 4 header bytes (stream chunks may be smaller)
-  const headerBuf = new Uint8Array(4);
-  let headerFilled = 0;
-  let leftover: Uint8Array | null = null;
+async function readEPPFrame(
+  br: BufferedReader,
+  deadline: number,
+): Promise<string> {
+  const makeTimeout = () =>
+    new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('EPP read timeout')), Math.max(1, deadline - Date.now()))
+    );
 
-  while (headerFilled < 4) {
-    const { done, value } = await reader.read();
-    if (done || !value || value.length === 0) {
-      throw new Error('Failed to read EPP frame header: connection closed');
-    }
-    const need = 4 - headerFilled;
-    const take = Math.min(value.length, need);
-    headerBuf.set(value.slice(0, take), headerFilled);
-    headerFilled += take;
-
-    // If this chunk had extra bytes beyond the header, save them for payload
-    if (headerFilled === 4 && take < value.length) {
-      leftover = value.slice(take);
-    }
-  }
+  // Read 4-byte length header
+  const headerBuf = await br.readExact(4, makeTimeout());
 
   const totalLength = new DataView(headerBuf.buffer, headerBuf.byteOffset, 4).getUint32(0, false);
 
@@ -96,27 +92,8 @@ async function readEPPFrame(reader: ReadableStreamDefaultReader<Uint8Array>): Pr
     return '';
   }
 
-  const payload = new Uint8Array(payloadLength);
-  let bytesRead = 0;
-
-  // Copy any leftover bytes from the header read
-  if (leftover !== null) {
-    const toCopy = Math.min(leftover.length, payloadLength);
-    payload.set(leftover.slice(0, toCopy), 0);
-    bytesRead += toCopy;
-  }
-
-  while (bytesRead < payloadLength) {
-    const { done, value } = await reader.read();
-    if (done || !value) {
-      throw new Error(`Connection closed while reading EPP frame (got ${bytesRead}/${payloadLength} bytes)`);
-    }
-    const remaining = payloadLength - bytesRead;
-    const toCopy = Math.min(value.length, remaining);
-    payload.set(value.slice(0, toCopy), bytesRead);
-    bytesRead += toCopy;
-  }
-
+  // Read payload — BufferedReader preserves leftover bytes between frames
+  const payload = await br.readExact(payloadLength, makeTimeout());
   return new TextDecoder().decode(payload);
 }
 
@@ -144,7 +121,7 @@ function encodeEPPFrame(xml: string): Uint8Array {
  */
 async function sendLogout(
   writer: WritableStreamDefaultWriter<Uint8Array>,
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
 ): Promise<void> {
   const logoutXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0">
@@ -155,7 +132,8 @@ async function sendLogout(
 </epp>`;
   try {
     await writer.write(encodeEPPFrame(logoutXml));
-    await readEPPFrame(reader); // 1500 = "Command completed successfully; ending session"
+    // Best-effort 3 s deadline for logout response
+    await readEPPFrame(br, Date.now() + 3000);
   } catch {
     // Best-effort; server may have closed already
   }
@@ -237,32 +215,40 @@ ${svcLines}
  * Open an EPP session: connect, read greeting, login.
  * Returns the reader, writer, socket, and greeting XML for reuse.
  * Caller is responsible for calling sendLogout() and socket.close().
+ *
+ * @param deadline - Absolute ms timestamp for all reads (passed to readEPPFrame)
  */
-async function openEPPSession(config: EPPConfig, objURIs?: string[]): Promise<{
-  reader: ReadableStreamDefaultReader<Uint8Array>;
+async function openEPPSession(config: EPPConfig, objURIs?: string[], deadline?: number): Promise<{
+  br: BufferedReader;
   writer: WritableStreamDefaultWriter<Uint8Array>;
   socket: ReturnType<typeof connect>;
   greeting: string;
 }> {
+  const dl = deadline ?? Date.now() + 15000;
   const socket = connect(`${config.host}:${config.port}`, { secureTransport: 'on', allowHalfOpen: false });
   try {
-    const reader = socket.readable.getReader();
+    const connectTimeout = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('EPP connection timeout')), Math.max(1, dl - Date.now()))
+    );
+    await Promise.race([socket.opened, connectTimeout]);
+
+    const br = new BufferedReader(socket.readable.getReader());
     const writer = socket.writable.getWriter();
 
     // RFC 5730 Section 2.4: Server sends greeting upon connection
-    const greeting = await readEPPFrame(reader);
+    const greeting = await readEPPFrame(br, dl);
 
     if (config.clid && config.pw) {
       const loginXml = buildLoginXml(config.clid, config.pw, objURIs);
       await writer.write(encodeEPPFrame(loginXml));
-      const loginResp = await readEPPFrame(reader);
+      const loginResp = await readEPPFrame(br, dl);
       const loginResult = parseEPPResponse(loginResp);
       if (loginResult.code !== 1000) {
         throw new Error(`Login failed (code ${loginResult.code}): ${loginResult.message}`);
       }
     }
 
-    return { reader, writer, socket, greeting };
+    return { br, writer, socket, greeting };
   } catch (err) {
     try { await socket.close(); } catch { /* ignored */ }
     throw err;
@@ -273,14 +259,14 @@ async function openEPPSession(config: EPPConfig, objURIs?: string[]): Promise<{
  * Gracefully close an EPP session: logout then close socket.
  */
 async function closeEPPSession(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   writer: WritableStreamDefaultWriter<Uint8Array>,
   socket: ReturnType<typeof connect>,
 ): Promise<void> {
   try {
-    await sendLogout(writer, reader);
+    await sendLogout(writer, br);
   } finally {
-    try { reader.releaseLock(); } catch { /* ignored */ }
+    try { br.raw.releaseLock(); } catch { /* ignored */ }
     try { writer.releaseLock(); } catch { /* ignored */ }
     try { await socket.close(); } catch { /* ignored */ }
   }
@@ -302,13 +288,28 @@ async function closeEPPSession(
  * presence instead of parsing a result code.
  */
 export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
+  // Check if behind Cloudflare
+  const cfCheck = await checkIfCloudflare(config.host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return {
+      success: false,
+      message: getCloudflareErrorMessage(config.host, cfCheck.ip),
+    };
+  }
+
+  const deadline = Date.now() + (config.timeout ?? 15000);
   const socket = connect(`${config.host}:${config.port}`, { secureTransport: 'on', allowHalfOpen: false });
 
-  const reader = socket.readable.getReader();
+  const br = new BufferedReader(socket.readable.getReader());
   const writer = socket.writable.getWriter();
   try {
+    const connectTimeout = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('EPP connection timeout')), Math.max(1, deadline - Date.now()))
+    );
+    await Promise.race([socket.opened, connectTimeout]);
+
     // Read initial server greeting
-    const greeting = await readEPPFrame(reader);
+    const greeting = await readEPPFrame(br, deadline);
 
     // Send hello command to request a fresh greeting
     const helloCmd = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -319,7 +320,7 @@ export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
     await writer.write(encodeEPPFrame(helloCmd));
 
     // Read hello response (which is a <greeting>, not a command response)
-    const helloResponse = await readEPPFrame(reader);
+    const helloResponse = await readEPPFrame(br, deadline);
 
     // A greeting has no result code; success = we got a valid greeting back
     const gotGreeting = isGreeting(helloResponse);
@@ -339,7 +340,7 @@ export async function eppConnect(config: EPPConfig): Promise<EPPResponse> {
       message: `EPP connection failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   } finally {
-    try { reader.releaseLock(); } catch { /* ignored */ }
+    try { br.raw.releaseLock(); } catch { /* ignored */ }
     try { writer.releaseLock(); } catch { /* ignored */ }
     try { await socket.close(); } catch { /* ignored */ }
   }
@@ -359,12 +360,22 @@ export async function eppLogin(config: EPPConfig): Promise<EPPResponse> {
     };
   }
 
+  // Check if behind Cloudflare
+  const cfCheck = await checkIfCloudflare(config.host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return {
+      success: false,
+      message: getCloudflareErrorMessage(config.host, cfCheck.ip),
+    };
+  }
+
+  const deadline = Date.now() + (config.timeout ?? 15000);
   let session: Awaited<ReturnType<typeof openEPPSession>> | null = null;
   try {
-    session = await openEPPSession(config);
+    session = await openEPPSession(config, undefined, deadline);
 
     // Login succeeded (openEPPSession throws on failure)
-    await closeEPPSession(session.reader, session.writer, session.socket);
+    await closeEPPSession(session.br, session.writer, session.socket);
 
     return {
       success: true,
@@ -376,7 +387,7 @@ export async function eppLogin(config: EPPConfig): Promise<EPPResponse> {
     };
   } catch (error: unknown) {
     if (session) {
-      try { await closeEPPSession(session.reader, session.writer, session.socket); } catch { /* ignored */ }
+      try { await closeEPPSession(session.br, session.writer, session.socket); } catch { /* ignored */ }
     }
     return {
       success: false,
@@ -407,10 +418,20 @@ export async function eppDomainCheck(config: EPPConfig, domain: string): Promise
     };
   }
 
+  // Check if behind Cloudflare
+  const cfCheck = await checkIfCloudflare(config.host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return {
+      success: false,
+      message: getCloudflareErrorMessage(config.host, cfCheck.ip),
+    };
+  }
+
+  const deadline = Date.now() + (config.timeout ?? 15000);
   let session: Awaited<ReturnType<typeof openEPPSession>> | null = null;
   try {
-    session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
-    const { reader, writer, socket } = session;
+    session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0'], deadline);
+    const { br, writer, socket } = session;
 
     // Send domain check command
     const checkCmd = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -426,14 +447,14 @@ export async function eppDomainCheck(config: EPPConfig, domain: string): Promise
 </epp>`;
 
     await writer.write(encodeEPPFrame(checkCmd));
-    const checkResponse = await readEPPFrame(reader);
+    const checkResponse = await readEPPFrame(br, deadline);
     const result = parseEPPResponse(checkResponse);
 
     // Parse availability from response
     const availMatch = checkResponse.match(/avail\s*=\s*["']([01])["']/);
     const available = availMatch ? availMatch[1] === '1' : null;
 
-    await closeEPPSession(reader, writer, socket);
+    await closeEPPSession(br, writer, socket);
 
     return {
       success: result.code === 1000,
@@ -448,7 +469,7 @@ export async function eppDomainCheck(config: EPPConfig, domain: string): Promise
     };
   } catch (error: unknown) {
     if (session) {
-      try { await closeEPPSession(session.reader, session.writer, session.socket); } catch { /* ignored */ }
+      try { await closeEPPSession(session.br, session.writer, session.socket); } catch { /* ignored */ }
     }
     return {
       success: false,
@@ -472,18 +493,33 @@ export async function eppDomainCheck(config: EPPConfig, domain: string): Promise
  */
 export async function handleEPPDomainInfo(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
-    const body = await request.json() as { host: string; port?: number; clid?: string; pw?: string; domain: string };
+    const body = await request.json() as { host: string; port?: number; clid?: string; pw?: string; domain: string; timeout?: number };
     if (!body.host || !body.domain) {
       return new Response(JSON.stringify({ success: false, error: 'host and domain are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const config: EPPConfig = { host: body.host, port: body.port ?? 700, clid: body.clid, pw: body.pw };
-    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
-    const { reader, writer, socket } = session;
+    const port = body.port ?? 700;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(body.host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(body.host, cfCheck.ip),
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const deadline = Date.now() + (body.timeout ?? 15000);
+    const config: EPPConfig = { host: body.host, port, clid: body.clid, pw: body.pw };
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0'], deadline);
+    const { br, writer, socket } = session;
 
     try {
       // Domain info command
@@ -499,10 +535,10 @@ export async function handleEPPDomainInfo(request: Request): Promise<Response> {
   </command>
 </epp>`;
       await writer.write(encodeEPPFrame(infoCmd));
-      const infoResp = await readEPPFrame(reader);
+      const infoResp = await readEPPFrame(br, deadline);
       const infoParsed = parseEPPResponse(infoResp);
 
-      await closeEPPSession(reader, writer, socket);
+      await closeEPPSession(br, writer, socket);
 
       // Extract key fields from XML
       const extract = (xml: string, tag: string) => {
@@ -528,7 +564,7 @@ export async function handleEPPDomainInfo(request: Request): Promise<Response> {
         raw: infoResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
+      try { await closeEPPSession(br, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -547,20 +583,35 @@ export async function handleEPPDomainInfo(request: Request): Promise<Response> {
  */
 export async function handleEPPDomainCreate(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
     const body = await request.json() as {
       host: string; port?: number; clid?: string; pw?: string;
       domain: string; period?: number; nameservers?: string[];
-      registrant?: string; password?: string;
+      registrant?: string; password?: string; timeout?: number;
     };
     if (!body.host || !body.domain) {
       return new Response(JSON.stringify({ success: false, error: 'host and domain are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const config: EPPConfig = { host: body.host, port: body.port ?? 700, clid: body.clid, pw: body.pw };
+    const port = body.port ?? 700;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(body.host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(body.host, cfCheck.ip),
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const deadline = Date.now() + (body.timeout ?? 15000);
+    const config: EPPConfig = { host: body.host, port, clid: body.clid, pw: body.pw };
     const period = body.period ?? 1;
     const ns = (body.nameservers ?? []).slice(0, 13); // RFC 5731: max 13 nameservers
     const registrant = body.registrant ?? 'REGISTRANT';
@@ -569,8 +620,8 @@ export async function handleEPPDomainCreate(request: Request): Promise<Response>
     const nsXml = ns.map(n => `<domain:hostObj>${escapeXml(n)}</domain:hostObj>`).join('');
     const nsBlock = ns.length > 0 ? `<domain:ns>${nsXml}</domain:ns>` : '';
 
-    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
-    const { reader, writer, socket } = session;
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0'], deadline);
+    const { br, writer, socket } = session;
 
     try {
       const createCmd = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -591,10 +642,10 @@ export async function handleEPPDomainCreate(request: Request): Promise<Response>
   </command>
 </epp>`;
       await writer.write(encodeEPPFrame(createCmd));
-      const createResp = await readEPPFrame(reader);
+      const createResp = await readEPPFrame(br, deadline);
       const createParsed = parseEPPResponse(createResp);
 
-      await closeEPPSession(reader, writer, socket);
+      await closeEPPSession(br, writer, socket);
 
       const extract = (xml: string, tag: string) => {
         const m = xml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
@@ -612,7 +663,7 @@ export async function handleEPPDomainCreate(request: Request): Promise<Response>
         raw: createResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
+      try { await closeEPPSession(br, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -644,7 +695,7 @@ export async function handleEPPDomainUpdate(request: Request): Promise<Response>
 
   interface EPPUpdateRequest {
     host: string; port?: number; clid: string; pw: string;
-    domain: string; addNs?: string[]; remNs?: string[]; authPw?: string;
+    domain: string; addNs?: string[]; remNs?: string[]; authPw?: string; timeout?: number;
   }
 
   let body: EPPUpdateRequest;
@@ -662,10 +713,26 @@ export async function handleEPPDomainUpdate(request: Request): Promise<Response>
     });
   }
 
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Check if behind Cloudflare
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const deadline = Date.now() + (body.timeout ?? 15000);
   const config: EPPConfig = { host, port, clid, pw };
   try {
-    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
-    const { reader, writer, socket } = session;
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0'], deadline);
+    const { br, writer, socket } = session;
 
     try {
       // Domain Update
@@ -692,10 +759,10 @@ export async function handleEPPDomainUpdate(request: Request): Promise<Response>
   </command>
 </epp>`;
       await writer.write(encodeEPPFrame(updateXml));
-      const updateResp = await readEPPFrame(reader);
+      const updateResp = await readEPPFrame(br, deadline);
       const result = parseEPPResponse(updateResp);
 
-      await closeEPPSession(reader, writer, socket);
+      await closeEPPSession(br, writer, socket);
 
       return new Response(JSON.stringify({
         success: result.code >= 1000 && result.code < 2000,
@@ -707,7 +774,7 @@ export async function handleEPPDomainUpdate(request: Request): Promise<Response>
         raw: updateResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
+      try { await closeEPPSession(br, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -734,7 +801,7 @@ export async function handleEPPDomainDelete(request: Request): Promise<Response>
   }
 
   interface EPPDeleteRequest {
-    host: string; port?: number; clid: string; pw: string; domain: string;
+    host: string; port?: number; clid: string; pw: string; domain: string; timeout?: number;
   }
 
   let body: EPPDeleteRequest;
@@ -752,10 +819,26 @@ export async function handleEPPDomainDelete(request: Request): Promise<Response>
     });
   }
 
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Check if behind Cloudflare
+  const cfCheckDel = await checkIfCloudflare(host);
+  if (cfCheckDel.isCloudflare && cfCheckDel.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheckDel.ip),
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const deadlineDel = Date.now() + (body.timeout ?? 15000);
   const config: EPPConfig = { host, port, clid, pw };
   try {
-    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
-    const { reader, writer, socket } = session;
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0'], deadlineDel);
+    const { br, writer, socket } = session;
 
     try {
       const deleteXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -770,10 +853,10 @@ export async function handleEPPDomainDelete(request: Request): Promise<Response>
   </command>
 </epp>`;
       await writer.write(encodeEPPFrame(deleteXml));
-      const deleteResp = await readEPPFrame(reader);
+      const deleteResp = await readEPPFrame(br, deadlineDel);
       const result = parseEPPResponse(deleteResp);
 
-      await closeEPPSession(reader, writer, socket);
+      await closeEPPSession(br, writer, socket);
 
       return new Response(JSON.stringify({
         success: result.code >= 1000 && result.code < 2000,
@@ -783,7 +866,7 @@ export async function handleEPPDomainDelete(request: Request): Promise<Response>
         raw: deleteResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
+      try { await closeEPPSession(br, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {
@@ -811,7 +894,7 @@ export async function handleEPPDomainRenew(request: Request): Promise<Response> 
 
   interface EPPRenewRequest {
     host: string; port?: number; clid: string; pw: string;
-    domain: string; curExpDate: string; years?: number;
+    domain: string; curExpDate: string; years?: number; timeout?: number;
   }
 
   let body: EPPRenewRequest;
@@ -829,10 +912,26 @@ export async function handleEPPDomainRenew(request: Request): Promise<Response> 
     }), { status: 400, headers: { 'Content-Type': 'application/json' } });
   }
 
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Check if behind Cloudflare
+  const cfCheckRenew = await checkIfCloudflare(host);
+  if (cfCheckRenew.isCloudflare && cfCheckRenew.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheckRenew.ip),
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const deadlineRenew = Date.now() + (body.timeout ?? 15000);
   const config: EPPConfig = { host, port, clid, pw };
   try {
-    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0']);
-    const { reader, writer, socket } = session;
+    const session = await openEPPSession(config, ['urn:ietf:params:xml:ns:domain-1.0'], deadlineRenew);
+    const { br, writer, socket } = session;
 
     try {
       const renewXml = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
@@ -849,13 +948,13 @@ export async function handleEPPDomainRenew(request: Request): Promise<Response> 
   </command>
 </epp>`;
       await writer.write(encodeEPPFrame(renewXml));
-      const renewResp = await readEPPFrame(reader);
+      const renewResp = await readEPPFrame(br, deadlineRenew);
       const result = parseEPPResponse(renewResp);
 
       // Extract new expiry date
       const newExpDate = renewResp.match(/<domain:exDate>([^<]+)<\/domain:exDate>/)?.[1];
 
-      await closeEPPSession(reader, writer, socket);
+      await closeEPPSession(br, writer, socket);
 
       return new Response(JSON.stringify({
         success: result.code >= 1000 && result.code < 2000,
@@ -868,7 +967,7 @@ export async function handleEPPDomainRenew(request: Request): Promise<Response> 
         raw: renewResp.substring(0, 2000),
       }), { headers: { 'Content-Type': 'application/json' } });
     } catch (err) {
-      try { await closeEPPSession(reader, writer, socket); } catch { /* ignored */ }
+      try { await closeEPPSession(br, writer, socket); } catch { /* ignored */ }
       throw err;
     }
   } catch (error) {

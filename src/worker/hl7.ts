@@ -29,6 +29,13 @@ const CARRIAGE_RETURN = 0x0D; // <CR>
 
 const MAX_MLLP_FRAME = 1 * 1024 * 1024; // 1 MB
 
+/** Sanitize user input for HL7 fields by stripping delimiters and segment separators. */
+function sanitizeHL7Field(value: string): string {
+  // Strip pipe (field sep), caret (component sep), tilde (repetition sep),
+  // ampersand (sub-component sep), backslash (escape char), and CR (segment sep)
+  return value.replace(/[|^~\\&\r\n]/g, '');
+}
+
 interface HL7ConnectRequest {
   host: string;
   port?: number;
@@ -235,22 +242,17 @@ function buildQRY_Q01(
   dateRange: string,
 ): string {
   const ts = hl7Timestamp();
+  const safeQueryId = sanitizeHL7Field(queryId);
+  const safePatientId = sanitizeHL7Field(patientId);
+  const safeDateRange = sanitizeHL7Field(dateRange);
+  const safeSendingApp = sanitizeHL7Field(sendingApp);
+  const safeSendingFac = sanitizeHL7Field(sendingFac);
+  const safeReceivingApp = sanitizeHL7Field(receivingApp);
+  const safeReceivingFac = sanitizeHL7Field(receivingFac);
+  const safeControlId = sanitizeHL7Field(controlId);
   const segments = [
-    `MSH|^~\\&|${sendingApp}|${sendingFac}|${receivingApp}|${receivingFac}|${ts}||QRY^Q01|${controlId}|P|2.5`,
-    // QRD fields:
-    // 1: query date/time
-    // 2: query format code (R=record-oriented)
-    // 3: query priority (I=immediate)
-    // 4: query ID
-    // 5: deferred response type (blank)
-    // 6: deferred response date/time
-    // 7: quantity limited request (99^RD = 99 records)
-    // 8: who subject filter (patient ID)
-    // 9: what subject filter (@PID)
-    // 10: what department data code (blank)
-    // 11: what data code value qualifier (blank)
-    // 12: query results level (blank)
-    `QRD|${ts}|R|I|${queryId}|||99^RD|${patientId}^^^TestHosp^MR|@PID|||${dateRange}`,
+    `MSH|^~\\&|${safeSendingApp}|${safeSendingFac}|${safeReceivingApp}|${safeReceivingFac}|${ts}||QRY^Q01|${safeControlId}|P|2.5`,
+    `QRD|${ts}|R|I|${safeQueryId}|||99^RD|${safePatientId}^^^TestHosp^MR|@PID|||${safeDateRange}`,
   ];
   return segments.join('\r');
 }
@@ -272,12 +274,23 @@ function buildADT_A08(
   diagnosis: string,
 ): string {
   const ts = hl7Timestamp();
+  const safeSendingApp = sanitizeHL7Field(sendingApp);
+  const safeSendingFac = sanitizeHL7Field(sendingFac);
+  const safeReceivingApp = sanitizeHL7Field(receivingApp);
+  const safeReceivingFac = sanitizeHL7Field(receivingFac);
+  const safeControlId = sanitizeHL7Field(controlId);
+  const safePatientId = sanitizeHL7Field(patientId);
+  const safeLastName = sanitizeHL7Field(lastName);
+  const safeFirstName = sanitizeHL7Field(firstName);
+  const safeDob = sanitizeHL7Field(dob);
+  const safeSex = sanitizeHL7Field(sex);
+  const safeDiagnosis = sanitizeHL7Field(diagnosis);
   const segments = [
-    `MSH|^~\\&|${sendingApp}|${sendingFac}|${receivingApp}|${receivingFac}|${ts}||ADT^A08|${controlId}|P|2.5`,
+    `MSH|^~\\&|${safeSendingApp}|${safeSendingFac}|${safeReceivingApp}|${safeReceivingFac}|${ts}||ADT^A08|${safeControlId}|P|2.5`,
     `EVN|A08|${ts}`,
-    `PID|1||${patientId}^^^TestHosp^MR||${lastName}^${firstName}||${dob}|${sex}|||123 Test St^^TestCity^TS^12345^USA`,
-    `PV1|1|O|TestWard^101^A|E|||TestDoc^Test^MD||||${diagnosis ? '1' : ''}`,
-    ...(diagnosis ? [`DG1|1||${diagnosis}^${diagnosis}^ICD10|${diagnosis} Diagnosis||F`] : []),
+    `PID|1||${safePatientId}^^^TestHosp^MR||${safeLastName}^${safeFirstName}||${safeDob}|${safeSex}|||123 Test St^^TestCity^TS^12345^USA`,
+    `PV1|1|O|TestWard^101^A|E|||TestDoc^Test^MD||||${safeDiagnosis ? '1' : ''}`,
+    ...(safeDiagnosis ? [`DG1|1||${safeDiagnosis}^${safeDiagnosis}^ICD10|${safeDiagnosis} Diagnosis||F`] : []),
   ];
   return segments.join('\r');
 }
@@ -286,6 +299,11 @@ function buildADT_A08(
  * Handle HL7 Connect - Test MLLP connectivity to an HL7 endpoint
  */
 export async function handleHL7Connect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as HL7ConnectRequest;
     const { host, port = 2575, timeout = 10000 } = body;
@@ -297,6 +315,12 @@ export async function handleHL7Connect(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -365,6 +389,11 @@ export async function handleHL7Connect(request: Request): Promise<Response> {
  * Handle HL7 Send - Send an HL7 message via MLLP and read the ACK
  */
 export async function handleHL7Send(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as HL7SendRequest;
     const {
@@ -389,6 +418,12 @@ export async function handleHL7Send(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -399,6 +434,12 @@ export async function handleHL7Send(request: Request): Promise<Response> {
       }), {
         status: 403,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (rawMessage && rawMessage.length > MAX_MLLP_FRAME - 3) {
+      return new Response(JSON.stringify({ success: false, error: 'rawMessage exceeds maximum allowed size' }), {
+        status: 413, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -416,7 +457,7 @@ export async function handleHL7Send(request: Request): Promise<Response> {
 
       try {
         // Build or use raw message
-        const controlId = `MSG${Date.now()}`;
+        const controlId = `MSG${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         let hl7Message: string;
 
         if (rawMessage) {
@@ -451,15 +492,21 @@ export async function handleHL7Send(request: Request): Promise<Response> {
         const chunks: Uint8Array[] = [];
         let totalLength = 0;
         let receivedEndBlock = false;
+        const ackDeadline = Date.now() + timeout;
 
         while (!receivedEndBlock) {
-          const { value, done } = await reader.read();
+          const remaining = ackDeadline - Date.now();
+          if (remaining <= 0) throw new Error('MLLP ACK response timeout');
+          const readTimeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('MLLP ACK response timeout')), remaining)
+          );
+          const { value, done } = await Promise.race([reader.read(), readTimeoutPromise]);
           if (done) break;
-          chunks.push(value);
-          totalLength += value.length;
-          if (totalLength > MAX_MLLP_FRAME) {
+          if (totalLength + value.length > MAX_MLLP_FRAME) {
             throw new Error('MLLP frame exceeds 1 MB limit');
           }
+          chunks.push(value);
+          totalLength += value.length;
 
           // Check for end-of-block marker in accumulated data
           for (let i = 0; i < value.length; i++) {
@@ -545,6 +592,11 @@ export async function handleHL7Send(request: Request): Promise<Response> {
  * Handle HL7 Query - Send QRY^Q01 (Patient Query) and parse response
  */
 export async function handleHL7Query(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as HL7QueryRequest;
     const {
@@ -563,6 +615,12 @@ export async function handleHL7Query(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -592,7 +650,7 @@ export async function handleHL7Query(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
 
       try {
-        const controlId = `QRY${Date.now()}`;
+        const controlId = `QRY${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
         const resolvedQueryId = queryId || `QID${Date.now()}`;
 
         const hl7Message = buildQRY_Q01(
@@ -614,15 +672,21 @@ export async function handleHL7Query(request: Request): Promise<Response> {
         const chunks: Uint8Array[] = [];
         let totalLength = 0;
         let receivedEndBlock = false;
+        const ackDeadline = Date.now() + timeout;
 
         while (!receivedEndBlock) {
-          const { value, done } = await reader.read();
+          const remaining = ackDeadline - Date.now();
+          if (remaining <= 0) throw new Error('MLLP ACK response timeout');
+          const readTimeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('MLLP ACK response timeout')), remaining)
+          );
+          const { value, done } = await Promise.race([reader.read(), readTimeoutPromise]);
           if (done) break;
-          chunks.push(value);
-          totalLength += value.length;
-          if (totalLength > MAX_MLLP_FRAME) {
+          if (totalLength + value.length > MAX_MLLP_FRAME) {
             throw new Error('MLLP frame exceeds 1 MB limit');
           }
+          chunks.push(value);
+          totalLength += value.length;
 
           for (let i = 0; i < value.length; i++) {
             if (value[i] === END_OF_BLOCK) {
@@ -699,6 +763,11 @@ export async function handleHL7Query(request: Request): Promise<Response> {
  * Handle HL7 ADT^A08 - Send Update Patient Information message and parse ACK
  */
 export async function handleHL7ADT_A08(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as HL7ADT_A08Request;
     const {
@@ -733,6 +802,12 @@ export async function handleHL7ADT_A08(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Check if behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -759,7 +834,7 @@ export async function handleHL7ADT_A08(request: Request): Promise<Response> {
       const reader = socket.readable.getReader();
 
       try {
-        const controlId = `A08${Date.now()}`;
+        const controlId = `A08${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
         const hl7Message = buildADT_A08(
           'PortOfCall',
@@ -783,15 +858,21 @@ export async function handleHL7ADT_A08(request: Request): Promise<Response> {
         const chunks: Uint8Array[] = [];
         let totalLength = 0;
         let receivedEndBlock = false;
+        const ackDeadline = Date.now() + timeout;
 
         while (!receivedEndBlock) {
-          const { value, done } = await reader.read();
+          const remaining = ackDeadline - Date.now();
+          if (remaining <= 0) throw new Error('MLLP ACK response timeout');
+          const readTimeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('MLLP ACK response timeout')), remaining)
+          );
+          const { value, done } = await Promise.race([reader.read(), readTimeoutPromise]);
           if (done) break;
-          chunks.push(value);
-          totalLength += value.length;
-          if (totalLength > MAX_MLLP_FRAME) {
+          if (totalLength + value.length > MAX_MLLP_FRAME) {
             throw new Error('MLLP frame exceeds 1 MB limit');
           }
+          chunks.push(value);
+          totalLength += value.length;
 
           for (let i = 0; i < value.length; i++) {
             if (value[i] === END_OF_BLOCK) {

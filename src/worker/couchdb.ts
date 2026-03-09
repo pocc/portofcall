@@ -40,6 +40,7 @@ interface CouchDBQueryRequest extends CouchDBRequest {
   path?: string;
   method?: string;
   body?: string;
+  headers?: Record<string, string>;
 }
 
 interface CouchDBResponse {
@@ -62,88 +63,101 @@ async function sendHttpRequest(
   method: string,
   path: string,
   body?: string,
-  authHeader?: string,
+  headers?: Record<string, string>,
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
-
+  let timeoutHandle: any;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
 
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (authHeader) {
-    request += `Authorization: ${authHeader}\r\n`;
-  }
-
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
-  const maxSize = 512000;
-
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    if (headers) {
+      for (const [key, value] of Object.entries(headers)) {
+        request += `${key.replace(/[\r\n]/g, '')}: ${value.replace(/[\r\n]/g, '')}\r\n`;
+      }
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
-
-  const headerEnd = response.indexOf('\r\n\r\n');
-  if (headerEnd === -1) {
-    throw new Error('Invalid HTTP response: no header terminator found');
-  }
-
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
-
-  const statusLine = headerSection.split('\r\n')[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-
-  const headers: Record<string, string> = {};
-  const headerLines = headerSection.split('\r\n').slice(1);
-  for (const line of headerLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.substring(0, colonIdx).trim().toLowerCase();
-      const value = line.substring(colonIdx + 1).trim();
-      headers[key] = value;
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
     }
-  }
 
-  if (headers['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
-  }
+    writer.releaseLock();
 
-  return { statusCode, headers, body: bodySection };
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    let response = '';
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      throw new Error('Invalid HTTP response: no header terminator found');
+    }
+
+    const headerSection = response.substring(0, headerEnd);
+    let bodySection = response.substring(headerEnd + 4);
+
+    const statusLine = headerSection.split('\r\n')[0];
+    const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+    const resHeaders: Record<string, string> = {};
+    const headerLines = headerSection.split('\r\n').slice(1);
+    for (const line of headerLines) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.substring(0, colonIdx).trim().toLowerCase();
+        const value = line.substring(colonIdx + 1).trim();
+        resHeaders[key] = value;
+      }
+    }
+
+    if (resHeaders['transfer-encoding']?.includes('chunked')) {
+      bodySection = decodeChunked(bodySection);
+    }
+
+    return { statusCode, headers: resHeaders, body: bodySection };
+  } finally {
+    clearTimeout(timeoutHandle);
+    try { socket.close(); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -217,7 +231,7 @@ function validateInput(host: string, port: number): string | null {
   if (!/^[a-zA-Z0-9._-]+$/.test(host)) {
     return 'Host contains invalid characters';
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
   return null;
@@ -264,10 +278,11 @@ export async function handleCouchDBHealth(request: Request): Promise<Response> {
     }
 
     const authHeader = buildAuthHeader(username, password);
+    const headers = authHeader ? { 'Authorization': authHeader } : undefined;
     const start = Date.now();
 
     // GET / - Server info
-    const infoResult = await sendHttpRequest(host, port, 'GET', '/', undefined, authHeader, timeout);
+    const infoResult = await sendHttpRequest(host, port, 'GET', '/', undefined, headers, timeout);
     let serverInfo: unknown;
     try {
       serverInfo = JSON.parse(infoResult.body);
@@ -278,7 +293,7 @@ export async function handleCouchDBHealth(request: Request): Promise<Response> {
     // GET /_all_dbs - Database listing
     let databases: string[] | undefined;
     try {
-      const dbsResult = await sendHttpRequest(host, port, 'GET', '/_all_dbs', undefined, authHeader, timeout);
+      const dbsResult = await sendHttpRequest(host, port, 'GET', '/_all_dbs', undefined, headers, timeout);
       if (dbsResult.statusCode === 200) {
         databases = JSON.parse(dbsResult.body) as string[];
       }
@@ -338,6 +353,7 @@ export async function handleCouchDBQuery(request: Request): Promise<Response> {
       username,
       password,
       timeout = 15000,
+      headers: userHeaders,
     } = reqBody;
 
     const validationError = validateInput(host, port);
@@ -376,6 +392,11 @@ export async function handleCouchDBQuery(request: Request): Promise<Response> {
 
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const authHeader = buildAuthHeader(username, password);
+    const headers: Record<string, string> = { ...(userHeaders ?? {}) };
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    }
+
     const start = Date.now();
 
     const result = await sendHttpRequest(
@@ -384,7 +405,7 @@ export async function handleCouchDBQuery(request: Request): Promise<Response> {
       upperMethod,
       normalizedPath,
       queryBody,
-      authHeader,
+      headers,
       timeout,
     );
 

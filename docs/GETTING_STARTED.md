@@ -43,22 +43,20 @@ Visit `http://localhost:5173` and try:
 portofcall/
 ├── src/
 │   ├── worker/
-│   │   ├── index.ts              # Worker entry point
-│   │   └── protocols/            # Protocol implementations
-│   │       ├── ssh/
-│   │       ├── redis/
-│   │       ├── mysql/
-│   │       └── ...
-│   ├── components/               # React UI components
-│   └── pages/                    # React pages
+│   │   ├── index.ts              # Worker entry point & router
+│   │   ├── websocket-pipe.ts     # WebSocket↔TCP pipe functions
+│   │   ├── host-validator.ts     # SSRF prevention
+│   │   ├── cloudflare-detector.ts# Cloudflare IP detection
+│   │   ├── ssh.ts, ftp.ts, ...   # 240+ protocol handler files (flat)
+│   │   └── cli-routes.ts         # curl-friendly short URL routes
+│   ├── components/               # React UI components (240+ protocol clients)
+│   └── App.tsx                   # React root with lazy-loaded components
 ├── docs/
 │   ├── README.md                 # Documentation index
 │   ├── ARCHITECTURE.md           # System design
-│   ├── IMPLEMENTED.md            # Status tracker
-│   └── protocols/                # Protocol-specific docs
-├── tests/                        # Test files
-├── node_modules/
-│   └── mutex.md                  # Work-in-progress tracker
+│   ├── PROTOCOL_REGISTRY.md      # Protocol status tracker
+│   └── protocols/                # Protocol-specific docs (319 specs)
+├── tests/                        # Test files (230+)
 └── wrangler.toml                 # Cloudflare config
 ```
 
@@ -96,17 +94,14 @@ portofcall/
 
 ## Current Status
 
-### 📊 Implementation Stats
-- **53+ protocols implemented**
-- **14 protocols deployed and live**
-- **39 protocols awaiting deployment**
-- **214+ integration tests**
+### Implementation Stats
+- **244 protocols implemented and deployed**
+- **230+ integration tests**
+- **200+ critical bugs fixed** across 19 security audit passes
+- **319 protocol specification docs**
 
-### 🔥 Live Protocols
-SSH, FTP, Telnet, SMTP, POP3, IMAP, MySQL, PostgreSQL, Redis, MQTT, LDAP, SMB, Echo, Memcached, and more!
-
-### 🚧 In Progress
-Check [node_modules/mutex.md](../node_modules/mutex.md) for currently implementing protocols.
+### Live Protocols
+SSH, FTP, Telnet, SMTP, POP3, IMAP, MySQL, PostgreSQL, Redis, MQTT, LDAP, SMB, Echo, Memcached, MongoDB, Kafka, NATS, AMQP, Cassandra, Neo4j, Elasticsearch, Docker, and 220+ more!
 
 ## Your First Contribution
 
@@ -225,7 +220,7 @@ API_BASE=http://localhost:8787/api npm test -- tests/redis.test.ts
 open http://localhost:8787
 ```
 
-> **Important:** The production Worker at `portofcall.ross.gg` runs on Cloudflare's edge and cannot reach `localhost`. Always use `npx wrangler dev` for tests that require local Docker servers (FTP, Redis, databases, etc.).
+> **Important:** The production Worker at `l4.fyi` runs on Cloudflare's edge and cannot reach `localhost`. Always use `npx wrangler dev` for tests that require local Docker servers (FTP, Redis, databases, etc.).
 >
 > See [docs/LOCAL_TESTING.md](LOCAL_TESTING.md) for the full Docker setup guide.
 
@@ -327,7 +322,7 @@ npx wrangler kv:key list      # List KV keys (if using KV)
 - Or deploy on non-Cloudflare platform
 
 **Q: Tests failing (infrastructure tests like FTP, Redis, MySQL)**
-- Tests default to `https://portofcall.ross.gg` — they cannot reach `localhost`
+- Tests default to `https://l4.fyi` — they cannot reach `localhost`
 - Start `npx wrangler dev --port 8787` and run with `API_BASE=http://localhost:8787/api npm test`
 - Start the required Docker container (see [LOCAL_TESTING.md](LOCAL_TESTING.md))
 - Check test credentials match the Docker container config

@@ -72,6 +72,9 @@ async function readAllLines(
  */
 export async function handleRsyncConnect(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -90,7 +93,7 @@ export async function handleRsyncConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -120,7 +123,10 @@ export async function handleRsyncConnect(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    });
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
@@ -310,6 +316,9 @@ function rsyncChallengeResponse(password: string, challenge: string): string {
  */
 export async function handleRsyncAuth(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -341,7 +350,17 @@ export async function handleRsyncAuth(request: Request): Promise<Response> {
       });
     }
 
-    if (!username || !password) {
+    if (/[\r\n]/.test(moduleName)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Module name must not contain newline characters',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!username || password == null) {
       return new Response(JSON.stringify({
         success: false,
         error: 'username and password are required',
@@ -351,6 +370,15 @@ export async function handleRsyncAuth(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
@@ -358,7 +386,10 @@ export async function handleRsyncAuth(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    });
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -494,6 +525,9 @@ export async function handleRsyncAuth(request: Request): Promise<Response> {
  */
 export async function handleRsyncModule(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -523,7 +557,17 @@ export async function handleRsyncModule(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (/[\r\n]/.test(moduleName)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Module name must not contain newline characters',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -533,6 +577,11 @@ export async function handleRsyncModule(request: Request): Promise<Response> {
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
@@ -540,7 +589,10 @@ export async function handleRsyncModule(request: Request): Promise<Response> {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await Promise.race([socket.opened, timeoutPromise]).catch((err) => {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    });
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();

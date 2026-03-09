@@ -104,7 +104,7 @@ export async function handleSPDYConnect(request: Request): Promise<Response> {
     }
 
     if (!options.host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -113,6 +113,12 @@ export async function handleSPDYConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 443;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -518,6 +524,12 @@ export async function handleSPDYH2Probe(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }

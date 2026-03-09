@@ -467,7 +467,6 @@ type Protocol =
   | 'cvs'
   | 'amqps'
   | 'nomad'
-  | 'ircs'
   | 'ldp-mpls'
   | 'firebird'
   | 'hazelcast'

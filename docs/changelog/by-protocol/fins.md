@@ -229,3 +229,8 @@ Omron's security guidance:
 - [Omron FINS Reference Manual](https://assets.omron.com/m/1e5c03512b851e50/original/FINS-Reference-Manual.pdf)
 - [FINS/TCP Specification (W507)](https://www.ia.omron.com/support/guide/)
 - [ICS-CERT FINS Vulnerabilities](https://www.cisa.gov/news-events/ics-advisories)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

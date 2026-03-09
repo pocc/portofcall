@@ -39,6 +39,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface SybaseRequest {
   host: string;
@@ -481,6 +482,11 @@ function parseTDSTokenStream(payload: Uint8Array): {
  * Detects Sybase ASE and TDS protocol support.
  */
 export async function handleSybaseProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SybaseRequest;
     const { host, port = 5000, timeout = 15000 } = body;
@@ -497,7 +503,7 @@ export async function handleSybaseProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -506,6 +512,13 @@ export async function handleSybaseProbe(request: Request): Promise<Response> {
       } satisfies SybaseResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckProbe = await checkIfCloudflare(host);
+    if (cfCheckProbe.isCloudflare && cfCheckProbe.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheckProbe.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -627,6 +640,11 @@ export async function handleSybaseVersion(request: Request): Promise<Response> {
  * Request body JSON: { host, port?, username, password, database?, timeout? }
  */
 export async function handleSybaseLogin(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SybaseLoginRequest;
     const { host, port = 5000, username, password, timeout = 15000 } = body;
@@ -638,6 +656,19 @@ export async function handleSybaseLogin(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckLogin = await checkIfCloudflare(host);
+    if (cfCheckLogin.isCloudflare && cfCheckLogin.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckLogin.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -730,6 +761,11 @@ export async function handleSybaseLogin(request: Request): Promise<Response> {
  * Request body JSON: { host, port?, username, password, database?, query? }
  */
 export async function handleSybaseQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as SybaseLoginRequest;
     const {
@@ -749,6 +785,19 @@ export async function handleSybaseQuery(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckQuery = await checkIfCloudflare(host);
+    if (cfCheckQuery.isCloudflare && cfCheckQuery.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckQuery.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -901,6 +950,11 @@ export async function handleSybaseQuery(request: Request): Promise<Response> {
  * Body: { host, port?, username, password, database?, procname, params?, timeout? }
  */
 export async function handleSybaseProc(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
@@ -935,6 +989,19 @@ export async function handleSybaseProc(request: Request): Promise<Response> {
     const execSql = formattedParams.length > 0
       ? `EXECUTE ${procname} ${formattedParams.join(', ')}`
       : `EXECUTE ${procname}`;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckProc = await checkIfCloudflare(host);
+    if (cfCheckProc.isCloudflare && cfCheckProc.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckProc.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const start = Date.now();
     const socket = connect(`${host}:${port}`);

@@ -157,3 +157,8 @@ const parts = text
 
 - [IBM Informix Documentation](https://www.ibm.com/docs/en/informix-servers/)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

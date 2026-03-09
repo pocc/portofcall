@@ -4,7 +4,7 @@
 
 set -e  # Exit on error
 
-API_BASE="https://portofcall.ross.gg/api/ftp"
+API_BASE="https://l4.fyi/api/ftp"
 HOST="ftp.dlptest.com"
 PORT="21"
 USERNAME="dlpuser@dlptest.com"

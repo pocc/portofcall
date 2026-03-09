@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('LLMNR Protocol Integration Tests', () => {
   describe('LLMNR Forward Query', () => {
@@ -14,7 +14,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 5355,
           name: 'testhost',
           type: 1,
@@ -56,7 +56,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -71,7 +71,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
         }),
       });
@@ -86,7 +86,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
         }),
       });
@@ -107,9 +107,9 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 5355,
-          ip: '192.168.1.100',
+          ip: '93.184.216.34',
           timeout: 10000,
         }),
       });
@@ -119,7 +119,7 @@ describe('LLMNR Protocol Integration Tests', () => {
       expect(data).toHaveProperty('success');
 
       if (data.success) {
-        expect(data.ip).toBe('192.168.1.100');
+        expect(data.ip).toBe('93.184.216.34');
         expect(data.ptrName).toBeDefined();
         expect(data.ptrName).toContain('.in-addr.arpa');
         expect(data.hostnames).toBeDefined();
@@ -132,7 +132,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           ip: 'fe80::1',
         }),
       });
@@ -150,7 +150,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ip: '192.168.1.100',
+          ip: '93.184.216.34',
         }),
       });
 
@@ -165,7 +165,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -180,8 +180,8 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
-          ip: '192.168.1.100',
+          host: 'example.com',
+          ip: '93.184.216.34',
         }),
       });
 
@@ -207,7 +207,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 5355,
           names: ['DC', 'SERVER', 'WORKSTATION'],
           type: 1,
@@ -235,7 +235,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           prefix: 'WS',
           rangeStart: 1,
           rangeEnd: 5,
@@ -269,7 +269,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           timeout: 30000,
         }),
       });
@@ -285,7 +285,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           names: ['SERVER'],
         }),
       });
@@ -308,7 +308,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
         }),
       });
@@ -332,7 +332,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
         }),
       });
@@ -350,7 +350,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
         }),
       });
@@ -368,7 +368,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
         }),
       });
@@ -388,7 +388,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
           type: 28,
         }),
@@ -407,7 +407,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
           type: 255,
         }),
@@ -428,7 +428,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
           type: 1,
         }),
@@ -457,7 +457,7 @@ describe('LLMNR Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           name: 'testhost',
           type: 28,
         }),

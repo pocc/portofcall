@@ -40,6 +40,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 const NSCA_INIT_PACKET_SIZE = 132;
 const NSCA_IV_SIZE = 128;
@@ -218,12 +219,23 @@ export async function handleNSCAProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -403,7 +415,7 @@ export async function handleNSCASend(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -420,6 +432,17 @@ export async function handleNSCASend(request: Request): Promise<Response> {
         error: 'Only encryption methods 0 (none) and 1 (XOR) are supported',
       }), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckSend = await checkIfCloudflare(host);
+    if (cfCheckSend.isCloudflare && cfCheckSend.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckSend.ip),
+      }), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -723,7 +746,7 @@ export async function handleNSCAEncrypted(request: Request): Promise<Response> {
       });
     }
 
-    if (!password) {
+    if (password == null) {
       return new Response(JSON.stringify({
         cipher,
         cipherName,
@@ -784,6 +807,33 @@ export async function handleNSCAEncrypted(request: Request): Promise<Response> {
         error: `Unsupported cipher ${cipher}. Supported: 1 (XOR), 14 (AES-128), 16 (AES-256)`,
       } satisfies NSCAEncryptedResponse), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: 'Port must be between 1 and 65535',
+      } satisfies NSCAEncryptedResponse), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckEnc = await checkIfCloudflare(host);
+    if (cfCheckEnc.isCloudflare && cfCheckEnc.ip) {
+      return new Response(JSON.stringify({
+        cipher,
+        cipherName,
+        encrypted: false,
+        submitted: false,
+        error: getCloudflareErrorMessage(host, cfCheckEnc.ip),
+      } satisfies NSCAEncryptedResponse), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

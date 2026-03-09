@@ -45,6 +45,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { createHash } from 'node:crypto';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface MSNRequest {
   host: string;
@@ -222,7 +223,7 @@ export async function handleMSNProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -232,6 +233,15 @@ export async function handleMSNProbe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -401,6 +411,15 @@ export async function handleMSNClientVersion(request: Request): Promise<Response
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
 
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
@@ -530,6 +549,15 @@ export async function handleMSNLogin(request: Request): Promise<Response> {
 
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const tp = new Promise<never>((_, rej) => {
@@ -626,6 +654,15 @@ export async function handleMSNMD5Login(request: Request): Promise<Response> {
     const { host, port = 1863, email = 'user@example.com', password = '', timeout = 12000 } = body;
 
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;

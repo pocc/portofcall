@@ -75,3 +75,8 @@ IPFS implementation provides 9 endpoints (probe, add, cat, pin-add, pin-ls, pin-
 - [IPFS Protocol Specification](../protocols/IPFS.md) - Technical wire format reference (if it exists)
 - [libp2p Multistream-Select](https://github.com/multiformats/multistream-select) - Protocol negotiation spec
 - [IPFS HTTP API](https://docs.ipfs.tech/reference/kubo/rpc/) - Kubo RPC API documentation
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

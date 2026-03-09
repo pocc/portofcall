@@ -516,7 +516,10 @@ async function sendKerberosRequest(
   framed.set(msg, 4);
 
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
 
@@ -525,9 +528,30 @@ async function sendKerberosRequest(
   let responseData: Uint8Array | null = null;
   try {
     const timer = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs));
-    const result = await Promise.race([reader.read(), timer]);
-    if (result.value && result.value.length > 4) {
-      responseData = result.value.slice(4);
+    // Accumulate response (handle fragmented TCP responses)
+    const chunks: Uint8Array[] = [];
+    let totalLen = 0;
+    const MAX_RESPONSE = 65536;
+    while (totalLen < MAX_RESPONSE) {
+      const result = await Promise.race([reader.read(), timer]);
+      if (!result || result.done || !result.value) break;
+      chunks.push(result.value);
+      totalLen += result.value.length;
+      // Kerberos responses have a 4-byte length prefix - stop when we have full message
+      if (totalLen >= 4) {
+        const partial = new Uint8Array(totalLen);
+        let offset = 0;
+        for (const c of chunks) { partial.set(c, offset); offset += c.length; }
+        const view = new DataView(partial.buffer);
+        const msgLen = view.getUint32(0, false) + 4;
+        if (totalLen >= msgLen) break;
+      }
+    }
+    const combined = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const c of chunks) { combined.set(c, offset); offset += c.length; }
+    if (combined.length > 4) {
+      responseData = combined.slice(4);
     }
   } catch { /* timeout */ }
 
@@ -556,7 +580,7 @@ async function sendKerberosRequest(
  */
 export async function handleKerberosUserEnum(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -583,6 +607,12 @@ export async function handleKerberosUserEnum(request: Request): Promise<Response
     }
     if (!Array.isArray(usernames) || usernames.length === 0) {
       return new Response(JSON.stringify({ success: false, error: 'Provide usernames array' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -706,7 +736,7 @@ export async function handleKerberosUserEnum(request: Request): Promise<Response
  */
 export async function handleKerberosSPNCheck(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -727,6 +757,12 @@ export async function handleKerberosSPNCheck(request: Request): Promise<Response
     }
     if (!realm || !spn) {
       return new Response(JSON.stringify({ success: false, error: 'realm and spn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -833,7 +869,7 @@ export async function handleKerberosConnect(request: Request): Promise<Response>
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',

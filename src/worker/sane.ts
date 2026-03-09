@@ -254,13 +254,14 @@ function errorResponse(error: unknown): Response {
  * This is the lightest-weight check — just confirms saned is running.
  */
 export async function handleSANEProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as SANERequest;
     const { host, port = 6566, timeout = 10000 } = body;
     const username = body.username ?? 'anonymous';
 
     if (!host) return badRequest('Host is required');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const guard = await guardCloudflare(host);
     if (guard) return guard;
@@ -346,7 +347,7 @@ export async function handleSANEProbe(request: Request): Promise<Response> {
  *     name, vendor, model, type
  */
 export async function handleSANEGetDevices(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as SANERequest;
@@ -354,7 +355,7 @@ export async function handleSANEGetDevices(request: Request): Promise<Response> 
     const username = body.username ?? 'anonymous';
 
     if (!host) return badRequest('Host is required');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const guard = await guardCloudflare(host);
     if (guard) return guard;
@@ -673,7 +674,7 @@ function parseParameters(data: Uint8Array, offset: number): SANEParameters | nul
  * Request body: { host, port=6566, deviceName='', username='anonymous', timeout=15000 }
  */
 export async function handleSANEOptions(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as SANERequest & { deviceName?: string };
@@ -682,7 +683,7 @@ export async function handleSANEOptions(request: Request): Promise<Response> {
     const deviceName = body.deviceName ?? '';
 
     if (!host) return badRequest('Host is required');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const guard = await guardCloudflare(host);
     if (guard) return guard;
@@ -783,7 +784,7 @@ export async function handleSANEOptions(request: Request): Promise<Response> {
  * }
  */
 export async function handleSANEScan(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as SANERequest & {
@@ -798,7 +799,7 @@ export async function handleSANEScan(request: Request): Promise<Response> {
     const setOptions   = body.setOptions   ?? [];
 
     if (!host) return badRequest('Host is required');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const guard = await guardCloudflare(host);
     if (guard) return guard;
@@ -1006,7 +1007,7 @@ export async function handleSANEScan(request: Request): Promise<Response> {
 // ─── POST /api/sane/open ──────────────────────────────────────────────────────
 
 export async function handleSANEOpen(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as SANERequest & { deviceName?: string };
@@ -1015,7 +1016,7 @@ export async function handleSANEOpen(request: Request): Promise<Response> {
     const deviceName = body.deviceName ?? '';
 
     if (!host) return badRequest('Host is required');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const guard = await guardCloudflare(host);
     if (guard) return guard;

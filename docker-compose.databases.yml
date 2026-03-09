@@ -1,0 +1,137 @@
+version: '3.8'
+
+# Additional Databases
+# Protocols covered: cassandra, clickhouse, couchdb, neo4j, rethinkdb, etcd, tarantool
+#
+# Usage: docker compose -f docker-compose.databases.yml up -d
+
+services:
+  # Apache Cassandra - Wide-column store (CQL native protocol)
+  cassandra:
+    image: cassandra:4
+    container_name: testserver-cassandra
+    ports:
+      - "9042:9042"     # CQL native transport
+    environment:
+      - CASSANDRA_CLUSTER_NAME=TestCluster
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_RACK=rack1
+      - MAX_HEAP_SIZE=256M
+      - HEAP_NEWSIZE=64M
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # ClickHouse - OLAP database
+  clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: testserver-clickhouse
+    ports:
+      - "9000:9000"     # Native TCP protocol
+      - "8123:8123"     # HTTP interface
+    environment:
+      - CLICKHOUSE_USER=testuser
+      - CLICKHOUSE_PASSWORD=testpass123
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Apache CouchDB - Document store (HTTP/REST)
+  couchdb:
+    image: couchdb:3
+    container_name: testserver-couchdb
+    ports:
+      - "5984:5984"
+    environment:
+      - COUCHDB_USER=testuser
+      - COUCHDB_PASSWORD=testpass123
+    volumes:
+      - couchdb_data:/opt/couchdb/data
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Neo4j - Graph database (Bolt protocol)
+  neo4j:
+    image: neo4j:5
+    container_name: testserver-neo4j
+    ports:
+      - "7687:7687"     # Bolt protocol
+      - "7474:7474"     # HTTP browser
+    environment:
+      - NEO4J_AUTH=neo4j/testpass123
+      - NEO4J_PLUGINS=[]
+    volumes:
+      - neo4j_data:/data
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # RethinkDB - Distributed document database
+  rethinkdb:
+    image: rethinkdb:latest
+    container_name: testserver-rethinkdb
+    ports:
+      - "28015:28015"   # Client driver
+      - "8090:8080"     # Web UI (remapped to avoid conflict)
+    volumes:
+      - rethinkdb_data:/data
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # etcd - Distributed key-value store
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.17
+    container_name: testserver-etcd
+    ports:
+      - "2379:2379"     # Client API
+    command:
+      - etcd
+      - --advertise-client-urls=http://0.0.0.0:2379
+      - --listen-client-urls=http://0.0.0.0:2379
+    volumes:
+      - etcd_data:/etcd-data
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Tarantool - In-memory database
+  tarantool:
+    image: tarantool/tarantool
+    container_name: testserver-tarantool
+    ports:
+      - "3301:3301"
+    environment:
+      - TARANTOOL_USER_NAME=testuser
+      - TARANTOOL_USER_PASSWORD=testpass123
+    volumes:
+      - tarantool_data:/var/lib/tarantool
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  cassandra_data:
+  clickhouse_data:
+  couchdb_data:
+  neo4j_data:
+  rethinkdb_data:
+  etcd_data:
+  tarantool_data:

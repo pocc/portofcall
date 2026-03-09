@@ -454,7 +454,11 @@ export async function handleHAProxySetWeight(request: Request): Promise<Response
     if (!server) return new Response(JSON.stringify({ success: false, error: 'Server is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (weight === undefined || weight === null) return new Response(JSON.stringify({ success: false, error: 'Weight is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const cmd = 'set server ' + backend + '/' + server + ' weight ' + String(weight);
+    // eslint-disable-next-line no-control-regex
+    const safeBackend = backend.replace(/[\r\n\x00]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeServer = server.replace(/[\r\n\x00]/g, '');
+    const cmd = 'set server ' + safeBackend + '/' + safeServer + ' weight ' + String(weight);
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
@@ -479,7 +483,11 @@ export async function handleHAProxySetState(request: Request): Promise<Response>
     const allowedStates = ['ready', 'drain', 'maint'];
     if (!allowedStates.includes(state)) return new Response(JSON.stringify({ success: false, error: 'State must be one of: ready, drain, maint' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const cmd = 'set server ' + backend + '/' + server + ' state ' + state;
+    // eslint-disable-next-line no-control-regex
+    const safeBackend = backend.replace(/[\r\n\x00]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeServer = server.replace(/[\r\n\x00]/g, '');
+    const cmd = 'set server ' + safeBackend + '/' + safeServer + ' state ' + state;
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
@@ -505,7 +513,13 @@ export async function handleHAProxySetAddr(request: Request): Promise<Response> 
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    const cmd = 'set server ' + backend + '/' + server + ' addr ' + addr + ' port ' + String(svrPort);
+    // eslint-disable-next-line no-control-regex
+    const safeBackend = backend.replace(/[\r\n\x00]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeServer = server.replace(/[\r\n\x00]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeAddr = addr.replace(/[\r\n\x00]/g, '');
+    const cmd = 'set server ' + safeBackend + '/' + safeServer + ' addr ' + safeAddr + ' port ' + String(svrPort);
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
@@ -526,7 +540,11 @@ export async function handleHAProxyDisableServer(request: Request): Promise<Resp
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server) return new Response(JSON.stringify({ success: false, error: 'backend and server are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const cmd = 'disable server ' + backend + '/' + server;
+    // eslint-disable-next-line no-control-regex
+    const safeBackend = backend.replace(/[\r\n\x00]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeServer = server.replace(/[\r\n\x00]/g, '');
+    const cmd = 'disable server ' + safeBackend + '/' + safeServer;
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
@@ -547,7 +565,11 @@ export async function handleHAProxyEnableServer(request: Request): Promise<Respo
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!backend || !server) return new Response(JSON.stringify({ success: false, error: 'backend and server are required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    const cmd = 'enable server ' + backend + '/' + server;
+    // eslint-disable-next-line no-control-regex
+    const safeBackend = backend.replace(/[\r\n\x00]/g, '');
+    // eslint-disable-next-line no-control-regex
+    const safeServer = server.replace(/[\r\n\x00]/g, '');
+    const cmd = 'enable server ' + safeBackend + '/' + safeServer;
     const { response, rtt } = await sendCommand(host, port, timeout, cmd);
     return new Response(JSON.stringify({ success: true, host, port, command: cmd, response: response.trim(), rtt }), { status: 200, headers: { 'Content-Type': 'application/json' } });
   } catch (error) {

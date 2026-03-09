@@ -40,6 +40,7 @@ async function readGangliaXML(
   timeoutMs: number
 ): Promise<string> {
   let buffer = '';
+  const MAX_XML_SIZE = 2 * 1024 * 1024; // 2 MiB cap — large clusters may have extensive XML
 
   const timeoutPromise = new Promise<string>((resolve) =>
     setTimeout(() => resolve(buffer), timeoutMs)
@@ -49,7 +50,14 @@ async function readGangliaXML(
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+
+      // Safety: enforce hard cap before accumulating
+      if (buffer.length + chunk.length > MAX_XML_SIZE) {
+        buffer += chunk.substring(0, MAX_XML_SIZE - buffer.length);
+        break;
+      }
+      buffer += chunk;
 
       // Check for end of XML document
       if (buffer.includes('</GANGLIA_XML>')) {
@@ -212,6 +220,11 @@ function parseGangliaXML(xml: string): {
  * POST /api/ganglia/connect
  */
 export async function handleGangliaConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -221,6 +234,7 @@ export async function handleGangliaConnect(request: Request): Promise<Response> 
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -231,6 +245,12 @@ export async function handleGangliaConnect(request: Request): Promise<Response> 
     const host = options.host;
     const port = options.port || 8649;
     const timeoutMs = options.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -341,6 +361,11 @@ export async function handleGangliaConnect(request: Request): Promise<Response> 
  * POST /api/ganglia/probe
  */
 export async function handleGangliaProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -350,6 +375,7 @@ export async function handleGangliaProbe(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -360,6 +386,12 @@ export async function handleGangliaProbe(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 8649;
     const timeoutMs = options.timeout || 5000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -386,7 +418,10 @@ export async function handleGangliaProbe(request: Request): Promise<Response> {
         let buffer = '';
         const readStart = Date.now();
 
-        const { value, done } = await reader.read();
+        const readTimeout = new Promise<{ value: undefined; done: true }>((resolve) =>
+          setTimeout(() => resolve({ value: undefined, done: true }), 5000)
+        );
+        const { value, done } = await Promise.race([reader.read(), readTimeout]);
         if (!done && value) {
           buffer = decoder.decode(value, { stream: true });
         }

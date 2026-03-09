@@ -211,7 +211,7 @@ echo -e "22, 54321\r" | nc localhost 113
 
 ```bash
 # Query an IDENT server
-curl -X POST https://portofcall.ross.gg/api/ident/query \
+curl -X POST https://l4.fyi/api/ident/query \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "irc.libera.chat",

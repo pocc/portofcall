@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('STOMP Protocol Integration Tests', () => {
   it('should test connection to a STOMP broker', async () => {

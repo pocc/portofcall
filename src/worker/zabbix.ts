@@ -25,6 +25,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // Zabbix header magic bytes
 const ZBXD_HEADER = new Uint8Array([0x5A, 0x42, 0x58, 0x44]); // "ZBXD"
@@ -189,6 +190,11 @@ function combineChunks(chunks: Uint8Array[], totalBytes: number): Uint8Array {
  * should be actively monitored for a given hostname.
  */
 export async function handleZabbixConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ZabbixConnectRequest;
     const { host, port = 10051, timeout = 10000 } = body;
@@ -203,7 +209,7 @@ export async function handleZabbixConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -211,6 +217,15 @@ export async function handleZabbixConnect(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckConnect = await checkIfCloudflare(host);
+    if (cfCheckConnect.isCloudflare && cfCheckConnect.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckConnect.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -302,6 +317,11 @@ export async function handleZabbixConnect(request: Request): Promise<Response> {
  * of a specific monitoring item key.
  */
 export async function handleZabbixAgent(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ZabbixAgentRequest;
     const { host, port = 10050, key, timeout = 10000 } = body;
@@ -326,7 +346,7 @@ export async function handleZabbixAgent(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -346,6 +366,15 @@ export async function handleZabbixAgent(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckAgent = await checkIfCloudflare(host);
+    if (cfCheckAgent.isCloudflare && cfCheckAgent.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckAgent.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -460,6 +489,11 @@ interface ZabbixDiscoveryResponse {
  * Both use the ZBXD framing (magic + 8-byte LE length + JSON payload).
  */
 export async function handleZabbixDiscovery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as ZabbixDiscoveryRequest;
     const { host, port = 10051, timeout = 10000 } = body;
@@ -475,7 +509,7 @@ export async function handleZabbixDiscovery(request: Request): Promise<Response>
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -483,6 +517,15 @@ export async function handleZabbixDiscovery(request: Request): Promise<Response>
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckDiscovery = await checkIfCloudflare(host);
+    if (cfCheckDiscovery.isCloudflare && cfCheckDiscovery.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckDiscovery.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();

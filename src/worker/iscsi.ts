@@ -210,7 +210,7 @@ function parseLoginResponse(data: Uint8Array): {
   const versionMax = data[2];
   const versionActive = data[3];
 
-  const dataLength = ((data[5] << 16) | (data[6] << 8) | data[7]);
+  const dataLength = Math.min(((data[5] << 16) | (data[6] << 8) | data[7]), 65536);
 
   const tsih = (data[14] << 8) | data[15];
   const statSN = (data[24] << 24) | (data[25] << 16) | (data[26] << 8) | data[27];
@@ -247,7 +247,7 @@ function parseTextResponse(data: Uint8Array): {
 } {
   const opcode = data[0] & 0x3f;
   const isFinal = !!(data[1] & 0x80);
-  const dataLength = ((data[5] << 16) | (data[6] << 8) | data[7]);
+  const dataLength = Math.min(((data[5] << 16) | (data[6] << 8) | data[7]), 65536);
 
   const kvPairs: Record<string, string> = {};
   const targets: Array<{ name: string; addresses: string[] }> = [];
@@ -445,7 +445,7 @@ async function readISCSIPDU(
     buf = newBuf;
 
     if (buf.length >= 48) {
-      const dataLen = ((buf[5] << 16) | (buf[6] << 8) | buf[7]);
+      const dataLen = Math.min(((buf[5] << 16) | (buf[6] << 8) | buf[7]), 65536);
       const paddedDataLen = Math.ceil(dataLen / 4) * 4;
       const totalLen = 48 + paddedDataLen;
       if (buf.length >= totalLen) return buf.slice(0, totalLen);
@@ -535,6 +535,12 @@ export async function handleISCSILogin(request: Request): Promise<Response> {
     } = body;
     const initiatorName = body.initiatorName || 'iqn.2024-01.gg.ross.portofcall:initiator';
     const targetName = body.targetName;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
@@ -792,6 +798,16 @@ export async function handleISCSIDiscover(request: Request): Promise<Response> {
     const body = await request.json() as ISCSIRequest;
     const { host, port = 3260, timeout = 10000 } = body;
     const initiatorName = body.initiatorName || 'iqn.2024-01.gg.ross.portofcall:initiator';
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     if (!host) {
       return new Response(JSON.stringify({

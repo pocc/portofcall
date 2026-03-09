@@ -37,6 +37,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // NBD Magic constants
 const NBDMAGIC = new Uint8Array([0x4e, 0x42, 0x44, 0x4d, 0x41, 0x47, 0x49, 0x43]); // "NBDMAGIC"
@@ -82,34 +83,6 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
  * Read exactly `needed` bytes from a reader with timeout.
  * Returns exactly the requested number of bytes, no more, no less.
  */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  needed: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  while (total < needed) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) {
-      throw new Error(`Connection closed after ${total} bytes (expected ${needed})`);
-    }
-    chunks.push(result.value);
-    total += result.value.length;
-  }
-
-  // Combine chunks and return exactly `needed` bytes (trim overshoot)
-  const combined = new Uint8Array(needed);
-  let offset = 0;
-  for (const chunk of chunks) {
-    const toCopy = Math.min(chunk.length, needed - offset);
-    combined.set(chunk.subarray(0, toCopy), offset);
-    offset += toCopy;
-    if (offset >= needed) break;
-  }
-  return combined;
-}
 
 /**
  * Parse the NBD newstyle handshake (18 bytes from server).
@@ -370,7 +343,7 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -409,8 +382,9 @@ export async function handleNBDConnect(request: Request): Promise<Response> {
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
-    const handshakeData = await readExact(reader, 18, timeoutPromise);
+    const handshakeData = await br.readExact(18, timeoutPromise);
     const handshake = parseHandshake(handshakeData);
 
     let exports: string[] = [];
@@ -501,6 +475,12 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -523,7 +503,8 @@ export async function handleNBDProbe(request: Request): Promise<Response> {
       await Promise.race([socket.opened, timeoutPromise]);
 
       const reader = socket.readable.getReader();
-      const handshakeData = await readExact(reader, 18, timeoutPromise);
+      const br = new BufferedReader(reader);
+      const handshakeData = await br.readExact(18, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       const handshake = parseHandshake(handshakeData);
@@ -632,6 +613,12 @@ export async function handleNBDRead(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -655,9 +642,10 @@ export async function handleNBDRead(request: Request): Promise<Response> {
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
 
       // Step 1: Read handshake (18 bytes)
-      const handshakeData = await readExact(reader, 18, timeoutPromise);
+      const handshakeData = await br.readExact(18, timeoutPromise);
       const handshake = parseHandshake(handshakeData);
 
       if (!handshake.isNBD) {
@@ -704,7 +692,7 @@ export async function handleNBDRead(request: Request): Promise<Response> {
 
       // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
       const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
-      const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
+      const exportInfo = await br.readExact(exportInfoSize, timeoutPromise);
       const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
       const exportSize = exportView.getBigUint64(0, false); // big-endian per NBD spec
       const transmissionFlags = exportView.getUint16(8, false);
@@ -715,7 +703,7 @@ export async function handleNBDRead(request: Request): Promise<Response> {
       await writer.write(readReq);
 
       // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
-      const replyHeader = await readExact(reader, 16, timeoutPromise);
+      const replyHeader = await br.readExact(16, timeoutPromise);
       const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
       const replyMagic = replyView.getUint32(0, false); // big-endian
       const replyError = replyView.getUint32(4, false);
@@ -767,7 +755,7 @@ export async function handleNBDRead(request: Request): Promise<Response> {
     }
 
       // Step 6: Read block data
-      const blockData = await readExact(reader, readSize, timeoutPromise);
+      const blockData = await br.readExact(readSize, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       // Step 7: Send DISCONNECT
@@ -972,6 +960,12 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -996,9 +990,10 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
 
       // Step 1: Read handshake (18 bytes)
-      const handshakeData = await readExact(reader, 18, timeoutPromise);
+      const handshakeData = await br.readExact(18, timeoutPromise);
       const handshake = parseHandshake(handshakeData);
 
       if (!handshake.isNBD) {
@@ -1043,7 +1038,7 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
 
       // Read export info: 8B size + 2B flags (+ optionally 124 zero bytes)
       const exportInfoSize = handshake.noZeroes ? 10 : 10 + 124;
-      const exportInfo = await readExact(reader, exportInfoSize, timeoutPromise);
+      const exportInfo = await br.readExact(exportInfoSize, timeoutPromise);
       const exportView = new DataView(exportInfo.buffer, exportInfo.byteOffset, exportInfo.byteLength);
       const exportSize = exportView.getBigUint64(0, false); // big-endian per NBD spec
       const transmissionFlags = exportView.getUint16(8, false);
@@ -1072,7 +1067,7 @@ export async function handleNBDWrite(request: Request): Promise<Response> {
       await writer.write(writeReq);
 
       // Step 5: Read reply header: [NBD_REPLY_MAGIC 4B][error 4B][handle 8B]
-      const replyHeader = await readExact(reader, 16, timeoutPromise);
+      const replyHeader = await br.readExact(16, timeoutPromise);
       const replyView = new DataView(replyHeader.buffer, replyHeader.byteOffset, replyHeader.byteLength);
       const replyMagic = replyView.getUint32(0, false); // big-endian
       const replyError = replyView.getUint32(4, false);

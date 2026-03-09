@@ -96,7 +96,7 @@ interface HTTPResponse {
 function validateInput(host: string, port: number, method: string): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._:-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   if (!ALLOWED_METHODS.has(method)) {
     return `Method must be one of: ${[...ALLOWED_METHODS].join(', ')}`;
   }
@@ -295,14 +295,15 @@ async function readFullResponse(
         // Chunked body ends with terminal chunk "0\r\n" followed by
         // optional trailers and final "\r\n". Minimum termination: "0\r\n\r\n" (5 bytes).
         if (body.length >= 5) {
-          // Scan backwards for the terminal chunk sequence
+          // The terminal chunk must appear at a chunk boundary (after \r\n
+          // ending the prior chunk's data, or at position 0 for an empty body).
+          // Check for "\r\n0\r\n...\r\n" suffix to avoid false-matching "0\r\n"
+          // that appears inside chunk data.
           const bodyStr = decoder.decode(body);
-          const termIdx = bodyStr.lastIndexOf('0\r\n');
-          if (termIdx >= 0) {
-            // Check that after "0\r\n" there's eventually a "\r\n" (end of trailers/empty trailers)
-            const afterTerm = bodyStr.slice(termIdx + 3);
-            if (afterTerm.endsWith('\r\n')) break;
-          }
+          if (
+            bodyStr.endsWith('\r\n0\r\n\r\n') ||  // standard: no trailers
+            bodyStr === '0\r\n\r\n'                // edge: empty chunked body
+          ) break;
         }
       } else {
         // Check Content-Length
@@ -352,7 +353,7 @@ async function readFullResponse(
  */
 export async function handleHTTPRequest(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -448,9 +449,16 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
       }
 
       // Assemble the raw HTTP/1.1 request
+      // Validate header names and values to prevent CRLF injection
+      for (const [k, v] of Object.entries(reqHeaders)) {
+        // eslint-disable-next-line no-control-regex
+        if (/[\r\n\x00]/.test(k) || /[\r\n\x00]/.test(String(v))) {
+          throw new Error(`Header "${k}" contains invalid characters`);
+        }
+      }
       const requestLine = `${upperMethod} ${safePath} HTTP/1.1`;
       const headerLines = Object.entries(reqHeaders)
-        .map(([k, v]) => `${k}: ${v}`)
+        .map(([k, v]) => `${k}: ${String(v)}`)
         .join('\r\n');
       const rawRequest = `${requestLine}\r\n${headerLines}\r\n\r\n${effectiveBody}`;
 
@@ -462,8 +470,8 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
       const { data: responseData, timedOut } = await readFullResponse(reader, effectiveTimeout, maxBodyBytes, upperMethod);
       const ttfb = Date.now() - sendTime; // crude TTFB — time until we got all data back
 
-      writer.releaseLock();
-      reader.releaseLock();
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
       socket.close();
 
       if (responseData.length === 0) {
@@ -555,7 +563,7 @@ export async function handleHTTPRequest(request: Request): Promise<Response> {
  */
 export async function handleHTTPHead(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
   const body = (await request.json()) as HTTPRequestOptions;
   return handleHTTPRequest(new Request(request.url, {
@@ -575,7 +583,7 @@ export async function handleHTTPHead(request: Request): Promise<Response> {
  */
 export async function handleHTTPOptions(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
   const body = (await request.json()) as HTTPRequestOptions;
   return handleHTTPRequest(new Request(request.url, {

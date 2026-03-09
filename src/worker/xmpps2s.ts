@@ -37,6 +37,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface XMPPS2SRequest {
   host: string;
@@ -70,8 +71,8 @@ function buildXMPPStreamInit(fromDomain: string, toDomain: string): string {
 <stream:stream
   xmlns='jabber:server'
   xmlns:stream='http://etherx.jabber.org/streams'
-  from='${fromDomain}'
-  to='${toDomain}'
+  from='${escapeXml(fromDomain)}'
+  to='${escapeXml(toDomain)}'
   version='1.0'>`;
 }
 
@@ -161,6 +162,11 @@ function parseXMPPStream(data: string): {
  * Detects server capabilities without full authentication.
  */
 export async function handleXMPPS2SProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as XMPPS2SRequest;
     const {
@@ -183,7 +189,7 @@ export async function handleXMPPS2SProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -193,6 +199,17 @@ export async function handleXMPPS2SProbe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckXMPPS2SProbe = await checkIfCloudflare(host);
+    if (cfCheckXMPPS2SProbe.isCloudflare && cfCheckXMPPS2SProbe.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheckXMPPS2SProbe.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const targetDomain = toDomain || host;
@@ -297,6 +314,11 @@ export async function handleXMPPS2SProbe(request: Request): Promise<Response> {
  * Probes whether server supports S2S for a specific domain.
  */
 export async function handleXMPPS2SFederationTest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as XMPPS2SRequest;
     const { host, port = 5269, timeout = 10000, fromDomain, toDomain } = body;
@@ -336,6 +358,14 @@ export async function handleXMPPS2SFederationTest(request: Request): Promise<Res
 function escapeXml(str: string): string {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+}
+
+function generateStanzaId(): string {
+  return `id${Math.random().toString(36).substring(2, 11)}`;
+}
+
+function encodeIqPing(id: string, to: string, from: string): string {
+  return `<iq type='get' id='${escapeXml(id)}' to='${escapeXml(to)}' from='${escapeXml(from)}'><ping xmlns='urn:xmpp:ping'/></iq>`;
 }
 
 function parseStreamId(xml: string): string | null {
@@ -395,6 +425,11 @@ async function readXMPPUntil(
  *  6. Send <db:result> dialback key → read result (valid/invalid/pending)
  */
 export async function handleXMPPS2STlsDialback(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; fromDomain: string; toDomain?: string; timeout?: number;
@@ -406,6 +441,21 @@ export async function handleXMPPS2STlsDialback(request: Request): Promise<Respon
       return new Response(JSON.stringify({
         success: false, error: 'host and fromDomain are required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckTlsDialback = await checkIfCloudflare(host);
+    if (cfCheckTlsDialback.isCloudflare && cfCheckTlsDialback.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckTlsDialback.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -543,6 +593,109 @@ export async function handleXMPPS2STlsDialback(request: Request): Promise<Respon
     return new Response(JSON.stringify({
       success: false,
       host: '', port: 5269,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * XMPP S2S IQ Ping — open stream, send IQ ping stanza, read response.
+ * Request body: { host, port=5269, fromDomain, toDomain?, timeout=15000 }
+ */
+export async function handleXmppS2SPing(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  try {
+    const body = await request.json() as XMPPS2SRequest & { fromDomain?: string };
+    const { host, port = 5269, timeout = 15000 } = body;
+    const fromDomain = body.fromDomain || 'probe.example.com';
+    const toDomain = body.toDomain || host;
+
+    if (!host || !fromDomain) {
+      return new Response(JSON.stringify({
+        success: false, host: host || '', port,
+        error: 'host and fromDomain are required',
+      } satisfies XMPPS2SResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: 'Port must be between 1 and 65535',
+      } satisfies XMPPS2SResponse), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+
+    const work = (async () => {
+      const start = Date.now();
+      const socket = connect(`${host}:${port}`);
+      await socket.opened;
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+
+      try {
+        // Send stream header
+        const header = buildXMPPStreamInit(fromDomain, toDomain);
+        await writer.write(new TextEncoder().encode(header));
+
+        // Wait briefly for stream features before sending ping
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        // Send IQ ping
+        const pingId = generateStanzaId();
+        await writer.write(new TextEncoder().encode(encodeIqPing(pingId, toDomain, fromDomain)));
+        writer.releaseLock();
+
+        // Read response — look for ping reply or stream error
+        const raw = await readXMPPUntil(reader, pingId, 32768, timeout);
+        const rtt = Date.now() - start;
+        reader.releaseLock();
+        try { socket.close(); } catch { /* ignore */ }
+
+        const streamId = parseStreamId(raw);
+        const parsed = parseXMPPStream(raw);
+        const hasPingResponse = raw.includes(`id='${pingId}'`) || raw.includes(`id="${pingId}"`);
+        const hasError = raw.includes('<stream:error>');
+
+        return {
+          success: hasPingResponse && !hasError,
+          host, port, streamId: streamId ?? undefined,
+          features: parsed?.features,
+          pingResponseReceived: hasPingResponse,
+          rtt,
+          error: hasError ? 'Server sent error response' : undefined,
+        };
+      } catch (err) {
+        try { writer.releaseLock(); } catch { /* ignore */ }
+        try { reader.releaseLock(); } catch { /* ignore */ }
+        socket.close();
+        throw err;
+      }
+    })();
+
+    const result = await Promise.race([work, timeoutPromise]);
+    return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false, host: '', port: 5269,
       error: error instanceof Error ? error.message : 'Unknown error',
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }

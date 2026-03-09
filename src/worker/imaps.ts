@@ -310,7 +310,7 @@ export async function handleIMAPSList(request: Request): Promise<Response> {
 
     const options = await request.json() as Partial<IMAPSConnectionOptions>;
 
-    if (!options.host || !options.username || !options.password) {
+    if (!options.host || !options.username || options.password == null) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Missing required parameters: host, username, password',
@@ -458,7 +458,7 @@ export async function handleIMAPSSelect(request: Request): Promise<Response> {
 
     const options = await request.json() as Partial<IMAPSConnectionOptions & { mailbox: string }>;
 
-    if (!options.host || !options.username || !options.password || !options.mailbox) {
+    if (!options.host || !options.username || options.password == null || !options.mailbox) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Missing required parameters: host, username, password, mailbox',

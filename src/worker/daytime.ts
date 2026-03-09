@@ -18,6 +18,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface DaytimeRequest {
   host: string;
@@ -43,6 +44,11 @@ interface DaytimeResponse {
  * Server sends time immediately upon connection - no request needed
  */
 export async function handleDaytimeGet(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DaytimeRequest;
     const { host, port = 13, timeout = 10000 } = body;
@@ -60,7 +66,7 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -68,6 +74,20 @@ export async function handleDaytimeGet(request: Request): Promise<Response> {
         error: 'Port must be between 1 and 65535',
       } satisfies DaytimeResponse), {
         status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check if behind Cloudflare
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+      } satisfies DaytimeResponse), {
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }

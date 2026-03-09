@@ -41,6 +41,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface HSRPRequest {
   host: string;
@@ -192,6 +193,11 @@ function parseHSRPPacket(data: Buffer): {
  * Detects Active/Standby routers and extracts configuration.
  */
 export async function handleHSRPProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as HSRPRequest;
     const { host, port = 1985, timeout = 15000 } = body;
@@ -208,7 +214,7 @@ export async function handleHSRPProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -217,6 +223,14 @@ export async function handleHSRPProbe(request: Request): Promise<Response> {
       } satisfies HSRPResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -342,6 +356,11 @@ export async function handleHSRPProbe(request: Request): Promise<Response> {
  * Passive listening mode to discover HSRP configuration.
  */
 export async function handleHSRPListen(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as HSRPRequest;
     const { host, port = 1985, timeout = 10000 } = body;
@@ -474,6 +493,11 @@ function buildHSRPv1Coup(
  * Body: { host, port=1985, group=0, priority=255, authentication="cisco", timeout=10000 }
  */
 export async function handleHSRPCoup(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -488,6 +512,32 @@ export async function handleHSRPCoup(request: Request): Promise<Response> {
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof group !== 'number' || isNaN(group) || group < 0 || group > 255) {
+      return new Response(JSON.stringify({ success: false, error: 'HSRPv1 group must be 0-255' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof priority !== 'number' || isNaN(priority) || priority < 0 || priority > 255) {
+      return new Response(JSON.stringify({ success: false, error: 'Priority must be 0-255' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -587,6 +637,11 @@ export async function handleHSRPCoup(request: Request): Promise<Response> {
  * Body: { host, port=1985, group=0, priority=50, timeout=10000 }
  */
 export async function handleHSRPv2Probe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -600,6 +655,32 @@ export async function handleHSRPv2Probe(request: Request): Promise<Response> {
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof group !== 'number' || isNaN(group) || group < 0 || group > 4095) {
+      return new Response(JSON.stringify({ success: false, error: 'HSRPv2 group must be 0-4095' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof priority !== 'number' || isNaN(priority) || priority < 0 || priority > 255) {
+      return new Response(JSON.stringify({ success: false, error: 'Priority must be 0-255' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 

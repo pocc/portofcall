@@ -49,6 +49,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface IKERequest {
   host: string;
@@ -373,7 +374,7 @@ export async function handleIKEProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -382,6 +383,14 @@ export async function handleIKEProbe(request: Request): Promise<Response> {
       } satisfies IKEResponse), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies IKEResponse), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -531,6 +540,12 @@ export async function handleIKEVersionDetect(request: Request): Promise<Response
   try {
     const body = await request.json() as IKERequest;
     const { host, port = 500, timeout = 10000 } = body;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Probe IKEv1 and IKEv2 concurrently
     const v1Request = new Request(request.url, {
@@ -929,7 +944,8 @@ function parseIKEv2SAPayload(saPayloadData: Buffer): {
           break;
       }
 
-      tOffset += tLen || 8;
+      if (tLen < 8) break; // malformed transform payload
+        tOffset += tLen;
     }
 
     const isLast = saPayloadData.readUInt8(propOffset) === 0;
@@ -966,13 +982,21 @@ export async function handleIKEv2SA(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false, host, port,
         error: 'Port must be between 1 and 65535',
       } satisfies IKEv2Response), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies IKEv2Response), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 

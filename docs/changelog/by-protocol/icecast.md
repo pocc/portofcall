@@ -51,3 +51,8 @@ The implementation includes detailed documentation:
 - [Icecast Documentation](https://icecast.org/docs/) - Official server documentation
 - [SHOUTcast Server Protocol](http://wiki.winamp.com/wiki/SHOUTcast_DNAS_Server_2) - DNAS compatibility notes
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

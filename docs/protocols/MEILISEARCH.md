@@ -430,28 +430,28 @@ HTTP status 200 (the proxy succeeded, but `success: false` indicates Meilisearch
 
 ```bash
 # Health check (no auth)
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/health \
+curl -s -X POST https://l4.fyi/api/meilisearch/health \
   -H 'Content-Type: application/json' \
   -d '{"host":"search.example.com","port":7700}'
 
 # Health check with API key
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/health \
+curl -s -X POST https://l4.fyi/api/meilisearch/health \
   -H 'Content-Type: application/json' \
   -d '{"host":"search.example.com","apiKey":"your-master-or-admin-key"}'
 
 # Search an index
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/search \
+curl -s -X POST https://l4.fyi/api/meilisearch/search \
   -H 'Content-Type: application/json' \
   -d '{"host":"search.example.com","apiKey":"your-search-key","index":"movies","query":"batman","limit":5}' \
   | jq '.results.hits'
 
 # Search with empty query (returns all docs up to limit)
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/search \
+curl -s -X POST https://l4.fyi/api/meilisearch/search \
   -H 'Content-Type: application/json' \
   -d '{"host":"search.example.com","apiKey":"your-search-key","index":"movies","query":"","limit":100}'
 
 # Add documents
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/documents \
+curl -s -X POST https://l4.fyi/api/meilisearch/documents \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"search.example.com",
@@ -465,12 +465,12 @@ curl -s -X POST https://portofcall.ross.gg/api/meilisearch/documents \
   }'
 
 # Delete specific documents by ID
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/delete \
+curl -s -X POST https://l4.fyi/api/meilisearch/delete \
   -H 'Content-Type: application/json' \
   -d '{"host":"search.example.com","apiKey":"your-admin-key","index":"movies","ids":[1,2]}'
 
 # Delete ALL documents in an index
-curl -s -X POST https://portofcall.ross.gg/api/meilisearch/delete \
+curl -s -X POST https://l4.fyi/api/meilisearch/delete \
   -H 'Content-Type: application/json' \
   -d '{"host":"search.example.com","apiKey":"your-admin-key","index":"movies","all":true}'
 ```

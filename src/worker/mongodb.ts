@@ -91,6 +91,9 @@ function decodeBSON(data: Uint8Array, startOffset: number = 0, depth: number = 0
   if (depth > 10) throw new Error('BSON nesting too deep');
   const view = new DataView(data.buffer, data.byteOffset + startOffset);
   const docLength = view.getInt32(0, true);
+  if (startOffset + docLength > data.byteLength) {
+    throw new Error('BSON document length exceeds available data');
+  }
   const result: Record<string, unknown> = {};
 
   let offset = 4;
@@ -319,6 +322,10 @@ async function readFullResponse(
 
   const expectedLength = new DataView(firstChunk.buffer, firstChunk.byteOffset).getInt32(0, true);
 
+  if (expectedLength < 16 || expectedLength > 50 * 1024 * 1024) {
+    throw new Error(`Invalid MongoDB message length: ${expectedLength}`);
+  }
+
   if (firstChunk.length >= expectedLength) {
     return firstChunk.slice(0, expectedLength);
   }
@@ -332,6 +339,10 @@ async function readFullResponse(
     if (readDone || !value) break;
     chunks.push(value);
     totalRead += value.length;
+  }
+
+  if (totalRead < expectedLength) {
+    throw new Error(`Incomplete MongoDB response: expected ${expectedLength} bytes, got ${totalRead}`);
   }
 
   const fullResponse = new Uint8Array(totalRead);
@@ -369,6 +380,11 @@ function parseResponse(data: Uint8Array): Record<string, unknown> {
  * Sends hello command and returns server information
  */
 export async function handleMongoDBConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -388,7 +404,7 @@ export async function handleMongoDBConnect(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -411,8 +427,9 @@ export async function handleMongoDBConnect(request: Request): Promise<Response> 
       });
     }
 
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     const connectionPromise = (async () => {
@@ -453,7 +470,7 @@ export async function handleMongoDBConnect(request: Request): Promise<Response> 
         // Clean up
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
+        await socket.close();
 
         return {
           success: true,
@@ -478,12 +495,17 @@ export async function handleMongoDBConnect(request: Request): Promise<Response> 
       } catch (error) {
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
+        await socket.close();
         throw error;
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    let result;
+    try {
+      result = await Promise.race([connectionPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -506,6 +528,11 @@ export async function handleMongoDBConnect(request: Request): Promise<Response> 
  * Simple latency check using the ping command
  */
 export async function handleMongoDBPing(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -525,8 +552,27 @@ export async function handleMongoDBPing(request: Request): Promise<Response> {
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     const connectionPromise = (async () => {
@@ -552,7 +598,7 @@ export async function handleMongoDBPing(request: Request): Promise<Response> {
 
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
+        await socket.close();
 
         return {
           success: true,
@@ -564,12 +610,17 @@ export async function handleMongoDBPing(request: Request): Promise<Response> {
       } catch (error) {
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
+        await socket.close();
         throw error;
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    let result;
+    try {
+      result = await Promise.race([connectionPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    }
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -592,6 +643,11 @@ export async function handleMongoDBPing(request: Request): Promise<Response> {
  * POST /api/mongodb/find
  */
 export async function handleMongoDBFind(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number;
@@ -613,10 +669,26 @@ export async function handleMongoDBFind(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error('Timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('Timeout')), timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
@@ -657,11 +729,13 @@ export async function handleMongoDBFind(request: Request): Promise<Response> {
       } finally {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
+        await socket.close();
       }
     } catch (error) {
-      socket.close();
+      await socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -676,6 +750,11 @@ export async function handleMongoDBFind(request: Request): Promise<Response> {
  * POST /api/mongodb/insert
  */
 export async function handleMongoDBInsert(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number;
@@ -698,10 +777,26 @@ export async function handleMongoDBInsert(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error('Timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('Timeout')), timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
@@ -740,11 +835,13 @@ export async function handleMongoDBInsert(request: Request): Promise<Response> {
       } finally {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
+        await socket.close();
       }
     } catch (error) {
-      socket.close();
+      await socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -764,6 +861,11 @@ export async function handleMongoDBInsert(request: Request): Promise<Response> {
  * Returns: { success, matched, modified, upsertedId }
  */
 export async function handleMongoDBUpdate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number;
@@ -784,6 +886,12 @@ export async function handleMongoDBUpdate(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -792,9 +900,10 @@ export async function handleMongoDBUpdate(request: Request): Promise<Response> {
     }
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error('Timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('Timeout')), timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
@@ -839,11 +948,13 @@ export async function handleMongoDBUpdate(request: Request): Promise<Response> {
       } finally {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
+        await socket.close();
       }
     } catch (error) {
-      socket.close();
+      await socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -862,6 +973,11 @@ export async function handleMongoDBUpdate(request: Request): Promise<Response> {
  * Returns: { success, deleted }
  */
 export async function handleMongoDBDelete(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number;
@@ -879,6 +995,12 @@ export async function handleMongoDBDelete(request: Request): Promise<Response> {
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -887,9 +1009,10 @@ export async function handleMongoDBDelete(request: Request): Promise<Response> {
     }
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, rej) =>
-      setTimeout(() => rej(new Error('Timeout')), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeoutPromise = new Promise<never>((_, rej) => {
+      timeoutHandle = setTimeout(() => rej(new Error('Timeout')), timeout);
+    });
     try {
       await Promise.race([socket.opened, timeoutPromise]);
       const reader = socket.readable.getReader();
@@ -930,11 +1053,13 @@ export async function handleMongoDBDelete(request: Request): Promise<Response> {
       } finally {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
+        await socket.close();
       }
     } catch (error) {
-      socket.close();
+      await socket.close();
       throw error;
+    } finally {
+      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
     }
   } catch (error) {
     return new Response(JSON.stringify({

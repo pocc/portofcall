@@ -37,6 +37,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface RadsecRequest {
   host: string;
@@ -404,6 +405,9 @@ function parseRadiusResponse(data: Uint8Array): {
  */
 export async function handleRadsecAuth(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as RadsecRequest;
     const {
       host,
@@ -428,7 +432,7 @@ export async function handleRadsecAuth(request: Request): Promise<Response> {
       });
     }
 
-    if (!username || !password) {
+    if (username == null || password == null) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -440,7 +444,7 @@ export async function handleRadsecAuth(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -450,6 +454,11 @@ export async function handleRadsecAuth(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -662,6 +671,9 @@ export async function handleRadsecAuth(request: Request): Promise<Response> {
  */
 export async function handleRadsecConnect(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string;
       port?: number;
@@ -678,6 +690,15 @@ export async function handleRadsecConnect(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -805,7 +826,7 @@ async function encodeAccountingRequest(params: {
  */
 export async function handleRadsecAccounting(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -823,7 +844,16 @@ export async function handleRadsecAccounting(request: Request): Promise<Response
             acctOutputOctets = 0, acctSessionTime = 0 } = body;
 
     if (!host) return new Response(JSON.stringify({ success: false, host: '', port, error: 'Host is required' } satisfies RadsecResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!username) return new Response(JSON.stringify({ success: false, host, port, error: 'Username is required' } satisfies RadsecResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (username == null) return new Response(JSON.stringify({ success: false, host, port, error: 'Username is required' } satisfies RadsecResponse), { status: 400, headers: { 'Content-Type': 'application/json' } });
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const identifier = generateIdentifier();
     const radiusRequest = await encodeAccountingRequest({

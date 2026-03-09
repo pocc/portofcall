@@ -59,3 +59,8 @@ The IDENT protocol implementation was well-documented but needed clarification. 
 - [IDENT Protocol Specification](../protocols/IDENT.md) - Technical reference
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
 - [RFC 1413](https://datatracker.ietf.org/doc/html/rfc1413) - IDENT specification
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

@@ -4,7 +4,7 @@
 **Transport:** TCP
 **RFC:** [RFC 2229](https://tools.ietf.org/html/rfc2229) (1997)
 **Implementation:** `src/worker/dict.ts`
-**Routes:** `src/worker/index.ts` lines 1817-1827
+**Routes:** `src/worker/index.ts`
 
 ## Overview
 

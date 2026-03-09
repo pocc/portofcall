@@ -57,3 +57,8 @@ The implementation includes detailed documentation:
 
 - [RFC 2661 - Layer Two Tunneling Protocol](https://www.rfc-editor.org/rfc/rfc2661)
 - [RFC 3931 - Layer Two Tunneling Protocol (L2TPv3)](https://www.rfc-editor.org/rfc/rfc3931)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

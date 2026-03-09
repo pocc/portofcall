@@ -27,6 +27,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface MpdStatusRequest {
   host: string;
@@ -196,6 +197,10 @@ async function mpdSession(
   commands: string[],
   timeoutMs: number
 ): Promise<{ version: string; responses: string[] }> {
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    throw new Error(getCloudflareErrorMessage(host, cfCheck.ip));
+  }
   const socket = connect(`${host}:${port}`);
 
   const timeoutPromise = new Promise<never>((_, reject) => {
@@ -279,7 +284,7 @@ export async function handleMpdStatus(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -387,7 +392,7 @@ export async function handleMpdCommand(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         server: '',
@@ -524,7 +529,7 @@ async function runPlaybackCommand(
   command: string,
 ): Promise<{ version: string; raw: string; error?: string }> {
   if (!host) throw new Error('Host is required');
-  if (port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) throw new Error('Port must be between 1 and 65535');
   if (!/^[a-zA-Z0-9._:-]+$/.test(host)) throw new Error('Invalid host format');
   const { version, responses } = await mpdSession(host, port, password, [command], timeout);
   const raw = responses[0];

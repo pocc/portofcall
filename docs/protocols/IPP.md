@@ -446,23 +446,23 @@ These are commonly returned by Get-Printer-Attributes:
 
 ```bash
 # Probe a printer for capabilities
-curl -s -X POST https://portofcall.ross.gg/api/ipp/probe \
+curl -s -X POST https://l4.fyi/api/ipp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.50"}' | jq .
 
 # Probe with custom printer URI
-curl -s -X POST https://portofcall.ross.gg/api/ipp/probe \
+curl -s -X POST https://l4.fyi/api/ipp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.50","printerUri":"ipp://192.168.1.50/printers/laserjet"}' | jq .
 
 # Just printer name and state
-curl -s -X POST https://portofcall.ross.gg/api/ipp/probe \
+curl -s -X POST https://l4.fyi/api/ipp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.50"}' \
   | jq '[.attributes[] | select(.name | test("printer-name|printer-state$"))]'
 
 # Print a text document
-curl -s -X POST https://portofcall.ross.gg/api/ipp/print \
+curl -s -X POST https://l4.fyi/api/ipp/print \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"192.168.1.50",
@@ -472,7 +472,7 @@ curl -s -X POST https://portofcall.ross.gg/api/ipp/print \
   }' | jq .
 
 # Print to a non-standard port
-curl -s -X POST https://portofcall.ross.gg/api/ipp/print \
+curl -s -X POST https://l4.fyi/api/ipp/print \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"192.168.1.50",
@@ -481,7 +481,7 @@ curl -s -X POST https://portofcall.ross.gg/api/ipp/print \
   }' | jq .
 
 # Check if probe succeeded
-curl -s -X POST https://portofcall.ross.gg/api/ipp/probe \
+curl -s -X POST https://l4.fyi/api/ipp/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.50"}' \
   | jq '{success, statusMessage, version, rtt}'

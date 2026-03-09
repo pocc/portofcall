@@ -9,7 +9,7 @@ interface DiameterClientProps {
 export default function DiameterClient({ onBack }: DiameterClientProps) {
   const [host, setHost] = useState('');
   const [port, setPort] = useState('3868');
-  const [originHost, setOriginHost] = useState('portofcall.ross.gg');
+  const [originHost, setOriginHost] = useState('l4.fyi');
   const [originRealm, setOriginRealm] = useState('ross.gg');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

@@ -70,9 +70,13 @@ async function sendHttpRequest(
   const writer = socket.writable.getWriter();
   const encoder = new TextEncoder();
 
+  // Sanitize inputs to prevent CRLF injection / request smuggling
+  const safePath = path.replace(/[\r\n]/g, '');
+  const safeHost = host.replace(/[\r\n]/g, '');
+
   // Build HTTP/1.1 request
-  let request = `${method} ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  let request = `${method} ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -101,7 +105,12 @@ async function sendHttpRequest(
     const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     if (value) {
-      response += decoder.decode(value, { stream: true });
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
   response += decoder.decode(new Uint8Array(0)); // Flush remaining multi-byte sequences
@@ -188,6 +197,11 @@ function decodeChunked(data: string): string {
  * GET /info returns system-wide information
  */
 export async function handleDockerHealth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerRequest;
     const { host, port = 2375, timeout = 15000 } = body;
@@ -199,6 +213,12 @@ export async function handleDockerHealth(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -307,6 +327,11 @@ export async function handleDockerHealth(request: Request): Promise<Response> {
  * Sends an arbitrary HTTP request to the Docker daemon.
  */
 export async function handleDockerQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerQueryRequest;
     const {
@@ -327,29 +352,65 @@ export async function handleDockerQuery(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
-    // Validate method - restrict to safe methods by default
-    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
-    const upperMethod = method.toUpperCase();
-    if (!allowedMethods.includes(upperMethod)) {
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
         success: false,
-        error: `Invalid HTTP method: ${method}`,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
       }), {
-        status: 400,
+        status: 403,
         headers: { 'Content-Type': 'application/json' },
       });
     }
 
+    // Restrict to read-only paths to prevent arbitrary container manipulation (C-6)
+    const ALLOWED_DOCKER_PATH_PREFIXES = [
+      '/version', '/info', '/_ping',
+      '/containers/json', '/containers/',  // allow inspect (GET only)
+      '/images/json', '/images/',          // allow inspect (GET only)
+      '/volumes', '/networks',
+      '/system/df',
+    ];
+    const ALLOWED_DOCKER_METHODS = ['GET', 'HEAD'];
+    const safeMethod = (method || 'GET').toUpperCase();
+    if (!ALLOWED_DOCKER_METHODS.includes(safeMethod)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only methods (GET, HEAD) are allowed for the Docker query endpoint',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Ensure path starts with /
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+    // Prevent path traversal via .. segments
+    if (normalizedPath.includes('..')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Path traversal not allowed',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (!ALLOWED_DOCKER_PATH_PREFIXES.some(prefix => normalizedPath.startsWith(prefix))) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Path '${normalizedPath}' is not in the allowed Docker API paths`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const start = Date.now();
 
     const result = await sendHttpRequest(
       host,
       port,
-      upperMethod,
+      safeMethod,
       normalizedPath,
       queryBody,
       timeout,
@@ -399,6 +460,11 @@ export async function handleDockerQuery(request: Request): Promise<Response> {
  * Body: { host, port?, path?, method?, body?, timeout? }
  */
 export async function handleDockerTLS(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerQueryRequest;
     const {
@@ -415,16 +481,54 @@ export async function handleDockerTLS(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-
-    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
-    const upperMethod = method.toUpperCase();
-    if (!allowedMethods.includes(upperMethod)) {
-      return new Response(JSON.stringify({ success: false, error: `Invalid HTTP method: ${method}` }), {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Restrict to read-only methods and safe paths (same as non-TLS endpoint)
+    const ALLOWED_DOCKER_TLS_METHODS = ['GET', 'HEAD'];
+    const ALLOWED_DOCKER_TLS_PATH_PREFIXES = [
+      '/version', '/info', '/_ping',
+      '/containers/json', '/containers/',
+      '/images/json', '/images/',
+      '/volumes', '/networks',
+      '/system/df',
+    ];
+
+    const upperMethod = method.toUpperCase();
+    if (!ALLOWED_DOCKER_TLS_METHODS.includes(upperMethod)) {
+      return new Response(JSON.stringify({ success: false, error: 'Only read-only methods (GET, HEAD) are allowed for Docker TLS endpoint' }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+
+    if (normalizedPath.includes('..')) {
+      return new Response(JSON.stringify({ success: false, error: 'Path traversal not allowed' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (!ALLOWED_DOCKER_TLS_PATH_PREFIXES.some(prefix => normalizedPath.startsWith(prefix))) {
+      return new Response(JSON.stringify({ success: false, error: `Path '${normalizedPath}' is not in the allowed Docker API paths` }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const url = `https://${host}:${port}${normalizedPath}`;
 
     const fetchHeaders: Record<string, string> = {
@@ -498,6 +602,11 @@ interface DockerContainerCreateRequest extends DockerRequest {
  * Body: { host, port?, image, name?, cmd?, env?, https?, timeout? }
  */
 export async function handleDockerContainerCreate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerContainerCreateRequest;
     const {
@@ -521,6 +630,22 @@ export async function handleDockerContainerCreate(request: Request): Promise<Res
     if (!image) {
       return new Response(JSON.stringify({ success: false, error: 'Image is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (effectivePort < 1 || effectivePort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -599,6 +724,11 @@ interface DockerContainerStartRequest extends DockerRequest {
  * Body: { host, port?, containerId, https?, timeout? }
  */
 export async function handleDockerContainerStart(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerContainerStartRequest;
     const {
@@ -619,6 +749,22 @@ export async function handleDockerContainerStart(request: Request): Promise<Resp
     if (!containerId) {
       return new Response(JSON.stringify({ success: false, error: 'containerId is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (effectivePort < 1 || effectivePort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -730,6 +876,11 @@ function parseDockerLogs(data: Uint8Array): { stdout: string[]; stderr: string[]
  * Query/Body: { host, port?, containerId, tail?, https?, timeout? }
  */
 export async function handleDockerContainerLogs(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerContainerLogsRequest;
     const {
@@ -753,8 +904,26 @@ export async function handleDockerContainerLogs(request: Request): Promise<Respo
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    // Clamp tail to a safe range — Docker interprets negative values as "all logs"
+    const safeTail = Math.max(1, Math.min(10000, Math.floor(Number(tail) || 100)));
+    if (effectivePort < 1 || effectivePort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
-    const pathStr = `/containers/${encodeURIComponent(containerId)}/logs?stdout=true&stderr=true&tail=${tail}`;
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const pathStr = `/containers/${encodeURIComponent(containerId)}/logs?stdout=true&stderr=true&tail=${safeTail}`;
     const start = Date.now();
 
     let rawBytes: Uint8Array;
@@ -787,9 +956,11 @@ export async function handleDockerContainerLogs(request: Request): Promise<Respo
 
       const writer = socket.writable.getWriter();
       const encoder = new TextEncoder();
+      const safeH = host.replace(/[\r\n]/g, '');
+      const safePStr = pathStr.replace(/[\r\n]/g, '');
       const httpReq =
-        `GET ${pathStr} HTTP/1.1\r\n` +
-        `Host: ${host}:${effectivePort}\r\n` +
+        `GET ${safePStr} HTTP/1.1\r\n` +
+        `Host: ${safeH}:${effectivePort}\r\n` +
         `Accept: application/octet-stream\r\n` +
         `Connection: close\r\n` +
         `User-Agent: PortOfCall/1.0\r\n` +
@@ -847,7 +1018,7 @@ export async function handleDockerContainerLogs(request: Request): Promise<Respo
       success: true,
       statusCode,
       containerId,
-      tail,
+      tail: safeTail,
       stdout: logs.stdout,
       stderr: logs.stderr,
       combined: logs.combined,
@@ -931,6 +1102,11 @@ interface DockerExecRequest extends DockerRequest {
  * Body: { host, port?, containerId, cmd, https?, timeout? }
  */
 export async function handleDockerExec(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as DockerExecRequest;
     const {
@@ -957,6 +1133,22 @@ export async function handleDockerExec(request: Request): Promise<Response> {
     if (!cmd || cmd.length === 0) {
       return new Response(JSON.stringify({ success: false, error: 'cmd is required' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (effectivePort < 1 || effectivePort > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -1040,9 +1232,58 @@ export async function handleDockerExec(request: Request): Promise<Response> {
       const ab = await r2.arrayBuffer();
       rawBytes = new Uint8Array(ab);
     } else {
-      const r2 = await sendHttpRequest(host, effectivePort, 'POST', execStartPath, execStartBody, timeout);
-      startStatusCode = r2.statusCode;
-      rawBytes = new TextEncoder().encode(r2.body);
+      // Read raw bytes directly to avoid UTF-8 codec roundtrip corrupting
+      // the binary 8-byte frame headers in Docker's multiplexed log stream.
+      const execEncoder = new TextEncoder();
+      const execSocket = connect(`${host}:${effectivePort}`);
+      const execTimeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Connection timeout')), timeout),
+      );
+      await Promise.race([execSocket.opened, execTimeoutPromise]);
+
+      const execWriter = execSocket.writable.getWriter();
+      const execBodyBytes = execEncoder.encode(execStartBody);
+      const safeExecHost = host.replace(/[\r\n]/g, '');
+      const safeExecPath = execStartPath.replace(/[\r\n]/g, '');
+      const execHttpReq =
+        `POST ${safeExecPath} HTTP/1.1\r\n` +
+        `Host: ${safeExecHost}:${effectivePort}\r\n` +
+        `Content-Type: application/json\r\n` +
+        `Content-Length: ${execBodyBytes.length}\r\n` +
+        `Accept: application/octet-stream\r\n` +
+        `Connection: close\r\n` +
+        `User-Agent: PortOfCall/1.0\r\n` +
+        `\r\n`;
+      await execWriter.write(execEncoder.encode(execHttpReq));
+      await execWriter.write(execBodyBytes);
+      execWriter.releaseLock();
+
+      const execReader = execSocket.readable.getReader();
+      const execChunks: Uint8Array[] = [];
+      let execTotalLen = 0;
+      while (execTotalLen < 1048576) {
+        const { value, done } = await Promise.race([execReader.read(), execTimeoutPromise]);
+        if (done) break;
+        if (value) { execChunks.push(value); execTotalLen += value.length; }
+      }
+      execReader.releaseLock();
+      execSocket.close();
+
+      const execCombined = new Uint8Array(execTotalLen);
+      let execOff = 0;
+      for (const c of execChunks) { execCombined.set(c, execOff); execOff += c.length; }
+
+      const execHeaderEndIdx = findHeaderEnd(execCombined);
+      if (execHeaderEndIdx === -1) throw new Error('Invalid HTTP response from Docker exec');
+
+      const execHeaderStr = new TextDecoder().decode(execCombined.slice(0, execHeaderEndIdx));
+      const execStatusMatch = execHeaderStr.match(/HTTP\/[\d.]+ (\d+)/);
+      startStatusCode = execStatusMatch ? parseInt(execStatusMatch[1], 10) : 0;
+
+      rawBytes = execCombined.slice(execHeaderEndIdx + 4);
+      if (execHeaderStr.toLowerCase().includes('transfer-encoding: chunked')) {
+        rawBytes = decodeChunkedBytes(rawBytes);
+      }
     }
 
     const latencyMs = Date.now() - start;

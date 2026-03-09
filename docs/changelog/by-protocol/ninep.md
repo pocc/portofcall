@@ -143,3 +143,8 @@ From the inline comments and implementation:
 - [9P Protocol Manual](https://man.cat-v.org/plan_9/5/intro) - Official Plan 9 reference
 - [9P2000 Wire Format](http://9p.cat-v.org/documentation/rfc/) - Protocol RFC
 - [QEMU virtio-9p](https://wiki.qemu.org/Documentation/9psetup) - Common use case
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

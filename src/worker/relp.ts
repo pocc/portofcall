@@ -140,6 +140,9 @@ async function readRelpResponse(
  */
 export async function handleRelpConnect(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const { host, port = 20514, timeout = 10000 } = await request.json() as {
       host: string;
       port?: number;
@@ -150,6 +153,12 @@ export async function handleRelpConnect(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -263,6 +272,9 @@ export async function handleRelpConnect(request: Request): Promise<Response> {
  */
 export async function handleRelpSend(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const {
       host,
       port = 20514,
@@ -309,6 +321,12 @@ export async function handleRelpSend(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Severity must be between 0 and 7' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -466,6 +484,9 @@ async function readAllRelpResponses(
  */
 export async function handleRELPBatch(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const {
       host,
       port = 20514,
@@ -507,6 +528,12 @@ export async function handleRELPBatch(request: Request): Promise<Response> {
       return new Response(JSON.stringify({ error: 'Severity must be between 0 and 7' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 

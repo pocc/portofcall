@@ -17,6 +17,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface StompConnectRequest {
   host: string;
@@ -48,13 +49,18 @@ interface StompFrame {
 
 const NULL_BYTE = '\x00';
 
+/** Escape a STOMP 1.2 header value per spec (section 5.4). */
+function escapeStompHeaderValue(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/:/g, '\\c');
+}
+
 /**
  * Build a STOMP frame string
  */
 function buildFrame(command: string, headers: Record<string, string>, body: string = ''): string {
   let frame = command + '\n';
   for (const [key, value] of Object.entries(headers)) {
-    frame += `${key}:${value}\n`;
+    frame += `${escapeStompHeaderValue(key)}:${escapeStompHeaderValue(value)}\n`;
   }
   frame += '\n';
   frame += body;
@@ -104,7 +110,7 @@ function validateStompInput(host: string, port: number): string | null {
     return 'Host contains invalid characters';
   }
 
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
 
@@ -137,6 +143,13 @@ export async function handleStompConnect(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -185,12 +198,11 @@ export async function handleStompConnect(request: Request): Promise<Response> {
           if (done) break;
 
           if (value) {
+            if (totalBytes + value.length > maxSize) {
+              throw new Error('STOMP response too large');
+            }
             chunks.push(value);
             totalBytes += value.length;
-
-            if (totalBytes > maxSize) {
-              throw new Error('Response too large');
-            }
 
             // Check if we have a complete frame (contains NULL byte)
             const partial = new TextDecoder().decode(value);
@@ -340,6 +352,13 @@ export async function handleStompSend(request: Request): Promise<Response> {
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const socket = connect(`${host}:${port}`);
 
     const timeoutPromise = new Promise<never>((_, reject) => {
@@ -366,6 +385,7 @@ export async function handleStompSend(request: Request): Promise<Response> {
 
       // Read CONNECTED response
       let responseBuffer = '';
+      const connDecoder = new TextDecoder();
       try {
         while (!responseBuffer.includes(NULL_BYTE)) {
           const { value, done } = await Promise.race([
@@ -374,7 +394,7 @@ export async function handleStompSend(request: Request): Promise<Response> {
           ]);
           if (done) break;
           if (value) {
-            responseBuffer += new TextDecoder().decode(value, { stream: true });
+            responseBuffer += connDecoder.decode(value, { stream: true });
           }
         }
       } catch (error) {
@@ -402,17 +422,18 @@ export async function handleStompSend(request: Request): Promise<Response> {
       // Step 2: SEND message
       const bodyByteLength = new TextEncoder().encode(messageBody).length;
       const sendHeaders: Record<string, string> = {
+        ...customHeaders,
         destination,
         'content-type': contentType,
         'content-length': String(bodyByteLength),
         receipt: 'send-receipt',
-        ...customHeaders,
       };
 
       await writer.write(new TextEncoder().encode(buildFrame('SEND', sendHeaders, messageBody)));
 
       // Read RECEIPT or ERROR
       let receiptBuffer = '';
+      const receiptDecoder = new TextDecoder();
       try {
         while (!receiptBuffer.includes(NULL_BYTE)) {
           const { value, done } = await Promise.race([
@@ -421,7 +442,7 @@ export async function handleStompSend(request: Request): Promise<Response> {
           ]);
           if (done) break;
           if (value) {
-            receiptBuffer += new TextDecoder().decode(value, { stream: true });
+            receiptBuffer += receiptDecoder.decode(value, { stream: true });
           }
         }
       } catch (error) {
@@ -534,11 +555,12 @@ export async function handleStompSubscribe(request: Request): Promise<Response> 
 
       // Read CONNECTED frame
       let buf = '';
+      const subConnDecoder = new TextDecoder();
       try {
         while (!buf.includes(NULL_BYTE)) {
           const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
           if (done) break;
-          if (value) buf += new TextDecoder().decode(value, { stream: true });
+          if (value) buf += subConnDecoder.decode(value, { stream: true });
         }
       } catch { /* timeout */ }
 
@@ -592,7 +614,7 @@ export async function handleStompSubscribe(request: Request): Promise<Response> 
           );
           const { value, done } = await Promise.race([reader.read(), shortTimeout]);
           if (done) break;
-          if (value) buf += new TextDecoder().decode(value, { stream: true });
+          if (value) buf += subConnDecoder.decode(value, { stream: true });
         } catch { break; }
       }
 

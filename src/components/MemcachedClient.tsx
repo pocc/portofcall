@@ -28,6 +28,16 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
   const outputRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Cleanup WebSocket on unmount
+  useEffect(() => {
+    return () => {
+      if (wsRef.current && wsRef.current.readyState <= WebSocket.OPEN) {
+        wsRef.current.close(1000, 'component unmount');
+      }
+      wsRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
@@ -55,6 +65,16 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
     const ws = new WebSocket(`${proto}//${window.location.host}/api/memcached/session?${params}`);
     wsRef.current = ws;
 
+    // Connection timeout — abort if not connected within 15s
+    const connectTimeout = setTimeout(() => {
+      if (ws.readyState !== WebSocket.OPEN) {
+        ws.close();
+        setStatus('disconnected');
+        setStatusMsg('Connection timed out after 15 seconds.');
+        addEntry('error', 'Connection timed out.');
+      }
+    }, 15_000);
+
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data as string) as {
@@ -66,6 +86,7 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
         };
 
         if (msg.type === 'connected') {
+          clearTimeout(connectTimeout);
           setStatus('connected');
           setVersion(msg.version ?? '');
           addEntry('info', `Connected to ${host}:${port} — Memcached ${msg.version ?? 'unknown'}`);
@@ -84,11 +105,13 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
     };
 
     ws.onerror = () => {
+      clearTimeout(connectTimeout);
       addEntry('error', 'WebSocket error');
       setStatus('disconnected');
     };
 
     ws.onclose = (e) => {
+      clearTimeout(connectTimeout);
       addEntry('info', `[closed: ${e.reason || e.code}]`);
       setStatus('disconnected');
       wsRef.current = null;
@@ -169,8 +192,9 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
             <h2 className="text-xl font-semibold text-white mb-4">Connection</h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Host</label>
+                <label htmlFor="memcached-host" className="block text-sm font-medium text-slate-300 mb-1">Host</label>
                 <input
+                  id="memcached-host"
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -180,8 +204,9 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">Port</label>
+                <label htmlFor="memcached-port" className="block text-sm font-medium text-slate-300 mb-1">Port</label>
                 <input
+                  id="memcached-port"
                   type="number"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
@@ -191,7 +216,7 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
                 <p className="text-xs text-slate-400 mt-1">Default: 11211</p>
               </div>
 
-              {statusMsg && <p className="text-sm text-red-400">{statusMsg}</p>}
+              {statusMsg && <p className="text-sm text-red-400" role="alert">{statusMsg}</p>}
 
               {status !== 'connected' ? (
                 <button

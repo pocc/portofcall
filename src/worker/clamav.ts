@@ -87,7 +87,7 @@ async function readClamdResponse(
 export async function handleClamAVPing(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -110,7 +110,7 @@ export async function handleClamAVPing(request: Request): Promise<Response> {
     const port = body.port || 3310;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -133,7 +133,8 @@ export async function handleClamAVPing(request: Request): Promise<Response> {
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    const connectTimeoutP = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+    await Promise.race([socket.opened, connectTimeoutP]);
 
     const connectTime = Date.now() - startTime;
 
@@ -187,7 +188,7 @@ export async function handleClamAVPing(request: Request): Promise<Response> {
 export async function handleClamAVVersion(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -210,7 +211,7 @@ export async function handleClamAVVersion(request: Request): Promise<Response> {
     const port = body.port || 3310;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -232,7 +233,8 @@ export async function handleClamAVVersion(request: Request): Promise<Response> {
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    const connectTimeoutP = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+    await Promise.race([socket.opened, connectTimeoutP]);
 
     // Send VERSION command
     const writer = socket.writable.getWriter();
@@ -298,7 +300,7 @@ export async function handleClamAVVersion(request: Request): Promise<Response> {
 export async function handleClamAVStats(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -321,7 +323,7 @@ export async function handleClamAVStats(request: Request): Promise<Response> {
     const port = body.port || 3310;
     const timeout = body.timeout || 10000;
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -343,7 +345,8 @@ export async function handleClamAVStats(request: Request): Promise<Response> {
     const startTime = Date.now();
 
     const socket = connect(`${host}:${port}`);
-    await socket.opened;
+    const connectTimeoutP = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+    await Promise.race([socket.opened, connectTimeoutP]);
 
     // Send STATS command
     const writer = socket.writable.getWriter();
@@ -455,7 +458,7 @@ export async function handleClamAVStats(request: Request): Promise<Response> {
 export async function handleClamAVScan(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -473,7 +476,7 @@ export async function handleClamAVScan(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
         JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } }
@@ -515,7 +518,8 @@ export async function handleClamAVScan(request: Request): Promise<Response> {
 
     const socket = connect(`${host}:${port}`);
     try {
-      await socket.opened;
+      const connectTimeoutP = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Connection timeout')), timeout));
+      await Promise.race([socket.opened, connectTimeoutP]);
       const reader = socket.readable.getReader();
       const writer = socket.writable.getWriter();
       try {

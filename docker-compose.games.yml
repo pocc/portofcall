@@ -1,0 +1,54 @@
+version: '3.8'
+
+# Game Servers
+# Protocols covered: minecraft, mumble
+#
+# Usage: docker compose -f docker-compose.games.yml up -d
+#
+# Note: Minecraft server requires ~1GB RAM and takes a minute to start.
+
+services:
+  # Minecraft Java Edition Server
+  minecraft:
+    image: itzg/minecraft-server
+    container_name: testserver-minecraft
+    ports:
+      - "25565:25565"
+    environment:
+      - EULA=TRUE
+      - TYPE=VANILLA
+      - VERSION=LATEST
+      - MEMORY=512M
+      - MAX_PLAYERS=5
+      - MOTD=Port of Call Test Server
+      - ONLINE_MODE=false
+    volumes:
+      - minecraft_data:/data
+    mem_limit: 1g
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Mumble (Murmur) - VoIP server
+  mumble:
+    image: mumblevoip/mumble-server
+    container_name: testserver-mumble
+    ports:
+      - "64738:64738/tcp"
+      - "64738:64738/udp"
+    environment:
+      - MUMBLE_SUPERUSER_PASSWORD=testpass123
+    volumes:
+      - mumble_data:/data
+    mem_limit: 128m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  minecraft_data:
+  mumble_data:

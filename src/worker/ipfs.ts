@@ -49,7 +49,7 @@ interface IPFSProbeRequest {
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._:-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -123,7 +123,7 @@ function parseMultistreamResponse(data: Uint8Array): string[] {
  */
 export async function handleIPFSProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -303,7 +303,7 @@ interface IPFSNodeInfoRequest {
  */
 export async function handleIPFSAdd(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -322,6 +322,11 @@ export async function handleIPFSAdd(request: Request): Promise<Response> {
         JSON.stringify({ success: false, error: addValidationError }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const form = new FormData();
@@ -379,7 +384,7 @@ export async function handleIPFSAdd(request: Request): Promise<Response> {
  */
 export async function handleIPFSCat(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -399,6 +404,11 @@ export async function handleIPFSCat(request: Request): Promise<Response> {
         JSON.stringify({ success: false, error: 'CID is required' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();
@@ -447,13 +457,17 @@ export async function handleIPFSCat(request: Request): Promise<Response> {
  * Pins a CID to the local IPFS node (prevents garbage collection).
  */
 export async function handleIPFSPinAdd(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; cid: string; timeout?: number };
     const { host, port = 5001, cid, timeout = 15000 } = body;
     const pinAddValErr = validateInput(host, port);
     if (pinAddValErr) return new Response(JSON.stringify({ success: false, error: pinAddValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!cid || !cid.trim()) return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const startTime = Date.now();
     const resp = await fetch(`http://${host}:${port}/api/v0/pin/add?arg=${encodeURIComponent(cid)}`, { method: 'POST', signal: AbortSignal.timeout(timeout) });
     const latencyMs = Date.now() - startTime;
@@ -471,12 +485,16 @@ export async function handleIPFSPinAdd(request: Request): Promise<Response> {
  * Lists pinned CIDs. type = 'all' | 'direct' | 'indirect' | 'recursive' (default 'all').
  */
 export async function handleIPFSPinList(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; cid?: string; type?: string; timeout?: number };
     const { host, port = 5001, cid, type = 'all', timeout = 10000 } = body;
     const pinLsValErr = validateInput(host, port);
     if (pinLsValErr) return new Response(JSON.stringify({ success: false, error: pinLsValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const startTime = Date.now();
     let url = `http://${host}:${port}/api/v0/pin/ls?type=${encodeURIComponent(type)}`;
     if (cid) url += `&arg=${encodeURIComponent(cid)}`;
@@ -500,13 +518,17 @@ export async function handleIPFSPinList(request: Request): Promise<Response> {
  * Calls POST /api/v0/pin/rm?arg=CID&recursive=true
  */
 export async function handleIPFSPinRm(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; cid: string; recursive?: boolean; timeout?: number };
     const { host, port = 5001, cid, recursive = true, timeout = 15000 } = body;
     const pinRmValErr = validateInput(host, port);
     if (pinRmValErr) return new Response(JSON.stringify({ success: false, error: pinRmValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!cid || !cid.trim()) return new Response(JSON.stringify({ success: false, error: 'CID is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const startTime = Date.now();
     const resp = await fetch(
       `http://${host}:${port}/api/v0/pin/rm?arg=${encodeURIComponent(cid)}&recursive=${recursive}`,
@@ -539,13 +561,17 @@ export async function handleIPFSPinRm(request: Request): Promise<Response> {
  * not as a raw octet-stream body.
  */
 export async function handleIPFSPubsubPub(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; topic: string; data?: string; timeout?: number };
     const { host, port = 5001, topic, data = '', timeout = 10000 } = body;
     const pubValErr = validateInput(host, port);
     if (pubValErr) return new Response(JSON.stringify({ success: false, error: pubValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!topic || !topic.trim()) return new Response(JSON.stringify({ success: false, error: 'Topic is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const startTime = Date.now();
     // Kubo RPC API expects data as a file in multipart/form-data
     const form = new FormData();
@@ -578,12 +604,16 @@ export async function handleIPFSPubsubPub(request: Request): Promise<Response> {
  * Calls POST /api/v0/pubsub/ls
  */
 export async function handleIPFSPubsubLs(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   try {
     const body = await request.json() as { host: string; port?: number; timeout?: number };
     const { host, port = 5001, timeout = 10000 } = body;
     const lsValErr = validateInput(host, port);
     if (lsValErr) return new Response(JSON.stringify({ success: false, error: lsValErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
     const startTime = Date.now();
     const resp = await fetch(`http://${host}:${port}/api/v0/pubsub/ls`, { method: 'POST', signal: AbortSignal.timeout(timeout) });
     const latencyMs = Date.now() - startTime;
@@ -609,7 +639,7 @@ export async function handleIPFSPubsubLs(request: Request): Promise<Response> {
  */
 export async function handleIPFSNodeInfo(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -622,6 +652,11 @@ export async function handleIPFSNodeInfo(request: Request): Promise<Response> {
         JSON.stringify({ success: false, error: infoValidationError }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const startTime = Date.now();

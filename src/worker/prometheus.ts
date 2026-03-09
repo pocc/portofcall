@@ -46,8 +46,10 @@ async function sendHttpGet(
 
   const writer = socket.writable.getWriter();
 
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json, text/plain\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -64,7 +66,12 @@ async function sendHttpGet(
     const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
     if (readResult.done) break;
     if (readResult.value) {
-      response += decoder.decode(readResult.value, { stream: true });
+      const chunk = decoder.decode(readResult.value, { stream: true });
+      if (response.length + chunk.length > maxSize) {
+        response += chunk.substring(0, maxSize - response.length);
+        break;
+      }
+      response += chunk;
     }
   }
 
@@ -142,6 +149,9 @@ function decodeChunked(data: string): string {
  */
 export async function handlePrometheusHealth(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const { host, port = 9090, timeout = 15000 } = await request.json<{
       host: string;
       port?: number;
@@ -152,6 +162,12 @@ export async function handlePrometheusHealth(request: Request): Promise<Response
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -248,6 +264,9 @@ export async function handlePrometheusHealth(request: Request): Promise<Response
  */
 export async function handlePrometheusQuery(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const { host, port = 9090, query, timeout = 15000 } = await request.json<{
       host: string;
       port?: number;
@@ -266,6 +285,12 @@ export async function handlePrometheusQuery(request: Request): Promise<Response>
       return new Response(JSON.stringify({ error: 'Missing required parameter: query' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -345,6 +370,9 @@ export async function handlePrometheusQuery(request: Request): Promise<Response>
  */
 export async function handlePrometheusMetrics(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const { host, port = 9090, timeout = 15000 } = await request.json<{
       host: string;
       port?: number;
@@ -355,6 +383,12 @@ export async function handlePrometheusMetrics(request: Request): Promise<Respons
       return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -446,6 +480,9 @@ export async function handlePrometheusMetrics(request: Request): Promise<Respons
  */
 export async function handlePrometheusRangeQuery(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = await request.json() as {
       host: string; port?: number; query: string;
       start?: string; end?: string; step?: string; timeout?: number;
@@ -458,6 +495,12 @@ export async function handlePrometheusRangeQuery(request: Request): Promise<Resp
     const host = body.host;
     const port = body.port || 9090;
     const timeout = body.timeout || 15000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Bug fix: added missing Cloudflare detection (all other handlers had this check)
     const cfCheck = await checkIfCloudflare(host);

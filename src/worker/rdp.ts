@@ -31,6 +31,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // RDP Negotiation Protocol constants
 const PROTOCOL_RDP = 0x00000000;
@@ -116,27 +117,6 @@ function getSelectedProtocolName(protocol: number): string {
   }
 }
 
-/**
- * Read exactly `length` bytes from a reader, accumulating chunks.
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
-
-  while (offset < length) {
-    const { value, done } = await reader.read();
-    if (done || !value) throw new Error('Connection closed while reading');
-
-    const toCopy = Math.min(length - offset, value.length);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
-  }
-
-  return buffer;
-}
 
 interface RDPNegotiateResult {
   success: boolean;
@@ -193,7 +173,7 @@ export async function handleRDPNegotiate(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
@@ -222,6 +202,7 @@ export async function handleRDPNegotiate(request: Request): Promise<Response> {
       await socket.opened;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
@@ -229,7 +210,7 @@ export async function handleRDPNegotiate(request: Request): Promise<Response> {
         await writer.write(buildConnectionRequest(requestProtocols));
 
         // --- Step 2: Read TPKT header (4 bytes) ---
-        const tpktHeader = await readExact(reader, 4);
+        const tpktHeader = await br.readExact(4);
 
         if (tpktHeader[0] !== 0x03) {
           throw new Error(`Invalid TPKT version: 0x${tpktHeader[0].toString(16)} (expected 0x03)`);
@@ -244,7 +225,7 @@ export async function handleRDPNegotiate(request: Request): Promise<Response> {
         }
 
         const remaining = tpktLength - 4;
-        const responseData = await readExact(reader, remaining);
+        const responseData = await br.readExact(remaining);
         const latencyMs = Date.now() - startTime;
 
         // Assemble full raw packet for diagnostics
@@ -388,7 +369,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -422,6 +403,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
       const connectTime = Date.now() - startTime;
 
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       const writer = socket.writable.getWriter();
 
       try {
@@ -430,7 +412,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
         await writer.write(buildConnectionRequest(requestedProtocols));
 
         // Read TPKT header (4 bytes)
-        const tpktHeader = await readExact(reader, 4);
+        const tpktHeader = await br.readExact(4);
         const tpktVersion = tpktHeader[0];
         const tpktLength = new DataView(tpktHeader.buffer).getUint16(2, false);
 
@@ -440,7 +422,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
 
         // Read the rest of the packet
         const remaining = tpktLength - 4;
-        const responseData = await readExact(reader, remaining);
+        const responseData = await br.readExact(remaining);
 
         const rtt = Date.now() - startTime;
 
@@ -461,7 +443,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
         let hasNegotiation = false;
 
         const negOffset = 7; // negotiation starts after LI(1) + fixed X.224 CC header(6)
-        if (remaining > negOffset) {
+        if (remaining >= negOffset + 8) { // Need 8 bytes for type(1) + flags(1) + length(2) + value(4)
           hasNegotiation = true;
           negotiationType = responseData[negOffset];
           negotiationFlags = responseData[negOffset + 1];
@@ -695,6 +677,7 @@ export async function handleRDPNLAProbe(request: Request): Promise<Response> {
       await Promise.race([socket.opened, tp]);
 
       let reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
       let writer = socket.writable.getWriter();
 
       try {
@@ -702,10 +685,10 @@ export async function handleRDPNLAProbe(request: Request): Promise<Response> {
         await writer.write(buildConnectionRequest(PROTOCOL_HYBRID));
 
         // Step 2: Read X.224 CC
-        const tpktHdr = await readExact(reader, 4);
+        const tpktHdr = await br.readExact(4);
         if (tpktHdr[0] !== 0x03) throw new Error('Not an RDP server (bad TPKT version)');
         const tpktLen = new DataView(tpktHdr.buffer).getUint16(2, false);
-        const rest    = await readExact(reader, tpktLen - 4);
+        const rest    = await br.readExact(tpktLen - 4);
         const x224LatencyMs = Date.now() - start;
 
         if (rest[1] !== 0xD0) {

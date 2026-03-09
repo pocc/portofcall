@@ -61,6 +61,11 @@ async function readMemcachedResponse(
  * POST /api/memcached/connect
  */
 export async function handleMemcachedConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 11211, timeout = 10000 } = await request.json<{
       host: string;
@@ -69,9 +74,15 @@ export async function handleMemcachedConnect(request: Request): Promise<Response
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -147,6 +158,11 @@ export async function handleMemcachedConnect(request: Request): Promise<Response
  * the proper two-line request: command header + data block.
  */
 export async function handleMemcachedCommand(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 11211, command, timeout = 10000 } = await request.json<{
       host: string;
@@ -161,6 +177,21 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (/[\r\n]/.test(command)) {
+      return new Response(JSON.stringify({
+        error: 'Command must not contain newline characters',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -291,7 +322,11 @@ export async function handleMemcachedSession(request: Request): Promise<Response
   const port = parseInt(url.searchParams.get('port') || '11211', 10);
 
   if (!host) {
-    return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
+    return new Response(JSON.stringify({ success: false, error: 'Missing host' }), { status: 400 });
+  }
+
+  if (isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400 });
   }
 
   const cfCheck = await checkIfCloudflare(host);
@@ -327,6 +362,10 @@ export async function handleMemcachedSession(request: Request): Promise<Response
           const msg = JSON.parse(event.data as string) as { type: string; command?: string };
           if (msg.type === 'command' && msg.command) {
             const trimmed = msg.command.trim();
+            if (/[\r\n]/.test(trimmed)) {
+              server.send(JSON.stringify({ type: 'error', message: 'Command must not contain newline characters' }));
+              return;
+            }
             const parts = trimmed.split(/\s+/);
             const cmd = parts[0].toLowerCase();
             const storageCommands = ['set', 'add', 'replace', 'append', 'prepend'];
@@ -404,6 +443,11 @@ export async function handleMemcachedSession(request: Request): Promise<Response
  * POST /api/memcached/stats
  */
 export async function handleMemcachedStats(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 11211, timeout = 10000, subcommand = '' } = await request.json<{
       host: string;
@@ -413,7 +457,7 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -424,6 +468,12 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
       return new Response(JSON.stringify({
         error: `Invalid subcommand. Allowed: ${allowed.filter(Boolean).join(', ')}`,
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -536,6 +586,11 @@ function parseValueBlocks(raw: string): Array<{
  * Returns structured VALUE objects including CAS unique tokens for use with CAS writes.
  */
 export async function handleMemcachedGets(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const { host, port = 11211, keys, timeout = 10000 } = await request.json<{
       host: string;
@@ -551,7 +606,25 @@ export async function handleMemcachedGets(request: Request): Promise<Response> {
     }
 
     if (keys.length > 100) {
-      return new Response(JSON.stringify({ error: 'keys array may not exceed 100 entries' }), {
+      return new Response(JSON.stringify({ success: false, error: 'keys array may not exceed 100 entries' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Memcached keys must not contain control chars or spaces (protocol injection prevention)
+    // eslint-disable-next-line no-control-regex
+    const INVALID_KEY_RE = /[\x00-\x20\x7f]/;
+    for (const key of keys) {
+      if (!key || key.length > 250 || INVALID_KEY_RE.test(key)) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Invalid memcached key: keys must be 1-250 bytes, no spaces or control characters',
+        }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+      }
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }

@@ -294,33 +294,33 @@ The version number tracks the ADB protocol feature level, not the Android OS ver
 
 ```bash
 # Check ADB server version
-curl -s -X POST https://portofcall.ross.gg/api/adb/version \
+curl -s -X POST https://l4.fyi/api/adb/version \
   -H 'Content-Type: application/json' \
   -d '{"host":"build-server.local"}' | jq .
 
 # List connected devices
-curl -s -X POST https://portofcall.ross.gg/api/adb/devices \
+curl -s -X POST https://l4.fyi/api/adb/devices \
   -H 'Content-Type: application/json' \
   -d '{"host":"build-server.local"}' | jq .
 
 # Send arbitrary command
-curl -s -X POST https://portofcall.ross.gg/api/adb/command \
+curl -s -X POST https://l4.fyi/api/adb/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"build-server.local","command":"host:features"}' | jq .
 
 # Run a shell command on the first available device
-curl -s -X POST https://portofcall.ross.gg/api/adb/shell \
+curl -s -X POST https://l4.fyi/api/adb/shell \
   -H 'Content-Type: application/json' \
   -d '{"host":"build-server.local","command":"getprop ro.build.version.release"}' | jq .
 
 # Run shell on a specific device
-curl -s -X POST https://portofcall.ross.gg/api/adb/shell \
+curl -s -X POST https://l4.fyi/api/adb/shell \
   -H 'Content-Type: application/json' \
   -d '{"host":"build-server.local","serial":"emulator-5554","command":"pm list packages -s"}' \
   | jq -r '.stdout'
 
 # Connect a device over TCP/IP (device must have adb tcpip 5555 enabled)
-curl -s -X POST https://portofcall.ross.gg/api/adb/command \
+curl -s -X POST https://l4.fyi/api/adb/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"build-server.local","command":"host:connect:192.168.1.100:5555"}' | jq .
 ```

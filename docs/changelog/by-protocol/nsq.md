@@ -123,3 +123,8 @@ NSQ implementation provides 5 endpoints (connect, publish, subscribe, dpub, mpub
 - [NSQ TCP Protocol Specification](https://nsq.io/clients/tcp_protocol_spec.html) - Official binary protocol reference
 - [NSQ Message Format](https://nsq.io/clients/tcp_protocol_spec.html#message-format) - Binary field layout
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

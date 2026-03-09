@@ -41,8 +41,14 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 const SPAMC_VERSION = '1.5';
+
+/** Strip CR/LF to prevent CRLF header injection in raw spamd requests. */
+function sanitizeCRLF(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
 
 interface SpamdPingRequest {
   host: string;
@@ -218,7 +224,7 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -235,6 +241,13 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -255,7 +268,7 @@ export async function handleSpamdPing(request: Request): Promise<Response> {
         // Send PING command with optional User header
         let pingCmd = `PING SPAMC/${SPAMC_VERSION}\r\n`;
         if (username) {
-          pingCmd += `User: ${username}\r\n`;
+          pingCmd += `User: ${sanitizeCRLF(username)}\r\n`;
         }
         pingCmd += `\r\n`;
         await writer.write(new TextEncoder().encode(pingCmd));
@@ -374,7 +387,7 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -418,6 +431,13 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
     socket = connect(`${host}:${port}`);
 
@@ -436,7 +456,7 @@ export async function handleSpamdCheck(request: Request): Promise<Response> {
         const messageBytes = new TextEncoder().encode(message);
         let requestText = `${cmd} SPAMC/${SPAMC_VERSION}\r\nContent-length: ${messageBytes.length}\r\n`;
         if (username) {
-          requestText += `User: ${username}\r\n`;
+          requestText += `User: ${sanitizeCRLF(username)}\r\n`;
         }
         requestText += `\r\n`;
 
@@ -597,7 +617,7 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -648,6 +668,13 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
       });
     }
 
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const startTime = Date.now();
     socket = connect(`${host}:${port}`);
 
@@ -671,7 +698,7 @@ export async function handleSpamdTell(request: Request): Promise<Response> {
           `Message-class: ${messageType}\r\n` +
           actionHeader;
         if (username) {
-          requestText += `User: ${username}\r\n`;
+          requestText += `User: ${sanitizeCRLF(username)}\r\n`;
         }
         requestText += `\r\n`;
 

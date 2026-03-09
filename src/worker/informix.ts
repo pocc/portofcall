@@ -42,6 +42,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -272,7 +273,7 @@ export async function handleInformixProbe(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false, host, port,
         error: 'Port must be between 1 and 65535',
@@ -281,10 +282,19 @@ export async function handleInformixProbe(request: Request): Promise<Response> {
       });
     }
 
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheck.ip) } satisfies InformixResponse), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const start  = Date.now();
     const socket = connect(`${host}:${port}`);
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout),
     );
 
     try {
@@ -300,7 +310,6 @@ export async function handleInformixProbe(request: Request): Promise<Response> {
         data = await Promise.race([readAll(reader, 4000), timeoutPromise]);
       } catch {
         reader.releaseLock();
-        socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
           error: 'No response from server',
@@ -309,7 +318,6 @@ export async function handleInformixProbe(request: Request): Promise<Response> {
         });
       }
       reader.releaseLock();
-      socket.close();
 
       const rtt    = Date.now() - start;
       const parsed = parseInformixResponse(data);
@@ -326,10 +334,9 @@ export async function handleInformixProbe(request: Request): Promise<Response> {
       } satisfies InformixResponse), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       });
-
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({
@@ -378,10 +385,19 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
       });
     }
 
+    // SSRF protection
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheck2.ip) } satisfies InformixResponse), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const start  = Date.now();
     const socket = connect(`${host}:${port}`);
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout),
     );
 
     try {
@@ -400,7 +416,6 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
       } catch {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
           error: 'Server did not respond to connect packet',
@@ -413,7 +428,6 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
       if (!parsed.isInformix) {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
           error: 'Server does not appear to be Informix',
@@ -445,7 +459,6 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
       if (authFailed) {
         reader.releaseLock();
         writer.releaseLock();
-        socket.close();
         return new Response(JSON.stringify({
           success: false, host, port,
           isInformix: true,
@@ -488,7 +501,6 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
 
       reader.releaseLock();
       writer.releaseLock();
-      socket.close();
 
       // Parse results: extract printable ASCII strings from response chunks.
       // NOTE: This is a best-effort heuristic. Proper SQLI result decoding
@@ -511,7 +523,7 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
         const parts = text
           .split('\0')
           .map(s => s.trim())
-          .filter(s => s.length > 0 && /^[\x20-\x7E]+$/.test(s)); // printable ASCII
+          .filter(s => s.length > 0 && /^[\x20-\x7E\t\n\r]+$/.test(s)); // printable ASCII + whitespace
         if (parts.length > 0) rows.push(parts);
       }
 
@@ -526,10 +538,9 @@ export async function handleInformixQuery(request: Request): Promise<Response> {
       } satisfies InformixResponse), {
         status: 200, headers: { 'Content-Type': 'application/json' },
       });
-
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({

@@ -219,3 +219,8 @@ function mpDecode(data: Uint8Array, off: number, depth = 0): [unknown, number] {
 - [Tarantool IPROTO Protocol](https://www.tarantool.io/en/doc/latest/dev_guide/internals/iproto/)
 - [MessagePack Specification](https://msgpack.org/index.html)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

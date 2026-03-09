@@ -93,3 +93,8 @@ JDWP implementation provides 3 endpoints (probe, version, threads) for Java debu
 - [JDWP Specification](https://docs.oracle.com/javase/8/docs/technotes/guides/jpda/jdwp-spec.html) - Official Oracle docs
 - [JPDA Architecture](https://docs.oracle.com/javase/8/docs/technotes/guides/jpda/architecture.html) - Java Platform Debugger Architecture
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

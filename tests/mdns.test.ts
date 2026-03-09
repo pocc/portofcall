@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('mDNS Protocol Integration Tests', () => {
   describe('mDNS Query', () => {
@@ -14,7 +14,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 5353,
           service: '_http._tcp.local',
           queryType: 'PTR',
@@ -58,7 +58,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 99999,
         }),
       });
@@ -74,7 +74,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
         }),
       });
@@ -89,7 +89,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -103,7 +103,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
         }),
       });
@@ -120,7 +120,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
           queryType: 'PTR',
         }),
@@ -136,7 +136,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'myservice._http._tcp.local',
           queryType: 'SRV',
         }),
@@ -152,7 +152,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'myservice._http._tcp.local',
           queryType: 'TXT',
         }),
@@ -168,7 +168,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'device.local',
           queryType: 'A',
         }),
@@ -184,7 +184,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'device.local',
           queryType: 'AAAA',
         }),
@@ -200,7 +200,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'device.local',
           queryType: 'ANY',
         }),
@@ -218,7 +218,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
           unicastResponse: true,
         }),
@@ -234,7 +234,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
         }),
       });
@@ -251,7 +251,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 5353,
           timeout: 10000,
         }),
@@ -270,7 +270,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           port: 5353,
           serviceType: '_http._tcp.local',
           instanceName: 'testservice._http._tcp.local',
@@ -317,7 +317,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -337,7 +337,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
         }),
       });
 
@@ -358,7 +358,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
           queryType: 'PTR',
         }),
@@ -384,7 +384,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'service._http._tcp.local',
           queryType: 'SRV',
         }),
@@ -411,7 +411,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'service._http._tcp.local',
           queryType: 'TXT',
         }),
@@ -436,7 +436,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'device.local',
           queryType: 'A',
         }),
@@ -460,7 +460,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: 'device.local',
           queryType: 'AAAA',
         }),
@@ -486,7 +486,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
         }),
       });
@@ -510,7 +510,7 @@ describe('mDNS Protocol Integration Tests', () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          host: '192.168.1.1',
+          host: 'example.com',
           service: '_http._tcp.local',
         }),
       });

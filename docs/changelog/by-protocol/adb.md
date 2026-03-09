@@ -58,3 +58,8 @@ No dedicated protocol documentation file found in `docs/protocols/`. Consider cr
 
 - [ADB Protocol Specification](https://android.googlesource.com/platform/packages/modules/adb/+/refs/heads/main/OVERVIEW.TXT) - Official ADB protocol overview
 - [Critical Fixes Summary](../critical-fixes.md) - All critical bugs across protocols
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

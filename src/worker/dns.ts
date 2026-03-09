@@ -205,7 +205,7 @@ function buildDNSQuery(domain: string, typeCode: number, opts: BuildQueryOptions
   const { edns = true, dnssecOK = false, checkingDisabled = false } = opts;
   const buffer: number[] = [];
 
-  const id = Math.floor(Math.random() * 65536);
+  const id = crypto.getRandomValues(new Uint16Array(1))[0];
   buffer.push((id >> 8) & 0xff, id & 0xff);
 
   // Flags: RD=1, CD=opt
@@ -519,9 +519,10 @@ function parseDNSRecord(data: Uint8Array, offset: number): { record: DNSRecord; 
 /**
  * Parse a full DNS response
  */
-function parseDNSResponse(data: Uint8Array): Omit<DNSQueryResult, "success"|"domain"|"server"|"port"|"queryType"|"queryTimeMs"> {
+function parseDNSResponse(data: Uint8Array): Omit<DNSQueryResult, "success"|"domain"|"server"|"port"|"queryType"|"queryTimeMs"> & { responseId: number } {
   if (data.length < 12) throw new Error("DNS response too short");
 
+  const responseId = (data[0] << 8) | data[1];
   const headerFlags = (data[2] << 8) | data[3];
   const qdcount = (data[4] << 8) | data[5];
   const ancount = (data[6] << 8) | data[7];
@@ -563,6 +564,7 @@ function parseDNSResponse(data: Uint8Array): Omit<DNSQueryResult, "success"|"dom
   }
 
   return {
+    responseId,
     rcode: RCODE_NAMES[rcode] || `RCODE${rcode}`,
     flags: {
       qr: !!(headerFlags & 0x8000),
@@ -651,7 +653,7 @@ async function readTCPDNSMessage(
 export async function handleDNSQuery(request: Request): Promise<Response> {
   try {
     if (request.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method not allowed" }), {
+      return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
         status: 405, headers: { "Content-Type": "application/json" },
       });
     }
@@ -667,7 +669,7 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
     };
 
     if (!body.domain) {
-      return new Response(JSON.stringify({ error: "Missing required parameter: domain" }), {
+      return new Response(JSON.stringify({ success: false, error: "Missing required parameter: domain" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
@@ -678,12 +680,19 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
 
     if (typeCode === undefined) {
       return new Response(JSON.stringify({
+        success: false,
         error: `Unknown record type: ${queryTypeName}. Supported: ${Object.keys(DNS_RECORD_TYPES).join(", ")}`,
       }), { status: 400, headers: { "Content-Type": "application/json" } });
     }
 
     const server = body.server || "8.8.8.8";
     const port = body.port || 53;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: "Port must be between 1 and 65535" }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(server);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -700,10 +709,15 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
     const checkingDisabled = body.checkingDisabled ?? false;
 
     const queryPacket = buildDNSQuery(domain, typeCode, { edns, dnssecOK, checkingDisabled });
+    // Extract the query ID from bytes 0-1 of the DNS packet for later validation
+    const sentQueryId = (queryPacket[0] << 8) | queryPacket[1];
     const tcpPacket = tcpWrap(queryPacket);
 
     const socket = connect(`${server}:${port}`);
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000)),
+    ]);
 
     const writer = socket.writable.getWriter();
     await writer.write(tcpPacket);
@@ -766,6 +780,11 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
  * A REFUSED response is normal for servers that do not allow transfers.
  */
 export async function handleDNSAXFR(request: Request): Promise<Response> {
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), {
+      status: 405, headers: { "Content-Type": "application/json" },
+    });
+  }
   const start = Date.now();
   try {
     const body = (await request.json()) as {
@@ -776,7 +795,7 @@ export async function handleDNSAXFR(request: Request): Promise<Response> {
     };
 
     if (!body.zone || !body.server) {
-      return new Response(JSON.stringify({ error: "zone and server are required" }), {
+      return new Response(JSON.stringify({ success: false, error: "zone and server are required" }), {
         status: 400, headers: { "Content-Type": "application/json" },
       });
     }
@@ -785,6 +804,12 @@ export async function handleDNSAXFR(request: Request): Promise<Response> {
     const server = body.server;
     const port = body.port ?? 53;
     const timeout = body.timeout ?? 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: "Port must be between 1 and 65535" }), {
+        status: 400, headers: { "Content-Type": "application/json" },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(server);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -819,7 +844,7 @@ export async function handleDNSAXFR(request: Request): Promise<Response> {
       const deadline = Date.now() + timeout;
 
       try {
-        while (Date.now() < deadline && soaCount < 2) {
+        while (Date.now() < deadline && soaCount < 2 && !errorMsg) {
           const remaining = deadline - Date.now();
           if (remaining <= 0) break;
 
@@ -838,6 +863,10 @@ export async function handleDNSAXFR(request: Request): Promise<Response> {
 
           for (const rec of [...parsed.answers, ...parsed.authority, ...parsed.additional]) {
             if (rec.typeCode === 41) continue;
+            if (allRecords.length >= 50_000) {
+              errorMsg = 'Zone transfer exceeded 50 000 record limit';
+              break;
+            }
             allRecords.push(rec);
             if (rec.typeCode === DNS_RECORD_TYPES.SOA) {
               soaCount++;

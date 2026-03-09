@@ -148,7 +148,7 @@ function encodeVarUInt(value: number): Uint8Array {
  * Decode a VarUInt from a buffer at the given offset.
  * Returns [value, bytesConsumed].
  */
-function decodeVarUInt(data: Uint8Array, offset: number): [number, number] {
+function decodeVarUInt(data: Uint8Array, offset: number): [number | bigint, number] {
   let result = 0n; // Use BigInt to avoid precision loss for shift >= 53
   let shift = 0n;
   let bytesRead = 0;
@@ -162,7 +162,11 @@ function decodeVarUInt(data: Uint8Array, offset: number): [number, number] {
     result |= BigInt(byte & 0x7F) << shift;
     shift += 7n;
     if ((byte & 0x80) === 0) {
-      return [Number(result), bytesRead]; // Safe for values < 2^53
+      // Return as number if safe, else BigInt to preserve precision
+      if (result <= BigInt(Number.MAX_SAFE_INTEGER)) {
+        return [Number(result), bytesRead];
+      }
+      return [result, bytesRead];
     }
   }
   throw new Error('VarUInt: too many bytes (max 9)');
@@ -191,7 +195,8 @@ function encodeNativeString(str: string): Uint8Array {
  * Returns [string, bytesConsumed].
  */
 function decodeNativeString(data: Uint8Array, offset: number): [string, number] {
-  const [strLen, lenBytes] = decodeVarUInt(data, offset);
+  const [strLenVal, lenBytes] = decodeVarUInt(data, offset);
+  const strLen = Number(strLenVal);
   const strStart = offset + lenBytes;
   const strEnd = strStart + strLen;
   if (strEnd > data.length) {
@@ -379,13 +384,16 @@ function parseServerHello(data: Uint8Array, offset: number): [ParsedServerHello,
   const [serverName, nameLen] = decodeNativeString(data, offset);
   offset += nameLen;
 
-  const [versionMajor, majLen] = decodeVarUInt(data, offset);
+  const [versionMajorVal, majLen] = decodeVarUInt(data, offset);
+  const versionMajor = Number(versionMajorVal);
   offset += majLen;
 
-  const [versionMinor, minLen] = decodeVarUInt(data, offset);
+  const [versionMinorVal, minLen] = decodeVarUInt(data, offset);
+  const versionMinor = Number(versionMinorVal);
   offset += minLen;
 
-  const [revision, revLen] = decodeVarUInt(data, offset);
+  const [revisionVal, revLen] = decodeVarUInt(data, offset);
+  const revision = Number(revisionVal);
   offset += revLen;
 
   const result: ParsedServerHello = {
@@ -459,7 +467,8 @@ function parseDataBlock(data: Uint8Array, offset: number): [ParsedDataBlock, num
 
   // Block info (field_num loop)
   while (offset < data.length) {
-    const [fieldNum, fnLen] = decodeVarUInt(data, offset);
+    const [fieldNumVal, fnLen] = decodeVarUInt(data, offset);
+    const fieldNum = Number(fieldNumVal);
     offset += fnLen;
     if (fieldNum === 0) break; // end of block info
     if (fieldNum === 1) {
@@ -474,10 +483,12 @@ function parseDataBlock(data: Uint8Array, offset: number): [ParsedDataBlock, num
     }
   }
 
-  const [numColumns, ncLen] = decodeVarUInt(data, offset);
+  const [numColumnsVal, ncLen] = decodeVarUInt(data, offset);
+  const numColumns = Number(numColumnsVal);
   offset += ncLen;
 
-  const [numRows, nrLen] = decodeVarUInt(data, offset);
+  const [numRowsVal, nrLen] = decodeVarUInt(data, offset);
+  const numRows = Number(numRowsVal);
   offset += nrLen;
 
   const columns: Array<{ name: string; type: string }> = [];
@@ -556,6 +567,12 @@ function readColumnValue(data: Uint8Array, offset: number, type: string): [strin
     return [val.toString(), 8];
   }
 
+  // IPv4
+  if (type === 'IPv4') {
+    const val = (data[offset] << 24 | data[offset+1] << 16 | data[offset+2] << 8 | data[offset+3]) >>> 0;
+    return [ `${(val >> 24) & 0xFF}.${(val >> 16) & 0xFF}.${(val >> 8) & 0xFF}.${val & 0xFF}`, 4 ];
+  }
+
   // Int8
   if (type === 'Int8') {
     const val = data[offset] > 127 ? data[offset] - 256 : data[offset];
@@ -627,9 +644,10 @@ function readColumnValue(data: Uint8Array, offset: number, type: string): [strin
   // Fallback: try to read as a native string (many types serialize this way)
   try {
     const [val, len] = decodeNativeString(data, offset);
+    if (len === 0) return ['<unknown type: ' + type + '>', 1]; // Consume at least 1 byte to avoid infinite loop
     return [val, len];
   } catch {
-    return ['<unknown type: ' + type + '>', 0];
+    return ['<unknown type: ' + type + '>', 1]; // Consume at least 1 byte to avoid infinite loop
   }
 }
 
@@ -653,19 +671,19 @@ async function readNativeResponse(
   chunks.push(value);
   totalLen += value.length;
 
-  // Continue reading with a short timeout for additional data
+  // Continue reading with per-read short timeout for additional data
   try {
-    const shortTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('read_done')), 1000),
-    );
     while (totalLen < maxBytes) {
-      const { value: next, done: nextDone } = await Promise.race([reader.read(), shortTimeout]);
+      const perReadTimeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('read_done')), 2000),
+      );
+      const { value: next, done: nextDone } = await Promise.race([reader.read(), perReadTimeout]);
       if (nextDone || !next) break;
       chunks.push(next);
       totalLen += next.length;
     }
   } catch {
-    // Short timeout expired — we have all available data
+    // Per-read timeout expired — we have all available data
   }
 
   const combined = new Uint8Array(totalLen);
@@ -692,93 +710,106 @@ async function sendHttpRequest(
   timeout = 15000,
 ): Promise<{ statusCode: number; headers: Record<string, string>; body: string }> {
   const socket = connect(`${host}:${port}`);
-
+  let timeoutHandle: any;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
 
-  // Build the full HTTP request as a single buffer to avoid split-write issues
-  let requestStr = `${method} ${path} HTTP/1.1\r\n`;
-  requestStr += `Host: ${host}:${port}\r\n`;
-  requestStr += `Connection: close\r\n`;
-  requestStr += `User-Agent: PortOfCall/1.0\r\n`;
+    // Build the full HTTP request as a single buffer to avoid split-write issues
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let requestStr = `${method} ${safePath} HTTP/1.1\r\n`;
+    requestStr += `Host: ${safeHost}:${port}\r\n`;
+    requestStr += `Connection: close\r\n`;
+    requestStr += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (headers) {
-    for (const [key, value] of Object.entries(headers)) {
-      requestStr += `${key}: ${value}\r\n`;
+    if (headers) {
+      for (const [key, value] of Object.entries(headers)) {
+        requestStr += `${key.replace(/[\r\n]/g, '')}: ${value.replace(/[\r\n]/g, '')}\r\n`;
+      }
     }
-  }
 
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    requestStr += `Content-Type: text/plain\r\n`;
-    requestStr += `Content-Length: ${bodyBytes.length}\r\n`;
-    requestStr += `\r\n`;
-    // Write headers + body as a single combined buffer to avoid TCP fragmentation issues
-    const headerBytes = encoder.encode(requestStr);
-    const combined = new Uint8Array(headerBytes.length + bodyBytes.length);
-    combined.set(headerBytes, 0);
-    combined.set(bodyBytes, headerBytes.length);
-    await writer.write(combined);
-  } else {
-    requestStr += `\r\n`;
-    await writer.write(encoder.encode(requestStr));
-  }
-
-  writer.releaseLock();
-
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
-  let response = '';
-  const maxSize = 512000;
-
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      response += decoder.decode(value, { stream: true });
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      requestStr += `Content-Type: text/plain\r\n`;
+      requestStr += `Content-Length: ${bodyBytes.length}\r\n`;
+      requestStr += `\r\n`;
+      // Write headers + body as a single combined buffer to avoid TCP fragmentation issues
+      const headerBytes = encoder.encode(requestStr);
+      const combined = new Uint8Array(headerBytes.length + bodyBytes.length);
+      combined.set(headerBytes, 0);
+      combined.set(bodyBytes, headerBytes.length);
+      await writer.write(combined);
+    } else {
+      requestStr += `\r\n`;
+      await writer.write(encoder.encode(requestStr));
     }
-  }
 
-  // Flush the streaming decoder to handle any remaining bytes
-  response += decoder.decode(new Uint8Array(0), { stream: false });
+    writer.releaseLock();
 
-  reader.releaseLock();
-  socket.close();
+    reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    let response = '';
+    const maxSize = 512000;
 
-  const headerEnd = response.indexOf('\r\n\r\n');
-  if (headerEnd === -1) {
-    throw new Error('Invalid HTTP response: no header terminator found');
-  }
-
-  const headerSection = response.substring(0, headerEnd);
-  let bodySection = response.substring(headerEnd + 4);
-
-  const statusLine = headerSection.split('\r\n')[0];
-  const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
-  const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
-
-  const respHeaders: Record<string, string> = {};
-  const headerLines = headerSection.split('\r\n').slice(1);
-  for (const line of headerLines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0) {
-      const key = line.substring(0, colonIdx).trim().toLowerCase();
-      const value = line.substring(colonIdx + 1).trim();
-      respHeaders[key] = value;
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
     }
-  }
 
-  if (respHeaders['transfer-encoding']?.includes('chunked')) {
-    bodySection = decodeChunked(bodySection);
-  }
+    // Flush the streaming decoder to handle any remaining bytes
+    response += decoder.decode(new Uint8Array(0), { stream: false });
 
-  return { statusCode, headers: respHeaders, body: bodySection };
+    reader.releaseLock();
+
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd === -1) {
+      throw new Error('Invalid HTTP response: no header terminator found');
+    }
+
+    const headerSection = response.substring(0, headerEnd);
+    let bodySection = response.substring(headerEnd + 4);
+
+    const statusLine = headerSection.split('\r\n')[0];
+    const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+    const statusCode = statusMatch ? parseInt(statusMatch[1], 10) : 0;
+
+    const respHeaders: Record<string, string> = {};
+    const headerLines = headerSection.split('\r\n').slice(1);
+    for (const line of headerLines) {
+      const colonIdx = line.indexOf(':');
+      if (colonIdx > 0) {
+        const key = line.substring(0, colonIdx).trim().toLowerCase();
+        const value = line.substring(colonIdx + 1).trim();
+        respHeaders[key] = value;
+      }
+    }
+
+    if (respHeaders['transfer-encoding']?.includes('chunked')) {
+      bodySection = decodeChunked(bodySection);
+    }
+
+    return { statusCode, headers: respHeaders, body: bodySection };
+  } finally {
+    clearTimeout(timeoutHandle);
+    try { reader?.releaseLock(); } catch { /* ignore */ }
+    try { socket.close(); } catch { /* ignore */ }
+  }
 }
 
 /**
@@ -842,7 +873,7 @@ function validateInput(host: string, port: number): string | null {
   if (!/^[a-zA-Z0-9._-]+$/.test(host)) {
     return 'Host contains invalid characters';
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return 'Port must be between 1 and 65535';
   }
   return null;
@@ -901,8 +932,9 @@ export async function handleClickHouseNative(request: Request): Promise<Response
       );
     }
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     const start = Date.now();
@@ -924,7 +956,6 @@ export async function handleClickHouseNative(request: Request): Promise<Response
       if (helloResponse.length === 0) {
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
         return new Response(
           JSON.stringify({
             success: false,
@@ -935,7 +966,8 @@ export async function handleClickHouseNative(request: Request): Promise<Response
       }
 
       // Parse server response packet type
-      const [packetType, ptLen] = decodeVarUInt(helloResponse, 0);
+      const [packetTypeVal, ptLen] = decodeVarUInt(helloResponse, 0);
+      const packetType = Number(packetTypeVal);
       const offset = ptLen;
 
       if (packetType === ServerPacketType.Exception) {
@@ -943,7 +975,6 @@ export async function handleClickHouseNative(request: Request): Promise<Response
         const [exception] = parseServerException(helloResponse, offset);
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
         return new Response(
           JSON.stringify({
             success: false,
@@ -956,7 +987,6 @@ export async function handleClickHouseNative(request: Request): Promise<Response
       if (packetType !== ServerPacketType.Hello) {
         writer.releaseLock();
         reader.releaseLock();
-        socket.close();
         return new Response(
           JSON.stringify({
             success: false,
@@ -999,7 +1029,8 @@ export async function handleClickHouseNative(request: Request): Promise<Response
 
             // Parse all response packets
             while (qOffset < queryResponse.length) {
-              const [qPacketType, qptLen] = decodeVarUInt(queryResponse, qOffset);
+              const [qPacketTypeVal, qptLen] = decodeVarUInt(queryResponse, qOffset);
+              const qPacketType = Number(qPacketTypeVal);
               qOffset += qptLen;
 
               if (qPacketType === ServerPacketType.Data) {
@@ -1029,13 +1060,13 @@ export async function handleClickHouseNative(request: Request): Promise<Response
               } else if (qPacketType === ServerPacketType.Progress) {
                 // Progress: 3 VarUInts (rows, bytes, total_rows) + optionally more
                 try {
-                  const [, r1] = decodeVarUInt(queryResponse, qOffset); qOffset += r1;
-                  const [, r2] = decodeVarUInt(queryResponse, qOffset); qOffset += r2;
-                  const [, r3] = decodeVarUInt(queryResponse, qOffset); qOffset += r3;
+                  const [, r1] = decodeVarUInt(queryResponse, qOffset); qOffset += Number(r1);
+                  const [, r2] = decodeVarUInt(queryResponse, qOffset); qOffset += Number(r2);
+                  const [, r3] = decodeVarUInt(queryResponse, qOffset); qOffset += Number(r3);
                   // written_rows, written_bytes added in later revisions
                   if (serverHello.revision >= 54460 && qOffset < queryResponse.length) {
-                    const [, r4] = decodeVarUInt(queryResponse, qOffset); qOffset += r4;
-                    const [, r5] = decodeVarUInt(queryResponse, qOffset); qOffset += r5;
+                    const [, r4] = decodeVarUInt(queryResponse, qOffset); qOffset += Number(r4);
+                    const [, r5] = decodeVarUInt(queryResponse, qOffset); qOffset += Number(r5);
                   }
                 } catch {
                   break;
@@ -1045,7 +1076,7 @@ export async function handleClickHouseNative(request: Request): Promise<Response
                 try {
                   for (let i = 0; i < 7; i++) {
                     const [, len] = decodeVarUInt(queryResponse, qOffset);
-                    qOffset += len;
+                    qOffset += Number(len);
                   }
                   qOffset += 3; // 3 boolean UInt8 fields
                 } catch {
@@ -1082,15 +1113,14 @@ export async function handleClickHouseNative(request: Request): Promise<Response
 
       writer.releaseLock();
       reader.releaseLock();
-      socket.close();
 
       return new Response(JSON.stringify(result), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       });
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(

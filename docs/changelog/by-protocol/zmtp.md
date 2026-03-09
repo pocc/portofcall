@@ -161,3 +161,8 @@ From the inline comments and implementation:
 - [ZMTP 3.1 Specification](https://rfc.zeromq.org/spec/23/) - Official protocol RFC
 - [ZeroMQ Guide](https://zguide.zeromq.org/) - Patterns and best practices
 - [ZMTP Security Mechanisms](https://rfc.zeromq.org/spec/27/) - CURVE specification
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

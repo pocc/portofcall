@@ -17,6 +17,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { isBlockedHost } from './host-validator';
 
 interface RloginConnectRequest {
   host: string;
@@ -67,6 +68,18 @@ export async function handleRloginConnect(request: Request): Promise<Response> {
     const terminalSpeed = options.terminalSpeed || '38400';
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // SSRF prevention
+    if (isBlockedHost(host)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Connections to private/internal addresses are not allowed: ${host}`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     // Check Cloudflare
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -93,7 +106,12 @@ export async function handleRloginConnect(request: Request): Promise<Response> {
         await writer.write(new Uint8Array([0]));
 
         // Step 2: Send client-user-name\0server-user-name\0terminal-type/speed\0
-        const handshake = `${localUser}\0${remoteUser}\0${terminalType}/${terminalSpeed}\0`;
+        // Sanitize user inputs — strip null bytes to prevent framing injection
+        const safeLocalUser = localUser.replace(/\0/g, '');
+        const safeRemoteUser = remoteUser.replace(/\0/g, '');
+        const safeTermType = terminalType.replace(/\0/g, '');
+        const safeTermSpeed = terminalSpeed.replace(/\0/g, '');
+        const handshake = `${safeLocalUser}\0${safeRemoteUser}\0${safeTermType}/${safeTermSpeed}\0`;
         await writer.write(new TextEncoder().encode(handshake));
 
         // Step 3: Read server response
@@ -214,6 +232,9 @@ interface RloginBannerResult {
  */
 export async function handleRloginBanner(request: Request): Promise<Response> {
   try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
     const body = (await request.json()) as {
       host: string;
       port?: number;
@@ -238,6 +259,15 @@ export async function handleRloginBanner(request: Request): Promise<Response> {
         JSON.stringify({ success: false, connected: false, banner: '', raw: '', latencyMs: 0, error: 'Host is required' } satisfies RloginBannerResult),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -310,8 +340,6 @@ export async function handleRloginWebSocket(request: Request): Promise<Response>
     const url = new URL(request.url);
     const host = url.searchParams.get('host');
     const port = parseInt(url.searchParams.get('port') || '513', 10);
-    const localUser = url.searchParams.get('localUser') || 'guest';
-    const remoteUser = url.searchParams.get('remoteUser') || 'guest';
     const terminalType = url.searchParams.get('terminalType') || 'xterm';
     const terminalSpeed = url.searchParams.get('terminalSpeed') || '38400';
 
@@ -319,9 +347,18 @@ export async function handleRloginWebSocket(request: Request): Promise<Response>
       return new Response('Host parameter required', { status: 400 });
     }
 
+    if (isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader !== 'websocket') {
       return new Response('Expected websocket', { status: 426 });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const webSocketPair = new WebSocketPair();
@@ -329,18 +366,49 @@ export async function handleRloginWebSocket(request: Request): Promise<Response>
 
     server.accept();
 
-    const socket = connect(`${host}:${port}`);
+    // Credentials arrive via first WebSocket message (not URL params)
+    const credentialPromise = new Promise<{ localUser: string; remoteUser: string }>((resolve, reject) => {
+      const authTimer = setTimeout(() => {
+        server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+        server.close(4001, 'Auth timeout');
+        reject(new Error('Auth timeout'));
+      }, 15_000);
+
+      server.addEventListener('message', function onAuth(event) {
+        try {
+          const msg = JSON.parse(event.data as string);
+          if (msg.type === 'auth') {
+            clearTimeout(authTimer);
+            server.removeEventListener('message', onAuth);
+            resolve({
+              localUser: msg.localUser || 'guest',
+              remoteUser: msg.remoteUser || 'guest',
+            });
+          }
+        } catch { /* not JSON yet — ignore until auth */ }
+      });
+    });
 
     (async () => {
       try {
-        await socket.opened;
+        const { localUser, remoteUser } = await credentialPromise;
+
+        const socket = connect(`${host}:${port}`);
+        await Promise.race([
+          socket.opened,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
+        ]);
 
         const writer = socket.writable.getWriter();
         const reader = socket.readable.getReader();
 
-        // Perform Rlogin handshake
+        // Perform Rlogin handshake (sanitize null bytes to prevent field injection)
         await writer.write(new Uint8Array([0]));
-        const handshake = `${localUser}\0${remoteUser}\0${terminalType}/${terminalSpeed}\0`;
+        const safeLocalUser = localUser.replace(/\0/g, '');
+        const safeRemoteUser = remoteUser.replace(/\0/g, '');
+        const safeTerminalType = terminalType.replace(/\0/g, '');
+        const safeTerminalSpeed = terminalSpeed.replace(/\0/g, '');
+        const handshake = `${safeLocalUser}\0${safeRemoteUser}\0${safeTerminalType}/${safeTerminalSpeed}\0`;
         await writer.write(new TextEncoder().encode(handshake));
 
         // Forward TCP -> WebSocket
@@ -374,8 +442,7 @@ export async function handleRloginWebSocket(request: Request): Promise<Response>
         });
       } catch (error) {
         console.error('Rlogin WebSocket tunnel error:', error);
-        server.close();
-        socket.close();
+        try { server.close(); } catch { /* already closed */ }
       }
     })();
 

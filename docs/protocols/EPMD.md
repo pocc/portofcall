@@ -355,7 +355,7 @@ environment variable on newer releases).
 ## curl Quick Reference
 
 ```bash
-BASE="https://portofcall.ross.gg"
+BASE="https://l4.fyi"
 HOST="rabbitmq.example.com"
 
 # List all registered Erlang nodes

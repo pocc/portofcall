@@ -52,8 +52,12 @@ async function sendHttpGet(
 
   const writer = socket.writable.getWriter();
 
-  let request = `GET ${path} HTTP/1.1\r\n`;
-  request += `Host: ${host}:${port}\r\n`;
+  // Sanitize to prevent CRLF injection / request smuggling
+  const safePath = path.replace(/[\r\n]/g, '');
+  const safeHost = host.replace(/[\r\n]/g, '');
+
+  let request = `GET ${safePath} HTTP/1.1\r\n`;
+  request += `Host: ${safeHost}:${port}\r\n`;
   request += `Accept: application/json\r\n`;
   request += `Connection: close\r\n`;
   request += `User-Agent: PortOfCall/1.0\r\n`;
@@ -73,8 +77,12 @@ async function sendHttpGet(
         timeoutPromise.then(() => ({ value: undefined, done: true as const })),
       ]);
       if (done || !value) break;
-      response += decoder.decode(value, { stream: true });
-      if (response.length > 512_000) break;
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > 512_000) {
+        response += chunk.substring(0, 512_000 - response.length);
+        break;
+      }
+      response += chunk;
     }
   } catch {
     // Connection closed or timeout
@@ -141,22 +149,28 @@ async function sendHttpGet(
  */
 export async function handleKibanaStatus(request: Request): Promise<Response> {
   try {
-    const { host, port = 5601 } = await request.json() as { host: string; port?: number };
+    const { host, port = 5601, timeout = 15000 } = await request.json() as { host: string; port?: number; timeout?: number };
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Host is required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const startTime = Date.now();
-    const resp = await sendHttpGet(host, port, '/api/status');
+    const resp = await sendHttpGet(host, port, '/api/status', timeout);
     const elapsed = Date.now() - startTime;
 
     let parsed: Record<string, unknown> | null = null;
@@ -198,6 +212,7 @@ export async function handleKibanaStatus(request: Request): Promise<Response> {
 
   } catch (e: unknown) {
     return new Response(JSON.stringify({
+      success: false,
       error: e instanceof Error ? e.message : String(e),
     }), {
       status: 500, headers: { 'Content-Type': 'application/json' },
@@ -220,14 +235,20 @@ export async function handleKibanaSavedObjects(request: Request): Promise<Respon
       space?: string; timeout?: number;
     };
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Host is required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -303,8 +324,13 @@ async function sendHttpWithAuth(
   await Promise.race([socket.opened, timeoutPromise]);
   const writer = socket.writable.getWriter();
 
-  let req = `${method} ${path} HTTP/1.1\r\n`;
-  req += `Host: ${host}:${port}\r\n`;
+  // Sanitize to prevent CRLF injection / request smuggling
+  const safePath = path.replace(/[\r\n]/g, '');
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safeApiKey = apiKey ? apiKey.replace(/[\r\n]/g, '') : undefined;
+
+  let req = `${method} ${safePath} HTTP/1.1\r\n`;
+  req += `Host: ${safeHost}:${port}\r\n`;
   req += `Accept: application/json\r\n`;
 
   // kbn-xsrf is required only for mutating requests (POST, PUT, DELETE)
@@ -316,8 +342,8 @@ async function sendHttpWithAuth(
   req += `Connection: close\r\n`;
   req += `User-Agent: PortOfCall/1.0\r\n`;
 
-  if (apiKey) {
-    req += `Authorization: ApiKey ${apiKey}\r\n`;
+  if (safeApiKey) {
+    req += `Authorization: ApiKey ${safeApiKey}\r\n`;
   } else if (username && password) {
     const authBytes = new TextEncoder().encode(`${username}:${password}`);
     let authBinary = '';
@@ -343,8 +369,12 @@ async function sendHttpWithAuth(
     while (true) {
       const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
       if (done || !value) break;
-      response += decoder.decode(value, { stream: true });
-      if (response.length > 512_000) break;
+      const chunk = decoder.decode(value, { stream: true });
+      if (response.length + chunk.length > 512_000) {
+        response += chunk.substring(0, 512_000 - response.length);
+        break;
+      }
+      response += chunk;
     }
   } catch { /* timeout or close */ } finally {
     reader.releaseLock();
@@ -406,14 +436,20 @@ export async function handleKibanaIndexPatterns(request: Request): Promise<Respo
     };
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Host is required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -443,7 +479,7 @@ export async function handleKibanaIndexPatterns(request: Request): Promise<Respo
     }), { headers: { 'Content-Type': 'application/json' } });
 
   } catch (e: unknown) {
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+    return new Response(JSON.stringify({ success: false, error: e instanceof Error ? e.message : String(e) }), {
       status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -465,14 +501,20 @@ export async function handleKibanaAlerts(request: Request): Promise<Response> {
     };
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Host is required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -510,7 +552,7 @@ export async function handleKibanaAlerts(request: Request): Promise<Response> {
     }), { headers: { 'Content-Type': 'application/json' } });
 
   } catch (e: unknown) {
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+    return new Response(JSON.stringify({ success: false, error: e instanceof Error ? e.message : String(e) }), {
       status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }
@@ -536,14 +578,20 @@ export async function handleKibanaQuery(request: Request): Promise<Response> {
     };
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Host is required' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), {
         status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -576,7 +624,7 @@ export async function handleKibanaQuery(request: Request): Promise<Response> {
     }), { headers: { 'Content-Type': 'application/json' } });
 
   } catch (e: unknown) {
-    return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+    return new Response(JSON.stringify({ success: false, error: e instanceof Error ? e.message : String(e) }), {
       status: 500, headers: { 'Content-Type': 'application/json' },
     });
   }

@@ -80,7 +80,7 @@ interface CollectdSendRequest {
 function validateInput(host: string, port: number): string | null {
   if (!host || host.trim().length === 0) return 'Host is required';
   if (!/^[a-zA-Z0-9._-]+$/.test(host)) return 'Host contains invalid characters';
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -229,7 +229,7 @@ function parseReceivedParts(data: Uint8Array): Array<{ type: number; typeName: s
  */
 export async function handleCollectdProbe(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -336,7 +336,7 @@ export async function handleCollectdProbe(request: Request): Promise<Response> {
  */
 export async function handleCollectdSend(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -486,7 +486,7 @@ interface CollectdPutRequest {
  */
 export async function handleCollectdPut(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -599,7 +599,7 @@ interface CollectdMetric {
   typeInstance: string;
   timestamp: number;
   interval: number;
-  values: Array<{ type: string; value: number }>;
+  values: Array<{ type: string; value: number | string }>;
 }
 
 /**
@@ -684,24 +684,24 @@ function decodeBinaryPacket(data: Uint8Array): CollectdMetric[] {
       const valuesOff    = typeCodesOff + numValues;
 
       if (bodyLen >= valuesOff + numValues * 8) {
-        const values: Array<{ type: string; value: number }> = [];
+        const values: Array<{ type: string; value: number | string }> = [];
         for (let i = 0; i < numValues; i++) {
           const vtCode = v.getUint8(typeCodesOff + i);
           const vtName = VALUE_TYPE_NAMES[vtCode] ?? `UNKNOWN(${vtCode})`;
           const off = valuesOff + i * 8;
-          let val: number;
+          let val: number | string;
           if (vtCode === VALUE_GAUGE) {
-            // GAUGE: IEEE 754 double, little-endian
+            // GAUGE: IEEE 754 double, little-endian (fits in Number)
             val = v.getFloat64(off, true);
           } else if (vtCode === VALUE_DERIVE) {
-            // DERIVE: signed int64 big-endian
-            val = Number(v.getBigInt64(off, false));
+            // DERIVE: signed int64 big-endian — use string to preserve precision above 2^53
+            val = v.getBigInt64(off, false).toString();
           } else if (vtCode === VALUE_COUNTER || vtCode === VALUE_ABSOLUTE) {
-            // COUNTER / ABSOLUTE: unsigned int64 big-endian
-            val = Number(v.getBigUint64(off, false));
+            // COUNTER / ABSOLUTE: unsigned int64 big-endian — use string to preserve precision above 2^53
+            val = v.getBigUint64(off, false).toString();
           } else {
             // Unknown value type — treat as unsigned int64 big-endian
-            val = Number(v.getBigUint64(off, false));
+            val = v.getBigUint64(off, false).toString();
           }
           values.push({ type: vtName, value: val });
         }
@@ -748,7 +748,7 @@ interface CollectdReceiveRequest {
  */
 export async function handleCollectdReceive(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {

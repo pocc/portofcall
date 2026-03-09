@@ -813,6 +813,9 @@ async function readSmb2Msg(
     if (needed === 4 && received >= 4) {
       const buf = combineBuffers(chunks);
       const msgLen = (buf[1] << 16) | (buf[2] << 8) | buf[3];
+      if (msgLen > 1_048_576) {
+        throw new Error(`SMB2 message too large: ${msgLen} bytes (max 1 MiB)`);
+      }
       needed = 4 + msgLen;
     }
   }
@@ -867,7 +870,7 @@ function validateHost(host: string): string | null {
 }
 
 function validatePort(port: number): string | null {
-  if (port < 1 || port > 65535) return 'Port must be between 1 and 65535';
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return 'Port must be between 1 and 65535';
   return null;
 }
 
@@ -878,12 +881,10 @@ function validatePort(port: number): string | null {
  * Returns: dialect, server GUID, capabilities, timestamps.
  */
 export async function handleCIFSNegotiate(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
-    let body: Partial<CifsBaseRequest>;
-    if (request.method === 'POST') body = await request.json() as Partial<CifsBaseRequest>;
-    else body = {};
+    const body = await request.json() as Partial<CifsBaseRequest>;
 
     const host = (body.host ?? '').trim();
     const port = body.port ?? 445;
@@ -967,7 +968,7 @@ export { handleCIFSNegotiate as handleCIFSConnect };
  * Returns: success/failure, session info, server info.
  */
 export async function handleCIFSAuth(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as CifsAuthRequest;
@@ -983,7 +984,7 @@ export async function handleCIFSAuth(request: Request): Promise<Response> {
     const portErr = validatePort(port);
     if (portErr) return new Response(JSON.stringify({ success: false, error: portErr }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!username) return new Response(JSON.stringify({ success: false, error: 'Username is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
-    if (!password) return new Response(JSON.stringify({ success: false, error: 'Password is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (password == null) return new Response(JSON.stringify({ success: false, error: 'Password is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -1170,7 +1171,7 @@ async function withSmbShare<T>(
  * Body: { host, port?, username?, password?, domain?, share, path? }
  */
 export async function handleCIFSList(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as CifsFsRequest;
@@ -1243,7 +1244,7 @@ export async function handleCIFSList(request: Request): Promise<Response> {
  * Body: { host, port?, username?, password?, domain?, share, path }
  */
 export async function handleCIFSRead(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as CifsFsRequest;
@@ -1342,7 +1343,7 @@ export async function handleCIFSRead(request: Request): Promise<Response> {
  * Body: { host, port?, username?, password?, domain?, share, path? }
  */
 export async function handleCIFSStat(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as CifsFsRequest;
@@ -1426,7 +1427,7 @@ interface CifsWriteRequest extends CifsFsRequest {
  * Use `content` for text, `base64` for binary.
  */
 export async function handleCIFSWrite(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as CifsWriteRequest;

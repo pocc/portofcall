@@ -1,0 +1,40 @@
+version: '3.8'
+
+# HashiCorp Stack & Service Discovery
+# Protocols covered: consul, vault
+#
+# Usage: docker compose -f docker-compose.hashicorp.yml up -d
+
+services:
+  # HashiCorp Consul - Service discovery & KV store
+  consul:
+    image: hashicorp/consul
+    container_name: testserver-consul
+    ports:
+      - "8500:8500"     # HTTP API
+      - "8600:8600/udp" # DNS
+    command: agent -dev -client=0.0.0.0
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # HashiCorp Vault - Secrets management (dev mode)
+  vault:
+    image: hashicorp/vault
+    container_name: testserver-vault
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=testtoken123
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge

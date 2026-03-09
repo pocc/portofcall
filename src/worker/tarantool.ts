@@ -26,6 +26,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 // IPROTO constants
 const IPROTO_REQUEST_TYPE = 0x00;
@@ -40,34 +41,6 @@ export const IPROTO_ID = 0x49;
 
 // Greeting is always exactly 128 bytes
 const GREETING_SIZE = 128;
-
-/**
- * Read exactly `needed` bytes from the socket.
- */
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  needed: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-
-  while (total < needed) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) break;
-    chunks.push(result.value);
-    total += result.value.length;
-  }
-
-  if (chunks.length === 1) return chunks[0].slice(0, needed);
-  const combined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return combined.slice(0, needed);
-}
 
 /**
  * Parse the Tarantool greeting (128 bytes).
@@ -238,7 +211,7 @@ function mpDecodeUint(data: Uint8Array, offset: number): [number, number] {
     return [byte - 256, offset + 1];
   }
 
-  return [0, offset + 1];
+  throw new Error(`mpDecodeUint: unexpected byte 0x${byte.toString(16)} at offset ${offset}`);
 }
 
 /**
@@ -397,6 +370,13 @@ function parseIprotoResponse(data: Uint8Array): {
  * Handle Tarantool connection test with IPROTO_PING.
  */
 export async function handleTarantoolConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {
     const body = await request.json() as {
       host: string;
@@ -416,7 +396,7 @@ export async function handleTarantoolConnect(request: Request): Promise<Response
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -443,7 +423,7 @@ export async function handleTarantoolConnect(request: Request): Promise<Response
     const socket = connect(`${host}:${port}`);
 
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
     await Promise.race([socket.opened, timeoutPromise]);
@@ -451,9 +431,10 @@ export async function handleTarantoolConnect(request: Request): Promise<Response
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     // Phase 1: Read the 128-byte greeting
-    const greetingData = await readExact(reader, GREETING_SIZE, timeoutPromise);
+    const greetingData = await br.readExact(GREETING_SIZE, timeoutPromise);
     const greeting = parseGreeting(greetingData);
 
     // Phase 2: Send IPROTO_PING
@@ -467,7 +448,7 @@ export async function handleTarantoolConnect(request: Request): Promise<Response
       await writer.write(pingPacket);
 
       // Read response (size varies, read enough)
-      const responseData = await readExact(reader, 64, timeoutPromise);
+      const responseData = await br.readExact(64, timeoutPromise);
       const parsed = parseIprotoResponse(responseData);
       pingStatus = parsed.status;
       schemaVersion = parsed.schemaVersion;
@@ -522,6 +503,8 @@ export async function handleTarantoolConnect(request: Request): Promise<Response
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
   }
 }
 
@@ -529,6 +512,12 @@ export async function handleTarantoolConnect(request: Request): Promise<Response
  * Handle Tarantool probe — just reads the greeting banner for detection.
  */
 export async function handleTarantoolProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -548,12 +537,22 @@ export async function handleTarantoolProbe(request: Request): Promise<Response> 
       });
     }
 
-    // Check Cloudflare
-    const cfCheck = await checkIfCloudflare(host);
-    if (cfCheck.isCloudflare && cfCheck.ip) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
-        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        error: 'Port must be between 1 and 65535',
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // Check Cloudflare
+    const cfCheckProbe = await checkIfCloudflare(host);
+    if (cfCheckProbe.isCloudflare && cfCheckProbe.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckProbe.ip),
         isCloudflare: true,
       }), {
         status: 403,
@@ -564,47 +563,52 @@ export async function handleTarantoolProbe(request: Request): Promise<Response> 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
+    let timeoutHandle: any;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout);
     });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
 
-    const reader = socket.readable.getReader();
+      const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
 
-    // Read 128-byte greeting
-    const greetingData = await readExact(reader, GREETING_SIZE, timeoutPromise);
-    const greeting = parseGreeting(greetingData);
-    const rtt = Date.now() - startTime;
+      // Read 128-byte greeting
+      const greetingData = await br.readExact(GREETING_SIZE, timeoutPromise);
+      const greeting = parseGreeting(greetingData);
+      const rtt = Date.now() - startTime;
 
-    reader.releaseLock();
-    socket.close();
+      reader.releaseLock();
 
-    let message = '';
-    if (greeting.isTarantool) {
-      message = `Tarantool server detected. Version: ${greeting.version}.`;
-      if (greeting.instanceInfo) {
-        message += ` Instance: ${greeting.instanceInfo}`;
+      let message = '';
+      if (greeting.isTarantool) {
+        message = `Tarantool server detected. Version: ${greeting.version}.`;
+        if (greeting.instanceInfo) {
+          message += ` Instance: ${greeting.instanceInfo}`;
+        }
+      } else {
+        message = 'Server responded but does not appear to be Tarantool.';
       }
-    } else {
-      message = 'Server responded but does not appear to be Tarantool.';
+
+      return new Response(JSON.stringify({
+        success: true,
+        host,
+        port,
+        rtt,
+        isTarantool: greeting.isTarantool,
+        version: greeting.version,
+        instanceInfo: greeting.instanceInfo,
+        greetingLine1: greeting.rawLine1,
+        message,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { socket.close(); } catch { /* ignore */ }
     }
-
-    return new Response(JSON.stringify({
-      success: true,
-      host,
-      port,
-      rtt,
-      isTarantool: greeting.isTarantool,
-      version: greeting.version,
-      instanceInfo: greeting.instanceInfo,
-      greetingLine1: greeting.rawLine1,
-      message,
-    }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-
   } catch (error) {
     return new Response(JSON.stringify({
       success: false,
@@ -919,7 +923,7 @@ function parseFullIprotoResponse(data: Uint8Array): {
  * Read a complete IPROTO response: first reads size prefix, then the full payload.
  */
 async function readIprotoResponse(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutPromise: Promise<never>,
 ): Promise<Uint8Array> {
   // Read 5 bytes. For 0xCE (uint32) all 5 bytes are the size prefix.
@@ -927,14 +931,14 @@ async function readIprotoResponse(
   // the first 2 bytes of the message payload (over-read during the 5-byte
   // read). For fixint (byte 0 <= 0x7F) only byte 0 is the size prefix;
   // bytes 1-4 are the first 4 bytes of the message payload.
-  const sizeBytes = await readExact(reader, 5, timeoutPromise);
+  const sizeBytes = await br.readExact(5, timeoutPromise);
   let msgLen: number;
 
   if (sizeBytes[0] === 0xCE) {
     // 5-byte uint32: no over-read
     msgLen = new DataView(sizeBytes.buffer, sizeBytes.byteOffset + 1).getUint32(0, false);
     if (msgLen > 1_048_576) throw new Error('IPROTO payload too large: ' + msgLen + ' bytes');
-    const payload = await readExact(reader, msgLen, timeoutPromise);
+    const payload = await br.readExact(msgLen, timeoutPromise);
     const full = new Uint8Array(5 + msgLen);
     full.set(sizeBytes, 0);
     full.set(payload, 5);
@@ -943,7 +947,7 @@ async function readIprotoResponse(
     // 3-byte uint16: bytes 3-4 of sizeBytes are first 2 payload bytes
     msgLen = ((sizeBytes[1] << 8) | sizeBytes[2]);
     const overRead = sizeBytes.slice(3, 5); // first 2 payload bytes already consumed
-    const remaining = msgLen > 2 ? await readExact(reader, msgLen - 2, timeoutPromise) : new Uint8Array(0);
+    const remaining = msgLen > 2 ? await br.readExact(msgLen - 2, timeoutPromise) : new Uint8Array(0);
     const full = new Uint8Array(3 + msgLen);
     full.set(sizeBytes.slice(0, 3), 0); // 0xCD hi lo
     full.set(overRead, 3);              // first 2 payload bytes
@@ -954,7 +958,7 @@ async function readIprotoResponse(
     msgLen = sizeBytes[0];
     const overReadCount = Math.min(4, msgLen); // how many payload bytes are in sizeBytes[1..4]
     const overRead = sizeBytes.slice(1, 1 + overReadCount);
-    const remaining = msgLen > 4 ? await readExact(reader, msgLen - 4, timeoutPromise) : new Uint8Array(0);
+    const remaining = msgLen > 4 ? await br.readExact(msgLen - 4, timeoutPromise) : new Uint8Array(0);
     const full = new Uint8Array(1 + msgLen);
     full[0] = sizeBytes[0];             // fixint size byte
     full.set(overRead, 1);              // first up-to-4 payload bytes
@@ -973,6 +977,12 @@ async function readIprotoResponse(
  * Body: { host, port?, timeout?, expression, args?, username?, password? }
  */
 export async function handleTarantoolEval(request: Request, _env: unknown): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -987,13 +997,15 @@ export async function handleTarantoolEval(request: Request, _env: unknown): Prom
 
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!expression) return new Response(JSON.stringify({ success: false, error: 'Lua expression is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
-    const cfCheck = await checkIfCloudflare(host);
-    if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    const cfCheckEval = await checkIfCloudflare(host);
+    if (cfCheckEval.isCloudflare && cfCheckEval.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckEval.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutHandle: any;
+    const timeoutPromise = new Promise<never>((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout); });
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
@@ -1001,14 +1013,14 @@ export async function handleTarantoolEval(request: Request, _env: unknown): Prom
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Read Tarantool greeting (128 bytes)
-      const greetingData = await readExact(reader, GREETING_SIZE, timeoutPromise);
+      const greetingData = await br.readExact(GREETING_SIZE, timeoutPromise);
       const greeting = parseGreeting(greetingData);
 
       if (!greeting.isTarantool) {
-        writer.releaseLock(); reader.releaseLock(); socket.close();
         return new Response(JSON.stringify({ success: false, host, port, error: 'Server is not Tarantool' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -1016,11 +1028,10 @@ export async function handleTarantoolEval(request: Request, _env: unknown): Prom
       const evalPacket = buildEvalPacket(expression, args, 1);
       await writer.write(evalPacket);
 
-      const rawResp = await readIprotoResponse(reader, timeoutPromise);
+      const rawResp = await readIprotoResponse(br, timeoutPromise);
       const parsed = parseFullIprotoResponse(rawResp);
       const rtt = Date.now() - startTime;
 
-      writer.releaseLock(); reader.releaseLock(); socket.close();
 
       if (parsed.status !== 0) {
         const errMsg = (parsed.body[String(IPROTO_ERROR)] as string) || `IPROTO error code: ${parsed.status}`;
@@ -1034,9 +1045,11 @@ export async function handleTarantoolEval(request: Request, _env: unknown): Prom
         expression,
         result: data,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    } catch (err) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -1050,6 +1063,12 @@ export async function handleTarantoolEval(request: Request, _env: unknown): Prom
  * Body: { host, port?, timeout?, sql, username?, password? }
  */
 export async function handleTarantoolSQL(request: Request, _env: unknown): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string;
@@ -1063,13 +1082,15 @@ export async function handleTarantoolSQL(request: Request, _env: unknown): Promi
 
     if (!host) return new Response(JSON.stringify({ success: false, error: 'Host is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     if (!sql) return new Response(JSON.stringify({ success: false, error: 'SQL statement is required' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 
-    const cfCheck = await checkIfCloudflare(host);
-    if (cfCheck.isCloudflare && cfCheck.ip) {
-      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    const cfCheckSQL = await checkIfCloudflare(host);
+    if (cfCheckSQL.isCloudflare && cfCheckSQL.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckSQL.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout));
+    let timeoutHandle: any;
+    const timeoutPromise = new Promise<never>((_, reject) => { timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout); });
 
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
@@ -1077,14 +1098,14 @@ export async function handleTarantoolSQL(request: Request, _env: unknown): Promi
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Read Tarantool greeting (128 bytes)
-      const greetingData = await readExact(reader, GREETING_SIZE, timeoutPromise);
+      const greetingData = await br.readExact(GREETING_SIZE, timeoutPromise);
       const greeting = parseGreeting(greetingData);
 
       if (!greeting.isTarantool) {
-        writer.releaseLock(); reader.releaseLock(); socket.close();
         return new Response(JSON.stringify({ success: false, host, port, error: 'Server is not Tarantool' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
 
@@ -1092,11 +1113,10 @@ export async function handleTarantoolSQL(request: Request, _env: unknown): Promi
       const execPacket = buildExecutePacket(sql, 2);
       await writer.write(execPacket);
 
-      const rawResp = await readIprotoResponse(reader, timeoutPromise);
+      const rawResp = await readIprotoResponse(br, timeoutPromise);
       const parsed = parseFullIprotoResponse(rawResp);
       const rtt = Date.now() - startTime;
 
-      writer.releaseLock(); reader.releaseLock(); socket.close();
 
       if (parsed.status !== 0) {
         const errMsg = (parsed.body[String(IPROTO_ERROR)] as string) || `IPROTO error code: ${parsed.status}`;
@@ -1139,9 +1159,11 @@ export async function handleTarantoolSQL(request: Request, _env: unknown): Promi
         version: greeting.version,
         sql, columns, rows, rowCount: rows.length,
       }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    } catch (err) {
-      writer.releaseLock(); reader.releaseLock(); socket.close();
-      throw err;
+    } finally {
+      clearTimeout(timeoutHandle);
+      try { writer.releaseLock(); } catch { /* ignore */ }
+      try { reader.releaseLock(); } catch { /* ignore */ }
+      try { socket.close(); } catch { /* ignore */ }
     }
   } catch (error) {
     return new Response(JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }), { status: 500, headers: { 'Content-Type': 'application/json' } });

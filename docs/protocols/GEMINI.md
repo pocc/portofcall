@@ -162,14 +162,14 @@ with a simple line-splitter rather than a full parser.
 
 ### Fetch a Gemini capsule
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
+curl -s -X POST https://l4.fyi/api/gemini/fetch \
   -H 'Content-Type: application/json' \
   -d '{"url":"gemini://gemini.circumlunar.space/"}' | jq '{status, meta}'
 ```
 
 ### Extract all links from a Gemtext page
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
+curl -s -X POST https://l4.fyi/api/gemini/fetch \
   -H 'Content-Type: application/json' \
   -d '{"url":"gemini://gemini.circumlunar.space/"}' \
   | jq -r '.body' | grep '^=>' | awk '{print $2, $3}'
@@ -177,7 +177,7 @@ curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
 
 ### Check a redirect
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
+curl -s -X POST https://l4.fyi/api/gemini/fetch \
   -H 'Content-Type: application/json' \
   -d '{"url":"gemini://example.com/old-path"}' \
   | jq '{status, meta}'
@@ -186,14 +186,14 @@ curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
 
 ### Custom port
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
+curl -s -X POST https://l4.fyi/api/gemini/fetch \
   -H 'Content-Type: application/json' \
   -d '{"url":"gemini://localhost:1965/","timeout":5000}' | jq .
 ```
 
 ### Short timeout for fast probing
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/gemini/fetch \
+curl -s -X POST https://l4.fyi/api/gemini/fetch \
   -H 'Content-Type: application/json' \
   -d '{"url":"gemini://gemini.circumlunar.space/","timeout":3000}' | jq .success
 ```

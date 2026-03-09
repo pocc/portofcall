@@ -20,6 +20,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // Q.931 Message Types
 const Q931_PROTOCOL_DISCRIMINATOR = 0x08;
@@ -313,36 +314,48 @@ function parseQ931Message(data: Uint8Array): ParsedQ931Message | null {
 }
 
 /**
- * Read exact number of bytes from the socket with a deadline.
+ * Buffered reader that preserves leftover bytes between sequential reads.
+ * Prevents data loss when TCP delivers more bytes than a single readExact requests.
  */
-export async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-  timeoutMs: number,
-): Promise<Uint8Array> {
-  const buffer = new Uint8Array(length);
-  let offset = 0;
+class BufferedReader {
+  private leftover = new Uint8Array(0);
+  constructor(private reader: ReadableStreamDefaultReader<Uint8Array>) {}
 
-  const deadline = Date.now() + timeoutMs;
+  async readExact(length: number, timeoutMs: number): Promise<Uint8Array> {
+    const buffer = new Uint8Array(length);
+    let offset = 0;
+    const deadline = Date.now() + timeoutMs;
 
-  while (offset < length) {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('Read timeout');
+    if (this.leftover.length > 0) {
+      const take = Math.min(this.leftover.length, length);
+      buffer.set(this.leftover.subarray(0, take), 0);
+      this.leftover = this.leftover.subarray(take);
+      offset = take;
+    }
 
-    const readPromise = reader.read();
-    const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
-      setTimeout(() => resolve({ done: true, value: undefined }), remaining)
-    );
+    while (offset < length) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('Read timeout');
 
-    const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-    if (done || !value) throw new Error('Connection closed');
+      const readPromise = this.reader.read();
+      const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
+        setTimeout(() => resolve({ done: true, value: undefined }), remaining)
+      );
 
-    const toCopy = Math.min(value.length, length - offset);
-    buffer.set(value.subarray(0, toCopy), offset);
-    offset += toCopy;
+      const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+      if (done || !value) throw new Error('Connection closed');
+
+      const toCopy = Math.min(value.length, length - offset);
+      buffer.set(value.subarray(0, toCopy), offset);
+      offset += toCopy;
+
+      if (value.length > toCopy) {
+        this.leftover = value.slice(toCopy);
+      }
+    }
+
+    return buffer;
   }
-
-  return buffer;
 }
 
 /**
@@ -368,12 +381,12 @@ function wrapTPKT(payload: Uint8Array): Uint8Array {
  * Returns the payload (without the TPKT header) or null on timeout/close.
  */
 async function readTPKTFrame(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutMs: number,
 ): Promise<Uint8Array | null> {
   let header: Uint8Array;
   try {
-    header = await readExact(reader, 4, timeoutMs);
+    header = await br.readExact(4, timeoutMs);
   } catch {
     return null; // timeout or connection closed
   }
@@ -397,7 +410,7 @@ async function readTPKTFrame(
   }
 
   try {
-    return await readExact(reader, payloadLength, timeoutMs);
+    return await br.readExact(payloadLength, timeoutMs);
   } catch {
     return null;
   }
@@ -452,7 +465,7 @@ interface H323RegisterResult {
  */
 export async function handleH323Register(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -476,7 +489,7 @@ export async function handleH323Register(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -493,6 +506,24 @@ export async function handleH323Register(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (callingNumber.length > 20) {
+      return new Response(JSON.stringify({ success: false, error: 'Calling number too long (max 20 digits)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (calledNumber.length > 20) {
+      return new Response(JSON.stringify({ success: false, error: 'Called number too long (max 20 digits)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       setTimeout(() => reject(new Error('Connection timeout')), timeout);
@@ -505,6 +536,7 @@ export async function handleH323Register(request: Request): Promise<Response> {
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
 
       try {
         // Generate a random call reference (1–0x7FFF)
@@ -516,7 +548,7 @@ export async function handleH323Register(request: Request): Promise<Response> {
 
         // Read the first TPKT-framed response
         const readTimeout = Math.max(timeout - (Date.now() - startTime) - 200, 1000);
-        const responseData = await readTPKTFrame(reader, readTimeout);
+        const responseData = await readTPKTFrame(br, readTimeout);
         const latencyMs = Date.now() - startTime;
 
         writer.releaseLock();
@@ -635,7 +667,7 @@ export async function handleH323Register(request: Request): Promise<Response> {
  */
 export async function handleH323Info(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -655,9 +687,17 @@ export async function handleH323Info(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
       });
     }
 
@@ -673,6 +713,7 @@ export async function handleH323Info(request: Request): Promise<Response> {
 
       const writer = socket.writable.getWriter();
       const reader = socket.readable.getReader();
+      const br = new BufferedReader(reader);
 
       try {
         // Send a minimal SETUP to provoke any Q.931 response, wrapped in TPKT
@@ -681,7 +722,7 @@ export async function handleH323Info(request: Request): Promise<Response> {
         await writer.write(wrapTPKT(setupMsg));
 
         const readTimeout = Math.max(timeout - connectTime - 200, 1000);
-        const responseData = await readTPKTFrame(reader, readTimeout);
+        const responseData = await readTPKTFrame(br, readTimeout);
         const rtt = Date.now() - startTime;
 
         writer.releaseLock();
@@ -760,7 +801,7 @@ export async function handleH323Info(request: Request): Promise<Response> {
  */
 export async function handleH323Connect(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
   }
 
   try {
@@ -785,7 +826,7 @@ export async function handleH323Connect(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
@@ -803,16 +844,38 @@ export async function handleH323Connect(request: Request): Promise<Response> {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
+    if (callingNumber.length > 20) {
+      return new Response(JSON.stringify({ success: false, error: 'Calling number too long (max 20 digits)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (calledNumber.length > 20) {
+      return new Response(JSON.stringify({ success: false, error: 'Called number too long (max 20 digits)' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    // SSRF protection
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+        status: 403, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const startTime = Date.now();
 
     // Connect to the H.323 gateway/terminal
     const socket = connect({ hostname: host, port });
-    await socket.opened;
+    await Promise.race([
+      socket.opened,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+    ]);
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       // Generate random call reference
@@ -839,7 +902,7 @@ export async function handleH323Connect(request: Request): Promise<Response> {
       const maxReadTime = Math.min(timeout - connectTime, 8000);
 
       while (!gotFinalResponse && (Date.now() - readStart) < maxReadTime) {
-        const responseData = await readTPKTFrame(reader, Math.min(3000, maxReadTime - (Date.now() - readStart)));
+        const responseData = await readTPKTFrame(br, Math.min(3000, maxReadTime - (Date.now() - readStart)));
         if (!responseData) break;
 
         const parsed = parseQ931Message(responseData);
@@ -1011,6 +1074,9 @@ interface H323CapabilitiesRequest {
 }
 
 export async function handleH323Capabilities(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   let body: H323CapabilitiesRequest;
   try {
     body = await request.json() as H323CapabilitiesRequest;
@@ -1029,12 +1095,28 @@ export async function handleH323Capabilities(request: Request): Promise<Response
     });
   }
 
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+      status: 400,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // SSRF protection
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheck.ip) }), {
+      status: 403, headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   const messages: string[] = [];
   const startTime = Date.now();
 
   try {
     const socket = connect({ hostname: host, port }, { secureTransport: 'off', allowHalfOpen: false });
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
     const writer = socket.writable.getWriter();
 
     try {
@@ -1060,7 +1142,7 @@ export async function handleH323Capabilities(request: Request): Promise<Response
         const remaining = timeoutAt - Date.now();
         if (remaining <= 0) break;
 
-        const chunk = await readTPKTFrame(reader, remaining);
+        const chunk = await readTPKTFrame(br, remaining);
         if (!chunk) break;
 
         totalBytes += chunk.length;

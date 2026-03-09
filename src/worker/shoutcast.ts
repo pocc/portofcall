@@ -83,6 +83,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface ShoutCastRequest {
   host: string;
@@ -112,9 +113,11 @@ interface ShoutCastResponse {
  * Build SHOUTcast/ICY protocol request
  */
 function buildShoutCastRequest(host: string, port: number, stream: string = '/'): string {
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safeStream = stream.replace(/[\r\n]/g, '');
   return [
-    `GET ${stream} HTTP/1.0`,
-    `Host: ${host}:${port}`,
+    `GET ${safeStream} HTTP/1.0`,
+    `Host: ${safeHost}:${port}`,
     'Icy-MetaData: 1',
     'User-Agent: WinampMPEG/5.0',
     '\r\n',
@@ -216,6 +219,9 @@ function parseShoutCastResponse(data: string): {
  * Detects SHOUTcast/Icecast servers and basic stream info.
  */
 export async function handleShoutCastProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as ShoutCastRequest;
     const { host, port = 8000, timeout = 15000, stream = '/' } = body;
@@ -232,7 +238,7 @@ export async function handleShoutCastProbe(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -242,6 +248,11 @@ export async function handleShoutCastProbe(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({ success: false, host, port, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -401,13 +412,15 @@ interface ShoutCastAdminResponse {
  * Build a basic HTTP/1.0 GET request string.
  */
 function buildHttpGet(host: string, port: number, path: string, authHeader?: string): string {
+  const safeHost = host.replace(/[\r\n]/g, '');
+  const safePath = path.replace(/[\r\n]/g, '');
   const lines = [
-    `GET ${path} HTTP/1.0`,
-    `Host: ${host}:${port}`,
+    `GET ${safePath} HTTP/1.0`,
+    `Host: ${safeHost}:${port}`,
     'User-Agent: Mozilla/5.0',
     'Connection: close',
   ];
-  if (authHeader) lines.push(`Authorization: ${authHeader}`);
+  if (authHeader) lines.push(`Authorization: ${authHeader.replace(/[\r\n]/g, '')}`);
   lines.push('\r\n');
   return lines.join('\r\n');
 }
@@ -501,12 +514,13 @@ function parse7Html(body: string): Partial<ShoutCastAdminResponse> {
 
   if (parts.length < 7) return {};
 
+  const safeInt = (s: string): number | undefined => { const n = parseInt(s, 10); return Number.isFinite(n) ? n : undefined; };
   return {
-    currentListeners: parseInt(parts[0], 10) || undefined,
-    peakListeners: parseInt(parts[2], 10) || undefined,
-    maxListeners: parseInt(parts[3], 10) || undefined,
-    uniqueListeners: parseInt(parts[4], 10) || undefined,
-    bitrate: parseInt(parts[5], 10) || undefined,
+    currentListeners: safeInt(parts[0]),
+    peakListeners: safeInt(parts[2]),
+    maxListeners: safeInt(parts[3]),
+    uniqueListeners: safeInt(parts[4]),
+    bitrate: safeInt(parts[5]),
     title: parts[6]?.trim() || undefined,
   };
 }
@@ -527,12 +541,13 @@ function parseAdminXml(body: string): Partial<ShoutCastAdminResponse> {
   const uniqueStr = extractXml('UNIQUELISTENERS');
   const bitrateStr = extractXml('BITRATE');
 
+  const safeInt = (s: string | undefined): number | undefined => { if (s === undefined) return undefined; const n = parseInt(s, 10); return Number.isFinite(n) ? n : undefined; };
   return {
-    currentListeners: currentStr !== undefined ? parseInt(currentStr, 10) || undefined : undefined,
-    peakListeners: peakStr !== undefined ? parseInt(peakStr, 10) || undefined : undefined,
-    maxListeners: maxStr !== undefined ? parseInt(maxStr, 10) || undefined : undefined,
-    uniqueListeners: uniqueStr !== undefined ? parseInt(uniqueStr, 10) || undefined : undefined,
-    bitrate: bitrateStr !== undefined ? parseInt(bitrateStr, 10) || undefined : undefined,
+    currentListeners: safeInt(currentStr),
+    peakListeners: safeInt(peakStr),
+    maxListeners: safeInt(maxStr),
+    uniqueListeners: safeInt(uniqueStr),
+    bitrate: safeInt(bitrateStr),
     title: extractXml('SONGTITLE') || extractXml('SERVERTITLE') || undefined,
     genre: extractXml('GENRE') || undefined,
   };
@@ -590,6 +605,9 @@ function mergeStats(
  *   3. GET /7.html                         (legacy 7-field CSV)
  */
 export async function handleSHOUTcastAdmin(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+  }
   try {
     const body = await request.json() as ShoutCastAdminRequest;
     const {
@@ -619,7 +637,7 @@ export async function handleSHOUTcastAdmin(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false, host, port,
         error: 'Port must be between 1 and 65535',
@@ -752,7 +770,7 @@ export async function handleSHOUTcastAdmin(request: Request): Promise<Response> 
  */
 export async function handleSHOUTcastSource(request: Request): Promise<Response> {
   if (request.method !== 'POST') {
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
       status: 405,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -798,11 +816,20 @@ export async function handleSHOUTcastSource(request: Request): Promise<Response>
       headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (!password) {
+  if (password == null) {
     return new Response(JSON.stringify({ success: false, error: 'password is required' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+    return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  const cfCheckSource = await checkIfCloudflare(host);
+  if (cfCheckSource.isCloudflare && cfCheckSource.ip) {
+    return new Response(JSON.stringify({ success: false, error: getCloudflareErrorMessage(host, cfCheckSource.ip), isCloudflare: true }), { status: 403, headers: { 'Content-Type': 'application/json' } });
   }
 
   const startTime = Date.now();

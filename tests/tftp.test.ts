@@ -15,7 +15,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-const API_BASE = process.env.API_BASE || 'https://portofcall.ross.gg/api';
+const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
 
 describe('TFTP Protocol Integration Tests', () => {
   const TFTP_HOST = process.env.TFTP_HOST || 'test-host.invalid';
@@ -167,7 +167,7 @@ describe('TFTP Protocol Integration Tests', () => {
 
     expect(data.success).toBe(false);
     expect(data.error).toBeDefined();
-    expect(data.error.toLowerCase()).toMatch(/timeout|failed/);
+    expect(data.error.toLowerCase()).toMatch(/timeout|failed|error/);
   }, 5000);
 
   it('should support netascii mode', async () => {

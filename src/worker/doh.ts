@@ -81,7 +81,7 @@ function encodeDomainName(domain: string): Uint8Array {
  * Build a DNS query packet (wire format, no TCP length prefix)
  */
 function buildDNSQuery(domain: string, qtype: number): Uint8Array {
-  const id = Math.floor(Math.random() * 65536);
+  const id = crypto.getRandomValues(new Uint16Array(1))[0];
   const qname = encodeDomainName(domain);
 
   const header = new Uint8Array(12);
@@ -277,6 +277,11 @@ function parseDNSResponse(data: Uint8Array, domain: string, queryType: string): 
  * Handle DoH DNS query via HTTPS fetch
  */
 export async function handleDOHQuery(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       domain?: string;

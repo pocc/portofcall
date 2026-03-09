@@ -110,8 +110,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
         }
       };
 
-      websocket.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      websocket.onerror = () => {
         addToTerminal('WebSocket error occurred', 'error');
       };
 
@@ -151,7 +150,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
     addToTerminal('Disconnected from server', 'info');
   };
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendCommand();
@@ -190,10 +189,11 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="telnet-host" className="block text-sm font-medium text-slate-300 mb-1">
                   Host
                 </label>
                 <input
+                  id="telnet-host"
                   type="text"
                   value={host}
                   onChange={(e) => setHost(e.target.value)}
@@ -204,10 +204,11 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-slate-300 mb-1">
+                <label htmlFor="telnet-port" className="block text-sm font-medium text-slate-300 mb-1">
                   Port
                 </label>
                 <input
+                  id="telnet-port"
                   type="number"
                   value={port}
                   onChange={(e) => setPort(e.target.value)}
@@ -255,10 +256,9 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
                     <button
                       key={cmd}
                       onClick={() => {
-                        setCommand(cmd);
-                        setTimeout(() => {
-                          handleSendCommand();
-                        }, 100);
+                        if (!wsRef.current) return;
+                        addToTerminal(cmd, 'input');
+                        wsRef.current.send(cmd + '\r\n');
                       }}
                       className="w-full text-left text-sm bg-slate-700 hover:bg-slate-600 text-slate-300 py-2 px-3 rounded transition-colors"
                     >
@@ -330,7 +330,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
                   type="text"
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
-                  onKeyPress={handleKeyPress}
+                  onKeyDown={handleKeyDown}
                   placeholder="Enter command..."
                   disabled={!connected}
                   className="flex-1 bg-slate-700 border border-slate-600 rounded-lg px-4 py-2 text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono disabled:opacity-50"

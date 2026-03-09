@@ -265,6 +265,9 @@ async function readDiameterMessage(reader: ReadableStreamDefaultReader<Uint8Arra
           if (copied >= 4) break;
         }
         messageLength = (header[1] << 16) | (header[2] << 8) | header[3];
+        if (messageLength > 1_048_576) {
+          throw new Error(`Diameter message too large: ${messageLength} bytes (max 1 MiB)`);
+        }
       }
 
       if (messageLength > 0 && totalRead >= messageLength) {
@@ -288,6 +291,11 @@ async function readDiameterMessage(reader: ReadableStreamDefaultReader<Uint8Arra
  * and reads CEA (Capabilities-Exchange-Answer)
  */
 export async function handleDiameterConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -299,6 +307,7 @@ export async function handleDiameterConnect(request: Request): Promise<Response>
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -308,9 +317,14 @@ export async function handleDiameterConnect(request: Request): Promise<Response>
 
     const host = options.host;
     const port = options.port || 3868;
-    const originHost = options.originHost || 'portofcall.ross.gg';
+    const originHost = options.originHost || 'l4.fyi';
     const originRealm = options.originRealm || 'ross.gg';
     const timeoutMs = options.timeout || 15000;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -462,6 +476,11 @@ export async function handleDiameterConnect(request: Request): Promise<Response>
  * and reads DWA (Device-Watchdog-Answer)
  */
 export async function handleDiameterWatchdog(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -473,6 +492,7 @@ export async function handleDiameterWatchdog(request: Request): Promise<Response
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -482,9 +502,14 @@ export async function handleDiameterWatchdog(request: Request): Promise<Response
 
     const host = options.host;
     const port = options.port || 3868;
-    const originHost = options.originHost || 'portofcall.ross.gg';
+    const originHost = options.originHost || 'l4.fyi';
     const originRealm = options.originRealm || 'ross.gg';
     const timeoutMs = options.timeout || 15000;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -627,6 +652,11 @@ const DIAMETER_APP_NAMES: Record<number, string> = {
  * Handle Diameter ACR (Accounting-Request) — sends CER, then ACR, parses ACA.
  */
 export async function handleDiameterACR(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -642,6 +672,7 @@ export async function handleDiameterACR(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -651,12 +682,17 @@ export async function handleDiameterACR(request: Request): Promise<Response> {
 
     const host = options.host;
     const port = options.port || 3868;
-    const originHost = options.originHost || 'portofcall.ross.gg';
+    const originHost = options.originHost || 'l4.fyi';
     const originRealm = options.originRealm || 'ross.gg';
     const destinationRealm = options.destinationRealm || originRealm;
     const timeoutMs = options.timeout || 15000;
     const acctRecordType = options.acctRecordType ?? 1; // Default: EVENT_RECORD
     const sessionId = options.sessionId || `${originHost};${Date.now()};1`;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -789,6 +825,11 @@ export async function handleDiameterACR(request: Request): Promise<Response> {
  * advertises Auth-Application-IDs, then parses the AAA response.
  */
 export async function handleDiameterAuth(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const options = await request.json() as {
       host: string;
@@ -801,6 +842,7 @@ export async function handleDiameterAuth(request: Request): Promise<Response> {
 
     if (!options.host) {
       return new Response(JSON.stringify({
+        success: false,
         error: 'Missing required parameter: host',
       }), {
         status: 400,
@@ -810,10 +852,15 @@ export async function handleDiameterAuth(request: Request): Promise<Response> {
 
     const host = options.host;
     const port = options.port || 3868;
-    const originHost = options.originHost || 'portofcall.ross.gg';
+    const originHost = options.originHost || 'l4.fyi';
     const originRealm = options.originRealm || 'ross.gg';
     const destinationRealm = options.destinationRealm || originRealm;
     const timeoutMs = options.timeout || 15000;
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -981,6 +1028,11 @@ const CMD_SESSION_TERMINATION = 275;
  * Response: { success, host, port, rtt, resultCode, resultCodeName, sessionId }
  */
 export async function handleDiameterSTR(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as {
       host: string; port?: number; timeout?: number;
@@ -996,6 +1048,20 @@ export async function handleDiameterSTR(request: Request): Promise<Response> {
     if (!host) return new Response(JSON.stringify({ success: false, error: 'host is required' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheckSTR = await checkIfCloudflare(host);
+    if (cfCheckSTR.isCloudflare && cfCheckSTR.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: getCloudflareErrorMessage(host, cfCheckSTR.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const sessionId = body.sessionId ?? `${originHost};${Date.now()};str`;
 

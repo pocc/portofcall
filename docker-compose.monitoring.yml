@@ -1,0 +1,130 @@
+version: '3.8'
+
+# Monitoring & Observability Stack
+# Protocols covered: elasticsearch, kibana, prometheus, grafana, influxdb, loki, graphite
+#
+# Usage: docker compose -f docker-compose.monitoring.yml up -d
+
+services:
+  # Elasticsearch - Search & analytics engine
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: testserver-elasticsearch
+    ports:
+      - "9200:9200"     # HTTP API
+      - "9300:9300"     # Transport (node-to-node)
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms256m -Xmx256m
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Kibana - Elasticsearch UI
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: testserver-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Prometheus - Metrics collection
+  prometheus:
+    image: prom/prometheus
+    container_name: testserver-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Grafana - Visualization & dashboards
+  grafana:
+    image: grafana/grafana-oss
+    container_name: testserver-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=testuser
+      - GF_SECURITY_ADMIN_PASSWORD=testpass123
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # InfluxDB - Time-series database
+  influxdb:
+    image: influxdb:2
+    container_name: testserver-influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=testuser
+      - DOCKER_INFLUXDB_INIT_PASSWORD=testpass123
+      - DOCKER_INFLUXDB_INIT_ORG=testorg
+      - DOCKER_INFLUXDB_INIT_BUCKET=testbucket
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=testtoken123
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    mem_limit: 512m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Grafana Loki - Log aggregation
+  loki:
+    image: grafana/loki
+    container_name: testserver-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+  # Graphite - Metrics storage & graphing
+  graphite:
+    image: graphiteapp/graphite-statsd
+    container_name: testserver-graphite
+    ports:
+      - "2003:2003"     # Carbon plaintext
+      - "2004:2004"     # Carbon pickle
+      - "8081:80"       # Graphite web (remapped to avoid conflict)
+    volumes:
+      - graphite_data:/opt/graphite/storage
+    mem_limit: 256m
+    restart: unless-stopped
+    networks:
+      - testnet
+
+networks:
+  testnet:
+    driver: bridge
+
+volumes:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
+  influxdb_data:
+  graphite_data:

@@ -79,14 +79,14 @@ SZL fields are populated on a best-effort basis. If the PLC doesn't support SZL 
 
 **curl example:**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/s7comm/connect \
+curl -X POST https://l4.fyi/api/s7comm/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"192.168.1.10","rack":0,"slot":2}'
 ```
 
 **curl example — custom timeout and port:**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/s7comm/connect \
+curl -X POST https://l4.fyi/api/s7comm/connect \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "plc.example.com",
@@ -157,7 +157,7 @@ Performs COTP connection, S7 setup, then reads bytes from a PLC data block using
 
 **curl example — read 16 bytes from DB5 starting at offset 100:**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/s7comm/read \
+curl -X POST https://l4.fyi/api/s7comm/read \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "192.168.1.10",
@@ -169,7 +169,7 @@ curl -X POST https://portofcall.ross.gg/api/s7comm/read \
 
 **curl example — read with custom rack/slot:**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/s7comm/read \
+curl -X POST https://l4.fyi/api/s7comm/read \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "plc.factory.local",
@@ -236,7 +236,7 @@ Performs COTP connection, S7 setup, then writes bytes to a PLC data block using 
 
 **curl example — write 4 bytes to DB1 at offset 10:**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/s7comm/write \
+curl -X POST https://l4.fyi/api/s7comm/write \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "192.168.1.10",
@@ -248,7 +248,7 @@ curl -X POST https://portofcall.ross.gg/api/s7comm/write \
 
 **curl example — zero out 8 bytes:**
 ```bash
-curl -X POST https://portofcall.ross.gg/api/s7comm/write \
+curl -X POST https://l4.fyi/api/s7comm/write \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "plc.factory.local",

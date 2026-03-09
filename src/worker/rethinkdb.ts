@@ -29,6 +29,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { BufferedReader } from './buffered-reader';
 
 const MAGIC_V0_4 = 0xD3CCAA08;
 const MAGIC_V1_0 = 0x400C2D20;
@@ -59,54 +60,19 @@ const RESPONSE_TYPE_NAMES: Record<number, string> = {
 // ---------------------------------------------------------------------------
 
 async function readNullTerminatedString(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutPromise: Promise<never>,
   maxBytes = 4096,
 ): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (total < maxBytes) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) break;
-    chunks.push(result.value);
-    total += result.value.length;
-    if (result.value.includes(0)) break;
+  const bytes: number[] = [];
+  for (let i = 0; i < maxBytes; i++) {
+    const b = await br.readExact(1, timeoutPromise);
+    if (b[0] === 0) break;
+    bytes.push(b[0]);
   }
-  const combined = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) { combined.set(c, off); off += c.length; }
-  const nullIdx = combined.indexOf(0);
-  return new TextDecoder().decode(combined.slice(0, nullIdx >= 0 ? nullIdx : combined.length));
+  return new TextDecoder().decode(new Uint8Array(bytes));
 }
 
-async function readExact(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
-  length: number,
-  timeoutPromise: Promise<never>,
-): Promise<Uint8Array> {
-  if (length > 16 * 1024 * 1024) throw new Error('Response too large (max 16MB)');
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  while (total < length) {
-    const result = await Promise.race([reader.read(), timeoutPromise]);
-    if (result.done || !result.value) throw new Error('Connection closed while reading');
-    const needed = length - total;
-    if (result.value.length <= needed) {
-      chunks.push(result.value);
-      total += result.value.length;
-    } else {
-      chunks.push(result.value.subarray(0, needed));
-      total += needed;
-    }
-  }
-  const buf = new Uint8Array(length);
-  let off = 0;
-  for (let i = 0; i < chunks.length; i++) {
-    buf.set(chunks[i], off);
-    off += chunks[i].length;
-  }
-  return buf;
-}
 
 // ---------------------------------------------------------------------------
 // Handshake builders
@@ -142,7 +108,7 @@ function buildV10ScramInit(): Uint8Array {
 
 async function performScramAuth(
   writer: WritableStreamDefaultWriter<Uint8Array>,
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   password: string,
   timeoutPromise: Promise<never>,
 ): Promise<{ success: boolean; error?: string }> {
@@ -163,7 +129,7 @@ async function performScramAuth(
   await writer.write(pkt);
 
   // Read server-first response (null-terminated JSON)
-  const serverFirstStr = await readNullTerminatedString(reader, timeoutPromise);
+  const serverFirstStr = await readNullTerminatedString(br, timeoutPromise);
   let serverFirst: { success?: boolean; authentication?: string; error?: string };
   try {
     serverFirst = JSON.parse(serverFirstStr) as typeof serverFirst;
@@ -230,7 +196,7 @@ async function performScramAuth(
   await writer.write(enc.encode(clientFinal + '\0'));
 
   // Read server-final response
-  const serverFinalStr = await readNullTerminatedString(reader, timeoutPromise);
+  const serverFinalStr = await readNullTerminatedString(br, timeoutPromise);
   let serverFinal: { success?: boolean; authentication?: string; error?: string };
   try {
     serverFinal = JSON.parse(serverFinalStr) as typeof serverFinal;
@@ -273,14 +239,17 @@ function buildQueryPacket(token: number, queryJson: string): Uint8Array {
 
 /** Read one ReQL response packet: [token:8LE][length:4LE][json:length] */
 async function readQueryResponse(
-  reader: ReadableStreamDefaultReader<Uint8Array>,
+  br: BufferedReader,
   timeoutPromise: Promise<never>,
 ): Promise<{ token: number; json: string }> {
-  const header = await readExact(reader, 12, timeoutPromise);
+  const header = await br.readExact(12, timeoutPromise);
   const v = new DataView(header.buffer);
   const token = v.getUint32(0, true);
   const length = v.getUint32(8, true);
-  const body = await readExact(reader, length, timeoutPromise);
+  if (length > 10_485_760) {
+    throw new Error(`RethinkDB response too large: ${length} bytes (max 10 MiB)`);
+  }
+  const body = await br.readExact(length, timeoutPromise);
   return { token, json: new TextDecoder().decode(body) };
 }
 
@@ -389,7 +358,7 @@ export async function handleRethinkDBConnect(request: Request): Promise<Response
     const { host, port = 28015, authKey = '', timeout = 10000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -405,10 +374,11 @@ export async function handleRethinkDBConnect(request: Request): Promise<Response
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       await writer.write(buildV04Handshake(authKey));
-      const response = await readNullTerminatedString(reader, timeoutPromise);
+      const response = await readNullTerminatedString(br, timeoutPromise);
       const rtt = Date.now() - startTime;
       const detection = detectProtocolVersion(response);
 
@@ -448,7 +418,7 @@ export async function handleRethinkDBProbe(request: Request): Promise<Response> 
     const { host, port = 28015, timeout = 10000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -462,10 +432,11 @@ export async function handleRethinkDBProbe(request: Request): Promise<Response> 
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
       await writer.write(buildV10ScramInit());
-      const response = await readNullTerminatedString(reader, timeoutPromise);
+      const response = await readNullTerminatedString(br, timeoutPromise);
       const rtt = Date.now() - startTime;
       const detection = detectProtocolVersion(response);
 
@@ -511,7 +482,7 @@ export async function handleRethinkDBQuery(request: Request): Promise<Response> 
 
     if (!host) return badRequest('Missing required parameter: host');
     if (!query) return badRequest('Missing required parameter: query');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -525,9 +496,10 @@ export async function handleRethinkDBQuery(request: Request): Promise<Response> 
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
-      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      const authResult = await performScramAuth(writer, br, password, timeoutPromise);
       if (!authResult.success) {
         return new Response(
           JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
@@ -536,7 +508,7 @@ export async function handleRethinkDBQuery(request: Request): Promise<Response> 
       }
 
       await writer.write(buildQueryPacket(1, query));
-      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const { json: responseJson } = await readQueryResponse(br, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       const parsed = parseReQLResponse(responseJson);
@@ -579,7 +551,7 @@ export async function handleRethinkDBListTables(request: Request): Promise<Respo
     const { host, port = 28015, password = '', db = 'rethinkdb', timeout = 15000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -593,9 +565,10 @@ export async function handleRethinkDBListTables(request: Request): Promise<Respo
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
-      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      const authResult = await performScramAuth(writer, br, password, timeoutPromise);
       if (!authResult.success) {
         return new Response(
           JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
@@ -607,7 +580,7 @@ export async function handleRethinkDBListTables(request: Request): Promise<Respo
       const tableListQuery = JSON.stringify([1, [TERM_TABLE_LIST, [[TERM_DB, [[db]]]]], {}]);
       await writer.write(buildQueryPacket(1, tableListQuery));
 
-      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const { json: responseJson } = await readQueryResponse(br, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       const parsed = parseReQLResponse(responseJson);
@@ -648,7 +621,7 @@ export async function handleRethinkDBServerInfo(request: Request): Promise<Respo
     const { host, port = 28015, password = '', timeout = 15000 } = body;
 
     if (!host) return badRequest('Missing required parameter: host');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -662,9 +635,10 @@ export async function handleRethinkDBServerInfo(request: Request): Promise<Respo
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
-      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      const authResult = await performScramAuth(writer, br, password, timeoutPromise);
       if (!authResult.success) {
         return new Response(
           JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
@@ -674,7 +648,7 @@ export async function handleRethinkDBServerInfo(request: Request): Promise<Respo
 
       // SERVER_INFO: query type=5, no term → [5]
       await writer.write(buildQueryPacket(1, '[5]'));
-      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const { json: responseJson } = await readQueryResponse(br, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       const parsed = parseReQLResponse(responseJson);
@@ -728,7 +702,7 @@ export async function handleRethinkDBTableCreate(request: Request): Promise<Resp
     const { host, port = 28015, password = '', db = 'test', timeout = 15000 } = body;
     const name = body.name ?? `portofcall_${Date.now()}`;
     if (!host) return badRequest('Missing required parameter: host');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -742,9 +716,10 @@ export async function handleRethinkDBTableCreate(request: Request): Promise<Resp
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
-      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      const authResult = await performScramAuth(writer, br, password, timeoutPromise);
       if (!authResult.success) {
         return new Response(
           JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
@@ -755,7 +730,7 @@ export async function handleRethinkDBTableCreate(request: Request): Promise<Resp
       // r.db(db).tableCreate(name) → [1, [TABLE_CREATE, [[DB, [[db]]], [name]]], {}]
       const query = JSON.stringify([1, [TERM_TABLE_CREATE, [[TERM_DB, [[db]]], [name]]], {}]);
       await writer.write(buildQueryPacket(1, query));
-      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const { json: responseJson } = await readQueryResponse(br, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       const parsed = parseReQLResponse(responseJson);
@@ -807,7 +782,7 @@ export async function handleRethinkDBInsert(request: Request): Promise<Response>
     const table = body.table ?? 'portofcall';
     const docs = body.docs ?? [{ source: 'portofcall', ts: Date.now() }];
     if (!host) return badRequest('Missing required parameter: host');
-    if (port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) return badRequest('Port must be between 1 and 65535');
 
     const block = await cfBlock(host);
     if (block) return block;
@@ -821,9 +796,10 @@ export async function handleRethinkDBInsert(request: Request): Promise<Response>
     await Promise.race([socket.opened, timeoutPromise]);
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
+    const br = new BufferedReader(reader);
 
     try {
-      const authResult = await performScramAuth(writer, reader, password, timeoutPromise);
+      const authResult = await performScramAuth(writer, br, password, timeoutPromise);
       if (!authResult.success) {
         return new Response(
           JSON.stringify({ success: false, error: `Authentication failed: ${authResult.error}` }),
@@ -835,7 +811,7 @@ export async function handleRethinkDBInsert(request: Request): Promise<Response>
       //   [1, [INSERT, [[TABLE, [[DB, [[db]]], [name]]], [docs...]]], {}]
       const query = JSON.stringify([1, [TERM_INSERT, [[TERM_TABLE, [[TERM_DB, [[db]]], [table]]], docs]], {}]);
       await writer.write(buildQueryPacket(1, query));
-      const { json: responseJson } = await readQueryResponse(reader, timeoutPromise);
+      const { json: responseJson } = await readQueryResponse(br, timeoutPromise);
       const rtt = Date.now() - startTime;
 
       const parsed = parseReQLResponse(responseJson);

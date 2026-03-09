@@ -66,12 +66,19 @@ const AJP_RESPONSE_SEND_BODY = 0x04;
 const AJP_RESPONSE_END_RESPONSE = 0x05;
 const AJP_RESPONSE_GET_BODY_CHUNK = 0x06;
 
-/** Read exactly N bytes from a socket reader */
-async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number): Promise<Uint8Array> {
+/** Read exactly N bytes from a socket reader, with a deadline (absolute ms timestamp). */
+async function readExact(reader: ReadableStreamDefaultReader<Uint8Array>, n: number, deadline: number): Promise<Uint8Array> {
   const buffer = new Uint8Array(n);
   let offset = 0;
   while (offset < n) {
-    const { value, done } = await reader.read();
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('Read timeout');
+    const { value, done } = await Promise.race([
+      reader.read(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Read timeout')), remaining)
+      ),
+    ]);
     if (done || !value) throw new Error('Connection closed unexpectedly');
     const toCopy = Math.min(n - offset, value.length);
     buffer.set(value.subarray(0, toCopy), offset);
@@ -346,6 +353,13 @@ async function readAJPResponse(
  * that an AJP connector (e.g., Tomcat) is listening and responsive.
  */
 export async function handleAJPConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   try {
     const { host, port = 8009, timeout = 10000 } = await request.json<{
       host: string;
@@ -354,7 +368,14 @@ export async function handleAJPConnect(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -386,7 +407,7 @@ export async function handleAJPConnect(request: Request): Promise<Response> {
         await writer.write(AJP_CPING);
 
         // Step 2: Read CPong response (5 bytes)
-        const response = await readExact(reader, 5);
+        const response = await readExact(reader, 5, start + timeout);
         const rtt = Date.now() - start;
 
         // Step 3: Validate CPong
@@ -458,6 +479,13 @@ export async function handleAJPConnect(request: Request): Promise<Response> {
  * Request body JSON: { host, port?, method?, path?, headers?, body?, timeout? }
  */
 export async function handleAJPRequest(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   try {
     const {
       host,
@@ -478,7 +506,14 @@ export async function handleAJPRequest(request: Request): Promise<Response> {
     }>();
 
     if (!host) {
-      return new Response(JSON.stringify({ error: 'Missing required parameter: host' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required parameter: host' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });

@@ -397,22 +397,22 @@ Two different read strategies are used:
 
 ```bash
 # Probe component port (no auth)
-curl -s -X POST https://portofcall.ross.gg/api/jabber-component/probe \
+curl -s -X POST https://l4.fyi/api/jabber-component/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"xmpp.example.com","componentName":"gateway.example.com"}' | jq .
 
 # Probe non-standard port
-curl -s -X POST https://portofcall.ross.gg/api/jabber-component/probe \
+curl -s -X POST https://l4.fyi/api/jabber-component/probe \
   -H 'Content-Type: application/json' \
   -d '{"host":"xmpp.example.com","port":5347,"componentName":"bot.example.com"}' | jq .
 
 # Full handshake (shared secret)
-curl -s -X POST https://portofcall.ross.gg/api/jabber-component/handshake \
+curl -s -X POST https://l4.fyi/api/jabber-component/handshake \
   -H 'Content-Type: application/json' \
   -d '{"host":"xmpp.example.com","componentName":"gateway.example.com","secret":"mysecret"}' | jq .
 
 # Send a message through the component
-curl -s -X POST https://portofcall.ross.gg/api/jabber-component/send \
+curl -s -X POST https://l4.fyi/api/jabber-component/send \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"xmpp.example.com",
@@ -424,7 +424,7 @@ curl -s -X POST https://portofcall.ross.gg/api/jabber-component/send \
   }' | jq .
 
 # IQ ping through the component (omit body)
-curl -s -X POST https://portofcall.ross.gg/api/jabber-component/send \
+curl -s -X POST https://l4.fyi/api/jabber-component/send \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"xmpp.example.com",
@@ -435,7 +435,7 @@ curl -s -X POST https://portofcall.ross.gg/api/jabber-component/send \
   }' | jq .
 
 # Roster query through the component
-curl -s -X POST https://portofcall.ross.gg/api/jabber-component/roster \
+curl -s -X POST https://l4.fyi/api/jabber-component/roster \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"xmpp.example.com",

@@ -10,13 +10,50 @@ import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
 
+type Action = 'connect' | 'stat' | 'read' | 'ls';
+
 interface NinePClientProps {
   onBack: () => void;
 }
 
+function describeQidType(t: number): string {
+  const flags: string[] = [];
+  if (t & 0x80) flags.push('directory');
+  if (t & 0x40) flags.push('append-only');
+  if (t & 0x20) flags.push('exclusive');
+  if (t & 0x10) flags.push('mounted channel');
+  if (t & 0x08) flags.push('auth file');
+  if (t & 0x04) flags.push('temp');
+  return flags.length > 0 ? flags.join(', ') : 'file';
+}
+
+function formatMode(mode: number): string {
+  const isDir = (mode & 0x80000000) !== 0;
+  const isAppend = (mode & 0x40000000) !== 0;
+  const isExcl = (mode & 0x20000000) !== 0;
+  const isMount = (mode & 0x10000000) !== 0;
+  const isAuth = (mode & 0x08000000) !== 0;
+  const isTmp = (mode & 0x04000000) !== 0;
+  const typeChar = isDir ? 'd' : isMount ? 'M' : isAuth ? 'A' : '-';
+  const perms = mode & 0x1ff;
+  const rwx = (p: number) =>
+    `${p & 4 ? 'r' : '-'}${p & 2 ? 'w' : '-'}${p & 1 ? 'x' : '-'}`;
+  const flags = [isAppend ? 'a' : '', isExcl ? 'l' : '', isTmp ? 't' : ''].filter(Boolean).join('');
+  return `${typeChar}${rwx(perms >> 6)}${rwx((perms >> 3) & 7)}${rwx(perms & 7)}${flags ? ' [' + flags + ']' : ''}`;
+}
+
+function formatTimestamp(unix: number): string {
+  // Returns "YYYY-MM-DD HH:MM:SS" — exactly 19 chars for column alignment
+  return new Date(unix * 1000).toISOString().slice(0, 19).replace('T', ' ');
+}
+
 export default function NinePClient({ onBack }: NinePClientProps) {
+  const [action, setAction] = useState<Action>('connect');
   const [host, setHost] = useState('');
   const [port, setPort] = useState('564');
+  const [path, setPath] = useState('');
+  const [offset, setOffset] = useState('0');
+  const [count, setCount] = useState('4096');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -26,23 +63,23 @@ export default function NinePClient({ onBack }: NinePClientProps) {
     port: [validationRules.port()],
   });
 
+  const reset = () => {
+    setError('');
+    setResult('');
+  };
+
   const handleConnect = async () => {
     const isValid = validateAll({ host, port });
     if (!isValid) return;
 
     setLoading(true);
-    setError('');
-    setResult('');
+    reset();
 
     try {
       const response = await fetch('/api/9p/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          host,
-          port: parseInt(port, 10),
-          timeout: 10000,
-        }),
+        body: JSON.stringify({ host, port: parseInt(port, 10), timeout: 10000 }),
       });
 
       const data = await response.json() as {
@@ -62,7 +99,7 @@ export default function NinePClient({ onBack }: NinePClientProps) {
 
         if (data.rootQid) {
           resultText += `\nRoot QID:\n`;
-          resultText += `  Type: ${data.rootQid.type} (${data.rootQid.type === 0x80 ? 'directory' : data.rootQid.type === 0 ? 'file' : `0x${data.rootQid.type.toString(16)}`})\n`;
+          resultText += `  Type: ${data.rootQid.type} (${describeQidType(data.rootQid.type)})\n`;
           resultText += `  Version: ${data.rootQid.version}\n`;
           resultText += `  Path: ${data.rootQid.path}\n`;
         }
@@ -82,10 +119,229 @@ export default function NinePClient({ onBack }: NinePClientProps) {
     }
   };
 
+  const handleStat = async () => {
+    const isValid = validateAll({ host, port });
+    if (!isValid) return;
+
+    setLoading(true);
+    reset();
+
+    try {
+      const response = await fetch('/api/9p/stat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port, 10),
+          path: path || '',
+          timeout: 10000,
+        }),
+      });
+
+      const data = await response.json() as {
+        success?: boolean;
+        path?: string;
+        stat?: {
+          type: number; dev: number;
+          qid: { type: number; version: number; path: string };
+          mode: number; atime: number; mtime: number;
+          length: string; name: string; uid: string; gid: string; muid: string;
+        };
+        error?: string;
+      };
+
+      if (response.ok && data.success && data.stat) {
+        const s = data.stat;
+        let t = `Stat: ${data.path}\n${'='.repeat(40)}\n\n`;
+        t += `Name:     ${s.name}\n`;
+        t += `Mode:     ${formatMode(s.mode)} (0x${s.mode.toString(16)})\n`;
+        t += `Size:     ${s.length} bytes\n`;
+        t += `UID:      ${s.uid}\n`;
+        t += `GID:      ${s.gid}\n`;
+        t += `Modified: ${s.muid} at ${formatTimestamp(s.mtime)}\n`;
+        t += `Accessed: ${formatTimestamp(s.atime)}\n`;
+        t += `\nQID:\n`;
+        t += `  Type:    ${s.qid.type} (${describeQidType(s.qid.type)})\n`;
+        t += `  Version: ${s.qid.version}\n`;
+        t += `  Path:    ${s.qid.path}\n`;
+        t += `\nDev: ${s.dev}  Type: ${s.type}\n`;
+        setResult(t);
+      } else {
+        setError(data.error || 'Stat failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Stat failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRead = async () => {
+    const isValid = validateAll({ host, port });
+    if (!isValid) return;
+    if (!path.trim()) {
+      setError('Path is required for read');
+      return;
+    }
+
+    setLoading(true);
+    reset();
+
+    try {
+      const response = await fetch('/api/9p/read', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port, 10),
+          path: path.trim(),
+          offset: parseInt(offset, 10) || 0,
+          count: parseInt(count, 10) || 4096,
+          timeout: 15000,
+        }),
+      });
+
+      const data = await response.json() as {
+        success?: boolean;
+        path?: string;
+        offset?: number;
+        bytesRead?: number;
+        data?: string;
+        encoding?: string;
+        error?: string;
+      };
+
+      if (response.ok && data.success) {
+        let t = `Read: ${data.path}\n${'='.repeat(40)}\n\n`;
+        t += `Offset:     ${data.offset ?? 0}\n`;
+        t += `Bytes Read: ${data.bytesRead ?? 0}\n\n`;
+        if (data.data && data.bytesRead && data.bytesRead > 0) {
+          try {
+            const decoded = atob(data.data);
+            const isPrintable = [...decoded].every(c => {
+              const code = c.charCodeAt(0);
+              return code >= 32 || code === 9 || code === 10 || code === 13;
+            });
+            if (isPrintable) {
+              t += `Content:\n${'─'.repeat(40)}\n${decoded}`;
+            } else {
+              t += `Content (base64, binary data):\n${data.data}`;
+            }
+          } catch {
+            t += `Content (base64):\n${data.data}`;
+          }
+        } else {
+          t += '(empty — EOF or zero bytes read)';
+        }
+        setResult(t);
+      } else {
+        setError(data.error || 'Read failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Read failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLs = async () => {
+    const isValid = validateAll({ host, port });
+    if (!isValid) return;
+
+    setLoading(true);
+    reset();
+
+    try {
+      const response = await fetch('/api/9p/ls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host,
+          port: parseInt(port, 10),
+          path: path || '',
+          timeout: 15000,
+        }),
+      });
+
+      const data = await response.json() as {
+        success?: boolean;
+        path?: string;
+        count?: number;
+        truncated?: boolean;
+        entries?: Array<{
+          type: number; dev: number;
+          qid: { type: number; version: number; path: string };
+          mode: number; atime: number; mtime: number;
+          length: string; name: string; uid: string; gid: string; muid: string;
+        }>;
+        error?: string;
+      };
+
+      if (response.ok && data.success) {
+        let t = `Directory: ${data.path}\n${'='.repeat(40)}\n`;
+        t += `${data.count ?? 0} entries`;
+        if (data.truncated) {
+          t += ` (listing may be incomplete — did not reach end of directory)`;
+        }
+        t += `\n\n`;
+        if (data.entries && data.entries.length > 0) {
+          // Column header (Mode=11, Size=12, Modified=19, Name=variable)
+          t += `${'Mode'.padEnd(11)} ${'Size'.padStart(12)} ${'Modified'.padEnd(19)} Name\n`;
+          t += `${'─'.repeat(11)} ${'─'.repeat(12)} ${'─'.repeat(19)} ${'─'.repeat(20)}\n`;
+          for (const e of data.entries) {
+            const modeStr = formatMode(e.mode).padEnd(11);
+            const sizeStr = e.length.padStart(12);
+            const modStr = formatTimestamp(e.mtime).padEnd(19);
+            t += `${modeStr} ${sizeStr} ${modStr} ${e.name}\n`;
+          }
+        } else {
+          t += '(empty directory)';
+        }
+        setResult(t);
+      } else {
+        setError(data.error || 'Directory listing failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Directory listing failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmit = () => {
+    switch (action) {
+      case 'connect': return handleConnect();
+      case 'stat': return handleStat();
+      case 'read': return handleRead();
+      case 'ls': return handleLs();
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !loading && host && port) {
-      handleConnect();
+      handleSubmit();
     }
+  };
+
+  const actionLabels: Record<Action, string> = {
+    connect: 'Connect',
+    stat: 'Stat',
+    read: 'Read',
+    ls: 'ls',
+  };
+
+  const buttonLabels: Record<Action, string> = {
+    connect: 'Connect & Probe',
+    stat: 'Stat Path',
+    read: 'Read File',
+    ls: 'List Directory',
+  };
+
+  const ariaLabels: Record<Action, string> = {
+    connect: 'Connect to 9P server',
+    stat: 'Stat path on 9P server',
+    read: 'Read file from 9P server',
+    ls: 'List directory on 9P server',
   };
 
   return (
@@ -94,7 +350,45 @@ export default function NinePClient({ onBack }: NinePClientProps) {
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="9P Server Connection" />
 
-        <div className="grid md:grid-cols-2 gap-4 mb-6">
+        {/* Action tabs */}
+        <div className="flex gap-2 mb-6 flex-wrap" role="tablist" aria-label="9P operation">
+          {(Object.keys(actionLabels) as Action[]).map(a => (
+            <button
+              key={a}
+              id={`9p-tab-${a}`}
+              role="tab"
+              tabIndex={action === a ? 0 : -1}
+              aria-selected={action === a}
+              aria-controls="9p-tabpanel"
+              onClick={() => { setAction(a); reset(); }}
+              onKeyDown={(e) => {
+                const tabs = Object.keys(actionLabels) as Action[];
+                const idx = tabs.indexOf(a);
+                let next: Action | undefined;
+                if (e.key === 'ArrowRight') next = tabs[(idx + 1) % tabs.length];
+                else if (e.key === 'ArrowLeft') next = tabs[(idx - 1 + tabs.length) % tabs.length];
+                else if (e.key === 'Home') next = tabs[0];
+                else if (e.key === 'End') next = tabs[tabs.length - 1];
+                if (next) {
+                  e.preventDefault();
+                  setAction(next);
+                  reset();
+                  document.getElementById(`9p-tab-${next}`)?.focus();
+                }
+              }}
+              className={`px-3 py-1.5 rounded text-sm font-mono transition-colors ${
+                action === a
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
+              }`}
+            >
+              {actionLabels[a]}
+            </button>
+          ))}
+        </div>
+
+        <div id="9p-tabpanel" role="tabpanel" aria-labelledby={`9p-tab-${action}`}>
+        <div className="grid md:grid-cols-2 gap-4 mb-4">
           <FormField
             id="9p-host"
             label="Server Host"
@@ -122,16 +416,61 @@ export default function NinePClient({ onBack }: NinePClientProps) {
           />
         </div>
 
+        {/* Path field for stat/read/ls */}
+        {(action === 'stat' || action === 'read' || action === 'ls') && (
+          <div className="mb-4">
+            <FormField
+              id="9p-path"
+              label={`Path${action === 'read' ? '' : ' (optional, default: root)'}`}
+              type="text"
+              value={path}
+              onChange={setPath}
+              onKeyDown={handleKeyDown}
+              placeholder={action === 'read' ? 'etc/motd' : 'usr/local/bin'}
+              required={action === 'read'}
+              helpText="Slash-separated path. Leave empty for root."
+            />
+          </div>
+        )}
+
+        {/* Offset/Count for read */}
+        {action === 'read' && (
+          <div className="grid md:grid-cols-2 gap-4 mb-4">
+            <FormField
+              id="9p-offset"
+              label="Offset (bytes)"
+              type="number"
+              value={offset}
+              onChange={setOffset}
+              onKeyDown={handleKeyDown}
+              min="0"
+              helpText="Byte offset to start reading (default: 0)"
+            />
+            <FormField
+              id="9p-count"
+              label="Count (bytes)"
+              type="number"
+              value={count}
+              onChange={setCount}
+              onKeyDown={handleKeyDown}
+              min="1"
+              max="65536"
+              helpText="Max bytes to read (1-65536, default: 4096)"
+            />
+          </div>
+        )}
+
         <ActionButton
-          onClick={handleConnect}
+          onClick={handleSubmit}
           disabled={loading || !host || !port}
           loading={loading}
-          ariaLabel="Connect to 9P server"
+          ariaLabel={ariaLabels[action]}
         >
-          Connect & Probe
+          {buttonLabels[action]}
         </ActionButton>
 
         <ResultDisplay result={result} error={error} />
+        </div>
 
         <HelpSection
           title="About 9P Protocol"
@@ -148,6 +487,16 @@ export default function NinePClient({ onBack }: NinePClientProps) {
             <p><strong className="text-slate-300">Encoding:</strong> Little-endian binary</p>
             <p><strong className="text-slate-300">Message:</strong> [size:u32][type:u8][tag:u16][body...]</p>
             <p><strong className="text-slate-300">Origin:</strong> Plan 9 from Bell Labs</p>
+          </div>
+        </div>
+
+        <div className="mt-6 pt-6 border-t border-slate-600">
+          <h3 className="text-sm font-semibold text-slate-300 mb-2">Operations</h3>
+          <div className="space-y-2 text-xs text-slate-400">
+            <p><strong className="text-slate-300">connect</strong> — Tversion + Tattach handshake, returns server version and root QID</p>
+            <p><strong className="text-slate-300">stat</strong> — Walk to path and retrieve file metadata (size, mode, uid, mtime)</p>
+            <p><strong className="text-slate-300">read</strong> — Walk, open, and read file contents (returned as decoded text or base64)</p>
+            <p><strong className="text-slate-300">ls</strong> — Walk to directory, open and read its entries (concatenated stat records)</p>
           </div>
         </div>
 

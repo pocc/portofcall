@@ -37,6 +37,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Crypto helpers shared by authenticated TURN requests (RFC 5766 §15.4)
@@ -355,6 +356,12 @@ function xorDecodeAddress(value: Buffer, transactionId: Buffer): { address: stri
  * Sends Allocate Request and parses XOR-RELAYED-ADDRESS from response.
  */
 export async function handleTURNAllocate(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TURNRequest;
     const {
@@ -378,7 +385,7 @@ export async function handleTURNAllocate(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -388,6 +395,17 @@ export async function handleTURNAllocate(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckAllocate = await checkIfCloudflare(host);
+    if (cfCheckAllocate.isCloudflare && cfCheckAllocate.ip) {
+      return new Response(JSON.stringify({
+        success: false,
+        host,
+        port,
+        error: getCloudflareErrorMessage(host, cfCheckAllocate.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -625,6 +643,12 @@ interface TURNPermissionResponse {
  * The HMAC key is MD5(username:realm:password) per RFC 5389 / RFC 8656.
  */
 export async function handleTURNPermission(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TURNPermissionRequest;
     const {
@@ -666,7 +690,7 @@ export async function handleTURNPermission(request: Request): Promise<Response> 
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false, host, port,
         error: 'Port must be between 1 and 65535',
@@ -674,6 +698,15 @@ export async function handleTURNPermission(request: Request): Promise<Response> 
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheckPermission = await checkIfCloudflare(host);
+    if (cfCheckPermission.isCloudflare && cfCheckPermission.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheckPermission.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -965,6 +998,12 @@ export async function handleTURNPermission(request: Request): Promise<Response> 
  * Useful for checking if a TURN server is running and responsive.
  */
 export async function handleTURNProbe(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
   try {
     const body = await request.json() as TURNRequest;
     const { host, port = 3478, timeout = 10000 } = body;

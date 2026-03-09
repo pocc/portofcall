@@ -157,6 +157,11 @@ async function readNIResponse(
  * Returns: { success, host, port, niVersion, xServerPort?, database, serverInfo?, rtt }
  */
 export async function handleMaxDBConnect(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as MaxDBRequest;
@@ -166,6 +171,12 @@ export async function handleMaxDBConnect(request: Request): Promise<Response> {
       return new Response(JSON.stringify({
         success: false, error: 'Host is required',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     const cfCheck = await checkIfCloudflare(host);
@@ -178,8 +189,9 @@ export async function handleMaxDBConnect(request: Request): Promise<Response> {
     }
 
     const socket = connect(`${host}:${port}`);
+    let timeoutHandle: any;
     const tp = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout));
 
     try {
       await Promise.race([socket.opened, tp]);
@@ -190,7 +202,9 @@ export async function handleMaxDBConnect(request: Request): Promise<Response> {
       try {
         // NI CONNECT: service descriptor identifies which database to connect to
         // Format: "D={database}\n\n\r\0" (SAP NI routing string, null-terminated)
-        const serviceDesc = enc.encode(`D=${database}\n\n\r\0`);
+        // eslint-disable-next-line no-control-regex
+        const safeDatabase = database.replace(/[\n\r\x00]/g, '');
+        const serviceDesc = enc.encode(`D=${safeDatabase}\n\n\r\0`);
         const connectPkt = buildNIPacket(NI_CONNECT, serviceDesc);
         await writer.write(connectPkt);
 
@@ -260,12 +274,10 @@ export async function handleMaxDBConnect(request: Request): Promise<Response> {
       } finally {
         try { reader.releaseLock(); } catch { /* ignore */ }
         try { writer.releaseLock(); } catch { /* ignore */ }
-        try { socket.close(); } catch { /* ignore */ }
       }
-
-    } catch (error) {
+    } finally {
+      clearTimeout(timeoutHandle);
       try { socket.close(); } catch { /* ignore */ }
-      throw error;
     }
 
   } catch (error) {
@@ -289,6 +301,11 @@ export async function handleMaxDBConnect(request: Request): Promise<Response> {
  * Returns: { success, host, port, databases?, rawInfo?, rtt }
  */
 export async function handleMaxDBInfo(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as MaxDBRequest;
@@ -296,6 +313,12 @@ export async function handleMaxDBInfo(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -310,8 +333,9 @@ export async function handleMaxDBInfo(request: Request): Promise<Response> {
     }
 
     const socket = connect(`${host}:${port}`);
+    let timeoutHandle: any;
     const tp = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout));
+      timeoutHandle = setTimeout(() => reject(new Error('Connection timeout')), timeout));
 
     try {
       await Promise.race([socket.opened, tp]);
@@ -371,12 +395,10 @@ export async function handleMaxDBInfo(request: Request): Promise<Response> {
       } finally {
         try { reader.releaseLock(); } catch { /* ignore */ }
         try { writer.releaseLock(); } catch { /* ignore */ }
-        try { socket.close(); } catch { /* ignore */ }
       }
-
-    } catch (error) {
+    } finally {
+      clearTimeout(timeoutHandle);
       try { socket.close(); } catch { /* ignore */ }
-      throw error;
     }
 
   } catch (error) {
@@ -401,6 +423,11 @@ export async function handleMaxDBInfo(request: Request): Promise<Response> {
  *            niVersion, xServerConnected, sessionBytes, sessionHex, rtt }
  */
 export async function handleMaxDBSession(request: Request): Promise<Response> {
+  if (request.method !== 'POST') {
+    return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+      status: 405, headers: { 'Content-Type': 'application/json' },
+    });
+  }
   const start = Date.now();
   try {
     const body = await request.json() as MaxDBRequest;
@@ -408,6 +435,12 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
 
     if (!host) {
       return new Response(JSON.stringify({ success: false, error: 'Host is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -430,8 +463,9 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
     // Step 1: NI_CONNECT to global listener → discover X Server port
     // -----------------------------------------------------------------------
     {
+      let timeoutHandle1: any;
       const tp = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('NI connect timeout')), Math.min(timeout / 2, 8000)));
+        timeoutHandle1 = setTimeout(() => reject(new Error('NI connect timeout')), Math.min(timeout / 2, 8000)));
       const socket = connect(`${host}:${port}`);
       try {
         await Promise.race([socket.opened, tp]);
@@ -439,7 +473,9 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
         const reader = socket.readable.getReader();
 
         // Service descriptor: "D=<database>\n\n\r\0"
-        const svcDesc = enc.encode(`D=${database}\n\n\r\0`);
+        // eslint-disable-next-line no-control-regex
+        const safeDb = database.replace(/[\n\r\x00]/g, '');
+        const svcDesc = enc.encode(`D=${safeDb}\n\n\r\0`);
         const connectPkt = buildNIPacket(NI_CONNECT, svcDesc);
         await writer.write(connectPkt);
 
@@ -458,6 +494,7 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
         try { reader.releaseLock(); } catch { /* ok */ }
         try { writer.releaseLock(); } catch { /* ok */ }
       } finally {
+        clearTimeout(timeoutHandle1);
         try { socket.close(); } catch { /* ok */ }
       }
     }
@@ -491,8 +528,9 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
     {
       const remaining = timeout - (Date.now() - start);
       if (remaining > 1000) {
+        let timeoutHandle2: any;
         const tp = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('X Server timeout')), remaining));
+          timeoutHandle2 = setTimeout(() => reject(new Error('X Server timeout')), remaining));
         const socket = connect(`${host}:${xServerPort}`);
         try {
           await Promise.race([socket.opened, tp]);
@@ -502,7 +540,9 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
           const reader = socket.readable.getReader();
 
           // Send another NI_CONNECT to the X Server with the database name
-          const svcDesc2 = enc.encode(`D=${database}\n\n\r\0`);
+          // eslint-disable-next-line no-control-regex
+          const safeDb2 = database.replace(/[\n\r\x00]/g, '');
+          const svcDesc2 = enc.encode(`D=${safeDb2}\n\n\r\0`);
           const connectPkt2 = buildNIPacket(NI_CONNECT, svcDesc2);
           await writer.write(connectPkt2);
 
@@ -528,6 +568,7 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
           try { reader.releaseLock(); } catch { /* ok */ }
           try { writer.releaseLock(); } catch { /* ok */ }
         } finally {
+          clearTimeout(timeoutHandle2);
           try { socket.close(); } catch { /* ok */ }
         }
       }
@@ -548,7 +589,8 @@ export async function handleMaxDBSession(request: Request): Promise<Response> {
       rtt,
       note: xServerConnected
         ? `Connected to MaxDB X Server on port ${xServerPort} for database "${database}". ` +
-          'Full SQL execution requires SQLDBC binary protocol (proprietary).'
+          'Full SQL execution requires the proprietary SQLDBC binary protocol, which is not yet implemented. ' +
+          'This probe confirms the database is reachable and accepting sessions.'
         : `NI listener redirected to X Server port ${xServerPort} but connection failed.`,
     }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 

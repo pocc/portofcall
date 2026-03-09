@@ -78,6 +78,12 @@ export async function handleOpenTSDBVersion(request: Request): Promise<Response>
     const port = options.port || 4242;
     const timeoutMs = options.timeout || 10000;
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -193,6 +199,12 @@ export async function handleOpenTSDBStats(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 4242;
     const timeoutMs = options.timeout || 10000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
@@ -350,6 +362,12 @@ export async function handleOpenTSDBSuggest(request: Request): Promise<Response>
       });
     }
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -375,7 +393,7 @@ export async function handleOpenTSDBSuggest(request: Request): Promise<Response>
         // Build suggest command — telnet format uses positional args:
         // suggest <type> [<query>] [<max>]
         let cmd = `suggest ${suggestType}`;
-        if (query) cmd += ` ${query}`;
+        if (query) cmd += ` ${query.replace(/[\r\n]/g, '')}`;
         cmd += ` ${max}`;
         cmd += '\n';
 
@@ -529,6 +547,12 @@ export async function handleOpenTSDBPut(request: Request): Promise<Response> {
 
     const tagStr = Object.entries(tags).map(([k, v]) => `${k}=${v}`).join(' ');
 
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     const cfCheck = await checkIfCloudflare(host);
     if (cfCheck.isCloudflare && cfCheck.ip) {
       return new Response(JSON.stringify({
@@ -544,7 +568,7 @@ export async function handleOpenTSDBPut(request: Request): Promise<Response> {
       const writer = socket.writable.getWriter();
 
       try {
-        const cmd = `put ${options.metric} ${timestamp} ${options.value} ${tagStr}\n`;
+        const cmd = `put ${options.metric.replace(/[\r\n]/g, '')} ${timestamp} ${options.value} ${tagStr.replace(/[\r\n]/g, '')}\n`;
         await writer.write(encoder.encode(cmd));
         // OpenTSDB only responds on error; wait briefly
         const putResp = await readTelnetResponse(reader, 500).catch(() => '');
@@ -632,7 +656,7 @@ export async function handleOpenTSDBQuery(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         error: 'Invalid port. Must be 1-65535.',
       }), {

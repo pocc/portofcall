@@ -124,3 +124,8 @@ if (sizeStr.includes(';')) {
 - [CouchDB HTTP API Docs](https://docs.couchdb.org/en/stable/api/)
 - [RFC 7230 Chunked Encoding](https://tools.ietf.org/html/rfc7230#section-4.1)
 - [Critical Fixes Summary](../critical-fixes.md)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

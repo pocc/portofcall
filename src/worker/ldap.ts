@@ -363,7 +363,10 @@ async function ldapBindOnSocket(
   writer: WritableStreamDefaultWriter<Uint8Array>;
 }> {
   const socket = connect(`${host}:${port}`);
-  await socket.opened;
+  await Promise.race([
+    socket.opened,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
+  ]);
 
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
@@ -413,36 +416,22 @@ function encodeLDAPBindRequest(options: {
   // Bind DN (empty for anonymous, or provided DN)
   const bindDN = options.bindDN || '';
   const bindDNBytes = encoder.encode(bindDN);
-  const bindDNEncoded = [0x04, bindDNBytes.length, ...bindDNBytes]; // OCTET STRING
+  const bindDNEncoded = [0x04, ...berLength(bindDNBytes.length), ...bindDNBytes]; // OCTET STRING
 
   // Simple authentication (password)
   const password = options.password || '';
   const passwordBytes = encoder.encode(password);
-  const authEncoded = [0x80, passwordBytes.length, ...passwordBytes]; // [0] OCTET STRING (simple auth)
+  const authEncoded = [0x80, ...berLength(passwordBytes.length), ...passwordBytes]; // [0] OCTET STRING (simple auth)
 
   // Build BIND request
   const bindRequest = [...version, ...bindDNEncoded, ...authEncoded];
-  const bindRequestEncoded = [bindTag, bindRequest.length, ...bindRequest];
+  const bindRequestEncoded = [bindTag, ...berLength(bindRequest.length), ...bindRequest];
 
   // Build LDAP message
   const ldapMessage_legacy = [...messageId, ...bindRequestEncoded];
 
-  // Sequence tag (0x30) and length
-  const totalLength = ldapMessage_legacy.length;
-
-  // Handle length encoding (simple case for lengths < 128)
-  if (totalLength < 128) {
-    return new Uint8Array([0x30, totalLength, ...ldapMessage_legacy]);
-  } else {
-    // Long form length encoding
-    const lengthBytes = [];
-    let len = totalLength;
-    while (len > 0) {
-      lengthBytes.unshift(len & 0xFF);
-      len >>= 8;
-    }
-    return new Uint8Array([0x30, 0x80 | lengthBytes.length, ...lengthBytes, ...ldapMessage_legacy]);
-  }
+  // Sequence tag (0x30) and length (using berLength for all sizes)
+  return new Uint8Array([0x30, ...berLength(ldapMessage_legacy.length), ...ldapMessage_legacy]);
 }
 
 /**
@@ -506,7 +495,7 @@ function parseLDAPBindResponse(data: Uint8Array): { success: boolean; resultCode
 export async function handleLDAPConnect(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'POST required' }), { status: 405, headers: { 'Allow': 'POST', 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
     }
     const raw = await request.json() as Partial<LDAPConnectionOptions> & { bindDn?: string };
     const options = { ...raw, bindDN: raw.bindDN || raw.bindDn };
@@ -524,6 +513,12 @@ export async function handleLDAPConnect(request: Request): Promise<Response> {
     const host = options.host;
     const port = options.port || 389;
     const timeoutMs = options.timeout || 30000;
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Check if the target is behind Cloudflare
     const cfCheck = await checkIfCloudflare(host);
@@ -634,7 +629,12 @@ function encodeFilter(filter: string): number[] {
   const equalityMatch = filter.match(/^\(([^=)]+)=([^)]*)\)$/);
   if (equalityMatch) {
     const attrPart = berOctetString(equalityMatch[1]);
-    const valPart = berOctetString(equalityMatch[2]);
+    // Escape LDAP special characters per RFC 4515 §3
+    // eslint-disable-next-line no-control-regex
+    const escapedVal = equalityMatch[2].replace(/[*()\\\x00]/g, (ch) => {
+      return '\\' + ch.charCodeAt(0).toString(16).padStart(2, '0');
+    });
+    const valPart = berOctetString(escapedVal);
     return berTLV(0xA3, [...attrPart, ...valPart]);
   }
   // Default: (objectClass=*) presence
@@ -654,7 +654,7 @@ function encodeFilter(filter: string): number[] {
 export async function handleLDAPSearch(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -678,6 +678,12 @@ export async function handleLDAPSearch(request: Request): Promise<Response> {
     }
     if (baseDn === undefined || baseDn === null) {
       return new Response(JSON.stringify({ success: false, error: 'baseDn is required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -763,7 +769,7 @@ export async function handleLDAPSearch(request: Request): Promise<Response> {
 export async function handleLDAPAdd(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -779,6 +785,12 @@ export async function handleLDAPAdd(request: Request): Promise<Response> {
 
     if (!host || !bindDn || !entry?.dn) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDn, and entry.dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -857,7 +869,7 @@ export async function handleLDAPAdd(request: Request): Promise<Response> {
 export async function handleLDAPModify(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -874,6 +886,12 @@ export async function handleLDAPModify(request: Request): Promise<Response> {
 
     if (!host || !bindDn || !dn || !changes) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDn, dn, and changes are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -955,7 +973,7 @@ export async function handleLDAPModify(request: Request): Promise<Response> {
 export async function handleLDAPDelete(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -970,6 +988,12 @@ export async function handleLDAPDelete(request: Request): Promise<Response> {
 
     if (!host || !bindDn || !dn) {
       return new Response(JSON.stringify({ success: false, error: 'host, bindDn, and dn are required' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400, headers: { 'Content-Type': 'application/json' },
       });
     }
@@ -1181,7 +1205,7 @@ function extractPagedResultsCookie(data: Uint8Array): Uint8Array {
 export async function handleLDAPPagedSearch(request: Request): Promise<Response> {
   try {
     if (request.method !== 'POST') {
-      return new Response(JSON.stringify({ error: 'Method not allowed' }), {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
         status: 405,
         headers: { 'Content-Type': 'application/json' },
       });
@@ -1228,6 +1252,13 @@ export async function handleLDAPPagedSearch(request: Request): Promise<Response>
     if (baseDn === undefined || baseDn === null) {
       return new Response(
         JSON.stringify({ success: false, error: 'baseDn is required' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(
+        JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }),
         { status: 400, headers: { 'Content-Type': 'application/json' } },
       );
     }

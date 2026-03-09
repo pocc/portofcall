@@ -34,3 +34,8 @@ Created canonical review/spec document with endpoint coverage, auth behavior, an
 
 - [Protocol Stub](../../protocols/TORCONTROL.md)
 - [Worker Implementation](../../../src/worker/torcontrol.ts)
+
+
+## 1B/1C Sweep (2026-02-24)
+
+Pass: 0 findings (1B/1C sweep)

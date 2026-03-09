@@ -299,7 +299,7 @@ Standard error codes the server may return in `jsonrpc.error.code`:
 
 ### Single call (Ethereum block number)
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/call \
+curl -s -X POST https://l4.fyi/api/jsonrpc/call \
   -H 'Content-Type: application/json' \
   -d '{
     "host":   "mainnet.infura.io",
@@ -312,7 +312,7 @@ curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/call \
 
 ### Single call with Basic Auth
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/call \
+curl -s -X POST https://l4.fyi/api/jsonrpc/call \
   -H 'Content-Type: application/json' \
   -d '{
     "host":     "my-node.example.com",
@@ -327,7 +327,7 @@ curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/call \
 
 ### Batch call
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/batch \
+curl -s -X POST https://l4.fyi/api/jsonrpc/batch \
   -H 'Content-Type: application/json' \
   -d '{
     "host": "localhost",
@@ -342,7 +342,7 @@ curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/batch \
 
 ### WebSocket call
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/ws \
+curl -s -X POST https://l4.fyi/api/jsonrpc/ws \
   -H 'Content-Type: application/json' \
   -d '{
     "host":   "mainnet.infura.io",
@@ -355,7 +355,7 @@ curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/ws \
 
 ### Probe if a server speaks JSON-RPC at all
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/jsonrpc/call \
+curl -s -X POST https://l4.fyi/api/jsonrpc/call \
   -H 'Content-Type: application/json' \
   -d '{
     "host":    "my-service.example.com",

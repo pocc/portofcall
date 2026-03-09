@@ -48,6 +48,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { createHash } from 'node:crypto';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 interface OSCARRequest {
   host: string;
@@ -173,7 +174,7 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         host,
@@ -183,6 +184,15 @@ export async function handleOSCARProbe(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const start = Date.now();
@@ -321,7 +331,7 @@ export async function handleOSCARPing(request: Request): Promise<Response> {
       });
     }
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({
         success: false,
         error: 'Port must be between 1 and 65535',
@@ -329,6 +339,15 @@ export async function handleOSCARPing(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    const cfCheck2 = await checkIfCloudflare(host);
+    if (cfCheck2.isCloudflare && cfCheck2.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck2.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const socket = connect(`${host}:${port}`);
@@ -494,6 +513,7 @@ async function readFLAP(
       }
 
       if (done || !value) break;
+      if (total + value.length > 1000000) { throw new Error('OSCAR FLAP packet too large'); }
       chunks.push(Buffer.from(value));
       total += value.length;
       // Once we have the 6-byte FLAP header, know expected total length
@@ -529,8 +549,17 @@ export async function handleOSCARAuth(request: Request): Promise<Response> {
 
     if (!host) return Response.json({ success: false, error: 'Host is required' }, { status: 400 });
 
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
+    }
+
+    const cfCheck3 = await checkIfCloudflare(host);
+    if (cfCheck3.isCloudflare && cfCheck3.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck3.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
@@ -642,8 +671,16 @@ export async function handleOSCARLogin(request: Request): Promise<Response> {
     if (!host || !screenName || !password) {
       return Response.json({ success: false, error: 'host, screenName, and password are required' }, { status: 400 });
     }
-    if (port < 1 || port > 65535) {
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return Response.json({ success: false, error: 'Port must be between 1 and 65535' }, { status: 400 });
+    }
+    const cfCheck4 = await checkIfCloudflare(host);
+    if (cfCheck4.isCloudflare && cfCheck4.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck4.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
     const socket = connect(`${host}:${port}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -756,6 +793,16 @@ export async function handleOSCARBuddyList(request: Request): Promise<Response> 
     if (!host || !screenName || !password) {
       return Response.json({ success: false, error: 'host, screenName, and password are required' }, { status: 400 });
     }
+
+    const cfCheck5 = await checkIfCloudflare(host);
+    if (cfCheck5.isCloudflare && cfCheck5.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck5.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeout));
 
     // --- A: login to get BOS host + auth cookie ---
@@ -817,6 +864,10 @@ export async function handleOSCARBuddyList(request: Request): Promise<Response> 
     }
 
     // --- B: BOS connect with cookie ---
+    const cfCheckBos = await checkIfCloudflare(bosHost);
+    if (cfCheckBos.isCloudflare && cfCheckBos.ip) {
+      throw new Error(getCloudflareErrorMessage(bosHost, cfCheckBos.ip));
+    }
     const bosSock = connect(`${bosHost}:${bosPort}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     try {
       await Promise.race([bosSock.opened, tp]);
@@ -1044,6 +1095,15 @@ export async function handleOSCARSendIM(request: Request): Promise<Response> {
     if (!targetScreenName) return Response.json({ success: false, error: 'targetScreenName required' }, { status: 400 });
     if (!message) return Response.json({ success: false, error: 'message required' }, { status: 400 });
 
+    const cfCheck6 = await checkIfCloudflare(host);
+    if (cfCheck6.isCloudflare && cfCheck6.ip) {
+      return new Response(JSON.stringify({
+        success: false, host, port,
+        error: getCloudflareErrorMessage(host, cfCheck6.ip),
+        isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     const tp = new Promise<never>((_, rej) => setTimeout(() => rej(new Error('Overall timeout')), timeout));
 
     // === Phase 1: Authenticate on auth server ===
@@ -1096,6 +1156,10 @@ export async function handleOSCARSendIM(request: Request): Promise<Response> {
     authSock.close();
 
     // === Phase 2: Connect to BOS (Basic Oscar Service) server ===
+    const cfCheckBos2 = await checkIfCloudflare(bosHost);
+    if (cfCheckBos2.isCloudflare && cfCheckBos2.ip) {
+      throw new Error(getCloudflareErrorMessage(bosHost, cfCheckBos2.ip));
+    }
     const bosSock = connect(`${bosHost}:${bosPort}`, { secureTransport: 'off' as const, allowHalfOpen: false });
     await Promise.race([bosSock.opened, tp]);
     const bW = bosSock.writable.getWriter();

@@ -60,7 +60,7 @@ Connects to gpsd and reads the VERSION banner that the daemon sends automaticall
 
 **curl example:**
 ```bash
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/version \
+curl -s -X POST https://l4.fyi/api/gpsd/version \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com"}' | jq .
 ```
@@ -234,12 +234,12 @@ Sends an arbitrary `?`-prefixed command and returns all response objects. Only r
 **curl examples:**
 ```bash
 # List devices
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/command \
+curl -s -X POST https://l4.fyi/api/gpsd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com","command":"?DEVICES"}' | jq .
 
 # Check WATCH state
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/command \
+curl -s -X POST https://l4.fyi/api/gpsd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com","command":"?WATCH"}' | jq .
 ```
@@ -632,32 +632,32 @@ gpsd auto-detects the GPS chipset and selects the appropriate driver. Common dri
 
 ```bash
 # Version probe
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/version \
+curl -s -X POST https://l4.fyi/api/gpsd/version \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com"}' | jq .
 
 # List connected GPS devices
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/devices \
+curl -s -X POST https://l4.fyi/api/gpsd/devices \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com"}' | jq '.devices[]'
 
 # Get current position fix
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/poll \
+curl -s -X POST https://l4.fyi/api/gpsd/poll \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com"}' | jq '{lat: .tpv.lat, lon: .tpv.lon, alt: .tpv.alt, speed: .tpv.speed}'
 
 # Watch for 10 seconds
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/watch \
+curl -s -X POST https://l4.fyi/api/gpsd/watch \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com","seconds":10}' | jq '.messages[] | select(.class == "TPV") | {time, lat, lon, speed}'
 
 # Custom command
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/command \
+curl -s -X POST https://l4.fyi/api/gpsd/command \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com","command":"?WATCH"}' | jq '.objects[]'
 
 # Non-standard port
-curl -s -X POST https://portofcall.ross.gg/api/gpsd/version \
+curl -s -X POST https://l4.fyi/api/gpsd/version \
   -H 'Content-Type: application/json' \
   -d '{"host":"gps.example.com","port":3000}' | jq .
 ```

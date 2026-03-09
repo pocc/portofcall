@@ -17,6 +17,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
 // ─── DSI Layer Constants ──────────────────────────────────────────────────────
 
@@ -141,8 +142,8 @@ function buildDSIGetStatus(requestId: number): Uint8Array {
   return buildDSIHeader(DSI_FLAG_REQUEST, DSI_GET_STATUS, requestId, 0, 0);
 }
 
-function buildDSICommand(requestId: number, afpPayload: Uint8Array): Uint8Array {
-  const header = buildDSIHeader(DSI_FLAG_REQUEST, DSI_COMMAND, requestId, 0, afpPayload.length);
+function buildDSICommand(requestId: number, afpPayload: Uint8Array, writeOffset = 0): Uint8Array {
+  const header = buildDSIHeader(DSI_FLAG_REQUEST, DSI_COMMAND, requestId, writeOffset, afpPayload.length);
   const msg = new Uint8Array(DSI_HEADER_SIZE + afpPayload.length);
   msg.set(header, 0);
   msg.set(afpPayload, DSI_HEADER_SIZE);
@@ -172,6 +173,9 @@ function parseDSIHeader(data: Uint8Array): {
 
 function buildPascalString(str: string): Uint8Array {
   const bytes = new TextEncoder().encode(str);
+  if (bytes.length > 255) {
+    throw new Error(`AFP Pascal string too long (${bytes.length} bytes; max 255): "${str.substring(0, 32)}"`);
+  }
   const out = new Uint8Array(1 + bytes.length);
   out[0] = bytes.length;
   out.set(bytes, 1);
@@ -627,11 +631,20 @@ function parseFPOpenFork(data: Uint8Array): number {
 async function readExact(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   length: number,
-  timeoutMs: number
+  timeoutMs: number,
+  leftover: { data: Uint8Array },
 ): Promise<Uint8Array> {
   const buffer = new Uint8Array(length);
   let offset = 0;
   const deadline = Date.now() + timeoutMs;
+
+  // Consume from leftover first
+  if (leftover.data.length > 0) {
+    const n = Math.min(leftover.data.length, length);
+    buffer.set(leftover.data.subarray(0, n), 0);
+    leftover.data = leftover.data.length > n ? leftover.data.slice(n) : new Uint8Array(0);
+    offset = n;
+  }
 
   while (offset < length) {
     const remaining = deadline - Date.now();
@@ -648,6 +661,11 @@ async function readExact(
     const toCopy = Math.min(value.length, length - offset);
     buffer.set(value.subarray(0, toCopy), offset);
     offset += toCopy;
+
+    // Preserve excess bytes for the next read
+    if (value.length > toCopy) {
+      leftover.data = value.slice(toCopy);
+    }
   }
 
   return buffer;
@@ -656,17 +674,16 @@ async function readExact(
 /** Read a full DSI response (header + optional payload). */
 async function readDSIResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  timeoutMs: number
+  timeoutMs: number,
+  leftover: { data: Uint8Array },
 ): Promise<{ header: ReturnType<typeof parseDSIHeader>; payload: Uint8Array }> {
-  const headerBytes = await readExact(reader, DSI_HEADER_SIZE, timeoutMs);
+  const headerBytes = await readExact(reader, DSI_HEADER_SIZE, timeoutMs, leftover);
   const header = parseDSIHeader(headerBytes);
   if (!header) throw new Error('Invalid DSI header');
 
-   
   let payload: Uint8Array = new Uint8Array(0);
   if (header.dataLength > 0 && header.dataLength < 1024 * 1024) {
-    // Cast needed due to Uint8Array<ArrayBufferLike> vs Uint8Array<ArrayBuffer> variance
-    payload = await readExact(reader, header.dataLength, timeoutMs) as unknown as Uint8Array;
+    payload = await readExact(reader, header.dataLength, timeoutMs, leftover) as unknown as Uint8Array;
   }
 
   return { header, payload };
@@ -680,6 +697,7 @@ class AFPSession {
   private writer!: WritableStreamDefaultWriter<Uint8Array>;
   private requestId = 0;
   private timeoutMs: number;
+  private leftover: { data: Uint8Array } = { data: new Uint8Array(0) };
 
   constructor(timeoutMs = 15000) {
     this.timeoutMs = timeoutMs;
@@ -700,20 +718,21 @@ class AFPSession {
   async openSession(): Promise<void> {
     const msg = buildDSIOpenSession(this.nextId());
     await this.writer.write(msg);
-    const { header } = await readDSIResponse(this.reader, this.timeoutMs);
+    const { header } = await readDSIResponse(this.reader, this.timeoutMs, this.leftover);
     if (header!.errorCode !== AFP_NO_ERR) {
       throw new Error(`DSIOpenSession failed: ${getAFPErrorMessage(header!.errorCode)}`);
     }
   }
 
-  /** Send an AFP command via DSICommand and return the reply payload. */
-  async sendCommand(afpPayload: Uint8Array): Promise<Uint8Array> {
-    const msg = buildDSICommand(this.nextId(), afpPayload);
+  /** Send an AFP command via DSICommand and return the reply payload.
+   * @param writeOffset DSI writeOffset field — for FPWriteExt, set to the AFP command header size (20) */
+  async sendCommand(afpPayload: Uint8Array, writeOffset = 0): Promise<Uint8Array> {
+    const msg = buildDSICommand(this.nextId(), afpPayload, writeOffset);
     await this.writer.write(msg);
 
     // Drain any DSITickle or DSIAttention frames before the real reply
     while (true) {
-      const { header, payload } = await readDSIResponse(this.reader, this.timeoutMs);
+      const { header, payload } = await readDSIResponse(this.reader, this.timeoutMs, this.leftover);
       if (header!.command === DSI_TICKLE || header!.command === DSI_ATTENTION) continue;
       if (header!.errorCode !== AFP_NO_ERR) {
         throw new Error(getAFPErrorMessage(header!.errorCode));
@@ -755,12 +774,21 @@ class AFPSession {
     }
   }
 
-  /** List a directory. dirId=2 is the volume root. */
+  /** List a directory. dirId=2 is the volume root. Handles pagination for directories >200 entries. */
   async listDir(volumeId: number, dirId: number): Promise<AFPDirEntry[]> {
-    const payload = await this.sendCommand(
-      buildFPEnumerateExt2(volumeId, dirId, FILE_BITMAP, DIR_BITMAP)
-    );
-    return parseFPEnumerateExt2(payload);
+    const maxCount = 200;
+    const all: AFPDirEntry[] = [];
+    let startIndex = 1;
+    while (true) {
+      const payload = await this.sendCommand(
+        buildFPEnumerateExt2(volumeId, dirId, FILE_BITMAP, DIR_BITMAP, startIndex, maxCount)
+      );
+      const batch = parseFPEnumerateExt2(payload);
+      all.push(...batch);
+      if (batch.length < maxCount) break; // last page
+      startIndex += batch.length;
+    }
+    return all;
   }
 
   async getInfo(volumeId: number, dirId: number, name: string): Promise<AFPFileInfo> {
@@ -803,12 +831,12 @@ class AFPSession {
     create = true,
   ): Promise<{ bytesWritten: number; endOffset: bigint }> {
     if (create) {
-      // Attempt to create the file; ignore "file exists" errors (kFPObjectExists = -5001)
+      // Attempt to create the file; ignore "file exists" errors (kFPObjectExists = -5043)
       try {
         await this.sendCommand(buildFPCreateFile(volumeId, dirId, name, false));
       } catch (err) {
         const msg = err instanceof Error ? err.message : '';
-        if (!msg.includes('-5001') && !msg.includes('Object Exists') && !msg.includes('ObjectExists')) {
+        if (!msg.includes('-5043') && !msg.includes('Object already exists')) {
           throw err;
         }
       }
@@ -822,7 +850,9 @@ class AFPSession {
 
     try {
       const writeCmd = buildFPWriteExt(forkRef, offset, data);
-      const reply = await this.sendCommand(writeCmd);
+      // FPWriteExt AFP header is 20 bytes; DSI writeOffset must point to where data starts
+      const fpWriteExtHeaderSize = 1 + 1 + 2 + 8 + 8; // cmd+flag+forkRef+offset+count
+      const reply = await this.sendCommand(writeCmd, fpWriteExtHeaderSize);
       // FPWriteExt reply: lastWrittenOffset (8 bytes BE)
       let endOffset = offset + BigInt(data.length);
       if (reply.length >= 8) {
@@ -895,7 +925,7 @@ interface AFPBaseParams {
   uam?: string;
 }
 
-function validateBase(body: AFPBaseParams): { host: string; port: number; timeout: number } | Response {
+async function validateBase(body: AFPBaseParams): Promise<{ host: string; port: number; timeout: number } | Response> {
   const host = (body.host || '').trim();
   const port = body.port ?? 548;
   const timeout = Math.min(body.timeout ?? 15000, 30000);
@@ -905,11 +935,21 @@ function validateBase(body: AFPBaseParams): { host: string; port: number; timeou
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
-  if (port < 1 || port > 65535) {
+  if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
     return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
       status: 400, headers: { 'Content-Type': 'application/json' },
     });
   }
+
+  const cfCheck = await checkIfCloudflare(host);
+  if (cfCheck.isCloudflare && cfCheck.ip) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: getCloudflareErrorMessage(host, cfCheck.ip),
+      isCloudflare: true,
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+  }
+
   return { host, port, timeout };
 }
 
@@ -931,17 +971,25 @@ function jsonErr(error: unknown, status = 500): Response {
  * Returns server name, AFP versions, supported UAMs, and capabilities.
  */
 export async function handleAFPConnect(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams;
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
     const startTime = Date.now();
     const socket = connect({ hostname: host, port });
-    await socket.opened;
+    try {
+      await Promise.race([
+        socket.opened,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+      ]);
+    } catch (err) {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    }
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
@@ -949,11 +997,12 @@ export async function handleAFPConnect(request: Request): Promise<Response> {
 
     try {
       let requestId = 0;
+      const lo: { data: Uint8Array } = { data: new Uint8Array(0) };
 
       const getStatusMsg = buildDSIGetStatus(requestId++);
       await writer.write(getStatusMsg);
 
-      const replyHeader = await readExact(reader, DSI_HEADER_SIZE, timeout - connectTime);
+      const replyHeader = await readExact(reader, DSI_HEADER_SIZE, timeout - connectTime, lo);
       const header = parseDSIHeader(replyHeader);
 
       if (!header) {
@@ -973,7 +1022,7 @@ export async function handleAFPConnect(request: Request): Promise<Response> {
 
       let serverInfo = null;
       if (header.dataLength > 0 && header.dataLength < 65536) {
-        const payload = await readExact(reader, header.dataLength, timeout - (Date.now() - startTime));
+        const payload = await readExact(reader, header.dataLength, timeout - (Date.now() - startTime), lo);
         serverInfo = parseServerInfo(payload);
       }
 
@@ -1007,11 +1056,11 @@ export async function handleAFPConnect(request: Request): Promise<Response> {
  * Returns: { success, serverName, volumes }
  */
 export async function handleAFPLogin(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { afpVersion?: string };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1042,11 +1091,11 @@ export async function handleAFPLogin(request: Request): Promise<Response> {
  * Returns: { success, entries }
  */
 export async function handleAFPListDir(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { volumeName?: string; dirId?: number };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1085,11 +1134,11 @@ export async function handleAFPListDir(request: Request): Promise<Response> {
  * Returns: { success, info }
  */
 export async function handleAFPGetInfo(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { volumeName?: string; dirId?: number; name?: string };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1123,11 +1172,11 @@ export async function handleAFPGetInfo(request: Request): Promise<Response> {
  * Returns: { success, dirId }
  */
 export async function handleAFPCreateDir(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { volumeName?: string; parentDirId?: number; name?: string };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1161,11 +1210,11 @@ export async function handleAFPCreateDir(request: Request): Promise<Response> {
  * Returns: { success }
  */
 export async function handleAFPCreateFile(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { volumeName?: string; parentDirId?: number; name?: string };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1199,11 +1248,11 @@ export async function handleAFPCreateFile(request: Request): Promise<Response> {
  * Returns: { success }
  */
 export async function handleAFPDelete(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { volumeName?: string; dirId?: number; name?: string };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1237,14 +1286,14 @@ export async function handleAFPDelete(request: Request): Promise<Response> {
  * Returns: { success }
  */
 export async function handleAFPRename(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & {
       volumeName?: string; dirId?: number;
       oldName?: string; newName?: string;
     };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1278,11 +1327,11 @@ export async function handleAFPRename(request: Request): Promise<Response> {
  * Returns: { success, data (base64), size }
  */
 export async function handleAFPReadFile(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & { volumeName?: string; dirId?: number; name?: string };
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1329,6 +1378,9 @@ function parseServerInfo(data: Uint8Array): {
   serverSignature?: string;
   directoryNames?: string[];
 } {
+  // Guard before any DataView reads: need ≥10 bytes for the four getUint16 calls and ≥11 for serverNameLen
+  if (data.length < 11) return { serverName: '', machineType: '', afpVersions: [], uams: [], flags: 0, flagDescriptions: [] };
+
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const decoder = new TextDecoder('utf-8', { fatal: false });
 
@@ -1417,29 +1469,39 @@ interface AFPGetServerInfoResponse {
  * Body: { host, port?, timeout? }
  */
 export async function handleAFPGetServerInfo(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   const startTime = Date.now();
 
   try {
     const body = await request.json() as AFPBaseParams;
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
     const socket = connect({ hostname: host, port });
-    await socket.opened;
+    try {
+      await Promise.race([
+        socket.opened,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+      ]);
+    } catch (err) {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    }
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
     try {
+      const lo: { data: Uint8Array } = { data: new Uint8Array(0) };
+
       // Send DSI GetStatus (command 3, no body)
       const getStatusMsg = buildDSIGetStatus(1);
       await writer.write(getStatusMsg);
 
       // Read reply
-      const headerBytes = await readExact(reader, DSI_HEADER_SIZE, timeout - (Date.now() - startTime));
+      const headerBytes = await readExact(reader, DSI_HEADER_SIZE, timeout - (Date.now() - startTime), lo);
       const header = parseDSIHeader(headerBytes);
 
       if (!header) throw new Error('Invalid DSI reply header');
@@ -1452,7 +1514,7 @@ export async function handleAFPGetServerInfo(request: Request): Promise<Response
 
       let serverInfo: ReturnType<typeof parseServerInfo> | null = null;
       if (header.dataLength > 0 && header.dataLength < 65536) {
-        const payload = await readExact(reader, header.dataLength, timeout - (Date.now() - startTime)) as unknown as Uint8Array;
+        const payload = await readExact(reader, header.dataLength, timeout - (Date.now() - startTime), lo) as unknown as Uint8Array;
         serverInfo = parseServerInfo(payload);
       }
 
@@ -1529,28 +1591,37 @@ function buildDSIOpenSessionAFP0(requestId: number): Uint8Array {
  * Body: { host, port?, timeout? }
  */
 export async function handleAFPOpenSession(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   const startTime = Date.now();
 
   try {
     const body = await request.json() as AFPBaseParams;
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
     const socket = connect({ hostname: host, port });
-    await socket.opened;
+    try {
+      await Promise.race([
+        socket.opened,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
+      ]);
+    } catch (err) {
+      try { socket.close(); } catch { /* ignore */ }
+      throw err;
+    }
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
     try {
+      const lo: { data: Uint8Array } = { data: new Uint8Array(0) };
       const requestId = 1;
       const openSessionMsg = buildDSIOpenSessionAFP0(requestId);
       await writer.write(openSessionMsg);
 
-      const { header, payload } = await readDSIResponse(reader, timeout - (Date.now() - startTime));
+      const { header, payload } = await readDSIResponse(reader, timeout - (Date.now() - startTime), lo);
 
       if (!header) throw new Error('Invalid DSI reply header');
       if (header.flags !== DSI_FLAG_REPLY) {
@@ -1609,7 +1680,7 @@ export async function handleAFPOpenSession(request: Request): Promise<Response> 
  *         volumeName, dirId=2, name, data, offset=0, create=true }
  */
 export async function handleAFPWriteFile(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & {
@@ -1621,7 +1692,7 @@ export async function handleAFPWriteFile(request: Request): Promise<Response> {
       create?: boolean;
     };
 
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 
@@ -1696,7 +1767,7 @@ export async function handleAFPWriteFile(request: Request): Promise<Response> {
  *         volumeName, dirId=2, name, maxBytes=65536 }
  */
 export async function handleAFPReadResourceFork(request: Request): Promise<Response> {
-  if (request.method !== 'POST') return new Response('Method not allowed', { status: 405 });
+  if (request.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
 
   try {
     const body = await request.json() as AFPBaseParams & {
@@ -1706,7 +1777,7 @@ export async function handleAFPReadResourceFork(request: Request): Promise<Respo
       maxBytes?: number;
     };
 
-    const validated = validateBase(body);
+    const validated = await validateBase(body);
     if (validated instanceof Response) return validated;
     const { host, port, timeout } = validated;
 

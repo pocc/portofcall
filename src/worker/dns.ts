@@ -745,14 +745,23 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
 
     const parsed = parseDNSResponse(msgPayload);
 
-    const result: DNSQueryResult = {
+    // Validate the response query ID matches what we sent
+    const queryIdMismatch = parsed.responseId !== sentQueryId;
+
+    // Strip internal-only responseId from the spread — it's not part of DNSQueryResult
+    const { responseId: _rid, ...parsedPublic } = parsed;
+
+    const result: DNSQueryResult & { warning?: string } = {
       success: true,
       domain,
       server,
       port,
       queryType: queryTypeName,
       queryTimeMs,
-      ...parsed,
+      ...parsedPublic,
+      ...(queryIdMismatch && {
+        warning: `Response query ID (${parsed.responseId}) does not match request query ID (${sentQueryId}). The response may belong to a different query or indicate a spoofing attempt.`,
+      }),
     };
 
     return new Response(JSON.stringify(result), {

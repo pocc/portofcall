@@ -289,7 +289,7 @@ import { handleSCPConnect, handleSCPList, handleSCPGet, handleSCPPut } from './s
 import { handleSPDYConnect, handleSPDYH2Probe } from './spdy';
 import { isBlockedHost } from './host-validator';
 import { withRequestTimeoutCleanup } from './timers';
-import { maybeBlockCloudflareTarget, normalizeHost, parseGuardBody } from './router-guards';
+import { maybeBlockByTargetRateLimit, maybeBlockCloudflareTarget, normalizeHost, parseGuardBody } from './router-guards';
 import { addSecurityHeaders, sanitizeErrors } from './response-middleware';
 import { handleTcpPing, handleSocketConnection } from './websocket-pipe';
 import { detectClient } from './content-negotiation';
@@ -425,6 +425,14 @@ export default {
             }
           }
         }
+
+        // Per-target global rate limit: cap aggregate traffic to any single host
+        // across all users to prevent this tool from being used as a DDoS amplifier.
+        const primaryHost = hostsToCheck[0];
+        if (primaryHost) {
+          const rateLimitResponse = await maybeBlockByTargetRateLimit(env.CHECKLIST, primaryHost);
+          if (rateLimitResponse) return rateLimitResponse;
+        }
       }
 
       // --- POST-only enforcement for API routes ---
@@ -482,6 +490,10 @@ export default {
             headers: { 'Content-Type': 'application/json' },
           });
         }
+
+        // Per-target global rate limit (same guard as API routes)
+        const shortRateLimitResponse = await maybeBlockByTargetRateLimit(env.CHECKLIST, shortRoute.host);
+        if (shortRateLimitResponse) return shortRateLimitResponse;
 
         const clientType = detectClient(request);
         if (clientType === 'browser') {

@@ -94,6 +94,46 @@ function shouldDeferCloudflareGuard(protocol: string | null, body: Record<string
   return false;
 }
 
+/**
+ * Per-target global rate limit using KV.
+ *
+ * Caps aggregate requests to any single host across ALL users to prevent the
+ * tool from being used as a DDoS amplifier. Unlike per-user rate limiting,
+ * this counts every user's requests to the same target together.
+ *
+ * Uses a 1-minute sliding bucket. KV is not atomic, so there is a small race
+ * window between read and write — this is acceptable for abuse prevention.
+ */
+const TARGET_RATE_LIMIT = 60; // requests per minute to any single host, across all users
+const TARGET_RATE_BUCKET_MS = 60_000;
+const TARGET_RATE_KEY_TTL = 120; // 2 minutes — covers current + previous bucket
+
+export async function maybeBlockByTargetRateLimit(
+  kv: KVNamespace,
+  host: string,
+): Promise<Response | null> {
+  const normalized = host.toLowerCase().trim();
+  const bucket = Math.floor(Date.now() / TARGET_RATE_BUCKET_MS);
+  const key = `target_rate:${normalized}:${bucket}`;
+
+  const current = await kv.get(key);
+  const count = current !== null ? parseInt(current, 10) : 0;
+
+  if (count >= TARGET_RATE_LIMIT) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: `Rate limit exceeded: too many requests to ${host} from all users. Try again in a minute.`,
+    }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
+  // Best-effort increment. The race window is milliseconds; acceptable here.
+  await kv.put(key, String(count + 1), { expirationTtl: TARGET_RATE_KEY_TTL });
+  return null;
+}
+
 export async function maybeBlockCloudflareTarget(request: Request, url: URL): Promise<Response | null> {
   if (!shouldRunRouterCloudflareGuard(url.pathname)) {
     return null;

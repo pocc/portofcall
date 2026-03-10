@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 export interface SMTPConnectionOptions {
   host: string;
@@ -45,6 +46,7 @@ async function readSMTPResponse(
 ): Promise<string> {
   const readPromise = (async () => {
     const decoder = new TextDecoder();
+    const MAX_RESPONSE_SIZE = 512 * 1024; // 512 KB
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
@@ -53,19 +55,21 @@ async function readSMTPResponse(
       const chunk = decoder.decode(value, { stream: true });
       response += chunk;
 
+      if (response.length > MAX_RESPONSE_SIZE) {
+        throw new Error('SMTP response too large (exceeds 512 KB)');
+      }
+
       // Check if we have a complete response (ends with \r\n and has a code)
       if (response.match(/\d{3}\s.*\r\n$/)) {
         break;
       }
     }
+    // Flush any remaining bytes in the TextDecoder's internal buffer
+    response += decoder.decode();
     return response;
   })();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('SMTP read timeout')), timeoutMs)
-  );
-
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'SMTP read timeout');
 }
 
 /**
@@ -160,7 +164,6 @@ export async function handleSMTPConnect(request: Request): Promise<Response> {
 
         // Send QUIT
         await sendSMTPCommand(reader, writer, 'QUIT', 5000);
-        await socket.close();
 
         return {
           success: true,
@@ -171,18 +174,15 @@ export async function handleSMTPConnect(request: Request): Promise<Response> {
           capabilities: ehloResp.message,
           note: 'This is a connectivity test. Use the send feature to send emails.',
         };
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
+        await socket.close().catch(() => {});
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -364,7 +364,7 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
           normalizedBody,
         ].join('\r\n');
 
-        const dotStuffedBody = emailContent.replace(/(^|\r\n)\./g, '$1..');
+        const dotStuffedBody = emailContent.replace(/(^|\r\n)\./gm, '$1..');
         const finalContent = dotStuffedBody + '\r\n.\r\n';
 
         // Write DATA content directly — do NOT use sendSMTPCommand which strips CRLF
@@ -377,7 +377,6 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
 
         // Send QUIT
         await sendSMTPCommand(reader, writer, 'QUIT', 5000);
-        await socket.close();
 
         return {
           success: true,
@@ -387,18 +386,15 @@ export async function handleSMTPSend(request: Request): Promise<Response> {
           from: options.from,
           to: options.to,
         };
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
+        await socket.close().catch(() => {});
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Send timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([sendPromise, timeoutPromise]);
+      const result = await raceWithTimeout(sendPromise, timeoutMs, 'Send timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });

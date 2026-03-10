@@ -28,6 +28,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 /**
  * Human-readable names for VNC security types
@@ -474,10 +475,6 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
       });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
-
     const authPromise = (async () => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
@@ -489,7 +486,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
 
       try {
         // Step 1: Read server RFB version (12 bytes)
-        const serverVersionBytes = await Promise.race([bufferedReader.readExact(12), timeoutPromise]);
+        const serverVersionBytes = await raceWithTimeout(bufferedReader.readExact(12), timeout, 'Connection timeout');
         const serverVersionStr = new TextDecoder().decode(serverVersionBytes).trim();
 
         if (!serverVersionStr.startsWith('RFB ')) {
@@ -514,23 +511,23 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         let securityTypes: number[] = [];
 
         if (serverMajor >= 3 && serverMinor >= 7) {
-          const countBytes = await Promise.race([bufferedReader.readExact(1), timeoutPromise]);
+          const countBytes = await raceWithTimeout(bufferedReader.readExact(1), timeout, 'Connection timeout');
           const count = countBytes[0];
 
           if (count === 0) {
             // Server is rejecting — read error reason
-            const reasonLenBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
+            const reasonLenBytes = await raceWithTimeout(bufferedReader.readExact(4), timeout, 'Connection timeout');
             const reasonLen = new DataView(reasonLenBytes.buffer).getUint32(0, false);
-            const reasonBytes = await Promise.race([bufferedReader.readExact(Math.min(reasonLen, 256)), timeoutPromise]);
+            const reasonBytes = await raceWithTimeout(bufferedReader.readExact(Math.min(reasonLen, 256)), timeout, 'Connection timeout');
             const reason = new TextDecoder().decode(reasonBytes);
             throw new Error(`Server rejected connection: ${reason}`);
           }
 
-          const typesBytes = await Promise.race([bufferedReader.readExact(count), timeoutPromise]);
+          const typesBytes = await raceWithTimeout(bufferedReader.readExact(count), timeout, 'Connection timeout');
           securityTypes = Array.from(typesBytes);
         } else {
           // RFB 3.3: server decides security type
-          const typeBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
+          const typeBytes = await raceWithTimeout(bufferedReader.readExact(4), timeout, 'Connection timeout');
           const type = new DataView(typeBytes.buffer).getUint32(0, false);
           if (type === 0) {
             throw new Error('Server chose no security type (connection failure)');
@@ -550,7 +547,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         // For RFB 3.3 the server already chose it — no client selection needed
 
         // Step 5: Read 16-byte DES challenge
-        const challenge = await Promise.race([bufferedReader.readExact(16), timeoutPromise]);
+        const challenge = await raceWithTimeout(bufferedReader.readExact(16), timeout, 'Connection timeout');
         const challengeHex = Array.from(challenge).map(b => b.toString(16).padStart(2, '0')).join('');
 
         // Step 6: Encrypt challenge with DES (VNC bit-reversed key)
@@ -558,7 +555,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
         await writer.write(response);
 
         // Step 7: Read SecurityResult (4 bytes, big-endian uint32)
-        const resultBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
+        const resultBytes = await raceWithTimeout(bufferedReader.readExact(4), timeout, 'Connection timeout');
         const resultCode = new DataView(resultBytes.buffer).getUint32(0, false);
 
         let authResult: 'ok' | 'failed' | 'tooMany';
@@ -571,10 +568,10 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
           // RFB 3.8+: read failure reason string
           if (serverMajor >= 3 && serverMinor >= 8) {
             try {
-              const reasonLenBytes = await Promise.race([bufferedReader.readExact(4), timeoutPromise]);
+              const reasonLenBytes = await raceWithTimeout(bufferedReader.readExact(4), timeout, 'Connection timeout');
               const reasonLen = new DataView(reasonLenBytes.buffer).getUint32(0, false);
               if (reasonLen > 0 && reasonLen < 1024) {
-                const reasonBytes = await Promise.race([bufferedReader.readExact(reasonLen), timeoutPromise]);
+                const reasonBytes = await raceWithTimeout(bufferedReader.readExact(reasonLen), timeout, 'Connection timeout');
                 reason = new TextDecoder().decode(reasonBytes);
               }
             } catch {
@@ -618,7 +615,7 @@ export async function handleVNCAuth(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([authPromise, timeoutPromise]);
+    const result = await authPromise;
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -687,10 +684,6 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
 
     const connectionPromise = (async () => {
       const startTime = Date.now();
@@ -794,7 +787,7 @@ export async function handleVNCConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
 
     return new Response(JSON.stringify(result), {
       status: 200,

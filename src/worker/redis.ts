@@ -496,11 +496,29 @@ export async function handleRedisSession(request: Request): Promise<Response> {
 
           server.send(JSON.stringify({ type: 'connected', version, host, port }));
 
+          // Block destructive Redis commands to prevent data loss
+          const BLOCKED_REDIS_COMMANDS = new Set([
+            'FLUSHALL', 'FLUSHDB', 'SHUTDOWN', 'DEBUG', 'CONFIG',
+            'SLAVEOF', 'REPLICAOF', 'CLUSTER', 'FAILOVER',
+            'SWAPDB', 'MIGRATE', 'RESTORE', 'DUMP',
+            'SCRIPT', 'EVAL', 'EVALSHA', 'EVALRO', 'EVALSHA_RO',
+            'MODULE', 'ACL', 'BGSAVE', 'BGREWRITEAOF', 'SAVE',
+            'LATENCY', 'MEMORY', 'CLIENT',
+          ]);
+
           // Handle subsequent commands
           server.addEventListener('message', async (cmdEvent) => {
             try {
               const cmdMsg = JSON.parse(cmdEvent.data as string) as { type: string; command?: string[] };
               if (cmdMsg.type === 'command' && cmdMsg.command && cmdMsg.command.length > 0) {
+                const wsCmd = cmdMsg.command[0].toUpperCase();
+                if (BLOCKED_REDIS_COMMANDS.has(wsCmd)) {
+                  server.send(JSON.stringify({
+                    type: 'error',
+                    message: `Command "${wsCmd}" is blocked for safety.`,
+                  }));
+                  return;
+                }
                 await writer.write(encodeRESPArray(cmdMsg.command));
                 const raw = await readRESPResponse(reader, 30000);
                 server.send(JSON.stringify({
@@ -562,6 +580,23 @@ export async function handleRedisCommand(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Block destructive Redis commands to prevent data loss
+    const BLOCKED_REDIS_COMMANDS = new Set([
+      'FLUSHALL', 'FLUSHDB', 'SHUTDOWN', 'DEBUG', 'CONFIG',
+      'SLAVEOF', 'REPLICAOF', 'CLUSTER', 'FAILOVER',
+      'SWAPDB', 'MIGRATE', 'RESTORE', 'DUMP',
+      'SCRIPT', 'EVAL', 'EVALSHA', 'EVALRO', 'EVALSHA_RO',
+      'MODULE', 'ACL', 'BGSAVE', 'BGREWRITEAOF', 'SAVE',
+      'LATENCY', 'MEMORY', 'CLIENT',
+    ]);
+    const cmdName = options.command[0].toUpperCase();
+    if (BLOCKED_REDIS_COMMANDS.has(cmdName)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `Command "${cmdName}" is blocked for safety. Only read and basic write commands are allowed.`,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     const host = options.host;

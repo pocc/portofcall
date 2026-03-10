@@ -66,57 +66,60 @@ async function sendHttpRequest(
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
-
-  const safeHost = host.replace(/[\r\n]/g, '');
-  const safePath = path.replace(/[\r\n]/g, '');
-  let request = `${method} ${safePath} HTTP/1.1\r\n`;
-  request += `Host: ${safeHost}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-
-  if (authToken) {
-    request += `Authorization: Bearer ${authToken.replace(/[\r\n]/g, '')}\r\n`;
-  }
-
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
   let response = '';
-  const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      const chunk = decoder.decode(value, { stream: true });
-      if (response.length + chunk.length > maxSize) {
-        response += chunk.substring(0, maxSize - response.length);
-        break;
-      }
-      response += chunk;
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
+
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+
+    if (authToken) {
+      request += `Authorization: Bearer ${authToken.replace(/[\r\n]/g, '')}\r\n`;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+    }
+
+    writer.releaseLock();
+
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* already closed */ }
+  }
 
   const headerEnd = response.indexOf('\r\n\r\n');
   if (headerEnd === -1) {

@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 export interface POP3ConnectionOptions {
   host: string;
@@ -50,11 +51,7 @@ async function readPOP3Response(
     return response;
   })();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('POP3 read timeout')), timeoutMs)
-  );
-
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'POP3 read timeout');
 }
 
 /**
@@ -107,11 +104,7 @@ async function readPOP3MultiLine(
     return destuffed.join('\r\n');
   })();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('POP3 read timeout')), timeoutMs)
-  );
-
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'POP3 read timeout');
 }
 
 /**
@@ -242,12 +235,8 @@ export async function handlePOP3Connect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -400,12 +389,8 @@ export async function handlePOP3List(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('List timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([listPromise, timeoutPromise]);
+      const result = await raceWithTimeout(listPromise, timeoutMs, 'List timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -540,12 +525,8 @@ export async function handlePOP3Retrieve(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Retrieve timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([retrievePromise, timeoutPromise]);
+      const result = await raceWithTimeout(retrievePromise, timeoutMs, 'Retrieve timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -627,11 +608,8 @@ export async function handlePOP3Dele(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('DELE timeout')), timeoutMs)
-    );
     try {
-      const result = await Promise.race([delePromise, timeoutPromise]);
+      const result = await raceWithTimeout(delePromise, timeoutMs, 'DELE timeout');
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     } catch (timeoutError) {
       return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'DELE timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -705,11 +683,8 @@ export async function handlePOP3Uidl(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('UIDL timeout')), timeoutMs)
-    );
     try {
-      const result = await Promise.race([uidlPromise, timeoutPromise]);
+      const result = await raceWithTimeout(uidlPromise, timeoutMs, 'UIDL timeout');
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     } catch (timeoutError) {
       return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'UIDL timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -794,11 +769,8 @@ export async function handlePOP3Top(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('TOP timeout')), timeoutMs)
-    );
     try {
-      const result = await Promise.race([topPromise, timeoutPromise]);
+      const result = await raceWithTimeout(topPromise, timeoutMs, 'TOP timeout');
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     } catch (timeoutError) {
       return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'TOP timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });
@@ -875,11 +847,8 @@ export async function handlePOP3Capa(request: Request): Promise<Response> {
         throw error;
       }
     })();
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('CAPA timeout')), 30000)
-    );
     try {
-      const result = await Promise.race([capaPromise, timeoutPromise]);
+      const result = await raceWithTimeout(capaPromise, 30000, 'CAPA timeout');
       return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
     } catch (timeoutError) {
       return new Response(JSON.stringify({ success: false, error: timeoutError instanceof Error ? timeoutError.message : 'CAPA timeout' }), { status: 500, headers: { 'Content-Type': 'application/json' } });

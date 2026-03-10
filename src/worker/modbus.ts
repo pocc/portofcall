@@ -282,8 +282,6 @@ export async function handleModbusRead(request: Request): Promise<Response> {
         const parsed = parseModbusResponse(responseBytes);
         const transactionIdMismatch = parsed.transactionId !== sentTransactionId;
 
-        await socket.close();
-
         if (parsed.isException) {
           return {
             success: false,
@@ -326,9 +324,10 @@ export async function handleModbusRead(request: Request): Promise<Response> {
             warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${sentTransactionId}). The response may belong to a different request.`,
           }),
         };
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
+        await socket.close().catch(() => {});
       }
     })();
 
@@ -414,8 +413,6 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
         const parsed = parseModbusResponse(responseBytes);
         const connectTxIdMismatch = parsed.transactionId !== connectTransactionId;
 
-        await socket.close();
-
         if (parsed.isException) {
           // Even an exception means the server responded - it's reachable
           return {
@@ -443,9 +440,10 @@ export async function handleModbusConnect(request: Request): Promise<Response> {
             warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${connectTransactionId}). The response may belong to a different request.`,
           }),
         };
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
+        await socket.close().catch(() => {});
       }
     })();
 
@@ -559,8 +557,6 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
         const parsed = parseModbusResponse(responseBytes);
         const writeCoilTxIdMismatch = parsed.transactionId !== writeCoilTransactionId;
 
-        await socket.close();
-
         if (parsed.isException) {
           return {
             success: false,
@@ -592,9 +588,10 @@ export async function handleModbusWriteCoil(request: Request): Promise<Response>
             warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${writeCoilTransactionId}). The response may belong to a different request.`,
           }),
         };
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
+        await socket.close().catch(() => {});
       }
     })();
 
@@ -726,8 +723,6 @@ export async function handleModbusWriteRegisters(request: Request): Promise<Resp
         const parsed = parseModbusResponse(responseBytes);
         const writeRegsTxIdMismatch = parsed.transactionId !== writeRegsTransactionId;
 
-        await socket.close();
-
         if (parsed.isException) {
           return {
             success: false,
@@ -758,9 +753,10 @@ export async function handleModbusWriteRegisters(request: Request): Promise<Resp
             warning: `Response transaction ID (${parsed.transactionId}) does not match request transaction ID (${writeRegsTransactionId}). The response may belong to a different request.`,
           }),
         };
-      } catch (error) {
-        await socket.close();
-        throw error;
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
+        try { writer.releaseLock(); } catch { /* already released */ }
+        await socket.close().catch(() => {});
       }
     })();
 

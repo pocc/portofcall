@@ -70,9 +70,10 @@ async function sendHttpRequest(
     // Sanitize inputs to prevent CRLF injection / request smuggling
     const safePath = path.replace(/[\r\n]/g, '');
     const safeHost = host.replace(/[\r\n]/g, '');
+    const safeMethod = method.replace(/[\r\n]/g, '');
 
     // Build HTTP/1.1 request
-    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    let request = `${safeMethod} ${safePath} HTTP/1.1\r\n`;
     request += `Host: ${safeHost}:${port}\r\n`;
     request += `Accept: application/json\r\n`;
     request += `Connection: close\r\n`;
@@ -361,13 +362,13 @@ export async function handleElasticsearchQuery(request: Request): Promise<Respon
       });
     }
 
-    // Validate method
-    const allowedMethods = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'];
-    const upperMethod = method.toUpperCase();
+    // Validate method — only allow read-safe methods
+    const allowedMethods = ['GET', 'POST', 'HEAD'];
+    const upperMethod = method.toUpperCase().replace(/[\r\n]/g, '');
     if (!allowedMethods.includes(upperMethod)) {
       return new Response(JSON.stringify({
         success: false,
-        error: `Invalid HTTP method: ${method}. Allowed: ${allowedMethods.join(', ')}`,
+        error: `Invalid HTTP method: ${method}. Allowed: ${allowedMethods.join(', ')}. PUT/DELETE are blocked for safety.`,
       }), {
         status: 400,
         headers: { 'Content-Type': 'application/json' },

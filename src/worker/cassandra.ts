@@ -782,8 +782,10 @@ function parseResultRows(body: Uint8Array): {
     });
   }
   const rowCount = view.getInt32(off, false); off += 4;
+  const MAX_ROWS = 10_000;
+  const effectiveRowCount = Math.min(rowCount, MAX_ROWS);
   const rows: Array<Record<string, string | null>> = [];
-  for (let r = 0; r < rowCount; r++) {
+  for (let r = 0; r < effectiveRowCount; r++) {
     const row: Record<string, string | null> = {};
     for (let c = 0; c < columns.length; c++) {
       const cellLen = view.getInt32(off, false); off += 4;

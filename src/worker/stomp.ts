@@ -89,7 +89,12 @@ function parseFrame(text: string): StompFrame {
     }
     const colonIndex = line.indexOf(':');
     if (colonIndex > 0) {
-      headers[line.substring(0, colonIndex)] = line.substring(colonIndex + 1);
+      // Unescape STOMP 1.2 header values (RFC compliant)
+      const rawKey = line.substring(0, colonIndex);
+      const rawValue = line.substring(colonIndex + 1);
+      const unescapeHeader = (s: string) =>
+        s.replace(/\\n/g, '\n').replace(/\\c/g, ':').replace(/\\\\/g, '\\');
+      headers[unescapeHeader(rawKey)] = unescapeHeader(rawValue);
     }
   }
 

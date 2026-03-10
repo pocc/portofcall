@@ -129,7 +129,13 @@ function formatRFC5424Message(
   const msgId = '-';
   const structuredData = '-';
 
-  return `<${priority}>${version} ${timestamp} ${hostname} ${appName} ${procId} ${msgId} ${structuredData} ${message}\n`;
+  /* eslint-disable no-control-regex */
+  const safeHostname = hostname.replace(/[\r\n\x00-\x1f]/g, '_').slice(0, 255);
+  const safeAppName = appName.replace(/[\r\n\x00-\x1f]/g, '_').slice(0, 48);
+  const safeMessage = message.replace(/[\x00]/g, '');
+  /* eslint-enable no-control-regex */
+
+  return `<${priority}>${version} ${timestamp} ${safeHostname} ${safeAppName} ${procId} ${msgId} ${structuredData} ${safeMessage}\n`;
 }
 
 /**
@@ -144,7 +150,13 @@ function formatRFC3164Message(
 ): string {
   const timestamp = formatRFC3164Timestamp(new Date());
 
-  return `<${priority}>${timestamp} ${hostname} ${appName}: ${message}\n`;
+  /* eslint-disable no-control-regex */
+  const safeHostname = hostname.replace(/[\r\n\x00-\x1f]/g, '_').slice(0, 255);
+  const safeAppName = appName.replace(/[\r\n\x00-\x1f]/g, '_').slice(0, 48);
+  const safeMessage = message.replace(/[\x00]/g, '');
+  /* eslint-enable no-control-regex */
+
+  return `<${priority}>${timestamp} ${safeHostname} ${safeAppName}: ${safeMessage}\n`;
 }
 
 /**

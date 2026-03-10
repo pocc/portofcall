@@ -245,6 +245,8 @@ export function matchShortRoute(pathname: string): ShortRouteMatch | null {
   if (!config) return null;
 
   const targetStr = parts[1];
+  // Reject absurdly long targets to prevent DoS via oversized hostnames
+  if (targetStr.length > 253) return null; // RFC 1035: max hostname length is 253
   const extra = config.hasExtra && parts.length > 2 ? parts.slice(2).join('/') : undefined;
 
   const parsed = parseTarget(targetStr);

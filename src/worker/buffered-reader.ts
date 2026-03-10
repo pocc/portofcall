@@ -9,6 +9,7 @@
 export class BufferedReader {
   private reader: ReadableStreamDefaultReader<Uint8Array>;
   private buf: Uint8Array = new Uint8Array(0);
+  private static readonly MAX_BUFFER = 16 * 1024 * 1024; // 16 MiB safety cap
 
   constructor(reader: ReadableStreamDefaultReader<Uint8Array>) {
     this.reader = reader;
@@ -16,6 +17,9 @@ export class BufferedReader {
 
   /** Read exactly `n` bytes, optionally racing against a timeout/deadline promise. */
   async readExact(n: number, timeoutPromise?: Promise<never>): Promise<Uint8Array> {
+    if (n > BufferedReader.MAX_BUFFER) {
+      throw new Error(`Requested ${n} bytes exceeds maximum buffer size of ${BufferedReader.MAX_BUFFER}`);
+    }
     while (this.buf.length < n) {
       const readOp = this.reader.read();
       const { value, done } = timeoutPromise
@@ -37,14 +41,14 @@ export class BufferedReader {
     return result;
   }
 
-  /** Return any buffered bytes without consuming from the stream. */
+  /** Return a copy of buffered bytes without consuming from the stream. */
   peek(): Uint8Array {
-    return this.buf;
+    return this.buf.slice();
   }
 
   /** Drain leftover buffer (useful when handing control back to raw reader). */
   get leftover(): Uint8Array {
-    return this.buf;
+    return this.buf.slice();
   }
 
   /** Access the underlying reader (e.g. for cancel/releaseLock). */

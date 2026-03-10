@@ -214,6 +214,8 @@ export class FTPClient {
 
     const dataReader = dataSocket.readable.getReader();
     const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    const maxListingBytes = 10 * 1024 * 1024; // 10 MiB cap for directory listings
 
     try {
       const timeout = 30000;
@@ -228,6 +230,8 @@ export class FTPClient {
           ),
         ]);
         if (done) break;
+        totalBytes += value.length;
+        if (totalBytes > maxListingBytes) throw new Error('Directory listing exceeds maximum size (10 MiB)');
         chunks.push(value);
       }
     } finally {
@@ -275,6 +279,8 @@ export class FTPClient {
 
     const dataReader = dataSocket.readable.getReader();
     const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    const maxListingBytes = 10 * 1024 * 1024; // 10 MiB cap
 
     try {
       const timeout = 30000;
@@ -289,6 +295,8 @@ export class FTPClient {
           ),
         ]);
         if (done) break;
+        totalBytes += value.length;
+        if (totalBytes > maxListingBytes) throw new Error('Directory listing exceeds maximum size (10 MiB)');
         chunks.push(value);
       }
     } finally {
@@ -414,6 +422,8 @@ export class FTPClient {
     // Read directory listing from data socket with timeout
     const dataReader = dataSocket.readable.getReader();
     const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+    const maxListingBytes = 10 * 1024 * 1024; // 10 MiB cap
 
     try {
       const dataTimeout = 30000; // 30 seconds wall-clock for full data transfer
@@ -428,6 +438,8 @@ export class FTPClient {
           ),
         ]);
         if (done) break;
+        totalBytes += value.length;
+        if (totalBytes > maxListingBytes) throw new Error('Directory listing exceeds maximum size (10 MiB)');
         chunks.push(value);
       }
     } finally {

@@ -15,6 +15,7 @@
 
 import { connect } from "cloudflare:sockets";
 import { checkIfCloudflare, getCloudflareErrorMessage } from "./cloudflare-detector";
+import { raceWithTimeout, raceWithDeadline } from "./timeout-utils";
 
 /** DNS record type codes */
 export const DNS_RECORD_TYPES: Record<string, number> = {
@@ -607,10 +608,7 @@ async function readTCPDNSMessage(
   while (Date.now() < deadline) {
     let result: ReadableStreamReadResult<Uint8Array>;
     try {
-      result = await Promise.race([
-        reader.read(),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("read timeout")), deadline - Date.now())),
-      ]);
+      result = await raceWithTimeout(reader.read(), deadline - Date.now(), "read timeout");
     } catch { break; }
     if (result.done || !result.value) break;
     chunks.push(result.value);
@@ -714,10 +712,7 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
     const tcpPacket = tcpWrap(queryPacket);
 
     const socket = connect(`${server}:${port}`);
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000)),
-    ]);
+    await raceWithTimeout(socket.opened, 10000, 'Connection timeout');
 
     const writer = socket.writable.getWriter();
     await writer.write(tcpPacket);
@@ -726,10 +721,7 @@ export async function handleDNSQuery(request: Request): Promise<Response> {
     const reader = socket.readable.getReader();
     let msgPayload: Uint8Array | null;
     try {
-      msgPayload = await Promise.race([
-        readTCPDNSMessage(reader, 10000),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("DNS query timeout")), 10000)),
-      ]);
+      msgPayload = await raceWithTimeout(readTCPDNSMessage(reader, 10000), 10000, "DNS query timeout");
     } finally {
       try { reader.releaseLock(); } catch { /* ignore */ }
       try { await socket.close(); } catch { /* ignore */ }
@@ -840,10 +832,7 @@ export async function handleDNSAXFR(request: Request): Promise<Response> {
     let errorMsg: string | undefined;
 
     try {
-      await Promise.race([
-        socket.opened,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Connection timeout")), timeout)),
-      ]);
+      await raceWithTimeout(socket.opened, timeout, "Connection timeout");
 
       const writer = socket.writable.getWriter();
       await writer.write(tcpPacket);
@@ -857,10 +846,7 @@ export async function handleDNSAXFR(request: Request): Promise<Response> {
           const remaining = deadline - Date.now();
           if (remaining <= 0) break;
 
-          const msgPayload = await Promise.race([
-            readTCPDNSMessage(reader, remaining),
-            new Promise<never>((_, reject) => setTimeout(() => reject(new Error("AXFR read timeout")), remaining)),
-          ]);
+          const msgPayload = await raceWithDeadline(readTCPDNSMessage(reader, remaining), remaining);
 
           if (!msgPayload || msgPayload.length < 12) break;
           msgCount++;

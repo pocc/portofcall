@@ -67,11 +67,12 @@ async function readLMTPResponse(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
       // Complete response: final line has "code SP text CRLF" (anchored to line start)
       if (/(?:^|\r\n)\d{3}\s[^\r]*\r\n$/.test(response)) {
@@ -103,12 +104,13 @@ async function readLMTPMultiResponse(
   const results: Array<{ code: number; message: string }> = [];
 
   const readPromise = (async () => {
+    const decoder = new TextDecoder('utf-8', { fatal: false });
     let buffer = '';
     let currentResponseLines: string[] = [];
     while (results.length < count) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += new TextDecoder().decode(value);
+      buffer += decoder.decode(value, { stream: true });
 
       // Parse complete lines from buffer
       while (results.length < count) {
@@ -435,7 +437,7 @@ export async function handleLMTPSend(request: Request): Promise<Response> {
           `MIME-Version: 1.0`,
           `Content-Type: text/plain; charset=UTF-8`,
           '',
-          options.body,
+          (options.body ?? '').replace(/\r?\n/g, '\r\n'),
         ].join('\r\n');
 
         // Dot-stuffing (RFC 5321 Section 4.5.2): any line in the message that

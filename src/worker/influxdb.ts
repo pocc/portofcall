@@ -179,6 +179,7 @@ async function sendHttpRequest(
     return { statusCode, headers, body: bodySection };
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+    try { socket.close(); } catch { /* already closed */ }
   }
 }
 

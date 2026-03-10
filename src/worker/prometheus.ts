@@ -42,41 +42,44 @@ async function sendHttpGet(
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-
-  const safeHost = host.replace(/[\r\n]/g, '');
-  const safePath = path.replace(/[\r\n]/g, '');
-  let request = `GET ${safePath} HTTP/1.1\r\n`;
-  request += `Host: ${safeHost}:${port}\r\n`;
-  request += `Accept: application/json, text/plain\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-  request += `\r\n`;
-
-  await writer.write(encoder.encode(request));
-  writer.releaseLock();
-
-  const reader = socket.readable.getReader();
   let response = '';
-  const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
-    if (readResult.done) break;
-    if (readResult.value) {
-      const chunk = decoder.decode(readResult.value, { stream: true });
-      if (response.length + chunk.length > maxSize) {
-        response += chunk.substring(0, maxSize - response.length);
-        break;
+    const writer = socket.writable.getWriter();
+
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `GET ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json, text/plain\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+    request += `\r\n`;
+
+    await writer.write(encoder.encode(request));
+    writer.releaseLock();
+
+    const reader = socket.readable.getReader();
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const readResult = await Promise.race([reader.read(), timeoutPromise]) as ReadableStreamReadResult<Uint8Array>;
+      if (readResult.done) break;
+      if (readResult.value) {
+        const chunk = decoder.decode(readResult.value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
       }
-      response += chunk;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* already closed */ }
+  }
 
   const headerEnd = response.indexOf('\r\n\r\n');
   if (headerEnd === -1) {

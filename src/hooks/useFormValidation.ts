@@ -102,8 +102,9 @@ export const validationRules = {
 
   port: (message = 'Port must be between 1 and 65535'): ValidationRule => ({
     test: (value: string) => {
-      const num = parseInt(value, 10);
-      return !isNaN(num) && num >= 1 && num <= 65535;
+      if (!/^\d+$/.test(value.trim())) return false;
+      const num = Number(value);
+      return Number.isInteger(num) && num >= 1 && num <= 65535;
     },
     message,
   }),
@@ -118,14 +119,19 @@ export const validationRules = {
   }),
 
   number: (message = 'Must be a valid number'): ValidationRule => ({
-    test: (value: string) => !isNaN(parseInt(value, 10)),
+    test: (value: string) => {
+      const trimmed = value.trim();
+      return trimmed.length > 0 && !isNaN(Number(trimmed)) && isFinite(Number(trimmed));
+    },
     message,
   }),
 
   range: (min: number, max: number, message?: string): ValidationRule => ({
     test: (value: string) => {
-      const num = parseInt(value, 10);
-      return !isNaN(num) && num >= min && num <= max;
+      const trimmed = value.trim();
+      if (!/^-?\d+$/.test(trimmed)) return false;
+      const num = Number(trimmed);
+      return num >= min && num <= max;
     },
     message: message || `Must be between ${min} and ${max}`,
   }),

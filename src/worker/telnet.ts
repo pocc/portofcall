@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout, raceWithDeadline } from './timeout-utils';
 
 export interface TelnetConnectionOptions {
   host: string;
@@ -100,10 +101,9 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
         const bannerDeadline = Date.now() + 3000;
         while (Date.now() < bannerDeadline) {
           const remaining = bannerDeadline - Date.now();
-          const timeoutProm = new Promise<{value: undefined, done: true}>((resolve) =>
-            setTimeout(() => resolve({ value: undefined, done: true }), remaining)
-          );
-          const { value, done } = await Promise.race([reader.read(), timeoutProm]);
+          const readResult = await raceWithDeadline(reader.read(), remaining);
+          const value = readResult?.value;
+          const done = readResult === null ? true : readResult.done;
           if (done || !value) break;
           banner += decoder.decode(value, { stream: true });
           if (banner.length > 4096) break;
@@ -134,12 +134,8 @@ export async function handleTelnetConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -216,10 +212,7 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
 
     // Connect to Telnet server
     const socket = connect(`${host}:${port}`);
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
-    ]);
+    await raceWithTimeout(socket.opened, 30000, 'Connection timeout');
 
     // Send connection info to client
     server.send(JSON.stringify({
@@ -231,11 +224,13 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
 
     // Acquire a single writer for the socket's writable side.
     // Both pipe functions share this writer so only one lock is held.
+    // A shared write chain serializes all writes to prevent byte interleaving.
     const socketWriter = socket.writable.getWriter();
+    const writeChain = { current: Promise.resolve() };
 
     // Pipe data bidirectionally with Telnet protocol handling
-    pipeWebSocketToTelnet(server, socketWriter);
-    pipeTelnetToWebSocket(socket, socketWriter, server);
+    pipeWebSocketToTelnet(server, socketWriter, writeChain);
+    pipeTelnetToWebSocket(socket, socketWriter, server, writeChain);
 
     return new Response(null, {
       status: 101,
@@ -255,23 +250,33 @@ export async function handleTelnetWebSocket(request: Request): Promise<Response>
 /**
  * Pipe WebSocket messages to Telnet server.
  * Accepts a pre-acquired writer so the writable lock is not duplicated.
+ *
+ * Writes are serialized via a shared promise chain to prevent byte
+ * interleaving with IAC responses sent by pipeTelnetToWebSocket.
  */
-function pipeWebSocketToTelnet(ws: WebSocket, writer: WritableStreamDefaultWriter<Uint8Array>): void {
-  ws.addEventListener('message', async (event) => {
-    try {
-      if (typeof event.data === 'string') {
-        await writer.write(new TextEncoder().encode(event.data));
-      } else if (event.data instanceof ArrayBuffer) {
-        await writer.write(new Uint8Array(event.data));
+function pipeWebSocketToTelnet(
+  ws: WebSocket,
+  writer: WritableStreamDefaultWriter<Uint8Array>,
+  writeChain: { current: Promise<void> },
+): void {
+  const encoder = new TextEncoder();
+  ws.addEventListener('message', (event) => {
+    const data = typeof event.data === 'string'
+      ? encoder.encode(event.data)
+      : new Uint8Array(event.data as ArrayBuffer);
+
+    writeChain.current = writeChain.current.then(async () => {
+      try {
+        await writer.write(data);
+      } catch {
+        try { ws.close(); } catch { /* already closed */ }
       }
-    } catch (error) {
-      console.error('Error writing to Telnet socket:', error);
-      ws.close();
-    }
+    });
   });
 
   ws.addEventListener('close', () => {
-    writer.close().catch(() => {});
+    const cleanup = () => { writer.close().catch(() => {}); };
+    writeChain.current.then(cleanup, cleanup);
   });
 }
 
@@ -346,12 +351,14 @@ function processIACData(data: Uint8Array): { text: string; responses: Uint8Array
  * IAC command sequences are filtered out of the output stream and
  * appropriate responses are sent back to the Telnet server per RFC 854.
  *
- * Accepts the shared writer so the writable lock is not duplicated.
+ * Accepts the shared writer and write chain so IAC responses are
+ * serialized with user input from pipeWebSocketToTelnet.
  */
 async function pipeTelnetToWebSocket(
   socket: Socket,
   writer: WritableStreamDefaultWriter<Uint8Array>,
   ws: WebSocket,
+  writeChain: { current: Promise<void> },
 ): Promise<void> {
   const reader = socket.readable.getReader();
 
@@ -367,12 +374,16 @@ async function pipeTelnetToWebSocket(
       // Process IAC negotiation sequences per RFC 854
       const { text, responses } = processIACData(value);
 
-      // Send negotiation responses back to the Telnet server
+      // Send negotiation responses back to the Telnet server via shared write chain
       if (responses.length > 0) {
         const combined = new Uint8Array(responses.reduce((sum, r) => sum + r.length, 0));
         let off = 0;
         for (const r of responses) { combined.set(r, off); off += r.length; }
-        writer.write(combined).catch(() => {});
+        writeChain.current = writeChain.current.then(async () => {
+          try {
+            await writer.write(combined);
+          } catch { /* socket closed */ }
+        });
       }
 
       // Forward cleaned text to the WebSocket client
@@ -380,9 +391,11 @@ async function pipeTelnetToWebSocket(
         ws.send(text);
       }
     }
-  } catch (error) {
-    console.error('Error reading from Telnet socket:', error);
-    ws.close();
+  } catch {
+    // Socket read error or WebSocket send error — fall through to cleanup
+  } finally {
+    try { reader.releaseLock(); } catch { /* already released */ }
+    try { ws.close(); } catch { /* already closed */ }
   }
 }
 
@@ -482,12 +495,10 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
       let collectionDone = false;
       while (!collectionDone && Date.now() < collectDeadline) {
         const remaining = collectDeadline - Date.now();
-        const readResult = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((resolve) =>
-            setTimeout(() => resolve({ value: undefined, done: true }), remaining)
-          ),
-        ]);
+        const rawResult = await raceWithDeadline(reader.read(), remaining);
+        const readResult = rawResult === null
+          ? { value: undefined, done: true as const }
+          : rawResult;
 
         if (readResult.done || !readResult.value) {
           break;
@@ -646,11 +657,7 @@ export async function handleTelnetNegotiate(request: Request): Promise<Response>
       return { banner, negotiations, negotiatedOptions, rtt };
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
-    const result = await Promise.race([negotiatePromise, timeoutPromise]);
+    const result = await raceWithTimeout(negotiatePromise, timeoutMs, 'Connection timeout');
 
     return new Response(JSON.stringify({
       success: true,
@@ -850,12 +857,10 @@ export async function handleTelnetLogin(request: Request): Promise<Response> {
     while (Date.now() < deadline) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) break;
-      const result = await Promise.race([
-        reader.read(),
-        new Promise<{ done: boolean; value: undefined }>((resolve) =>
-          setTimeout(() => resolve({ done: true, value: undefined }), remaining)
-        ),
-      ]);
+      const rawResult = await raceWithDeadline(reader.read(), remaining);
+      const result = rawResult === null
+        ? { done: true as const, value: undefined }
+        : rawResult;
       if (result.done || !result.value) break;
       accumulated += processIAC(result.value, writer);
       const lower = accumulated.toLowerCase();
@@ -866,10 +871,7 @@ export async function handleTelnetLogin(request: Request): Promise<Response> {
 
   try {
     const socket = connect({ hostname: host, port }, { secureTransport: 'off' as const, allowHalfOpen: false });
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
+    await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
 
     const reader = socket.readable.getReader();
     const writer = socket.writable.getWriter();

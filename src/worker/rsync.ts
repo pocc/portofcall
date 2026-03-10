@@ -132,67 +132,67 @@ export async function handleRsyncConnect(request: Request): Promise<Response> {
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
 
-    // Read server greeting: "@RSYNCD: <version>\n"
-    const decoder = new TextDecoder();
     let greeting = '';
-
-    const greetingResult = await Promise.race([reader.read(), timeoutPromise]);
-    if (greetingResult.done || !greetingResult.value) {
-      throw new Error('Server closed connection without greeting');
-    }
-    greeting = decoder.decode(greetingResult.value).trim();
-
-    // Parse server version from "@RSYNCD: 31.0"
     let serverVersion = '';
-    if (greeting.startsWith('@RSYNCD:')) {
-      serverVersion = greeting.replace('@RSYNCD:', '').trim();
-    } else {
-      throw new Error(`Unexpected server greeting: ${greeting.substring(0, 100)}`);
-    }
-
-    // Send our protocol version
     const clientVersion = '30.0';
-    await writer.write(new TextEncoder().encode(`@RSYNCD: ${clientVersion}\n`));
-
-    // Send empty line to request module listing
-    await writer.write(new TextEncoder().encode('\n'));
-
-    // Read module list — server sends lines of "modulename\tdescription"
-    // terminated by "@RSYNCD: EXIT"
-    const lines = await readAllLines(reader, Math.min(timeout, 5000));
-
     const modules: Array<{ name: string; description: string }> = [];
     let motd = '';
+    let rtt = 0;
 
-    for (const line of lines) {
-      if (line.startsWith('@RSYNCD: EXIT')) {
-        break;
-      } else if (line.startsWith('@ERROR')) {
-        // Some servers return errors for anonymous module listing
-        break;
-      } else if (line.startsWith('@RSYNCD:')) {
-        // Skip protocol lines
-        continue;
-      } else if (line.includes('\t')) {
-        const tabIdx = line.indexOf('\t');
-        const name = line.substring(0, tabIdx).trim();
-        const description = line.substring(tabIdx + 1).trim();
-        if (name) {
-          modules.push({ name, description });
-        }
-      } else if (line.trim()) {
-        // Lines without tabs before modules are MOTD
-        if (modules.length === 0) {
-          motd += (motd ? '\n' : '') + line;
+    try {
+      // Read server greeting: "@RSYNCD: <version>\n"
+      const decoder = new TextDecoder();
+
+      const greetingResult = await Promise.race([reader.read(), timeoutPromise]);
+      if (greetingResult.done || !greetingResult.value) {
+        throw new Error('Server closed connection without greeting');
+      }
+      greeting = decoder.decode(greetingResult.value).trim();
+
+      // Parse server version from "@RSYNCD: 31.0"
+      if (greeting.startsWith('@RSYNCD:')) {
+        serverVersion = greeting.replace('@RSYNCD:', '').trim();
+      } else {
+        throw new Error(`Unexpected server greeting: ${greeting.substring(0, 100)}`);
+      }
+
+      // Send our protocol version
+      await writer.write(new TextEncoder().encode(`@RSYNCD: ${clientVersion}\n`));
+
+      // Send empty line to request module listing
+      await writer.write(new TextEncoder().encode('\n'));
+
+      // Read module list — server sends lines of "modulename\tdescription"
+      // terminated by "@RSYNCD: EXIT"
+      const lines = await readAllLines(reader, Math.min(timeout, 5000));
+
+      for (const line of lines) {
+        if (line.startsWith('@RSYNCD: EXIT')) {
+          break;
+        } else if (line.startsWith('@ERROR')) {
+          break;
+        } else if (line.startsWith('@RSYNCD:')) {
+          continue;
+        } else if (line.includes('\t')) {
+          const tabIdx = line.indexOf('\t');
+          const name = line.substring(0, tabIdx).trim();
+          const description = line.substring(tabIdx + 1).trim();
+          if (name) {
+            modules.push({ name, description });
+          }
+        } else if (line.trim()) {
+          if (modules.length === 0) {
+            motd += (motd ? '\n' : '') + line;
+          }
         }
       }
+
+      rtt = Date.now() - startTime;
+    } finally {
+      try { writer.releaseLock(); } catch { /* already released */ }
+      try { reader.releaseLock(); } catch { /* already released */ }
+      try { socket.close(); } catch { /* already closed */ }
     }
-
-    const rtt = Date.now() - startTime;
-
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
 
     return new Response(JSON.stringify({
       success: true,
@@ -482,10 +482,6 @@ export async function handleRsyncAuth(request: Request): Promise<Response> {
 
       const rtt = Date.now() - startTime;
 
-      writer.releaseLock();
-      reader.releaseLock();
-      socket.close();
-
       return new Response(JSON.stringify({
         success: authenticated,
         host,
@@ -504,9 +500,10 @@ export async function handleRsyncAuth(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
 
-    } catch (error) {
-      socket.close();
-      throw error;
+    } finally {
+      try { writer.releaseLock(); } catch { /* already released */ }
+      try { reader.releaseLock(); } catch { /* already released */ }
+      try { socket.close(); } catch { /* already closed */ }
     }
 
   } catch (error) {
@@ -598,56 +595,59 @@ export async function handleRsyncModule(request: Request): Promise<Response> {
     const reader = socket.readable.getReader();
     const decoder = new TextDecoder();
 
-    // Read server greeting
-    const greetingResult = await Promise.race([reader.read(), timeoutPromise]);
-    if (greetingResult.done || !greetingResult.value) {
-      throw new Error('Server closed connection without greeting');
-    }
-    const greeting = decoder.decode(greetingResult.value).trim();
-
     let serverVersion = '';
-    if (greeting.startsWith('@RSYNCD:')) {
-      serverVersion = greeting.replace('@RSYNCD:', '').trim();
-    } else {
-      throw new Error(`Unexpected server greeting: ${greeting.substring(0, 100)}`);
-    }
-
-    // Send our protocol version
-    await writer.write(new TextEncoder().encode(`@RSYNCD: 30.0\n`));
-
-    // Request specific module
-    await writer.write(new TextEncoder().encode(`${moduleName}\n`));
-
-    // Read module response
-    const lines = await readAllLines(reader, Math.min(timeout, 5000));
-
-    const rtt = Date.now() - startTime;
-
+    let rtt = 0;
     let authRequired = false;
     let moduleOk = false;
     let errorMessage = '';
     const responseLines: string[] = [];
 
-    for (const line of lines) {
-      if (line.startsWith('@RSYNCD: OK')) {
-        moduleOk = true;
-        break;
-      } else if (line.startsWith('@RSYNCD: AUTHREQD')) {
-        authRequired = true;
-        break;
-      } else if (line.startsWith('@RSYNCD: EXIT')) {
-        break;
-      } else if (line.startsWith('@ERROR')) {
-        errorMessage = line.replace('@ERROR:', '').replace('@ERROR', '').trim();
-        break;
-      } else {
-        responseLines.push(line);
+    try {
+      // Read server greeting
+      const greetingResult = await Promise.race([reader.read(), timeoutPromise]);
+      if (greetingResult.done || !greetingResult.value) {
+        throw new Error('Server closed connection without greeting');
       }
-    }
+      const greeting = decoder.decode(greetingResult.value).trim();
 
-    writer.releaseLock();
-    reader.releaseLock();
-    socket.close();
+      if (greeting.startsWith('@RSYNCD:')) {
+        serverVersion = greeting.replace('@RSYNCD:', '').trim();
+      } else {
+        throw new Error(`Unexpected server greeting: ${greeting.substring(0, 100)}`);
+      }
+
+      // Send our protocol version
+      await writer.write(new TextEncoder().encode(`@RSYNCD: 30.0\n`));
+
+      // Request specific module
+      await writer.write(new TextEncoder().encode(`${moduleName}\n`));
+
+      // Read module response
+      const lines = await readAllLines(reader, Math.min(timeout, 5000));
+
+      rtt = Date.now() - startTime;
+
+      for (const line of lines) {
+        if (line.startsWith('@RSYNCD: OK')) {
+          moduleOk = true;
+          break;
+        } else if (line.startsWith('@RSYNCD: AUTHREQD')) {
+          authRequired = true;
+          break;
+        } else if (line.startsWith('@RSYNCD: EXIT')) {
+          break;
+        } else if (line.startsWith('@ERROR')) {
+          errorMessage = line.replace('@ERROR:', '').replace('@ERROR', '').trim();
+          break;
+        } else {
+          responseLines.push(line);
+        }
+      }
+    } finally {
+      try { writer.releaseLock(); } catch { /* already released */ }
+      try { reader.releaseLock(); } catch { /* already released */ }
+      try { socket.close(); } catch { /* already closed */ }
+    }
 
     return new Response(JSON.stringify({
       success: true,

@@ -591,10 +591,13 @@ export async function doAMQPPublish(params: AMQPPublishParams): Promise<AMQPPubl
     const tuneView   = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
     const channelMax = tuneView.getUint16(0, false);
     const frameMax   = tuneView.getUint32(2, false);
-    const heartbeat  = tuneView.getUint16(6, false);
+    // Server's heartbeat interval is at offset 6 but we ignore it (see below).
 
     // Step 5: Send Connection.TuneOk
-    await writer.write(buildConnectionTuneOk(channelMax, frameMax, heartbeat));
+    // Disable heartbeats (0) since we don't send heartbeat frames.
+    // Echoing the server's value without honoring it causes the broker
+    // to kill long-lived connections after 2x the heartbeat interval.
+    await writer.write(buildConnectionTuneOk(channelMax, frameMax, 0));
 
     // Step 6: Send Connection.Open
     await writer.write(buildConnectionOpen(vhost));
@@ -1005,9 +1008,12 @@ export async function doAMQPConsume(
     const tuneView   = new DataView(tuneArgs.buffer, tuneArgs.byteOffset);
     const channelMax = tuneView.getUint16(0, false);
     const frameMax   = tuneView.getUint32(2, false);
-    const heartbeat  = tuneView.getUint16(6, false);
+    // Server's heartbeat interval is at offset 6 but we ignore it.
+    // Disable heartbeats (0) since we don't send heartbeat frames.
+    // Echoing the server's value without honoring it causes the broker
+    // to kill long-lived connections after 2x the heartbeat interval.
 
-    await writer.write(buildConnectionTuneOk(channelMax, frameMax, heartbeat));
+    await writer.write(buildConnectionTuneOk(channelMax, frameMax, 0));
     await writer.write(buildConnectionOpen(vhost));
     await expectMethod(br, CLASS_CONNECTION, METHOD_CONNECTION_OPEN_OK, deadline);
 

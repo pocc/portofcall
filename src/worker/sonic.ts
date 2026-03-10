@@ -270,10 +270,7 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
             const searchResult = await tryStartMode(searchWriter, searchReader, timeoutPromise, 'search', password);
             if (searchResult) modes.search = true;
             await sendCommand(searchWriter, searchReader, timeoutPromise, 'QUIT');
-            searchWriter.releaseLock();
-            searchReader.releaseLock();
-            searchSocket.close();
-          } catch {
+          } finally {
             try { searchWriter.releaseLock(); } catch { /* ignored */ }
             try { searchReader.releaseLock(); } catch { /* ignored */ }
             try { searchSocket.close(); } catch { /* ignored */ }
@@ -293,10 +290,7 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
             const ingestResult = await tryStartMode(ingestWriter, ingestReader, timeoutPromise, 'ingest', password);
             if (ingestResult) modes.ingest = true;
             await sendCommand(ingestWriter, ingestReader, timeoutPromise, 'QUIT');
-            ingestWriter.releaseLock();
-            ingestReader.releaseLock();
-            ingestSocket.close();
-          } catch {
+          } finally {
             try { ingestWriter.releaseLock(); } catch { /* ignored */ }
             try { ingestReader.releaseLock(); } catch { /* ignored */ }
             try { ingestSocket.close(); } catch { /* ignored */ }
@@ -304,10 +298,6 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
         } catch {
           // Ingest mode test failed, not critical
         }
-
-        writer.releaseLock();
-        reader.releaseLock();
-        socket.close();
 
         const result: SonicProbeResponse = {
           success: true,
@@ -323,12 +313,10 @@ export async function handleSonicProbe(request: Request): Promise<Response> {
 
         return result;
 
-      } catch (error) {
+      } finally {
         try { writer.releaseLock(); } catch { /* ignored */ }
         try { reader.releaseLock(); } catch { /* ignored */ }
         try { socket.close(); } catch { /* ignored */ }
-        throw error;
-      } finally {
         if (timeoutHandle) clearTimeout(timeoutHandle);
       }
     })();

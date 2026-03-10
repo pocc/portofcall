@@ -11,7 +11,9 @@ export function addSecurityHeaders(request: Request, response: Response): Respon
   const wrapped = new Response(response.body, response);
   wrapped.headers.set('X-Frame-Options', 'DENY');
   wrapped.headers.set('X-Content-Type-Options', 'nosniff');
-  wrapped.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  wrapped.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');
+  wrapped.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  wrapped.headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   // API responses: no-store (connections carry credentials / are unique)
   if (new URL(request.url).pathname.startsWith('/api/')) {
     wrapped.headers.set('Cache-Control', 'no-store');

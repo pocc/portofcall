@@ -15,6 +15,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout, raceWithDeadline } from './timeout-utils';
 
 /** Strip CR/LF to prevent command injection in NATS text protocol. */
 function sanitizeCRLF(s: string): string {
@@ -28,10 +29,6 @@ async function readWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number
 ): Promise<string> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
-  );
-
   const readPromise = (async () => {
     const decoder = new TextDecoder();
     let buffer = '';
@@ -46,7 +43,7 @@ async function readWithTimeout(
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'Read timeout');
 }
 
 /**
@@ -192,12 +189,8 @@ export async function handleNATSConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -344,12 +337,8 @@ export async function handleNATSPublish(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -409,11 +398,9 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
     }
 
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout_ms + 2000),
-    );
+    const outerTimeoutMs = timeout_ms + 2000;
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await raceWithTimeout(socket.opened, outerTimeoutMs, 'Connection timeout');
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
     const encoder = new TextEncoder();
@@ -425,7 +412,7 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
       // Read INFO
       let buf = '';
       while (!buf.includes('\r\n')) {
-        const { value } = await Promise.race([reader.read(), timeoutPromise]);
+        const { value } = await raceWithTimeout(reader.read(), outerTimeoutMs, 'Connection timeout');
         if (value) buf += decoder.decode(value, { stream: true });
       }
       const infoLine = buf.split('\r\n')[0];
@@ -452,15 +439,41 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
         const remaining = deadline - Date.now();
         if (remaining <= 0) break;
 
-        const readResult = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), remaining),
-          ),
-        ]).catch(() => ({ value: undefined, done: true as const }));
+        const rawResult = await raceWithDeadline(reader.read(), remaining);
+        const readResult = rawResult === null
+          ? { value: undefined, done: true as const }
+          : rawResult;
 
         if (readResult.done || !readResult.value) break;
         buf += decoder.decode(readResult.value, { stream: true });
+
+        // Prevent unbounded memory growth
+        if (buf.length > 4 * 1024 * 1024) {
+          throw new Error('NATS buffer exceeded 4 MB');
+        }
+
+        // Strip non-MSG control lines before parsing
+        let stripped = true;
+        while (stripped) {
+          stripped = false;
+          if (buf.startsWith('PING\r\n')) {
+            await writer.write(encoder.encode('PONG\r\n'));
+            buf = buf.substring(6);
+            stripped = true;
+          } else if (buf.startsWith('+OK\r\n')) {
+            buf = buf.substring(5);
+            stripped = true;
+          } else if (buf.startsWith('PONG\r\n')) {
+            buf = buf.substring(6);
+            stripped = true;
+          } else {
+            const ctrlMatch = buf.match(/^(-ERR\s[^\r\n]*|INFO\s[^\r\n]*)\r\n/);
+            if (ctrlMatch) {
+              buf = buf.substring(ctrlMatch[0].length);
+              stripped = true;
+            }
+          }
+        }
 
         // Parse MSG frames: MSG <subject> <sid> [reply_to] <bytes>\r\n<payload>\r\n
         while (true) {
@@ -476,12 +489,6 @@ export async function handleNATSSubscribe(request: Request): Promise<Response> {
           messages.push({ subject: msgSubject, payload, replyTo });
 
           if (messages.length >= max_msgs) break;
-        }
-
-        // Handle PING
-        if (buf.startsWith('PING\r\n')) {
-          await writer.write(encoder.encode('PONG\r\n'));
-          buf = buf.substring(6);
         }
       }
 
@@ -530,10 +537,7 @@ async function withNATSSession<T>(
   const socket = connect(`${host}:${port}`);
   const deadline = Date.now() + timeoutMs;
 
-  await new Promise<void>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error('Connection timeout')), timeoutMs);
-    socket.opened.then(() => { clearTimeout(t); resolve(); }).catch(reject);
-  });
+  await raceWithTimeout(socket.opened, timeoutMs, 'Connection timeout');
 
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
@@ -546,12 +550,9 @@ async function withNATSSession<T>(
     const untilMs = Math.min(Date.now() + waitMs, deadline);
     while (!buf.includes('\r\n')) {
       const rem = Math.max(1, untilMs - Date.now());
-      const t = new Promise<{ value: undefined; done: true }>((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), rem),
-      );
-      const { value, done } = await Promise.race([reader.read(), t]);
-      if (done || !value) break;
-      buf += decoder.decode(value, { stream: true });
+      const result = await raceWithDeadline(reader.read(), rem);
+      if (result === null || result.done || !result.value) break;
+      buf += decoder.decode(result.value, { stream: true });
     }
     const idx = buf.indexOf('\r\n');
     const line = idx >= 0 ? buf.substring(0, idx) : buf;
@@ -563,12 +564,35 @@ async function withNATSSession<T>(
     const untilMs = Date.now() + waitMs;
     while (Date.now() < untilMs) {
       const rem = Math.max(1, untilMs - Date.now());
-      const t = new Promise<{ value: undefined; done: true }>((_, reject) =>
-        setTimeout(() => reject(new Error('timeout')), rem),
-      );
-      const readResult = await Promise.race([reader.read(), t]).catch(() => ({ value: undefined, done: true as const }));
+      const rawResult = await raceWithDeadline(reader.read(), rem);
+      const readResult = rawResult === null
+        ? { value: undefined, done: true as const }
+        : rawResult;
       if (readResult.done || !readResult.value) break;
       buf += decoder.decode(readResult.value, { stream: true });
+
+      // Strip non-MSG control lines (PING, +OK, -ERR, INFO, PONG) before parsing
+      let stripped = true;
+      while (stripped) {
+        stripped = false;
+        if (buf.startsWith('PING\r\n')) {
+          await writer.write(encoder.encode('PONG\r\n'));
+          buf = buf.substring(6);
+          stripped = true;
+        } else if (buf.startsWith('+OK\r\n')) {
+          buf = buf.substring(5);
+          stripped = true;
+        } else if (buf.startsWith('PONG\r\n')) {
+          buf = buf.substring(6);
+          stripped = true;
+        } else {
+          const ctrlMatch = buf.match(/^(-ERR\s[^\r\n]*|INFO\s[^\r\n]*)\r\n/);
+          if (ctrlMatch) {
+            buf = buf.substring(ctrlMatch[0].length);
+            stripped = true;
+          }
+        }
+      }
 
       // Parse MSG
       const msgMatch = buf.match(/^MSG\s+(\S+)\s+\S+\s+(?:\S+\s+)?(\d+)\r\n/);
@@ -580,11 +604,6 @@ async function withNATSSession<T>(
           buf = buf.substring(hdrLen + byteLen + 2);
           return payload;
         }
-      }
-      // Handle PING
-      if (buf.startsWith('PING\r\n')) {
-        await writer.write(encoder.encode('PONG\r\n'));
-        buf = buf.substring(6);
       }
     }
     return null;
@@ -1008,11 +1027,9 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
 
     const inboxSubject = `_INBOX.${Math.random().toString(36).substring(2)}`;
     const socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Request timeout')), timeout_ms + 2000),
-    );
+    const outerTimeoutMs = timeout_ms + 2000;
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    await raceWithTimeout(socket.opened, outerTimeoutMs, 'Request timeout');
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
     const encoder = new TextEncoder();
@@ -1022,7 +1039,7 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
       // Read INFO
       let buf = '';
       while (!buf.includes('\r\n')) {
-        const { value } = await Promise.race([reader.read(), timeoutPromise]);
+        const { value } = await raceWithTimeout(reader.read(), outerTimeoutMs, 'Request timeout');
         if (value) buf += decoder.decode(value, { stream: true });
       }
 
@@ -1049,15 +1066,36 @@ export async function handleNATSRequest(request: Request): Promise<Response> {
 
       while (Date.now() < deadline && responsePayload === null) {
         const remaining = deadline - Date.now();
-        const readResult = await Promise.race([
-          reader.read(),
-          new Promise<{ value: undefined; done: true }>((_, reject) =>
-            setTimeout(() => reject(new Error('timeout')), remaining),
-          ),
-        ]).catch(() => ({ value: undefined, done: true as const }));
+        const rawResult = await raceWithDeadline(reader.read(), remaining);
+        const readResult = rawResult === null
+          ? { value: undefined, done: true as const }
+          : rawResult;
 
         if (readResult.done || !readResult.value) break;
         buf += decoder.decode(readResult.value, { stream: true });
+
+        // Strip non-MSG control lines before parsing
+        let stripped = true;
+        while (stripped) {
+          stripped = false;
+          if (buf.startsWith('PING\r\n')) {
+            await writer.write(encoder.encode('PONG\r\n'));
+            buf = buf.substring(6);
+            stripped = true;
+          } else if (buf.startsWith('+OK\r\n')) {
+            buf = buf.substring(5);
+            stripped = true;
+          } else if (buf.startsWith('PONG\r\n')) {
+            buf = buf.substring(6);
+            stripped = true;
+          } else {
+            const ctrlMatch = buf.match(/^(-ERR\s[^\r\n]*|INFO\s[^\r\n]*)\r\n/);
+            if (ctrlMatch) {
+              buf = buf.substring(ctrlMatch[0].length);
+              stripped = true;
+            }
+          }
+        }
 
         const msgMatch = buf.match(/^MSG\s+(\S+)\s+\S+\s+(?:\S+\s+)?(\d+)\r\n/);
         if (msgMatch) {

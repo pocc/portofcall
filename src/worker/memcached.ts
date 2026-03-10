@@ -7,6 +7,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -19,17 +20,17 @@ async function readMemcachedResponse(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number
 ): Promise<string> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs)
-  );
-
   const readPromise = (async () => {
+    const MAX_RESPONSE_SIZE = 512 * 1024; // 512 KB
     let buffer = '';
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_RESPONSE_SIZE) {
+        throw new Error('Response too large (exceeds 512 KB)');
+      }
 
       // Single-line terminal responses
       if (
@@ -53,7 +54,7 @@ async function readMemcachedResponse(
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'Read timeout');
 }
 
 /**
@@ -131,11 +132,7 @@ export async function handleMemcachedConnect(request: Request): Promise<Response
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -222,6 +219,10 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
 
         const storageCommands = ['set', 'add', 'replace', 'append', 'prepend'];
 
+        // Memcached keys must not contain control chars or spaces (protocol injection prevention)
+        // eslint-disable-next-line no-control-regex
+        const INVALID_KEY_RE = /[\x00-\x20\x7f]/;
+
         if (storageCommands.includes(cmd)) {
           // Storage command format: <cmd> <key> <flags> <exptime> <bytes> [noreply]\r\n<data>\r\n
           // We expect the user to provide: set <key> <flags> <exptime> <data>
@@ -234,8 +235,17 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
           }
 
           const key = parts[1];
+          if (!key || key.length > 250 || INVALID_KEY_RE.test(key)) {
+            throw new Error('Invalid memcached key: keys must be 1-250 bytes, no spaces or control characters');
+          }
           const flags = parts[2];
+          if (!/^\d+$/.test(flags)) {
+            throw new Error('Flags must be a numeric value');
+          }
           const exptime = parts[3];
+          if (!/^\d+$/.test(exptime)) {
+            throw new Error('Exptime must be a numeric value');
+          }
           const dataValue = parts.slice(4).join(' ');
           const dataBytes = encoder.encode(dataValue);
 
@@ -253,8 +263,17 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
             );
           }
           const key = parts[1];
+          if (!key || key.length > 250 || INVALID_KEY_RE.test(key)) {
+            throw new Error('Invalid memcached key: keys must be 1-250 bytes, no spaces or control characters');
+          }
           const flags = parts[2];
+          if (!/^\d+$/.test(flags)) {
+            throw new Error('Flags must be a numeric value');
+          }
           const exptime = parts[3];
+          if (!/^\d+$/.test(exptime)) {
+            throw new Error('Exptime must be a numeric value');
+          }
           const casUnique = parts[4];
           if (!/^\d+$/.test(String(casUnique))) {
             throw new Error('CAS token must be a numeric value');
@@ -283,11 +302,7 @@ export async function handleMemcachedCommand(request: Request): Promise<Response
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -528,11 +543,7 @@ export async function handleMemcachedStats(request: Request): Promise<Response> 
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -671,11 +682,7 @@ export async function handleMemcachedGets(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });

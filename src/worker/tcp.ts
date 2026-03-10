@@ -48,7 +48,7 @@ export async function handleTcpSend(request: Request): Promise<Response> {
     });
   }
 
-  const start = Date.now();
+  const start = performance.now();
 
   try {
     const body = (await request.json()) as TcpSendRequest;
@@ -105,14 +105,14 @@ export async function handleTcpSend(request: Request): Promise<Response> {
     }
 
     // Connect
-    const connectStart = Date.now();
+    const connectStart = performance.now();
     const socket = connect(`${host}:${port}`);
 
     const connectTimeout = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout),
     );
     await Promise.race([socket.opened, connectTimeout]);
-    const connectMs = Date.now() - connectStart;
+    const connectMs = Math.round((performance.now() - connectStart) * 100) / 100;
 
     const writer = socket.writable.getWriter();
     const reader = socket.readable.getReader();
@@ -177,7 +177,7 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       try { reader.releaseLock(); } catch { /* already released */ }
     }
 
-    await writer.close().catch(() => {});
+    try { writer.releaseLock(); } catch { /* already released */ }
     await socket.close().catch(() => {});
 
     // Combine chunks
@@ -204,7 +204,7 @@ export async function handleTcpSend(request: Request): Promise<Response> {
         receivedHex,
         receivedUtf8,
         bytesReceived: totalBytes,
-        rtt: Date.now() - start,
+        rtt: Math.round((performance.now() - start) * 100) / 100,
         connectMs,
         encoding,
       }),
@@ -215,7 +215,7 @@ export async function handleTcpSend(request: Request): Promise<Response> {
       JSON.stringify({
         success: false,
         error: error instanceof Error ? error.message : 'TCP connection failed',
-        rtt: Date.now() - start,
+        rtt: Math.round((performance.now() - start) * 100) / 100,
       }),
       { status: 500, headers: { 'Content-Type': 'application/json' } },
     );

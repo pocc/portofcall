@@ -75,70 +75,73 @@ async function sendSoapRequest(
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
-
-  const bodyBytes = encoder.encode(soapBody);
-
-  // Auto-detect SOAP version if not specified
-  const detectedVersion = soapVersion || detectSoapVersion(soapBody);
-
-  const safeHost = host.replace(/[\r\n]/g, '');
-  const safePath = path.replace(/[\r\n]/g, '');
-  let request = `POST ${safePath} HTTP/1.1\r\n`;
-  request += `Host: ${safeHost}:${port}\r\n`;
-
-  // SOAP 1.1 vs 1.2 Content-Type difference per W3C specs
-  const safeSoapAction = soapAction ? soapAction.replace(/[\r\n]/g, '') : soapAction;
-  if (detectedVersion === '1.2') {
-    // RFC 3902: SOAP 1.2 uses application/soap+xml
-    // Action parameter replaces SOAPAction header
-    let contentType = 'application/soap+xml; charset=utf-8';
-    if (safeSoapAction) {
-      contentType += `; action="${safeSoapAction}"`;
-    }
-    request += `Content-Type: ${contentType}\r\n`;
-  } else {
-    // SOAP 1.1 uses text/xml and separate SOAPAction header
-    request += `Content-Type: text/xml; charset=utf-8\r\n`;
-    if (safeSoapAction !== undefined) {
-      // SOAPAction header is required in SOAP 1.1, even if empty
-      request += `SOAPAction: "${safeSoapAction}"\r\n`;
-    }
-  }
-
-  request += `Content-Length: ${bodyBytes.length}\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-  request += `\r\n`;
-
-  await writer.write(encoder.encode(request));
-  await writer.write(bodyBytes);
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
   let response = '';
-  const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      const chunk = decoder.decode(value, { stream: true });
-      if (response.length + chunk.length > maxSize) {
-        response += chunk.substring(0, maxSize - response.length);
-        break;
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
+
+    const bodyBytes = encoder.encode(soapBody);
+
+    // Auto-detect SOAP version if not specified
+    const detectedVersion = soapVersion || detectSoapVersion(soapBody);
+
+    const safeHost = host.replace(/[\r\n]/g, '');
+    const safePath = path.replace(/[\r\n]/g, '');
+    let request = `POST ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+
+    // SOAP 1.1 vs 1.2 Content-Type difference per W3C specs
+    const safeSoapAction = soapAction ? soapAction.replace(/[\r\n]/g, '') : soapAction;
+    if (detectedVersion === '1.2') {
+      // RFC 3902: SOAP 1.2 uses application/soap+xml
+      // Action parameter replaces SOAPAction header
+      let contentType = 'application/soap+xml; charset=utf-8';
+      if (safeSoapAction) {
+        contentType += `; action="${safeSoapAction}"`;
       }
-      response += chunk;
+      request += `Content-Type: ${contentType}\r\n`;
+    } else {
+      // SOAP 1.1 uses text/xml and separate SOAPAction header
+      request += `Content-Type: text/xml; charset=utf-8\r\n`;
+      if (safeSoapAction !== undefined) {
+        // SOAPAction header is required in SOAP 1.1, even if empty
+        request += `SOAPAction: "${safeSoapAction}"\r\n`;
+      }
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
+    request += `Content-Length: ${bodyBytes.length}\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+    request += `\r\n`;
+
+    await writer.write(encoder.encode(request));
+    await writer.write(bodyBytes);
+    writer.releaseLock();
+
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* already closed */ }
+  }
 
   // Parse HTTP response
   const headerEnd = response.indexOf('\r\n\r\n');
@@ -229,46 +232,49 @@ async function sendWsdlRequest(
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
-
-  // Append ?wsdl if not already present
-  const safeHost2 = host.replace(/[\r\n]/g, '');
-  const wsdlPath = path.includes('?') ? path.replace(/[\r\n]/g, '') : `${path.replace(/[\r\n]/g, '')}?wsdl`;
-
-  let request = `GET ${wsdlPath} HTTP/1.1\r\n`;
-  request += `Host: ${safeHost2}:${port}\r\n`;
-  request += `Accept: text/xml, application/xml\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-  request += `\r\n`;
-
-  await writer.write(encoder.encode(request));
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
   let response = '';
-  const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      const chunk = decoder.decode(value, { stream: true });
-      if (response.length + chunk.length > maxSize) {
-        response += chunk.substring(0, maxSize - response.length);
-        break;
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
+
+    // Append ?wsdl if not already present
+    const safeHost2 = host.replace(/[\r\n]/g, '');
+    const wsdlPath = path.includes('?') ? path.replace(/[\r\n]/g, '') : `${path.replace(/[\r\n]/g, '')}?wsdl`;
+
+    let request = `GET ${wsdlPath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost2}:${port}\r\n`;
+    request += `Accept: text/xml, application/xml\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+    request += `\r\n`;
+
+    await writer.write(encoder.encode(request));
+    writer.releaseLock();
+
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
       }
-      response += chunk;
     }
-  }
 
-  reader.releaseLock();
-  socket.close();
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* already closed */ }
+  }
 
   const headerEnd = response.indexOf('\r\n\r\n');
   if (headerEnd === -1) {

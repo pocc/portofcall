@@ -6,6 +6,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout, raceWithDeadline } from './timeout-utils';
 
 export interface IRCConnectionOptions {
   host: string;
@@ -209,12 +210,9 @@ export async function handleIRCConnect(request: Request): Promise<Response> {
 
       try {
         while (Date.now() - startTime < maxReadTime) {
-          const readPromise = reader.read();
-          const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
-            setTimeout(() => resolve({ done: true, value: undefined }), 5000)
-          );
-
-          const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+          const readResult = await raceWithDeadline(reader.read(), 5000);
+          const done = readResult === null || readResult.done;
+          const value = readResult === null ? undefined : readResult.value;
           if (done || !value) break;
 
           buffer += decoder.decode(value, { stream: true });
@@ -252,6 +250,9 @@ export async function handleIRCConnect(request: Request): Promise<Response> {
         // Read timeout or error, continue with what we have
       }
 
+      // Release reader lock before sending QUIT (writer needs the socket)
+      try { reader.releaseLock(); } catch { /* already released */ }
+
       // Send QUIT
       try {
         const quitWriter = socket.writable.getWriter();
@@ -287,11 +288,7 @@ export async function handleIRCConnect(request: Request): Promise<Response> {
       };
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), 30000)
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, 30000, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -397,10 +394,7 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
         const { password, saslUsername, saslPassword } = await credentialPromise;
 
         const socket = connect(`${host}:${port}`);
-        await Promise.race([
-          socket.opened,
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
-        ]);
+        await raceWithTimeout(socket.opened, 30000, 'Connection timeout');
 
         const encoder = new TextEncoder();
         const decoder = new TextDecoder();
@@ -435,7 +429,8 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
         let saslState: 'idle' | 'cap_req' | 'authenticate' | 'credentials' | 'done' | 'no_sasl' = 'idle';
 
         // Handle WebSocket messages from browser -> IRC server
-        server.addEventListener('message', async (event) => {
+        server.addEventListener('message', (event) => {
+          writeChain = writeChain.then(async () => {
           try {
             const data = typeof event.data === 'string' ? event.data : '';
 
@@ -542,6 +537,7 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
               })
             );
           }
+          }).catch(() => { /* connection may be closing */ });
         });
 
         // Handle WebSocket close -> IRC quit
@@ -560,6 +556,10 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
           }
         });
 
+        // Serialize all writes to the IRC socket through a promise chain
+        // to prevent concurrent writer access between WS handlers and PING auto-responses
+        let writeChain: Promise<void> = Promise.resolve();
+
         // Read from IRC server -> WebSocket
         const reader = socket.readable.getReader();
         let buffer = '';
@@ -571,6 +571,11 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
 
             buffer += decoder.decode(value, { stream: true });
 
+            // Prevent unbounded memory growth from a malicious server
+            if (buffer.length > 512 * 1024) {
+              buffer = buffer.substring(buffer.length - 64 * 1024);
+            }
+
             let newlineIndex: number;
             while ((newlineIndex = buffer.indexOf('\r\n')) !== -1) {
               const line = buffer.substring(0, newlineIndex);
@@ -580,13 +585,16 @@ export async function handleIRCWebSocket(request: Request): Promise<Response> {
 
               const msg = parseIRCMessage(line);
 
-              // Auto-respond to PING
+              // Auto-respond to PING — queue through writeChain to avoid
+              // concurrent writer access with the WebSocket message handler
               if (msg.command === 'PING') {
-                const pongWriter = socket.writable.getWriter();
-                await pongWriter.write(
-                  encoder.encode(`PONG :${msg.params[0] || ''}\r\n`)
-                );
-                pongWriter.releaseLock();
+                writeChain = writeChain.then(async () => {
+                  const pongWriter = socket.writable.getWriter();
+                  await pongWriter.write(
+                    encoder.encode(`PONG :${msg.params[0] || ''}\r\n`)
+                  );
+                  pongWriter.releaseLock();
+                }).catch(() => { /* connection may be closing */ });
               }
 
               // IRCv3 CAP negotiation

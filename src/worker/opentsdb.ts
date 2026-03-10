@@ -38,11 +38,16 @@ async function readTelnetResponse(
     setTimeout(() => resolve(chunks.join('')), timeoutMs)
   );
 
+  const maxSize = 1024 * 1024; // 1 MiB
+  let totalLen = 0;
   const readPromise = (async () => {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
-      chunks.push(decoder.decode(value, { stream: true }));
+      const decoded = decoder.decode(value, { stream: true });
+      totalLen += decoded.length;
+      if (totalLen > maxSize) break;
+      chunks.push(decoded);
     }
     return chunks.join('');
   })();

@@ -412,6 +412,7 @@ async function dictSession(
       if (value) {
         bannerChunks.push(value);
         bannerBytes += value.length;
+        if (bannerBytes > 65536) throw new Error('Banner exceeds maximum size (64 KiB)');
 
         // Combine chunks and check for the first complete line
         const combined = new Uint8Array(bannerBytes);

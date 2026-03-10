@@ -574,6 +574,11 @@ export async function handleMQTTSession(request: Request): Promise<Response> {
         while (true) {
           const { value, done } = await reader.read();
           if (done) break;
+          // Prevent unbounded memory growth from malicious broker
+          if (leftover.length + value.length > 4 * 1024 * 1024) {
+            server.send(JSON.stringify({ type: 'error', error: 'Inbound buffer exceeded 4 MB' }));
+            break;
+          }
           const combined = new Uint8Array(leftover.length + value.length);
           combined.set(leftover);
           combined.set(value, leftover.length);

@@ -106,6 +106,7 @@ async function readRelpResponse(
     timeoutHandle = setTimeout(() => reject(new Error('Read timeout')), timeoutMs);
   });
 
+  const maxBufferSize = 1024 * 1024; // 1 MiB
   const readPromise = (async () => {
     let buffer = '';
     const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -113,6 +114,7 @@ async function readRelpResponse(
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > maxBufferSize) throw new Error('RELP response too large');
       // RELP frames end with LF - return first complete frame
       const newlineIdx = buffer.indexOf('\n');
       if (newlineIdx !== -1) {
@@ -446,6 +448,7 @@ async function readAllRelpResponses(
 
   const frames: string[] = [];
 
+  const maxBufferSize = 1024 * 1024; // 1 MiB
   const readPromise = (async () => {
     let buffer = '';
     const decoder = new TextDecoder('utf-8', { fatal: false });
@@ -453,6 +456,7 @@ async function readAllRelpResponses(
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > maxBufferSize) throw new Error('RELP batch response too large');
 
       // Extract all complete frames (each ends with \n)
       let newlineIdx: number;

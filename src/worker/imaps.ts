@@ -71,6 +71,7 @@ async function readIMAPResponse(
 
       const chunk = decoder.decode(value, { stream: true });
       response += chunk;
+      if (response.length > 1048576) { throw new Error('IMAPS response too large'); }
 
       if (hasTaggedResponse(response, tag)) {
         break;
@@ -594,13 +595,15 @@ export async function handleIMAPSSelect(request: Request): Promise<Response> {
 
 /**
  * Handle IMAPS interactive WebSocket session
- * GET /api/imaps/session?host=...&port=...&username=...&password=...
+ * GET /api/imaps/session?host=...&port=...
  *
+ * Credentials arrive via first WebSocket message (not URL params).
  * Connects over TLS, authenticates with LOGIN, then allows the browser
  * to issue raw IMAP commands and receive responses.
  *
  * WebSocket message protocol:
- *   Browser → Worker: JSON { type: 'command', command: string }
+ *   Browser → Worker: JSON { type: 'auth', username: string, password: string }
+ *                          { type: 'command', command: string }
  *   Worker → Browser: JSON { type: 'connected', greeting: string, capabilities: string }
  *                          { type: 'response', tag: string, response: string, command: string }
  *                          { type: 'error', message: string }
@@ -613,11 +616,9 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const host = url.searchParams.get('host') || '';
   const port = parseInt(url.searchParams.get('port') || '993', 10);
-  const username = url.searchParams.get('username') || '';
-  const password = url.searchParams.get('password') || '';
 
-  if (!host || !username || password == null) {
-    return new Response(JSON.stringify({ error: 'Missing host, username, or password' }), { status: 400 });
+  if (!host) {
+    return new Response(JSON.stringify({ error: 'Missing host' }), { status: 400 });
   }
 
   if (isNaN(port) || port < 1 || port > 65535) {
@@ -635,8 +636,39 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
   const [client, server] = Object.values(pair);
   server.accept();
 
+  // Credentials arrive via first WebSocket message (not URL params)
+  const credentialPromise = new Promise<{ username: string; password: string }>((resolve, reject) => {
+    const authTimer = setTimeout(() => {
+      server.send(JSON.stringify({ type: 'error', message: 'Auth timeout — no credentials received' }));
+      server.close(4001, 'Auth timeout');
+      reject(new Error('Auth timeout'));
+    }, 15_000);
+
+    server.addEventListener('message', function onAuth(event) {
+      try {
+        const msg = JSON.parse(event.data as string);
+        if (msg.type === 'auth') {
+          clearTimeout(authTimer);
+          server.removeEventListener('message', onAuth);
+          resolve({
+            username: msg.username || '',
+            password: msg.password || '',
+          });
+        }
+      } catch { /* not JSON yet — ignore until auth */ }
+    });
+  });
+
   (async () => {
     try {
+      const { username, password } = await credentialPromise;
+
+      if (!username || password == null) {
+        server.send(JSON.stringify({ type: 'error', message: 'Missing username or password' }));
+        server.close();
+        return;
+      }
+
       // Connect with TLS
       const socket = connect(`${host}:${port}`, { secureTransport: 'on', allowHalfOpen: false });
       await socket.opened;
@@ -706,7 +738,10 @@ export async function handleIMAPSSession(request: Request): Promise<Response> {
             const msg = JSON.parse(event.data as string) as { type: string; command?: string };
             if (msg.type === 'command' && msg.command) {
               const tag = `A${String(tagCounter++).padStart(3, '0')}`;
-              const response = await sendIMAPCommand(reader, writer, tag, msg.command.trim(), 30000);
+              // Sanitize CRLF and NUL to prevent command injection
+              // eslint-disable-next-line no-control-regex
+              const safeCommand = msg.command.trim().replace(/[\r\n\x00]/g, '');
+              const response = await sendIMAPCommand(reader, writer, tag, safeCommand, 30000);
               server.send(JSON.stringify({
                 type: 'response',
                 tag,

@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 export interface LDAPConnectionOptions {
   host: string;
@@ -24,6 +25,16 @@ function berLength(n: number): number[] {
   let v = n;
   while (v > 0) { bytes.unshift(v & 0xFF); v >>= 8; }
   return [0x80 | bytes.length, ...bytes];
+}
+
+/** Return how many bytes a BER length field occupies starting at data[offset]. */
+function berLengthSize(data: Uint8Array, offset: number): number {
+  if (offset >= data.length) return 1;
+  const first = data[offset];
+  if (first < 128) return 1; // Short form: length fits in 1 byte
+  // Long form: high bit set, lower 7 bits = number of subsequent length bytes
+  const numBytes = first & 0x7F;
+  return 1 + numBytes;
 }
 
 function berTLV(tag: number, data: number[]): number[] {
@@ -115,12 +126,7 @@ async function readLDAPData(
     return result;
   })();
 
-  return Promise.race([
-    readPromise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('LDAP read timeout')), timeoutMs)
-    ),
-  ]);
+  return raceWithTimeout(readPromise, timeoutMs, 'LDAP read timeout');
 }
 
 async function readLDAPSearchData(
@@ -173,12 +179,7 @@ async function readLDAPSearchData(
     return result;
   })();
 
-  return Promise.race([
-    readPromise,
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('LDAP search timeout')), timeoutMs)
-    ),
-  ]);
+  return raceWithTimeout(readPromise, timeoutMs, 'LDAP search timeout');
 }
 
 // ---------------------------------------------------------------------------
@@ -363,10 +364,7 @@ async function ldapBindOnSocket(
   writer: WritableStreamDefaultWriter<Uint8Array>;
 }> {
   const socket = connect(`${host}:${port}`);
-  await Promise.race([
-    socket.opened,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)),
-  ]);
+  await raceWithTimeout(socket.opened, timeoutMs, 'Connection timeout');
 
   const reader = socket.readable.getReader();
   const writer = socket.writable.getWriter();
@@ -447,18 +445,23 @@ function parseLDAPBindResponse(data: Uint8Array): { success: boolean; resultCode
   if (data[offset] !== 0x30) {
     return { success: false, resultCode: -1, message: 'Expected SEQUENCE tag' };
   }
-  offset += 2; // Skip tag and length (simplified)
+  offset++; // Skip SEQUENCE tag
+  offset += berLengthSize(data, offset); // Skip length (handles multi-byte BER lengths)
 
   // Skip message ID
   if (data[offset] === 0x02) {
-    offset += 2 + data[offset + 1]; // Skip INTEGER
+    offset++; // Skip INTEGER tag
+    const idLen = data[offset];
+    offset++; // Skip length byte
+    offset += idLen; // Skip integer value
   }
 
   // Check for BIND response tag (0x61)
   if (data[offset] !== 0x61) {
     return { success: false, resultCode: -1, message: 'Expected BIND response' };
   }
-  offset += 2; // Skip tag and length
+  offset++; // Skip tag
+  offset += berLengthSize(data, offset); // Skip length (handles multi-byte BER lengths)
 
   // Read result code (ENUMERATED)
   if (data[offset] === 0x0A) {
@@ -578,12 +581,8 @@ export async function handleLDAPConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
 
       if (!result.success) {
         return new Response(JSON.stringify(result), {
@@ -695,10 +694,6 @@ export async function handleLDAPSearch(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
     const work = (async () => {
       const startTime = Date.now();
       const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
@@ -749,7 +744,7 @@ export async function handleLDAPSearch(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([work, timeoutPromise]);
+    const result = await raceWithTimeout(work, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({
@@ -802,10 +797,6 @@ export async function handleLDAPAdd(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
     const work = (async () => {
       const startTime = Date.now();
       const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
@@ -847,7 +838,7 @@ export async function handleLDAPAdd(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([work, timeoutPromise]);
+    const result = await raceWithTimeout(work, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({
@@ -903,10 +894,6 @@ export async function handleLDAPModify(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
     const work = (async () => {
       const startTime = Date.now();
       const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
@@ -953,7 +940,7 @@ export async function handleLDAPModify(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([work, timeoutPromise]);
+    const result = await raceWithTimeout(work, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({
@@ -1005,10 +992,6 @@ export async function handleLDAPDelete(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout)
-    );
-
     const work = (async () => {
       const startTime = Date.now();
       const { socket, reader, writer } = await ldapBindOnSocket(host, port, bindDn, password, timeout);
@@ -1040,7 +1023,7 @@ export async function handleLDAPDelete(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([work, timeoutPromise]);
+    const result = await raceWithTimeout(work, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
   } catch (error) {
     return new Response(JSON.stringify({
@@ -1292,10 +1275,6 @@ export async function handleLDAPPagedSearch(request: Request): Promise<Response>
       );
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
     const work = (async () => {
       const startTime = Date.now();
       const { socket, reader, writer } = await ldapBindOnSocket(
@@ -1365,7 +1344,7 @@ export async function handleLDAPPagedSearch(request: Request): Promise<Response>
       }
     })();
 
-    const result = await Promise.race([work, timeoutPromise]);
+    const result = await raceWithTimeout(work, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });

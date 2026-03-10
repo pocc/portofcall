@@ -446,11 +446,11 @@ export async function handleRshWebSocket(request: Request): Promise<Response> {
         const reader = socket.readable.getReader();
         const encoder = new TextEncoder();
 
-        // Perform RSH handshake
+        // Perform RSH handshake (strip null bytes to prevent framing injection)
         await writer.write(encoder.encode('\0'));
-        await writer.write(encoder.encode(`${localUser}\0`));
-        await writer.write(encoder.encode(`${remoteUser}\0`));
-        await writer.write(encoder.encode(`${command}\0`));
+        await writer.write(encoder.encode(`${localUser.replace(/\0/g, '')}\0`));
+        await writer.write(encoder.encode(`${remoteUser.replace(/\0/g, '')}\0`));
+        await writer.write(encoder.encode(`${command.replace(/\0/g, '')}\0`));
 
         // Forward TCP -> WebSocket (command output)
         (async () => {

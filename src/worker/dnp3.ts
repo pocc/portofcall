@@ -898,6 +898,15 @@ export async function handleDNP3SelectOperate(request: Request): Promise<Respons
       });
     }
 
+    // Validate objectIndex range — critical for industrial protocols to prevent
+    // operating on the wrong point due to silent truncation to uint8
+    if (!Number.isInteger(objectIndex) || objectIndex < 0 || objectIndex > 255) {
+      return new Response(JSON.stringify({ success: false, error: 'objectIndex must be an integer between 0 and 255' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
     // Validate supported object groups
     const supported = (objectGroup === 12 && objectVariation === 1) ||
                       (objectGroup === 41 && objectVariation === 2);

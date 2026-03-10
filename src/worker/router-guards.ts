@@ -3,81 +3,20 @@
  *
  * Before any protocol handler runs, the main router calls
  * `maybeBlockCloudflareTarget` to prevent loop-back attacks through the CDN.
- * Only protocols in ROUTER_CLOUDFLARE_GUARD_PROTOCOLS are checked.
+ * All /api/ protocols are checked by default; only CLOUDFLARE_GUARD_EXCLUSIONS are skipped.
  */
 
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 
-const ROUTER_CLOUDFLARE_GUARD_PROTOCOLS = new Set([
-  'activeusers',
-  'afp',
-  'ami',
-  'battlenet',
-  'beats',
-  'chargen',
-  'daytime',
-  'dicom',
-  'discard',
-  'dot',
-  'echo',
-  'elasticsearch',
-  'epmd',
-  'epp',
-  'etcd',
-  'finger',
-  'gemini',
-  'gopher',
-  'h323',
-  'hsrp',
-  'ident',
-  'ike',
-  'influxdb',
-  'informix',
-  'ipp',
-  'jabber-component',
-  'jsonrpc',
-  'l2tp',
-  'matrix',
-  'mdns',
-  'mgcp',
-  'mpd',
-  'msn',
-  'msrp',
-  'napster',
-  '9p',
-  'nntp',
-  'nsca',
-  'oscar',
-  'portmapper',
-  'qotd',
-  'radsec',
-  'rcon',
-  'realaudio',
-  'rip',
-  'sccp',
-  'sentinel',
-  'shoutcast',
-  'sip',
-  'sips',
-  'snpp',
-  'soap',
-  'socks4',
-  'spamd',
-  'stomp',
-  'svn',
-  'sybase',
-  'syslog',
-  'teamspeak',
-  'tftp',
-  'time',
-  'turn',
-  'varnish',
-  'ventrilo',
-  'x11',
-  'xmpp-s2s',
-  'xmpps2s',
-  'ymsg',
-  'zabbix',
+/**
+ * Protocols that are EXCLUDED from the router-level Cloudflare guard
+ * because they do their own Cloudflare check internally (or don't connect
+ * to user-supplied hosts at all).
+ *
+ * All other /api/ protocols are checked by default.
+ */
+const CLOUDFLARE_GUARD_EXCLUSIONS = new Set([
+  'checklist', // Internal KV endpoint, no external connection
 ]);
 
 function getProtocolFromApiPath(pathname: string): string | null {
@@ -94,12 +33,21 @@ function getProtocolFromApiPath(pathname: string): string | null {
 }
 
 function shouldRunRouterCloudflareGuard(pathname: string): boolean {
+  if (!pathname.startsWith('/api/')) {
+    return false;
+  }
+
   if (pathname === '/api/connect') {
     return true;
   }
 
   const protocol = getProtocolFromApiPath(pathname);
-  return protocol !== null && ROUTER_CLOUDFLARE_GUARD_PROTOCOLS.has(protocol);
+  if (!protocol) {
+    return false;
+  }
+
+  // Check all protocols by default, except explicitly excluded ones
+  return !CLOUDFLARE_GUARD_EXCLUSIONS.has(protocol);
 }
 
 export function normalizeHost(value: unknown): string | null {
@@ -158,10 +106,16 @@ export async function maybeBlockCloudflareTarget(request: Request, url: URL): Pr
     return null;
   }
 
+  // Check all host field names that protocol handlers use — must match the SSRF guard in index.ts
   const host = normalizeHost(url.searchParams.get('host') ?? url.searchParams.get('hostname'))
     ?? normalizeHost(body?.host)
     ?? normalizeHost(body?.hostname)
-    ?? normalizeHost(body?.server);
+    ?? normalizeHost(body?.server)
+    ?? normalizeHost(body?.target)
+    ?? normalizeHost(body?.address)
+    ?? normalizeHost(body?.destHost)
+    ?? normalizeHost(body?.targetHost)
+    ?? normalizeHost(body?.proxyHost);
 
   if (!host) {
     return null;

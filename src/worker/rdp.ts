@@ -32,6 +32,7 @@
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 import { BufferedReader } from './buffered-reader';
+import { raceWithTimeout, raceWithDeadline } from './timeout-utils';
 
 // RDP Negotiation Protocol constants
 const PROTOCOL_RDP = 0x00000000;
@@ -192,10 +193,6 @@ export async function handleRDPNegotiate(request: Request): Promise<Response> {
       });
     }
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
-
     const negotiatePromise = (async (): Promise<RDPNegotiateResult> => {
       const startTime = Date.now();
       const socket = connect(`${host}:${port}`);
@@ -324,7 +321,7 @@ export async function handleRDPNegotiate(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([negotiatePromise, timeoutPromise]);
+    const result = await raceWithTimeout(negotiatePromise, timeout, 'Connection timeout');
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -391,10 +388,6 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
         headers: { 'Content-Type': 'application/json' },
       });
     }
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
 
     const connectionPromise = (async () => {
       const startTime = Date.now();
@@ -490,7 +483,7 @@ export async function handleRDPConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -669,12 +662,9 @@ export async function handleRDPNLAProbe(request: Request): Promise<Response> {
       }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
-    const tp = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout));
-
     const probePromise = (async () => {
       const socket = connect(`${host}:${port}`, { secureTransport: 'starttls', allowHalfOpen: false });
-      await Promise.race([socket.opened, tp]);
+      await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
 
       let reader = socket.readable.getReader();
       const br = new BufferedReader(reader);
@@ -756,14 +746,10 @@ export async function handleRDPNLAProbe(request: Request): Promise<Response> {
         let totalRead = 0;
         const deadline = Date.now() + 6000;
         while (Date.now() < deadline && totalRead < 4096) {
-          const { value, done } = await Promise.race([
-            reader.read(),
-            new Promise<{ value: undefined; done: true }>(res =>
-              setTimeout(() => res({ value: undefined, done: true }), Math.max(100, deadline - Date.now()))),
-          ]);
-          if (done || !value) break;
-          chunks.push(value);
-          totalRead += value.length;
+          const readResult = await raceWithDeadline(reader.read(), Math.max(100, deadline - Date.now()));
+          if (readResult === null || readResult.done || !readResult.value) break;
+          chunks.push(readResult.value);
+          totalRead += readResult.value.length;
           if (totalRead >= 512) break; // NTLM challenge is always < 512 bytes
         }
 
@@ -810,7 +796,7 @@ export async function handleRDPNLAProbe(request: Request): Promise<Response> {
       }
     })();
 
-    const result = await Promise.race([probePromise, tp]);
+    const result = await raceWithTimeout(probePromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       status: 200, headers: { 'Content-Type': 'application/json' },
     });

@@ -279,15 +279,18 @@ async function readAJPResponse(
     if (code === AJP_RESPONSE_SEND_HEADERS) {
       // Format: [status_code 2B][status_msg AJP string][num_headers 2B][headers...]
       const dv = new DataView(packetData.buffer, packetData.byteOffset, packetData.byteLength);
+      if (packetData.length < 4) continue;
       statusCode = dv.getUint16(0, false);
       const msgLen = dv.getUint16(2, false);
+      if (4 + msgLen + 1 > packetData.length) continue;
       statusMessage = decoder.decode(packetData.slice(4, 4 + msgLen));
       let pos = 4 + msgLen + 1; // +1 for null terminator
 
+      if (pos + 2 > packetData.length) continue;
       const numHeaders = dv.getUint16(pos, false);
       pos += 2;
 
-      for (let i = 0; i < numHeaders && pos < packetData.length; i++) {
+      for (let i = 0; i < numHeaders && pos + 2 <= packetData.length; i++) {
         let headerName: string;
         // Check if first byte is 0xA0 (common header code)
         if (packetData[pos] === 0xA0) {
@@ -295,13 +298,17 @@ async function readAJPResponse(
           headerName = responseHeaderNames[code16] ?? `header-0x${code16.toString(16)}`;
           pos += 2;
         } else {
+          if (pos + 2 > packetData.length) break;
           const nameLen = dv.getUint16(pos, false);
           pos += 2;
+          if (pos + nameLen + 1 > packetData.length) break;
           headerName = decoder.decode(packetData.slice(pos, pos + nameLen));
           pos += nameLen + 1; // +1 null terminator
         }
+        if (pos + 2 > packetData.length) break;
         const valLen = dv.getUint16(pos, false);
         pos += 2;
+        if (pos + valLen + 1 > packetData.length) break;
         const headerVal = decoder.decode(packetData.slice(pos, pos + valLen));
         pos += valLen + 1; // +1 null terminator
         responseHeaders[headerName.toLowerCase()] = headerVal;

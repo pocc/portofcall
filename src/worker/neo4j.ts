@@ -20,6 +20,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout, raceWithDeadline } from './timeout-utils';
 
 // Bolt protocol magic number
 const BOLT_MAGIC = 0x6060B017;
@@ -134,6 +135,7 @@ function unpackValue(data: Uint8Array, offset: number): [unknown, number] {
   // Tiny string (0x80-0x8F)
   if (marker >= 0x80 && marker <= 0x8F) {
     const length = marker & 0x0F;
+    if (offset + 1 + length > data.length) return [null, data.length];
     const str = new TextDecoder().decode(data.slice(offset + 1, offset + 1 + length));
     return [str, offset + 1 + length];
   }
@@ -184,6 +186,7 @@ function unpackValue(data: Uint8Array, offset: number): [unknown, number] {
 
   // Float64 (0xC1)
   if (marker === 0xC1) {
+    if (offset + 9 > data.length) return [null, data.length];
     const view = new DataView(data.buffer, data.byteOffset + offset + 1, 8);
     return [view.getFloat64(0), offset + 9];
   }
@@ -196,24 +199,28 @@ function unpackValue(data: Uint8Array, offset: number): [unknown, number] {
 
   // Int8 (0xC8)
   if (marker === 0xC8) {
+    if (offset + 2 > data.length) return [null, data.length];
     const val = data[offset + 1];
     return [val > 127 ? val - 256 : val, offset + 2];
   }
 
   // Int16 (0xC9)
   if (marker === 0xC9) {
+    if (offset + 3 > data.length) return [null, data.length];
     const view = new DataView(data.buffer, data.byteOffset + offset + 1, 2);
     return [view.getInt16(0), offset + 3];
   }
 
   // Int32 (0xCA)
   if (marker === 0xCA) {
+    if (offset + 5 > data.length) return [null, data.length];
     const view = new DataView(data.buffer, data.byteOffset + offset + 1, 4);
     return [view.getInt32(0), offset + 5];
   }
 
   // Int64 (0xCB)
   if (marker === 0xCB) {
+    if (offset + 9 > data.length) return [null, data.length];
     const view = new DataView(data.buffer, data.byteOffset + offset + 1, 8);
     const bigVal = view.getBigInt64(0);
     // Use Number when the value fits safely, otherwise keep as BigInt
@@ -226,21 +233,26 @@ function unpackValue(data: Uint8Array, offset: number): [unknown, number] {
 
   // String8 (0xD0)
   if (marker === 0xD0) {
+    if (offset + 2 > data.length) return [null, data.length];
     const length = data[offset + 1];
+    if (offset + 2 + length > data.length) return [null, data.length];
     const str = new TextDecoder().decode(data.slice(offset + 2, offset + 2 + length));
     return [str, offset + 2 + length];
   }
 
   // String16 (0xD1)
   if (marker === 0xD1) {
+    if (offset + 3 > data.length) return [null, data.length];
     const view = new DataView(data.buffer, data.byteOffset + offset + 1, 2);
     const length = view.getUint16(0);
+    if (offset + 3 + length > data.length) return [null, data.length];
     const str = new TextDecoder().decode(data.slice(offset + 3, offset + 3 + length));
     return [str, offset + 3 + length];
   }
 
   // Map8 (0xD8)
   if (marker === 0xD8) {
+    if (offset + 2 > data.length) return [null, data.length];
     const count = data[offset + 1];
     const map: Record<string, unknown> = {};
     let pos = offset + 2;
@@ -340,11 +352,7 @@ export async function handleNeo4jConnect(request: Request): Promise<Response> {
     const startTime = Date.now();
     const socket = connect(`${host}:${port}`);
 
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Connection timeout')), timeout);
-    });
-
-    await Promise.race([socket.opened, timeoutPromise]);
+    await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
     const connectTime = Date.now() - startTime;
 
     const writer = socket.writable.getWriter();
@@ -364,7 +372,7 @@ export async function handleNeo4jConnect(request: Request): Promise<Response> {
     await writer.write(handshake);
 
     // Read server's chosen version (4 bytes)
-    const versionResult = await Promise.race([reader.read(), timeoutPromise]);
+    const versionResult = await raceWithTimeout(reader.read(), timeout, 'Connection timeout');
     if (versionResult.done || !versionResult.value) {
       throw new Error('Server closed connection during handshake');
     }
@@ -402,7 +410,7 @@ export async function handleNeo4jConnect(request: Request): Promise<Response> {
     let errorMessage = '';
 
     try {
-      const responseResult = await Promise.race([reader.read(), timeoutPromise]);
+      const responseResult = await raceWithTimeout(reader.read(), timeout, 'Connection timeout');
       if (responseResult.value && responseResult.value.length > 0) {
         const parsed = parseResponse(responseResult.value);
         if (parsed) {
@@ -477,11 +485,7 @@ async function openBoltSession(
 }> {
   const socket = connect(`${host}:${port}`);
 
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error('Connection timeout')), timeout);
-  });
-
-  await Promise.race([socket.opened, timeoutPromise]);
+  await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
 
   const writer = socket.writable.getWriter();
   const reader = socket.readable.getReader();
@@ -497,7 +501,7 @@ async function openBoltSession(
 
   await writer.write(handshake);
 
-  const versionResult = await Promise.race([reader.read(), timeoutPromise]);
+  const versionResult = await raceWithTimeout(reader.read(), timeout, 'Connection timeout');
   if (versionResult.done || !versionResult.value) {
     throw new Error('Server closed connection during handshake');
   }
@@ -542,7 +546,7 @@ async function openBoltSession(
 
   await writer.write(buildChunkedMessage(helloMessage));
 
-  const helloResult = await Promise.race([reader.read(), timeoutPromise]);
+  const helloResult = await raceWithTimeout(reader.read(), timeout, 'Connection timeout');
   if (!helloResult.value || helloResult.value.length === 0) {
     throw new Error('No response to HELLO');
   }
@@ -613,13 +617,8 @@ async function readBoltMessages(
   // We need at least one SUCCESS/FAILURE to finish
   while (Date.now() < deadline) {
     const remaining = deadline - Date.now();
-    const readPromise = reader.read();
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Read timeout')), remaining);
-    });
-
-    const result = await Promise.race([readPromise, timeoutPromise]);
-    if (result.done) break;
+    const result = await raceWithDeadline(reader.read(), remaining);
+    if (result === null || result.done) break;
     if (result.value && result.value.length > 0) {
       append(result.value);
       consumeMessages();
@@ -674,6 +673,16 @@ export async function handleNeo4jQuery(request: Request): Promise<Response> {
         status: 400,
         headers: { 'Content-Type': 'application/json' },
       });
+    }
+
+    // Block destructive Cypher queries — only allow read-only operations
+    const BLOCKED_CYPHER_PREFIXES = /^\s*(CREATE|MERGE|SET|DELETE|DETACH|DROP|REMOVE|FOREACH|LOAD\s+CSV|CALL\s*\{)/i;
+    const queryWithoutStrings = query.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+    if (BLOCKED_CYPHER_PREFIXES.test(queryWithoutStrings)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only Cypher queries are allowed (MATCH, RETURN, CALL, EXPLAIN, PROFILE)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
     }
 
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
@@ -776,7 +785,7 @@ export async function handleNeo4jQuery(request: Request): Promise<Response> {
 
       if (msg.tag === 0x71) { // RECORD
         const recordData = msg.fields[0];
-        if (Array.isArray(recordData)) {
+        if (Array.isArray(recordData) && rows.length < 10000) {
           rows.push(recordData);
         }
         continue;
@@ -916,6 +925,16 @@ export async function handleNeo4jQueryParams(request: Request): Promise<Response
       });
     }
 
+    // Block destructive Cypher queries — only allow read-only operations
+    const BLOCKED_CYPHER_PREFIXES = /^\s*(CREATE|MERGE|SET|DELETE|DETACH|DROP|REMOVE|FOREACH|LOAD\s+CSV|CALL\s*\{)/i;
+    const queryWithoutStrings = query.replace(/'[^']*'/g, '').replace(/"[^"]*"/g, '');
+    if (BLOCKED_CYPHER_PREFIXES.test(queryWithoutStrings)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Only read-only Cypher queries are allowed (MATCH, RETURN, CALL, EXPLAIN, PROFILE)',
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
         status: 400,
@@ -991,7 +1010,7 @@ export async function handleNeo4jQueryParams(request: Request): Promise<Response
       }
       if (msg.tag === 0x71) {
         const recordData = msg.fields[0];
-        if (Array.isArray(recordData)) rows.push(recordData);
+        if (Array.isArray(recordData) && rows.length < 10000) rows.push(recordData);
         continue;
       }
       if (msg.tag === 0x70 && foundRunSuccess) {

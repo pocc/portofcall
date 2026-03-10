@@ -202,7 +202,7 @@ function decodeBSON(data: Uint8Array, startOffset: number = 0, depth: number = 0
  * Recursive BSON field encoder supporting null, nested objects, and arrays.
  * Used by encodeBSONFull for user-supplied documents.
  */
-function encodeField(parts: number[], keyBytes: Uint8Array, value: unknown): void {
+function encodeField(parts: number[], keyBytes: Uint8Array, value: unknown, depth = 0): void {
   if (value === null || value === undefined) {
     parts.push(BSON_NULL);
     parts.push(...keyBytes, 0);
@@ -231,14 +231,16 @@ function encodeField(parts: number[], keyBytes: Uint8Array, value: unknown): voi
     parts.push(...new Uint8Array(lenBuf));
     parts.push(...strBytes, 0);
   } else if (Array.isArray(value)) {
+    if (depth >= 10) throw new Error('BSON encoding exceeds maximum nesting depth (10)');
     parts.push(BSON_ARRAY);
     parts.push(...keyBytes, 0);
-    const arrDoc = encodeBSONFull(Object.fromEntries(value.map((v, i) => [String(i), v])));
+    const arrDoc = encodeBSONFull(Object.fromEntries(value.map((v, i) => [String(i), v])), depth + 1);
     parts.push(...arrDoc);
   } else if (typeof value === 'object') {
+    if (depth >= 10) throw new Error('BSON encoding exceeds maximum nesting depth (10)');
     parts.push(BSON_DOCUMENT);
     parts.push(...keyBytes, 0);
-    const subdoc = encodeBSONFull(value as Record<string, unknown>);
+    const subdoc = encodeBSONFull(value as Record<string, unknown>, depth + 1);
     parts.push(...subdoc);
   }
 }
@@ -247,10 +249,10 @@ function encodeField(parts: number[], keyBytes: Uint8Array, value: unknown): voi
  * Full BSON encoder supporting null, nested objects, and arrays.
  * Use this for user-supplied documents (filter, insert docs, etc.).
  */
-function encodeBSONFull(doc: Record<string, unknown>): Uint8Array {
+function encodeBSONFull(doc: Record<string, unknown>, depth = 0): Uint8Array {
   const parts: number[] = [];
   for (const [key, value] of Object.entries(doc)) {
-    encodeField(parts, new TextEncoder().encode(key), value);
+    encodeField(parts, new TextEncoder().encode(key), value, depth);
   }
   const totalSize = 4 + parts.length + 1;
   const result = new Uint8Array(totalSize);
@@ -345,11 +347,12 @@ async function readFullResponse(
     throw new Error(`Incomplete MongoDB response: expected ${expectedLength} bytes, got ${totalRead}`);
   }
 
-  const fullResponse = new Uint8Array(totalRead);
+  const fullResponse = new Uint8Array(expectedLength);
   let offset = 0;
   for (const chunk of chunks) {
-    fullResponse.set(chunk, offset);
-    offset += chunk.length;
+    const bytesToCopy = Math.min(chunk.length, expectedLength - offset);
+    fullResponse.set(chunk.subarray(0, bytesToCopy), offset);
+    offset += bytesToCopy;
   }
 
   return fullResponse;

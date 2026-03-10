@@ -357,6 +357,8 @@ function parseMetadataResponse(view: DataView): {
   const decoder = new TextDecoder();
   let offset = 0;
 
+  if (view.byteLength < 8) throw new Error('Malformed Metadata response: too short for header');
+
   // Correlation ID
   const correlationId = view.getInt32(offset);
   offset += 4;
@@ -369,7 +371,7 @@ function parseMetadataResponse(view: DataView): {
   }
 
   const brokers: Array<{ nodeId: number; host: string; port: number }> = [];
-  for (let i = 0; i < brokerCount && offset + 4 <= view.byteLength; i++) {
+  for (let i = 0; i < brokerCount && offset + 10 <= view.byteLength; i++) {
     const nodeId = view.getInt32(offset);
     offset += 4;
 
@@ -388,6 +390,7 @@ function parseMetadataResponse(view: DataView): {
   }
 
   // Topics array
+  if (offset + 4 > view.byteLength) throw new Error('Malformed Metadata response: truncated before topic count');
   const topicCount = view.getInt32(offset);
   offset += 4;
   if (topicCount < 0 || topicCount > 10000) {
@@ -406,7 +409,7 @@ function parseMetadataResponse(view: DataView): {
     }>;
   }> = [];
 
-  for (let t = 0; t < topicCount && offset + 2 <= view.byteLength; t++) {
+  for (let t = 0; t < topicCount && offset + 8 <= view.byteLength; t++) {
     const topicErrorCode = view.getInt16(offset);
     offset += 2;
 
@@ -421,6 +424,7 @@ function parseMetadataResponse(view: DataView): {
     offset += topicNameLen;
 
     // Partitions
+    if (offset + 4 > view.byteLength) break;
     const partitionCount = view.getInt32(offset);
     offset += 4;
     if (partitionCount < 0 || partitionCount > 10000) {
@@ -435,7 +439,7 @@ function parseMetadataResponse(view: DataView): {
       isr: number[];
     }> = [];
 
-    for (let p = 0; p < partitionCount && offset + 2 <= view.byteLength; p++) {
+    for (let p = 0; p < partitionCount && offset + 22 <= view.byteLength; p++) {
       const partErrorCode = view.getInt16(offset);
       offset += 2;
 
@@ -458,6 +462,7 @@ function parseMetadataResponse(view: DataView): {
       }
 
       // ISR
+      if (offset + 4 > view.byteLength) break;
       const isrCount = view.getInt32(offset);
       offset += 4;
       if (isrCount < 0 || isrCount > 10000) {
@@ -748,6 +753,7 @@ function parseProduceResponse(view: DataView): {
   const decoder = new TextDecoder();
   let offset = 0;
 
+  if (view.byteLength < 12) throw new Error('Malformed Produce response: too short for header');
   const correlationId = view.getInt32(offset); offset += 4;
   const throttleTimeMs = view.getInt32(offset); offset += 4;
 
@@ -765,8 +771,9 @@ function parseProduceResponse(view: DataView): {
       offset += nameLen;
     }
 
+    if (offset + 4 > view.byteLength) break;
     const partCount = view.getInt32(offset); offset += 4;
-    for (let p = 0; p < partCount && offset + 2 <= view.byteLength; p++) {
+    for (let p = 0; p < partCount && offset + 6 <= view.byteLength; p++) {
       partition = view.getInt32(offset); offset += 4;
       errorCode = view.getInt16(offset); offset += 2;
       if (offset + 8 <= view.byteLength) { baseOffset = view.getBigInt64(offset); offset += 8; }
@@ -1079,8 +1086,7 @@ function parseRecordBatches(data: Uint8Array, maxRecords: number): KafkaRecord[]
   const dv = new DataView(data.buffer, data.byteOffset, data.byteLength);
   let pos = 0;
 
-  while (pos + 12 < data.length && records.length < maxRecords) {
-    if (pos + 12 > data.length) break;
+  while (pos + 12 <= data.length && records.length < maxRecords) {
     const baseOffset = dv.getBigInt64(pos); pos += 8;
     const batchLength = dv.getInt32(pos); pos += 4;
     if (batchLength <= 0 || pos + batchLength > data.length) break;
@@ -1209,6 +1215,7 @@ function parseFetchResponse(view: DataView): {
   const dec = new TextDecoder();
   let off = 0;
 
+  if (view.byteLength < 12) throw new Error('Malformed Fetch response: too short for header');
   const correlationId = view.getInt32(off); off += 4;
   const throttleTimeMs = view.getInt32(off); off += 4;
   const topicCount = view.getInt32(off); off += 4;
@@ -1221,7 +1228,7 @@ function parseFetchResponse(view: DataView): {
   let lastStableOffset = BigInt(0);
   let records: KafkaRecord[] = [];
 
-  for (let t = 0; t < topicCount && off + 2 < view.byteLength; t++) {
+  for (let t = 0; t < topicCount && off + 2 <= view.byteLength; t++) {
     const nameLen = view.getInt16(off); off += 2;
     let name = '';
     if (nameLen >= 0 && off + nameLen <= view.byteLength) {
@@ -1230,8 +1237,9 @@ function parseFetchResponse(view: DataView): {
     }
     if (t === 0) topicName = name;
 
+    if (off + 4 > view.byteLength) break;
     const partCount = view.getInt32(off); off += 4;
-    for (let p = 0; p < partCount && off + 4 < view.byteLength; p++) {
+    for (let p = 0; p < partCount && off + 30 <= view.byteLength; p++) {
       const partId = view.getInt32(off); off += 4;
       const ec = view.getInt16(off); off += 2;
       const hw = view.getBigInt64(off); off += 8;
@@ -1242,6 +1250,7 @@ function parseFetchResponse(view: DataView): {
       if (abortedCount > 0) off += abortedCount * 16;
 
       // record_set: INT32 size prefix
+      if (off + 4 > view.byteLength) break;
       const rsSize = view.getInt32(off); off += 4;
       let partRecords: KafkaRecord[] = [];
       if (rsSize > 0 && off + rsSize <= view.byteLength) {
@@ -1417,6 +1426,7 @@ function parseListGroupsResponse(view: DataView): {
   groups: Array<{ groupId: string; protocolType: string }>;
 } {
   let offset = 0;
+  if (view.byteLength < 10) throw new Error('Malformed ListGroups response: too short for header');
   const correlationId = view.getInt32(offset); offset += 4;
   const errorCode = view.getInt16(offset);     offset += 2;
   const groupCount = view.getInt32(offset);    offset += 4;
@@ -1472,6 +1482,7 @@ function parseDescribeGroupsResponse(view: DataView): {
   }>;
 } {
   let off = 0;
+  if (view.byteLength < 8) throw new Error('Malformed DescribeGroups response: too short for header');
   const correlationId = view.getInt32(off); off += 4;
   const groupCount    = view.getInt32(off); off += 4;
   if (groupCount < 0 || groupCount > 10000) throw new Error(`Invalid Kafka group array length: ${groupCount}`);

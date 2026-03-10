@@ -60,6 +60,30 @@ if (!timerPatchGlobal[TIMER_PATCH_FLAG]) {
     }
     nativeClearTimeout(timeoutHandle);
   }) as typeof clearTimeout;
+
+  // Patch setInterval/clearInterval to prevent leaked recurring timers
+  const nativeSetInterval = globalThis.setInterval.bind(globalThis);
+  const nativeClearInterval = globalThis.clearInterval.bind(globalThis);
+
+  globalThis.setInterval = ((handler: TimerHandler, interval?: number, ...args: unknown[]) => {
+    const store = timerStore.getStore();
+
+    if (!store) {
+      return nativeSetInterval(handler, interval, ...(args as []));
+    }
+
+    const intervalHandle = nativeSetInterval(handler, interval, ...(args as [])) as unknown as TimeoutHandle;
+    store.timers.add(intervalHandle);
+    return intervalHandle;
+  }) as typeof setInterval;
+
+  globalThis.clearInterval = ((intervalHandle?: TimeoutHandle): void => {
+    const store = timerStore.getStore();
+    if (store && intervalHandle !== undefined) {
+      store.timers.delete(intervalHandle);
+    }
+    nativeClearInterval(intervalHandle);
+  }) as typeof clearInterval;
 }
 
 export async function withRequestTimeoutCleanup<T>(operation: () => Promise<T>): Promise<T> {

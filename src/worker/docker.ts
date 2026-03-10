@@ -65,58 +65,61 @@ async function sendHttpRequest(
     setTimeout(() => reject(new Error('Connection timeout')), timeout);
   });
 
-  await Promise.race([socket.opened, timeoutPromise]);
-
-  const writer = socket.writable.getWriter();
-  const encoder = new TextEncoder();
-
-  // Sanitize inputs to prevent CRLF injection / request smuggling
-  const safePath = path.replace(/[\r\n]/g, '');
-  const safeHost = host.replace(/[\r\n]/g, '');
-
-  // Build HTTP/1.1 request
-  let request = `${method} ${safePath} HTTP/1.1\r\n`;
-  request += `Host: ${safeHost}:${port}\r\n`;
-  request += `Accept: application/json\r\n`;
-  request += `Connection: close\r\n`;
-  request += `User-Agent: PortOfCall/1.0\r\n`;
-
-  if (body) {
-    const bodyBytes = encoder.encode(body);
-    request += `Content-Type: application/json\r\n`;
-    request += `Content-Length: ${bodyBytes.length}\r\n`;
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-    await writer.write(bodyBytes);
-  } else {
-    request += `\r\n`;
-    await writer.write(encoder.encode(request));
-  }
-
-  writer.releaseLock();
-
-  // Read response
-  const reader = socket.readable.getReader();
-  const decoder = new TextDecoder();
   let response = '';
-  const maxSize = 512000;
+  try {
+    await Promise.race([socket.opened, timeoutPromise]);
 
-  while (response.length < maxSize) {
-    const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    if (value) {
-      const chunk = decoder.decode(value, { stream: true });
-      if (response.length + chunk.length > maxSize) {
-        response += chunk.substring(0, maxSize - response.length);
-        break;
-      }
-      response += chunk;
+    const writer = socket.writable.getWriter();
+    const encoder = new TextEncoder();
+
+    // Sanitize inputs to prevent CRLF injection / request smuggling
+    const safePath = path.replace(/[\r\n]/g, '');
+    const safeHost = host.replace(/[\r\n]/g, '');
+
+    // Build HTTP/1.1 request
+    let request = `${method} ${safePath} HTTP/1.1\r\n`;
+    request += `Host: ${safeHost}:${port}\r\n`;
+    request += `Accept: application/json\r\n`;
+    request += `Connection: close\r\n`;
+    request += `User-Agent: PortOfCall/1.0\r\n`;
+
+    if (body) {
+      const bodyBytes = encoder.encode(body);
+      request += `Content-Type: application/json\r\n`;
+      request += `Content-Length: ${bodyBytes.length}\r\n`;
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
+      await writer.write(bodyBytes);
+    } else {
+      request += `\r\n`;
+      await writer.write(encoder.encode(request));
     }
-  }
-  response += decoder.decode(new Uint8Array(0)); // Flush remaining multi-byte sequences
 
-  reader.releaseLock();
-  socket.close();
+    writer.releaseLock();
+
+    // Read response
+    const reader = socket.readable.getReader();
+    const decoder = new TextDecoder();
+    const maxSize = 512000;
+
+    while (response.length < maxSize) {
+      const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+      if (done) break;
+      if (value) {
+        const chunk = decoder.decode(value, { stream: true });
+        if (response.length + chunk.length > maxSize) {
+          response += chunk.substring(0, maxSize - response.length);
+          break;
+        }
+        response += chunk;
+      }
+    }
+    response += decoder.decode(new Uint8Array(0)); // Flush remaining multi-byte sequences
+
+    reader.releaseLock();
+  } finally {
+    try { socket.close(); } catch { /* already closed */ }
+  }
 
   // Parse HTTP response
   const headerEnd = response.indexOf('\r\n\r\n');
@@ -952,32 +955,36 @@ export async function handleDockerContainerLogs(request: Request): Promise<Respo
       const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Connection timeout')), timeout),
       );
-      await Promise.race([socket.opened, timeoutPromise]);
 
-      const writer = socket.writable.getWriter();
-      const encoder = new TextEncoder();
-      const safeH = host.replace(/[\r\n]/g, '');
-      const safePStr = pathStr.replace(/[\r\n]/g, '');
-      const httpReq =
-        `GET ${safePStr} HTTP/1.1\r\n` +
-        `Host: ${safeH}:${effectivePort}\r\n` +
-        `Accept: application/octet-stream\r\n` +
-        `Connection: close\r\n` +
-        `User-Agent: PortOfCall/1.0\r\n` +
-        `\r\n`;
-      await writer.write(encoder.encode(httpReq));
-      writer.releaseLock();
-
-      const reader = socket.readable.getReader();
       const chunks: Uint8Array[] = [];
       let totalLen = 0;
-      while (totalLen < 1048576) {
-        const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
-        if (done) break;
-        if (value) { chunks.push(value); totalLen += value.length; }
+      try {
+        await Promise.race([socket.opened, timeoutPromise]);
+
+        const writer = socket.writable.getWriter();
+        const encoder = new TextEncoder();
+        const safeH = host.replace(/[\r\n]/g, '');
+        const safePStr = pathStr.replace(/[\r\n]/g, '');
+        const httpReq =
+          `GET ${safePStr} HTTP/1.1\r\n` +
+          `Host: ${safeH}:${effectivePort}\r\n` +
+          `Accept: application/octet-stream\r\n` +
+          `Connection: close\r\n` +
+          `User-Agent: PortOfCall/1.0\r\n` +
+          `\r\n`;
+        await writer.write(encoder.encode(httpReq));
+        writer.releaseLock();
+
+        const reader = socket.readable.getReader();
+        while (totalLen < 1048576) {
+          const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
+          if (done) break;
+          if (value) { chunks.push(value); totalLen += value.length; }
+        }
+        reader.releaseLock();
+      } finally {
+        try { socket.close(); } catch { /* already closed */ }
       }
-      reader.releaseLock();
-      socket.close();
 
       // Combine all chunks
       const combined = new Uint8Array(totalLen);
@@ -1239,35 +1246,39 @@ export async function handleDockerExec(request: Request): Promise<Response> {
       const execTimeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Connection timeout')), timeout),
       );
-      await Promise.race([execSocket.opened, execTimeoutPromise]);
 
-      const execWriter = execSocket.writable.getWriter();
-      const execBodyBytes = execEncoder.encode(execStartBody);
-      const safeExecHost = host.replace(/[\r\n]/g, '');
-      const safeExecPath = execStartPath.replace(/[\r\n]/g, '');
-      const execHttpReq =
-        `POST ${safeExecPath} HTTP/1.1\r\n` +
-        `Host: ${safeExecHost}:${effectivePort}\r\n` +
-        `Content-Type: application/json\r\n` +
-        `Content-Length: ${execBodyBytes.length}\r\n` +
-        `Accept: application/octet-stream\r\n` +
-        `Connection: close\r\n` +
-        `User-Agent: PortOfCall/1.0\r\n` +
-        `\r\n`;
-      await execWriter.write(execEncoder.encode(execHttpReq));
-      await execWriter.write(execBodyBytes);
-      execWriter.releaseLock();
-
-      const execReader = execSocket.readable.getReader();
       const execChunks: Uint8Array[] = [];
       let execTotalLen = 0;
-      while (execTotalLen < 1048576) {
-        const { value, done } = await Promise.race([execReader.read(), execTimeoutPromise]);
-        if (done) break;
-        if (value) { execChunks.push(value); execTotalLen += value.length; }
+      try {
+        await Promise.race([execSocket.opened, execTimeoutPromise]);
+
+        const execWriter = execSocket.writable.getWriter();
+        const execBodyBytes = execEncoder.encode(execStartBody);
+        const safeExecHost = host.replace(/[\r\n]/g, '');
+        const safeExecPath = execStartPath.replace(/[\r\n]/g, '');
+        const execHttpReq =
+          `POST ${safeExecPath} HTTP/1.1\r\n` +
+          `Host: ${safeExecHost}:${effectivePort}\r\n` +
+          `Content-Type: application/json\r\n` +
+          `Content-Length: ${execBodyBytes.length}\r\n` +
+          `Accept: application/octet-stream\r\n` +
+          `Connection: close\r\n` +
+          `User-Agent: PortOfCall/1.0\r\n` +
+          `\r\n`;
+        await execWriter.write(execEncoder.encode(execHttpReq));
+        await execWriter.write(execBodyBytes);
+        execWriter.releaseLock();
+
+        const execReader = execSocket.readable.getReader();
+        while (execTotalLen < 1048576) {
+          const { value, done } = await Promise.race([execReader.read(), execTimeoutPromise]);
+          if (done) break;
+          if (value) { execChunks.push(value); execTotalLen += value.length; }
+        }
+        execReader.releaseLock();
+      } finally {
+        try { execSocket.close(); } catch { /* already closed */ }
       }
-      execReader.releaseLock();
-      execSocket.close();
 
       const execCombined = new Uint8Array(execTotalLen);
       let execOff = 0;

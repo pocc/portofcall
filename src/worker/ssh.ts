@@ -4,6 +4,7 @@
  */
 
 import { connect } from 'cloudflare:sockets';
+import { raceWithTimeout, raceWithDeadline } from './timeout-utils';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
 export { handleSSHTerminal } from './ssh2-impl';
 import { openSSHSubsystem, type SSHTerminalOptions } from './ssh2-impl';
@@ -111,10 +112,7 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
       // Test connection
       const socket = connect(`${host}:${port}`);
-      await Promise.race([
-        socket.opened,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 10000)),
-      ]);
+      await raceWithTimeout(socket.opened, 10000, 'Connection timeout');
 
       // Read SSH banner
       const reader = socket.readable.getReader();
@@ -189,10 +187,7 @@ export async function handleSSHConnect(request: Request): Promise<Response> {
 
     // Connect to SSH server
     const socket = connect(`${host}:${port}`);
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), 30000)),
-    ]);
+    await raceWithTimeout(socket.opened, 30000, 'Connection timeout');
 
     // Wait for the first message containing credentials & connection options.
     // Echo back non-sensitive options only, then start bidirectional piping.
@@ -406,10 +401,7 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
 
     // Open TCP socket
     socket = connect(`${host}:${port}`);
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
+    await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
 
     // Build SSH options
     const sshOpts: SSHTerminalOptions = {
@@ -438,14 +430,7 @@ export async function handleSSHExecute(request: Request): Promise<Response> {
       }
 
       // Race between readChannelData and timeout
-      const timeoutPromise = new Promise<null>((resolve) =>
-        setTimeout(() => resolve(null), remaining)
-      );
-
-      const chunk = await Promise.race([
-        subsystem.readChannelData(),
-        timeoutPromise,
-      ]);
+      const chunk = await raceWithDeadline(subsystem.readChannelData(), remaining);
 
       if (chunk === null) {
         break; // EOF or timeout
@@ -755,11 +740,9 @@ async function sshReadAtLeast(
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error('SSH read timeout');
 
-    const timerPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
-      setTimeout(() => resolve({ done: true, value: undefined }), remaining)
-    );
-    const { done, value } = await Promise.race([reader.read(), timerPromise]);
-    if (done || !value) throw new Error('SSH connection closed');
+    const readResult = await raceWithDeadline(reader.read(), remaining);
+    if (!readResult || readResult.done || !readResult.value) throw new Error('SSH connection closed');
+    const value = readResult.value;
     chunks.push(value);
     total += value.length;
   }
@@ -937,10 +920,7 @@ export async function handleSSHKeyExchange(request: Request): Promise<Response> 
     }
 
     socket = connect(`${host}:${port}`);
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
+    await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
 
     reader = socket.readable.getReader();
     writer = socket.writable.getWriter();
@@ -1046,10 +1026,7 @@ export async function handleSSHAuth(request: Request): Promise<Response> {
     }
 
     socket = connect(`${host}:${port}`);
-    await Promise.race([
-      socket.opened,
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Connection timeout')), timeout)),
-    ]);
+    await raceWithTimeout(socket.opened, timeout, 'Connection timeout');
 
     reader = socket.readable.getReader();
     writer = socket.writable.getWriter();

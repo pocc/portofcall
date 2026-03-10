@@ -166,11 +166,15 @@ export async function checkIfCloudflare(host: string): Promise<{
       if (aaaaData.Answer) allIPs.push(...aaaaData.Answer.filter(a => a.type === 28).map(a => a.data));
     }
 
+    // If both DoH lookups failed (non-ok), we can't make a determination — fail open
+    // with a distinct error so callers can decide. If at least one succeeded but returned
+    // no records, the host genuinely has no DNS.
+    const bothFailed = !aResponse.ok && !aaaaResponse.ok;
     if (allIPs.length === 0) {
       return {
         isCloudflare: false,
         ip: null,
-        error: 'No DNS records found',
+        error: bothFailed ? 'DNS lookup failed (DoH unavailable)' : 'No DNS records found',
       };
     }
 

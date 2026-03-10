@@ -380,8 +380,14 @@ export async function handleEtcdQuery(request: Request): Promise<Response> {
       });
     }
 
-    // Ensure path starts with /
+    // Ensure path starts with / and block path traversal
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    if (normalizedPath.includes('..')) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Path traversal is not allowed',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
 
     const authHeader = buildAuthHeader(username, password);
     const start = Date.now();

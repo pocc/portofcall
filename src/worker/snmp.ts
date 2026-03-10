@@ -95,7 +95,7 @@ function encodeInteger(value: number): Uint8Array {
   if (n >= 0) {
     do {
       bytes.unshift(n & 0xff);
-      n >>= 8;
+      n = Math.floor(n / 256);
     } while (n > 0);
 
     // Add leading zero if high bit is set (to keep it positive)
@@ -103,10 +103,10 @@ function encodeInteger(value: number): Uint8Array {
       bytes.unshift(0);
     }
   } else {
-    // Negative number handling
+    // Negative number handling: use arithmetic shift to avoid 32-bit truncation
     do {
       bytes.unshift(n & 0xff);
-      n >>= 8;
+      n = Math.floor(n / 256);
     } while (n < -1 || (n === -1 && !(bytes[0] & 0x80)));
   }
 
@@ -156,16 +156,16 @@ function encodeOID(oid: string): Uint8Array {
     if (value < 128) {
       bytes.push(value);
     } else {
-      // Encode as variable-length quantity
+      // Encode as variable-length quantity (use Math.floor to avoid 32-bit truncation)
       const encoded: number[] = [];
       encoded.unshift(value & 0x7f);
-      value = (value >>> 7);
+      value = Math.floor(value / 128);
 
       let iterations = 0;
       while (value > 0) {
         if (++iterations > 32) throw new Error('OID component too large');
-        encoded.unshift((value & 0x7F) | (encoded.length > 0 ? 0x80 : 0));
-        value = (value >>> 7);
+        encoded.unshift((value & 0x7F) | 0x80);
+        value = Math.floor(value / 128);
       }
 
       bytes.push(...encoded);

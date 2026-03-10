@@ -42,12 +42,17 @@ async function readSMTPResponse(
   timeoutMs: number
 ): Promise<string> {
   const readPromise = (async () => {
+    const decoder = new TextDecoder();
+    const MAX_RESPONSE_SIZE = 512 * 1024; // 512 KB
     let response = '';
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      const chunk = new TextDecoder().decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       response += chunk;
+      if (response.length > MAX_RESPONSE_SIZE) {
+        throw new Error('SMTP response too large (exceeds 512 KB)');
+      }
       if (response.match(/\d{3}\s.*\r\n$/)) break;
     }
     return response;
@@ -258,10 +263,25 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
     if (!options.to) missing.push('to');
     if (!options.subject) missing.push('subject');
     if (!options.body) missing.push('body');
+    if (!options.username) missing.push('username');
+    if (!options.password) missing.push('password');
 
     if (missing.length > 0) {
       return new Response(JSON.stringify({
         error: `Missing required parameters: ${missing.join(', ')}`,
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Validate email addresses to prevent SMTP command injection
+    const EMAIL_RE = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+$/;
+    if (!EMAIL_RE.test(options.from!)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid "from" email address',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (!EMAIL_RE.test(options.to!)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid "to" email address',
       }), { status: 400, headers: { 'Content-Type': 'application/json' } });
     }
 
@@ -387,7 +407,7 @@ export async function handleSubmissionSend(request: Request): Promise<Response> 
         // RFC 5321 §4.5.2: Dot-stuff the body — any line starting with "."
         // must have an extra "." prepended to avoid being interpreted as the
         // end-of-data marker (".\r\n").
-        const dotStuffedBody = messageBody.replace(/(^|\r\n)\./g, '$1..');
+        const dotStuffedBody = messageBody.replace(/(^|\r\n)\./gm, '$1..');
         const finalContent = dotStuffedBody + '\r\n.\r\n';
 
         await writer.write(new TextEncoder().encode(finalContent));

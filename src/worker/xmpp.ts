@@ -19,6 +19,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -42,10 +43,6 @@ async function readWithTimeout(
   reader: ReadableStreamDefaultReader<Uint8Array>,
   timeoutMs: number,
 ): Promise<string> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs),
-  );
-
   const readPromise = (async () => {
     let buffer = '';
     // Read chunks until we have enough XML to parse
@@ -75,7 +72,7 @@ async function readWithTimeout(
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'Read timeout');
 }
 
 /**
@@ -288,11 +285,7 @@ export async function handleXMPPConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json' },
     });
@@ -315,10 +308,6 @@ async function readUntil(
   patterns: string[],
   timeoutMs: number,
 ): Promise<string> {
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Read timeout')), timeoutMs),
-  );
-
   const readPromise = (async () => {
     let buffer = '';
     while (true) {
@@ -331,7 +320,7 @@ async function readUntil(
     return buffer;
   })();
 
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'Read timeout');
 }
 
 /**
@@ -559,11 +548,7 @@ export async function handleXMPPLogin(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
 
   } catch (error) {
@@ -712,11 +697,7 @@ export async function handleXMPPRoster(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
 
   } catch (error) {
@@ -864,11 +845,7 @@ export async function handleXMPPMessage(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeout),
-    );
-
-    const result = await Promise.race([connectionPromise, timeoutPromise]);
+    const result = await raceWithTimeout(connectionPromise, timeout, 'Connection timeout');
     return new Response(JSON.stringify(result), { headers: { 'Content-Type': 'application/json' } });
 
   } catch (error) {

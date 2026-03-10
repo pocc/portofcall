@@ -427,89 +427,90 @@ export async function handleRIPRequest(request: Request): Promise<Response> {
       const ripRequest = buildRIPRequest(version, networkAddress);
 
       const writer = socket.writable.getWriter();
-      await writer.write(ripRequest);
-      writer.releaseLock();
+      try {
+        await writer.write(ripRequest);
+      } finally {
+        try { writer.releaseLock(); } catch { /* already released */ }
+      }
 
       const reader = socket.readable.getReader();
 
-      const readResult = await Promise.race([
-        reader.read(),
-        timeoutPromise,
-      ]);
-      if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+      try {
+        const readResult = await Promise.race([
+          reader.read(),
+          timeoutPromise,
+        ]);
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
 
-      const { value, done } = readResult;
+        const { value, done } = readResult;
 
-      if (done || !value) {
-        reader.releaseLock();
-        socket.close();
+        if (done || !value) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: 'No response from RIP router',
+          } satisfies RIPResponse), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const response = parseRIPMessage(Buffer.from(value));
+
+        if (!response) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            error: 'Invalid RIP response format',
+          } satisfies RIPResponse), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
+        const rtt = Date.now() - start;
+
+        const commandName = response.command === RIPCommand.Response ? 'Response' : 'Request';
+
+        if (response.command !== RIPCommand.Response) {
+          return new Response(JSON.stringify({
+            success: false,
+            host,
+            port,
+            version: response.version,
+            command: commandName,
+            error: `Unexpected RIP command: ${commandName} (expected Response)`,
+            rtt,
+          } satisfies RIPResponse), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+
         return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: 'No response from RIP router',
-        } satisfies RIPResponse), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const response = parseRIPMessage(Buffer.from(value));
-
-      if (!response) {
-        reader.releaseLock();
-        socket.close();
-        return new Response(JSON.stringify({
-          success: false,
-          host,
-          port,
-          error: 'Invalid RIP response format',
-        } satisfies RIPResponse), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      const rtt = Date.now() - start;
-
-      reader.releaseLock();
-      socket.close();
-
-      const commandName = response.command === RIPCommand.Response ? 'Response' : 'Request';
-
-      if (response.command !== RIPCommand.Response) {
-        return new Response(JSON.stringify({
-          success: false,
+          success: true,
           host,
           port,
           version: response.version,
           command: commandName,
-          error: `Unexpected RIP command: ${commandName} (expected Response)`,
+          routes: response.routes,
+          routeCount: response.routes.length,
           rtt,
         } satisfies RIPResponse), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
         });
+      } finally {
+        try { reader.releaseLock(); } catch { /* already released */ }
       }
-
-      return new Response(JSON.stringify({
-        success: true,
-        host,
-        port,
-        version: response.version,
-        command: commandName,
-        routes: response.routes,
-        routeCount: response.routes.length,
-        rtt,
-      } satisfies RIPResponse), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      });
 
     } catch (error) {
       if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
-      socket.close();
       throw error;
+    } finally {
+      try { socket.close(); } catch { /* already closed */ }
     }
 
   } catch (error) {

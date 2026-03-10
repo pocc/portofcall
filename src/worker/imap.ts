@@ -5,6 +5,7 @@
 
 import { connect } from 'cloudflare:sockets';
 import { checkIfCloudflare, getCloudflareErrorMessage } from './cloudflare-detector';
+import { raceWithTimeout } from './timeout-utils';
 
 export interface IMAPConnectionOptions {
   host: string;
@@ -47,19 +48,17 @@ async function readIMAPResponse(
       if (response.length > 1048576) { throw new Error('IMAP response too large'); }
 
       // IMAP responses are tagged: "A001 OK" or "* OK" for untagged
-      // Look for completion tag
-      if (response.includes(`${tag} OK`) || response.includes(`${tag} NO`) || response.includes(`${tag} BAD`)) {
+      // Look for completion tag anchored to line start to avoid false
+      // matches inside message bodies or untagged responses
+      const tagPattern = new RegExp(`(?:^|\\r\\n)${tag} (?:OK|NO|BAD)[ \\r]`);
+      if (tagPattern.test(response)) {
         break;
       }
     }
     return response;
   })();
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('IMAP read timeout')), timeoutMs)
-  );
-
-  return Promise.race([readPromise, timeoutPromise]);
+  return raceWithTimeout(readPromise, timeoutMs, 'IMAP read timeout');
 }
 
 /**
@@ -72,7 +71,7 @@ async function sendIMAPCommand(
   command: string,
   timeoutMs: number
 ): Promise<string> {
-  await writer.write(new TextEncoder().encode(`${tag} ${command}\r\n`));
+  await writer.write(new TextEncoder().encode(`${tag} ${command.replace(/[\r\n]/g, '')}\r\n`));
   return await readIMAPResponse(reader, tag, timeoutMs);
 }
 
@@ -151,11 +150,7 @@ export async function handleIMAPConnect(request: Request): Promise<Response> {
           return greeting;
         })();
 
-        const greetingTimeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Greeting timeout')), 5000)
-        );
-
-        const greeting = await Promise.race([greetingPromise, greetingTimeout]);
+        const greeting = await raceWithTimeout(greetingPromise, 5000, 'Greeting timeout');
 
         if (!greeting.includes('* OK')) {
           throw new Error(`Invalid IMAP greeting: ${greeting}`);
@@ -217,12 +212,8 @@ export async function handleIMAPConnect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Connection timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([connectionPromise, timeoutPromise]);
+      const result = await raceWithTimeout(connectionPromise, timeoutMs, 'Connection timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -371,12 +362,8 @@ export async function handleIMAPList(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('List timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([listPromise, timeoutPromise]);
+      const result = await raceWithTimeout(listPromise, timeoutMs, 'List timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -528,12 +515,8 @@ export async function handleIMAPSelect(request: Request): Promise<Response> {
       }
     })();
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Select timeout')), timeoutMs)
-    );
-
     try {
-      const result = await Promise.race([selectPromise, timeoutPromise]);
+      const result = await raceWithTimeout(selectPromise, timeoutMs, 'Select timeout');
       return new Response(JSON.stringify(result), {
         headers: { 'Content-Type': 'application/json' },
       });

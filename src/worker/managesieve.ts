@@ -83,6 +83,11 @@ function utf8ToBase64(str: string): string {
  * Per RFC 5804, quoted strings use backslash escaping for \ and ".
  */
 function escapeQuotedString(str: string): string {
+  // RFC 5804: quoted strings cannot contain CR, LF, or NUL
+  // eslint-disable-next-line no-control-regex
+  if (/[\r\n\x00]/.test(str)) {
+    throw new Error('ManageSieve quoted string cannot contain CR, LF, or NUL');
+  }
   return str.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
@@ -95,9 +100,12 @@ async function readFromSocket(
 ): Promise<string> {
   const decoder = new TextDecoder();
   const chunks: string[] = [];
+  let totalBytes = 0;
+  const maxBytes = 1024 * 1024; // 1 MiB
 
   const { value, done } = await Promise.race([reader.read(), timeoutPromise]);
   if (done || !value) return '';
+  totalBytes += value.length;
   chunks.push(decoder.decode(value));
 
   // Read more if available
@@ -108,6 +116,8 @@ async function readFromSocket(
     while (true) {
       const { value: next, done: nextDone } = await Promise.race([reader.read(), shortTimeout]);
       if (nextDone || !next) break;
+      totalBytes += next.length;
+      if (totalBytes > maxBytes) throw new Error('Response exceeds maximum size (1 MiB)');
       chunks.push(decoder.decode(next));
     }
   } catch {

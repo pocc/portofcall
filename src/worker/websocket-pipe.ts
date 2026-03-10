@@ -24,7 +24,8 @@ export async function handleTcpPing(request: Request): Promise<Response> {
   let socket: ReturnType<typeof connect> | null = null;
 
   try {
-    const { host, port, timeout = 10000 } = await request.json<{ host: string; port: number; timeout?: number }>();
+    const { host, port, timeout: rawTimeout = 10000 } = await request.json<{ host: string; port: number; timeout?: number }>();
+    const timeout = Math.min(Math.max(rawTimeout, 1000), 30000); // Cap between 1s and 30s
 
     if (!host || !port) {
       return new Response('Missing host or port', { status: 400 });
@@ -51,11 +52,16 @@ export async function handleTcpPing(request: Request): Promise<Response> {
 
     const start = performance.now();
     socket = connect(`${host}:${port}`);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout)
-    );
+    let timeoutHandle: ReturnType<typeof setTimeout>;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error(`Connection timeout after ${timeout}ms`)), timeout);
+    });
 
-    await Promise.race([socket.opened, timeoutPromise]);
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+    } finally {
+      clearTimeout(timeoutHandle!);
+    }
     const rtt = Math.round((performance.now() - start) * 100) / 100;
 
     await socket.close();
@@ -127,10 +133,15 @@ export async function handleSocketConnection(request: Request): Promise<Response
 
     // Connect to TCP socket (with timeout to avoid blocking the 101 upgrade)
     const socket = connect(`${host}:${port}`);
-    const openTimeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('TCP connect timeout')), 10000)
-    );
-    await Promise.race([socket.opened, openTimeout]);
+    let openTimeoutHandle: ReturnType<typeof setTimeout>;
+    const openTimeout = new Promise<never>((_, reject) => {
+      openTimeoutHandle = setTimeout(() => reject(new Error('TCP connect timeout')), 10000);
+    });
+    try {
+      await Promise.race([socket.opened, openTimeout]);
+    } finally {
+      clearTimeout(openTimeoutHandle!);
+    }
 
     // Start piping — fire-and-forget, do NOT await before returning 101
     pipeWebSocketToSocket(server, socket);

@@ -285,8 +285,13 @@ export async function handleRloginBanner(request: Request): Promise<Response> {
 
       try {
         // Rlogin preamble: null byte + localUser + null + remoteUser + null + term/speed + null
+        // Strip null bytes from inputs to prevent framing injection
+        const safeLocal = localUser.replace(/\0/g, '');
+        const safeRemote = remoteUser.replace(/\0/g, '');
+        const safeTerm = terminalType.replace(/\0/g, '');
+        const safeSpeed = terminalSpeed.replace(/\0/g, '');
         const preamble = new TextEncoder().encode(
-          `\0${localUser}\0${remoteUser}\0${terminalType}/${terminalSpeed}\0`,
+          `\0${safeLocal}\0${safeRemote}\0${safeTerm}/${safeSpeed}\0`,
         );
         await writer.write(preamble);
 

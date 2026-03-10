@@ -487,8 +487,8 @@ export default {
 
         const clientType = detectClient(request);
         if (clientType === 'browser') {
-          // Preserve protocol context so the SPA opens the right client
-          return Response.redirect(`/#${shortRoute.protocol}`, 302);
+          // Serve the SPA — it reads the path to determine which protocol to show
+          return env.ASSETS.fetch(new Request(new URL('/', request.url), request));
         }
 
         const jsonResponse = await dispatchShortRoute(shortRoute, url.searchParams);
@@ -516,7 +516,7 @@ export default {
     if (missingPort) {
       const clientType = detectClient(request);
       if (clientType === 'browser') {
-        return Response.redirect(`/#${missingPort.protocol}`, 302);
+        return env.ASSETS.fetch(new Request(new URL('/', request.url), request));
       }
       const errorJson = {
         success: false,
@@ -542,7 +542,8 @@ export default {
         if (manpage) {
           const clientType = detectClient(request);
           if (clientType === 'browser') {
-            return Response.redirect(`/#${bare}`, 302);
+            // Serve the SPA — it reads the path to show the protocol client
+            return env.ASSETS.fetch(new Request(new URL('/', request.url), request));
           }
           if (clientType === 'json') {
             return new Response(JSON.stringify({

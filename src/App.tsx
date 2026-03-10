@@ -530,31 +530,31 @@ function LoadingFallback() {
   );
 }
 
-function getHashProtocol(): Protocol {
-  const hash = window.location.hash.replace('#', '');
-  return hash ? hash as Protocol : null;
+function getPathProtocol(): Protocol {
+  const path = window.location.pathname.replace(/^\//, '');
+  return path ? path as Protocol : null;
 }
 
 function App() {
-  const [selectedProtocol, setSelectedProtocol] = useState<Protocol>(getHashProtocol);
+  const [selectedProtocol, setSelectedProtocol] = useState<Protocol>(getPathProtocol);
   const online = useOnlineStatus();
   const { recent, addRecent } = useRecentProtocols();
   const { favorites, toggleFavorite, isFavorite } = useFavorites();
 
-  // Sync hash → state
+  // Sync path → state (browser back/forward)
   useEffect(() => {
-    const onHashChange = () => setSelectedProtocol(getHashProtocol());
-    window.addEventListener('hashchange', onHashChange);
-    return () => window.removeEventListener('hashchange', onHashChange);
+    const onPopState = () => setSelectedProtocol(getPathProtocol());
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, []);
 
-  // Sync state → hash
+  // Sync state → path
   const selectProtocol = useCallback((p: Protocol) => {
     if (p) {
-      window.location.hash = p;
+      history.pushState(null, '', `/${p}`);
       addRecent(p);
     } else {
-      history.pushState(null, '', window.location.pathname);
+      history.pushState(null, '', '/');
     }
     setSelectedProtocol(p);
   }, [addRecent]);

@@ -63,29 +63,8 @@ export default function AboutPage() {
       {/* How it works */}
       <section className="bg-slate-800 border border-slate-600 rounded-xl p-8">
         <h2 className="text-2xl font-bold text-white mb-6">How it works</h2>
-        <div className="bg-slate-900 rounded-lg p-6 font-mono text-sm text-slate-300 overflow-x-auto">
-          <pre>{`┌─────────────────────────┐
-│     Your Browser        │
-│   (React UI / curl)     │
-└───────────┬─────────────┘
-            │ HTTPS / WebSocket
-┌───────────▼─────────────┐
-│   Cloudflare Worker     │
-│   (Smart Placement)     │
-│                         │
-│   Browser → Worker:     │
-│     HTTPS request or    │
-│     WebSocket upgrade   │
-│                         │
-│   Worker → Target:      │
-│     Raw TCP socket via  │
-│     connect() API       │
-└───────────┬─────────────┘
-            │ TCP
-┌───────────▼─────────────┐
-│   Your Target Server    │
-│   (any TCP service)     │
-└─────────────────────────┘`}</pre>
+        <div className="flex justify-center py-4">
+          <img src="/architecture.svg" alt="Architecture diagram: Browser → Cloudflare Worker → Target Server" className="max-w-xs w-full" />
         </div>
         <div className="grid sm:grid-cols-3 gap-4 mt-6">
           <div className="bg-slate-900/50 rounded-lg p-4">

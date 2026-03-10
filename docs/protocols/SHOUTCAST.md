@@ -234,7 +234,7 @@ Authenticate a source connection to a SHOUTcast server (broadcaster/DJ login).
 | `port` | number | No | 8000 | TCP port |
 | `mountpoint` | string | No | "/" | Stream mountpoint/path |
 | `password` | string | Yes | - | Source/DJ password |
-| `name` | string | No | "Port of Call Test" | Stream name |
+| `name` | string | No | "L4.FYI Test" | Stream name |
 | `genre` | string | No | "Various" | Genre tag |
 | `bitrate` | number | No | 128 | Stream bitrate (kbps) |
 | `contentType` | string | No | "audio/mpeg" | MIME type |
@@ -490,7 +490,7 @@ StreamTitle='Artist - Song Title';StreamUrl='http://example.com/buy';
   "mountpoint": "/live",
   "serverResponse": "ICY 401 Unauthorized",
   "statusCode": 401,
-  "name": "Port of Call Test",
+  "name": "L4.FYI Test",
   "genre": "Various",
   "bitrate": 128,
   "contentType": "audio/mpeg",
@@ -562,7 +562,7 @@ curl -X POST https://portofcall.app/api/shoutcast/source \
 
 6. **No relay authentication** — If the target is a relay server that requires listener auth, probe will fail.
 
-7. **No SHOUTcast DNAS 2 advanced features** — Port of Call implements core v1/v2 compatibility only. Advanced v2 features (on-demand, autoDJ control, advanced scheduling) are not exposed.
+7. **No SHOUTcast DNAS 2 advanced features** — L4.FYI implements core v1/v2 compatibility only. Advanced v2 features (on-demand, autoDJ control, advanced scheduling) are not exposed.
 
 8. **No Icecast-specific extensions** — While Icecast is largely compatible, Icecast-specific headers (like `ice-audio-info`) are not parsed.
 

@@ -2,7 +2,7 @@
 
 **Ports:** 4001 (swarm/libp2p), 5001 (HTTP API), 8080 (gateway) | **Protocol:** libp2p multistream-select + Kubo RPC HTTP API | **Tests:** Deployed
 
-Port of Call provides nine IPFS endpoints spanning two transport modes: a raw TCP libp2p multistream-select probe (port 4001) and a suite of Kubo RPC HTTP API proxies (port 5001). The swarm probe uses Cloudflare Workers `connect()` for direct TCP; the HTTP API endpoints use `fetch()` against the target node's Kubo RPC API.
+L4.FYI provides nine IPFS endpoints spanning two transport modes: a raw TCP libp2p multistream-select probe (port 4001) and a suite of Kubo RPC HTTP API proxies (port 5001). The swarm probe uses Cloudflare Workers `connect()` for direct TCP; the HTTP API endpoints use `fetch()` against the target node's Kubo RPC API.
 
 ---
 
@@ -323,11 +323,11 @@ The Kubo HTTP API has **no built-in authentication** by default. Security is ach
 
 3. **Reverse proxy:** Nginx/Caddy in front of port 5001 with HTTP Basic Auth or mTLS.
 
-Port of Call does not send any authentication headers. If the target node requires auth, requests will fail with HTTP 401/403.
+L4.FYI does not send any authentication headers. If the target node requires auth, requests will fail with HTTP 401/403.
 
 ### Important Kubo RPC API Endpoints Not Proxied
 
-These endpoints are accessible via the Kubo API but not (yet) exposed through Port of Call:
+These endpoints are accessible via the Kubo API but not (yet) exposed through L4.FYI:
 
 | Endpoint | Description |
 |----------|-------------|
@@ -478,7 +478,7 @@ curl -s -X POST https://l4.fyi/api/ipfs/cat \
 
 ## Known Limitations
 
-**No authentication support:** Port of Call does not send any authentication headers to the IPFS API. Nodes configured with `API.Authorizations` (Kubo 0.25+) or behind a reverse proxy with auth will reject requests.
+**No authentication support:** L4.FYI does not send any authentication headers to the IPFS API. Nodes configured with `API.Authorizations` (Kubo 0.25+) or behind a reverse proxy with auth will reject requests.
 
 **No TLS to the IPFS API:** Connections to port 5001 use plain HTTP. If the IPFS node requires HTTPS on its API port (uncommon but possible with a reverse proxy), requests will fail. The standard Kubo configuration does not use TLS on port 5001.
 
@@ -486,9 +486,9 @@ curl -s -X POST https://l4.fyi/api/ipfs/cat \
 
 **Large content via `/api/ipfs/add`:** Content is sent as a JSON string in the request body, then re-encoded into multipart/form-data. Very large files will hit JSON parsing limits and Workers memory limits. For files larger than ~10 MB, add directly to the IPFS node.
 
-**No directory operations:** The `/api/v0/add` endpoint supports adding directories (multiple files in one multipart upload), but Port of Call only sends a single file per request.
+**No directory operations:** The `/api/v0/add` endpoint supports adding directories (multiple files in one multipart upload), but L4.FYI only sends a single file per request.
 
-**No streaming/progress:** `/api/v0/add` with `progress=true` returns progress events as NDJSON. Port of Call reads the entire response as a single JSON object, so progress reporting is not supported.
+**No streaming/progress:** `/api/v0/add` with `progress=true` returns progress events as NDJSON. L4.FYI reads the entire response as a single JSON object, so progress reporting is not supported.
 
 **Swarm probe does not establish encryption:** The probe performs only multistream-select negotiation. It does not complete the Noise or TLS handshake that modern IPFS nodes require before application data can flow. The probe determines whether the node speaks multistream-select and which protocols it advertises, but cannot exchange actual IPFS data.
 

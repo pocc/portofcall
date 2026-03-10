@@ -17,7 +17,7 @@ export type SSHAuthMethod = 'password' | 'publickey' | 'keyboard-interactive' | 
 /**
  * SSH Connection Options
  *
- * Note: Port of Call provides TCP tunneling. The actual SSH protocol negotiation
+ * Note: L4.FYI provides TCP tunneling. The actual SSH protocol negotiation
  * and authentication happens browser-side. These options are metadata that can
  * be used by browser-side SSH clients (like xterm.js + ssh2).
  */

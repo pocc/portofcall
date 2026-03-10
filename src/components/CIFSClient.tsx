@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CIFSClientProps {
   onBack: () => void;
@@ -20,11 +21,11 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
   const [activeTab, setActiveTab] = useState<Tab>('negotiate');
 
   // ── Shared fields ─────────────────────────────────────────────────────────
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('445');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('cifs-host', '');
+  const [port, setPort] = usePersistedState('cifs-port', '445');
+  const [username, setUsername] = usePersistedState('cifs-username', '');
   const [password, setPassword] = useState('');
-  const [domain, setDomain] = useState('');
+  const [domain, setDomain] = usePersistedState('cifs-domain', '');
 
   // ── Negotiate ─────────────────────────────────────────────────────────────
   const [negLoading, setNegLoading] = useState(false);
@@ -37,22 +38,22 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
   const [authError, setAuthError] = useState('');
 
   // ── List ──────────────────────────────────────────────────────────────────
-  const [lsShare, setLsShare] = useState('C$');
-  const [lsPath, setLsPath] = useState('');
+  const [lsShare, setLsShare] = usePersistedState('cifs-lsShare', 'C$');
+  const [lsPath, setLsPath] = usePersistedState('cifs-lsPath', '');
   const [lsLoading, setLsLoading] = useState(false);
   const [lsResult, setLsResult] = useState('');
   const [lsError, setLsError] = useState('');
 
   // ── Read ──────────────────────────────────────────────────────────────────
-  const [readShare, setReadShare] = useState('C$');
-  const [readPath, setReadPath] = useState('Windows\\win.ini');
+  const [readShare, setReadShare] = usePersistedState('cifs-readShare', 'C$');
+  const [readPath, setReadPath] = usePersistedState('cifs-readPath', 'Windows\\win.ini');
   const [readLoading, setReadLoading] = useState(false);
   const [readResult, setReadResult] = useState('');
   const [readError, setReadError] = useState('');
 
   // ── Stat ──────────────────────────────────────────────────────────────────
-  const [statShare, setStatShare] = useState('C$');
-  const [statPath, setStatPath] = useState('Windows');
+  const [statShare, setStatShare] = usePersistedState('cifs-statShare', 'C$');
+  const [statPath, setStatPath] = usePersistedState('cifs-statPath', 'Windows');
   const [statLoading, setStatLoading] = useState(false);
   const [statResult, setStatResult] = useState('');
   const [statError, setStatError] = useState('');
@@ -322,7 +323,6 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
 
   return (
     <ProtocolClientLayout title="CIFS / SMB2 Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.CIFS || []} />
       {/* Tab bar */}
       <div className="flex gap-1 mb-4 bg-slate-900 rounded-lg p-1">
         {tabs.map(t => (
@@ -484,6 +484,8 @@ export default function CIFSClient({ onBack }: CIFSClientProps) {
           Port 445 = SMB2 direct TCP (modern) · Port 139 = NetBIOS session service (legacy)
         </div>
       </div>
+      <ApiExamples examples={apiExamples.CIFS || []} protocolId="cifs" />
+
     </ProtocolClientLayout>
   );
 }

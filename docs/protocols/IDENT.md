@@ -207,7 +207,7 @@ ss -tlnp | grep 113
 echo -e "22, 54321\r" | nc localhost 113
 ```
 
-### With curl (via Port of Call API)
+### With curl (via L4.FYI API)
 
 ```bash
 # Query an IDENT server

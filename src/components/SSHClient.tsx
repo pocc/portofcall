@@ -221,8 +221,6 @@ export default function SSHClient({ onBack }: SSHClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">SSH Client</h1>
         </div>
-
-      <ApiExamples examples={apiExamples.SSH || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} aria-hidden="true" />
@@ -418,6 +416,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SSH || []} protocolId="ssh" />
     </div>
   );
 }

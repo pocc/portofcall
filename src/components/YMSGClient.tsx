@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface YMSGClientProps {
   onBack: () => void;
 }
 
 export default function YMSGClient({ onBack }: YMSGClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5050');
+  const [host, setHost] = usePersistedState('ymsg-host', '');
+  const [port, setPort] = usePersistedState('ymsg-port', '5050');
   const [version, setVersion] = useState('16');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

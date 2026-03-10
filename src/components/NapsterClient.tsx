@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NapsterClientProps {
   onBack: () => void;
 }
 
 export default function NapsterClient({ onBack }: NapsterClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6699');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('napster-host', '');
+  const [port, setPort] = usePersistedState('napster-port', '6699');
+  const [username, setUsername] = usePersistedState('napster-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -133,7 +134,6 @@ export default function NapsterClient({ onBack }: NapsterClientProps) {
 
   return (
     <ProtocolClientLayout title="Napster Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Napster || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -213,6 +213,8 @@ export default function NapsterClient({ onBack }: NapsterClientProps) {
           description="Napster was a pioneering P2P file sharing service (1999-2001). The protocol lives on in OpenNap servers. Connect without credentials to test TCP connectivity, or provide a username/password to attempt login. Port 6699 is the default."
         />
       </div>
+      <ApiExamples examples={apiExamples.Napster || []} protocolId="napster" />
+
     </ProtocolClientLayout>
   );
 }

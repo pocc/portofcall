@@ -273,7 +273,7 @@ These protocols would provide the most immediate value for a web-based implement
 
 ## 🎯 Recommended Starting Points
 
-For building **Port of Call** features, start with:
+For building **L4.FYI** features, start with:
 
 1. **Redis Client** - Simplest protocol, immediate utility
 2. **MySQL Client** - High demand, medium complexity

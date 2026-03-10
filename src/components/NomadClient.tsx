@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NomadClientProps {
   onBack: () => void;
 }
 
 export default function NomadClient({ onBack }: NomadClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4646');
+  const [host, setHost] = usePersistedState('nomad-host', '');
+  const [port, setPort] = usePersistedState('nomad-port', '4646');
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -211,7 +212,6 @@ export default function NomadClient({ onBack }: NomadClientProps) {
 
   return (
     <ProtocolClientLayout title="Nomad Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Nomad || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Nomad Server" />
 
@@ -302,6 +302,8 @@ export default function NomadClient({ onBack }: NomadClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Nomad || []} protocolId="nomad" />
+
     </ProtocolClientLayout>
   );
 }

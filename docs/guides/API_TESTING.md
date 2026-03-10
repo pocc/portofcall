@@ -1,6 +1,6 @@
 # API Testing Guide
 
-This guide provides curl commands to test all Port of Call API endpoints.
+This guide provides curl commands to test all L4.FYI API endpoints.
 
 ## Local vs Production Testing
 

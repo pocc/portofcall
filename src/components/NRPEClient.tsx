@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NRPEClientProps {
   onBack: () => void;
@@ -22,9 +23,9 @@ const COMMON_COMMANDS = [
 ];
 
 export default function NRPEClient({ onBack }: NRPEClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5666');
-  const [command, setCommand] = useState('_NRPE_CHECK');
+  const [host, setHost] = usePersistedState('nrpe-host', '');
+  const [port, setPort] = usePersistedState('nrpe-port', '5666');
+  const [command, setCommand] = usePersistedState('nrpe-command', '_NRPE_CHECK');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

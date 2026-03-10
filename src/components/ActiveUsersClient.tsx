@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ActiveUsersClientProps {
   onBack: () => void;
 }
 
 export default function ActiveUsersClient({ onBack }: ActiveUsersClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('11');
+  const [host, setHost] = usePersistedState('activeusers-host', '');
+  const [port, setPort] = usePersistedState('activeusers-port', '11');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

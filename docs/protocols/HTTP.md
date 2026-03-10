@@ -2,7 +2,7 @@
 
 **Port:** 80/TCP (443/TCP with TLS) | **Protocol:** HTTP/1.1 (RFC 9110 / RFC 9112) | Deployed
 
-Port of Call provides three HTTP endpoints: a general-purpose request executor, a HEAD-only probe, and an OPTIONS capability discovery probe. All three open a raw TCP socket from the Cloudflare Worker to the target, write the HTTP/1.1 request bytes by hand, and parse the response off the wire — no `fetch()` abstraction involved.
+L4.FYI provides three HTTP endpoints: a general-purpose request executor, a HEAD-only probe, and an OPTIONS capability discovery probe. All three open a raw TCP socket from the Cloudflare Worker to the target, write the HTTP/1.1 request bytes by hand, and parse the response off the wire — no `fetch()` abstraction involved.
 
 ---
 
@@ -129,7 +129,7 @@ Host: {host}[:{port}]\r\n
 - **Asterisk-form:** `OPTIONS * HTTP/1.1` (server-wide capability query)
 - **Absolute-form:** `GET http://example.com/path HTTP/1.1` (used with proxies)
 
-**Host header:** Required in HTTP/1.1 (RFC 9112 Section 3.2). MUST include the port if it differs from the scheme default (80 for HTTP, 443 for HTTPS). Port of Call handles this automatically:
+**Host header:** Required in HTTP/1.1 (RFC 9112 Section 3.2). MUST include the port if it differs from the scheme default (80 for HTTP, 443 for HTTPS). L4.FYI handles this automatically:
 - `Host: example.com` when connecting to port 80 (HTTP) or 443 (HTTPS)
 - `Host: example.com:8080` when connecting to a non-default port
 
@@ -148,7 +148,7 @@ HTTP/1.1 {status-code} {reason-phrase}\r\n
 ### Header Field Parsing
 
 Per RFC 9110 Section 5.1-5.3:
-- Field names are case-insensitive. Port of Call normalizes all response header names to lowercase.
+- Field names are case-insensitive. L4.FYI normalizes all response header names to lowercase.
 - Field values have leading/trailing whitespace stripped.
 - Duplicate headers with the same name are combined with `, ` (comma-space), which is correct for all standard headers except `Set-Cookie`.
 - No whitespace is allowed between the field name and the colon in conformant responses, but the parser accepts it (robustness principle).
@@ -169,7 +169,7 @@ The presence and length of a response body depends on the status code and reques
 | Content-Length present | Yes | Exactly N octets after headers |
 | Neither CL nor TE | Yes | Read until connection close |
 
-Port of Call checks these conditions in the correct order: no-body statuses and HEAD first, then Transfer-Encoding, then Content-Length, then connection-close fallback.
+L4.FYI checks these conditions in the correct order: no-body statuses and HEAD first, then Transfer-Encoding, then Content-Length, then connection-close fallback.
 
 ---
 
@@ -415,7 +415,7 @@ if (result.success) {
 
 ## What's on the Wire
 
-For a `GET / HTTP/1.1` request to `example.com:80`, Port of Call writes these exact bytes to the TCP socket:
+For a `GET / HTTP/1.1` request to `example.com:80`, L4.FYI writes these exact bytes to the TCP socket:
 
 ```
 GET / HTTP/1.1\r\n

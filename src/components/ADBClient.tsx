@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ADBClientProps {
   onBack: () => void;
@@ -21,9 +22,9 @@ const COMMON_COMMANDS = [
 ];
 
 export default function ADBClient({ onBack }: ADBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5037');
-  const [command, setCommand] = useState('host:version');
+  const [host, setHost] = usePersistedState('adb-host', '');
+  const [port, setPort] = usePersistedState('adb-port', '5037');
+  const [command, setCommand] = usePersistedState('adb-command', 'host:version');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

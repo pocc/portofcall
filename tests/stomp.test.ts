@@ -47,7 +47,7 @@ describe('STOMP Protocol Integration Tests', () => {
         username: 'guest',
         password: 'guest',
         destination: '/queue/test',
-        body: 'Hello from Port of Call!',
+        body: 'Hello from L4.FYI!',
         timeout: 5000,
       }),
     });

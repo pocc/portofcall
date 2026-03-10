@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface EtherNetIPClientProps {
   onBack: () => void;
@@ -34,8 +35,8 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
   const [tab, setTab] = useState<Tab>('identity');
 
   // ── Shared connection fields ──────────────────────────────────────────────
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('44818');
+  const [host, setHost] = usePersistedState('ethernetip-host', '');
+  const [port, setPort] = usePersistedState('ethernetip-port', '44818');
 
   // ── Identity tab state ────────────────────────────────────────────────────
   const [identityLoading, setIdentityLoading] = useState(false);
@@ -54,25 +55,25 @@ export default function EtherNetIPClient({ onBack }: EtherNetIPClientProps) {
   } | null>(null);
 
   // ── CIP Read tab state ────────────────────────────────────────────────────
-  const [cipClassId, setCipClassId] = useState('0x01');
-  const [cipInstanceId, setCipInstanceId] = useState('1');
-  const [cipAttributeId, setCipAttributeId] = useState('7');
+  const [cipClassId, setCipClassId] = usePersistedState('ethernetip-cipClassId', '0x01');
+  const [cipInstanceId, setCipInstanceId] = usePersistedState('ethernetip-cipInstanceId', '1');
+  const [cipAttributeId, setCipAttributeId] = usePersistedState('ethernetip-cipAttributeId', '7');
   const [cipReadLoading, setCipReadLoading] = useState(false);
   const [cipReadResult, setCipReadResult] = useState('');
   const [cipReadError, setCipReadError] = useState('');
 
   // ── Get All Attributes tab state ──────────────────────────────────────────
-  const [getAllClassId, setGetAllClassId] = useState('0x01');
-  const [getAllInstanceId, setGetAllInstanceId] = useState('1');
+  const [getAllClassId, setGetAllClassId] = usePersistedState('ethernetip-getAllClassId', '0x01');
+  const [getAllInstanceId, setGetAllInstanceId] = usePersistedState('ethernetip-getAllInstanceId', '1');
   const [getAllLoading, setGetAllLoading] = useState(false);
   const [getAllResult, setGetAllResult] = useState('');
   const [getAllError, setGetAllError] = useState('');
 
   // ── CIP Write tab state ───────────────────────────────────────────────────
-  const [writeClassId, setWriteClassId] = useState('0x01');
-  const [writeInstanceId, setWriteInstanceId] = useState('1');
-  const [writeAttributeId, setWriteAttributeId] = useState('7');
-  const [writeHex, setWriteHex] = useState('');
+  const [writeClassId, setWriteClassId] = usePersistedState('ethernetip-writeClassId', '0x01');
+  const [writeInstanceId, setWriteInstanceId] = usePersistedState('ethernetip-writeInstanceId', '1');
+  const [writeAttributeId, setWriteAttributeId] = usePersistedState('ethernetip-writeAttributeId', '7');
+  const [writeHex, setWriteHex] = usePersistedState('ethernetip-writeHex', '');
   const [writeLoading, setWriteLoading] = useState(false);
   const [writeResult, setWriteResult] = useState('');
   const [writeError, setWriteError] = useState('');

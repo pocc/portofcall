@@ -7,26 +7,27 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface InfluxDBClientProps {
   onBack: () => void;
 }
 
 export default function InfluxDBClient({ onBack }: InfluxDBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8086');
+  const [host, setHost] = usePersistedState('influxdb-host', '');
+  const [port, setPort] = usePersistedState('influxdb-port', '8086');
   const [token, setToken] = useState('');
-  const [org, setOrg] = useState('');
-  const [bucket, setBucket] = useState('');
+  const [org, setOrg] = usePersistedState('influxdb-org', '');
+  const [bucket, setBucket] = usePersistedState('influxdb-bucket', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Write form state
-  const [lineProtocol, setLineProtocol] = useState('cpu,host=server01,region=us-west usage=75.2');
+  const [lineProtocol, setLineProtocol] = usePersistedState('influxdb-lineProtocol', 'cpu,host=server01,region=us-west usage=75.2');
 
   // Query form state
-  const [fluxQuery, setFluxQuery] = useState('');
+  const [fluxQuery, setFluxQuery] = usePersistedState('influxdb-fluxQuery', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],

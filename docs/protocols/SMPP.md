@@ -10,7 +10,7 @@ SMPP v3.4 is the industry-standard protocol for exchanging SMS messages between 
 
 ## Implementation Status
 
-Port of Call implements SMPP v3.4 client functionality with support for:
+L4.FYI implements SMPP v3.4 client functionality with support for:
 - Bind operations (receiver, transmitter, transceiver)
 - SMS submission (submit_sm)
 - Message status query (query_sm)
@@ -360,7 +360,7 @@ Send an SMS message via SMPP.
   "password": "test_pass",
   "source_addr": "1234",
   "destination_addr": "15551234567",
-  "message": "Hello from Port of Call!",
+  "message": "Hello from L4.FYI!",
   "data_coding": 0,
   "timeout": 15000
 }
@@ -514,7 +514,7 @@ curl -X POST http://localhost:8787/api/smpp/submit \
 
 ## Implementation Notes
 
-1. **Interface Version**: Port of Call sends interface_version = 0x34 (SMPP v3.4) in bind requests.
+1. **Interface Version**: L4.FYI sends interface_version = 0x34 (SMPP v3.4) in bind requests.
 
 2. **TON/NPI Defaults**: Uses 0x00 (Unknown) for bind operations, 0x01 (International/ISDN) for submit_sm.
 

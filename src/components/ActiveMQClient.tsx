@@ -40,7 +40,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
   // ── Send ──────────────────────────────────────────────────────────────────
   const [sendPort, setSendPort] = useState('61613');
   const [destination, setDestination] = usePersistedState('activemq-destination', '/queue/test');
-  const [messageBody, setMessageBody] = usePersistedState('activemq-messageBody', 'Hello from Port of Call!');
+  const [messageBody, setMessageBody] = usePersistedState('activemq-messageBody', 'Hello from L4.FYI!');
   const [persistent, setPersistent] = useState(true);
   const [priority, setPriority] = usePersistedState('activemq-priority', '4');
   const [sendLoading, setSendLoading] = useState(false);
@@ -380,7 +380,6 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
 
   return (
     <ProtocolClientLayout title="ActiveMQ Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.ActiveMQ || []} />
       {/* Tab bar */}
       <div className="flex gap-1 mb-6 bg-slate-800 border border-slate-600 rounded-xl p-1">
         {tabs.map(t => (
@@ -670,6 +669,8 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
           <div><code className="text-slate-300">8161</code>  — Web Admin Console + Jolokia REST — used by Admin tab</div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.ActiveMQ || []} protocolId="activemq" />
+
     </ProtocolClientLayout>
   );
 }

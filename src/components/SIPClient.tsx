@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SIPClientProps {
   onBack: () => void;
@@ -20,11 +21,11 @@ interface SipHeader {
 }
 
 export default function SIPClient({ onBack }: SIPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5060');
-  const [uri, setUri] = useState('');
-  const [username, setUsername] = useState('probe');
-  const [domain, setDomain] = useState('');
+  const [host, setHost] = usePersistedState('sip-host', '');
+  const [port, setPort] = usePersistedState('sip-port', '5060');
+  const [uri, setUri] = usePersistedState('sip-uri', '');
+  const [username, setUsername] = usePersistedState('sip-username', 'probe');
+  const [domain, setDomain] = usePersistedState('sip-domain', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -203,7 +204,6 @@ export default function SIPClient({ onBack }: SIPClientProps) {
 
   return (
     <ProtocolClientLayout title="SIP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SIP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="SIP Server" />
 
@@ -327,6 +327,8 @@ export default function SIPClient({ onBack }: SIPClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SIP || []} protocolId="sip" />
+
     </ProtocolClientLayout>
   );
 }

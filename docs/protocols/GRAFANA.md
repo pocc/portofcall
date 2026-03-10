@@ -2,7 +2,7 @@
 
 **Port:** 3000 | **Protocol:** HTTP/1.1 REST API over TCP | **Auth:** Bearer token / API key / Basic auth
 
-Port of Call connects to Grafana over raw TCP (HTTP/1.1). No TLS path exists.
+L4.FYI connects to Grafana over raw TCP (HTTP/1.1). No TLS path exists.
 
 ---
 ## Authentication

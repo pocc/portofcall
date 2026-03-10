@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FTPSClientProps {
   onBack: () => void;
 }
 
 export default function FTPSClient({ onBack }: FTPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('990');
+  const [host, setHost] = usePersistedState('ftps-host', '');
+  const [port, setPort] = usePersistedState('ftps-port', '990');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -124,7 +125,6 @@ export default function FTPSClient({ onBack }: FTPSClientProps) {
 
   return (
     <ProtocolClientLayout title="FTPS Client (FTP over TLS)" onBack={onBack}>
-      <ApiExamples examples={apiExamples.FTPS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="FTPS Connection" />
 
@@ -292,6 +292,8 @@ export default function FTPSClient({ onBack }: FTPSClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.FTPS || []} protocolId="ftps" />
+
     </ProtocolClientLayout>
   );
 }

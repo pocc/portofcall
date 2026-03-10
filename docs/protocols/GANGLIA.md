@@ -1,4 +1,4 @@
-# Ganglia gmond/gmetad -- Port of Call Reference
+# Ganglia gmond/gmetad -- L4.FYI Reference
 
 **Protocol:** Ganglia XML Dump (gmond/gmetad)
 **Default Ports:** 8649 (gmond), 8651 (gmetad)

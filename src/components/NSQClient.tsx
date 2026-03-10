@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NSQClientProps {
   onBack: () => void;
 }
 
 export default function NSQClient({ onBack }: NSQClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4150');
-  const [topic, setTopic] = useState('test');
-  const [message, setMessage] = useState('Hello from Port of Call!');
+  const [host, setHost] = usePersistedState('nsq-host', '');
+  const [port, setPort] = usePersistedState('nsq-port', '4150');
+  const [topic, setTopic] = usePersistedState('nsq-topic', 'test');
+  const [message, setMessage] = usePersistedState('nsq-message', 'Hello from L4.FYI!');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -148,8 +149,6 @@ export default function NSQClient({ onBack }: NSQClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.NSQ || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="nsq-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -300,6 +299,7 @@ export default function NSQClient({ onBack }: NSQClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.NSQ || []} protocolId="nsq" />
     </div>
   );
 }

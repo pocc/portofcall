@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SMPPClientProps {
   onBack: () => void;
 }
 
 export default function SMPPClient({ onBack }: SMPPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2775');
-  const [systemId, setSystemId] = useState('');
+  const [host, setHost] = usePersistedState('smpp-host', '');
+  const [port, setPort] = usePersistedState('smpp-port', '2775');
+  const [systemId, setSystemId] = usePersistedState('smpp-systemId', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [probing, setProbing] = useState(false);
@@ -149,8 +150,6 @@ export default function SMPPClient({ onBack }: SMPPClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.SMPP || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="smpp-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -313,6 +312,7 @@ export default function SMPPClient({ onBack }: SMPPClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SMPP || []} protocolId="smpp" />
     </div>
   );
 }

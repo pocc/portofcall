@@ -185,7 +185,7 @@ curl -s -X POST https://l4.fyi/api/munin/fetch \
 | `cap <capabilities>` | Single line | `\n` | Negotiate capabilities; server echoes supported caps |
 | `nodes` | Multi-line | `.\n` | List virtual node names (one per line); empty = no virtual nodes |
 | `list [node]` | Single line | `\n` | Space-separated plugin names; optional node argument for virtual nodes |
-| `config <plugin>` | Multi-line | `.\n` | Plugin configuration / graph metadata (not implemented in Port of Call) |
+| `config <plugin>` | Multi-line | `.\n` | Plugin configuration / graph metadata (not implemented in L4.FYI) |
 | `fetch <plugin>` | Multi-line | `.\n` | Current metric values in `field.value VALUE` format |
 | `quit` | None | — | Close connection gracefully |
 
@@ -278,7 +278,7 @@ The reader accumulates data until one of these patterns appears, then returns th
 ## Quirks and Known Limitations
 
 ### 1. No `config` endpoint
-Port of Call does not implement a `/munin/config` endpoint. To retrieve plugin metadata (graph title, field labels, thresholds, etc.), you must implement your own handler or use the native `munin-run` tool on the target host.
+L4.FYI does not implement a `/munin/config` endpoint. To retrieve plugin metadata (graph title, field labels, thresholds, etc.), you must implement your own handler or use the native `munin-run` tool on the target host.
 
 ### 2. Plugin name validation is strict
 `/fetch` rejects plugin names containing anything other than `[a-zA-Z0-9._-]`. This blocks legitimate plugins with unconventional names (e.g., `if_eth0:0` for aliased interfaces) but prevents command injection attacks. The regex matches standard Munin plugin naming conventions.
@@ -339,7 +339,7 @@ Previous behavior: If an error occurred after the happy path released locks (e.g
 Munin-node can be configured to require authentication (e.g., via `allow` / `deny` directives in `munin-node.conf`). This implementation does not support authentication — it assumes the target node accepts connections from the Workers IP range. Use a firewall or `allow` directive to restrict access.
 
 ### 11. No TLS support
-Munin supports TLS via the `tls` directive in `munin-node.conf`. Port of Call does not implement TLS for Munin (no `tls.connect()` wrapper). For encrypted monitoring, tunnel munin-node through SSH or use a Cloudflare Tunnel.
+Munin supports TLS via the `tls` directive in `munin-node.conf`. L4.FYI does not implement TLS for Munin (no `tls.connect()` wrapper). For encrypted monitoring, tunnel munin-node through SSH or use a Cloudflare Tunnel.
 
 ---
 
@@ -400,7 +400,7 @@ docker run --rm -d -p 4949:4949 \
   --name munin-node \
   aheimsbakk/munin-node
 
-# Verify from Port of Call
+# Verify from L4.FYI
 curl -s https://l4.fyi/api/munin/connect \
   -H 'Content-Type: application/json' \
   -d '{"host":"YOUR_SERVER_IP"}' | jq .
@@ -410,7 +410,7 @@ curl -s https://l4.fyi/api/munin/connect \
 
 ## Protocol Differences vs Standard Munin Master
 
-| Aspect | Standard Munin Master | Port of Call |
+| Aspect | Standard Munin Master | L4.FYI |
 |--------|----------------------|--------------|
 | Banner handling | Waits indefinitely | 3 s timeout |
 | Plugin discovery | `list` per virtual node | Single `list` (no virtual node arg) |
@@ -428,11 +428,11 @@ curl -s https://l4.fyi/api/munin/connect \
 
 2. **Plugin name injection** — the plugin name in `/fetch` is validated against `/^[a-zA-Z0-9._-]+$/` to prevent newline injection or command injection in the `fetch <plugin>` command.
 
-3. **Cloudflare detection** — both endpoints check if the target host resolves to a Cloudflare IP and return 403. This prevents abuse of Port of Call as a Cloudflare bypass.
+3. **Cloudflare detection** — both endpoints check if the target host resolves to a Cloudflare IP and return 403. This prevents abuse of L4.FYI as a Cloudflare bypass.
 
 4. **Timeout limits** — inner timeouts are capped at 3 s per command, outer timeout defaults to 10 s. This prevents resource exhaustion from slow or malicious munin-node servers.
 
-5. **No privileged operations** — the Munin protocol is read-only from the client's perspective. Port of Call cannot trigger plugin execution (that happens on the server side when `fetch` is called, but the server controls what runs).
+5. **No privileged operations** — the Munin protocol is read-only from the client's perspective. L4.FYI cannot trigger plugin execution (that happens on the server side when `fetch` is called, but the server controls what runs).
 
 ---
 

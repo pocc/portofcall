@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RsyncClientProps {
   onBack: () => void;
 }
 
 export default function RsyncClient({ onBack }: RsyncClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('873');
-  const [moduleName, setModuleName] = useState('');
+  const [host, setHost] = usePersistedState('rsync-host', '');
+  const [port, setPort] = usePersistedState('rsync-port', '873');
+  const [moduleName, setModuleName] = usePersistedState('rsync-moduleName', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -170,7 +171,6 @@ export default function RsyncClient({ onBack }: RsyncClientProps) {
 
   return (
     <ProtocolClientLayout title="Rsync Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Rsync || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -356,6 +356,8 @@ export default function RsyncClient({ onBack }: RsyncClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Rsync || []} protocolId="rsync" />
+
     </ProtocolClientLayout>
   );
 }

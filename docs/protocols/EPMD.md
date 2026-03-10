@@ -1,4 +1,4 @@
-# EPMD (Erlang Port Mapper Daemon) -- Port of Call Reference
+# EPMD (Erlang Port Mapper Daemon) -- L4.FYI Reference
 
 **Spec:** [Erlang EPMD Protocol](https://www.erlang.org/doc/apps/erts/erl_epmd) (part of Erlang/OTP ERTS)
 **Default port:** 4369
@@ -13,7 +13,7 @@ participates in distributed computing registers itself with the local EPMD
 instance, which maps the node's "alive name" to the TCP port the node uses for
 inter-node communication (the "distribution port").
 
-Port of Call implements two EPMD client operations:
+L4.FYI implements two EPMD client operations:
 
 1. **NAMES_REQ (tag 110)** -- List all registered Erlang nodes on a host
 2. **PORT_PLEASE2_REQ (tag 122)** -- Look up a specific node's distribution port
@@ -228,7 +228,7 @@ Offset  Size  Field
 ### ALIVE2_REQ (tag 120 / 0x78 / 'x') -- NOT IMPLEMENTED
 
 Used by Erlang nodes to register themselves with EPMD. Not implemented because
-Port of Call is a client querying EPMD, not an Erlang node registering itself.
+L4.FYI is a client querying EPMD, not an Erlang node registering itself.
 
 **Request:**
 ```
@@ -414,7 +414,7 @@ epmd -names
 
 | Feature | Notes |
 |---------|-------|
-| ALIVE2_REQ (tag 120) | Node registration -- Port of Call is a client, not an Erlang node |
+| ALIVE2_REQ (tag 120) | Node registration -- L4.FYI is a client, not an Erlang node |
 | ALIVE2_X_REQ (tag 118) | Extended registration (OTP 23+) |
 | DUMP_REQ (tag 100) | Internal EPMD state dump |
 | KILL_REQ (tag 107) | Kill EPMD daemon |

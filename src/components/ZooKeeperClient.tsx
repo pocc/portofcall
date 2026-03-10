@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ZooKeeperClientProps {
   onBack: () => void;
@@ -26,8 +27,8 @@ const FOUR_LETTER_COMMANDS = [
 ];
 
 export default function ZooKeeperClient({ onBack }: ZooKeeperClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2181');
+  const [host, setHost] = usePersistedState('zookeeper-host', '');
+  const [port, setPort] = usePersistedState('zookeeper-port', '2181');
   const [command, setCommand] = useState('ruok');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -160,7 +161,6 @@ export default function ZooKeeperClient({ onBack }: ZooKeeperClientProps) {
 
   return (
     <ProtocolClientLayout title="ZooKeeper Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.ZooKeeper || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -301,6 +301,8 @@ export default function ZooKeeperClient({ onBack }: ZooKeeperClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.ZooKeeper || []} protocolId="zookeeper" />
+
     </ProtocolClientLayout>
   );
 }

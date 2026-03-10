@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ZabbixClientProps {
   onBack: () => void;
@@ -31,9 +32,9 @@ const commonAgentKeys = [
 
 export default function ZabbixClient({ onBack }: ZabbixClientProps) {
   const [mode, setMode] = useState<Mode>('server');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('10051');
-  const [agentKey, setAgentKey] = useState('agent.ping');
+  const [host, setHost] = usePersistedState('zabbix-host', '');
+  const [port, setPort] = usePersistedState('zabbix-port', '10051');
+  const [agentKey, setAgentKey] = usePersistedState('zabbix-agentKey', 'agent.ping');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -161,7 +162,6 @@ export default function ZabbixClient({ onBack }: ZabbixClientProps) {
 
   return (
     <ProtocolClientLayout title="Zabbix Protocol Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Zabbix || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* Mode Selector */}
         <div className="mb-6">
@@ -388,6 +388,8 @@ export default function ZabbixClient({ onBack }: ZabbixClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Zabbix || []} protocolId="zabbix" />
+
     </ProtocolClientLayout>
   );
 }

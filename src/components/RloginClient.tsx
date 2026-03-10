@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RloginClientProps {
   onBack: () => void;
 }
 
 export default function RloginClient({ onBack }: RloginClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('513');
-  const [localUser, setLocalUser] = useState('guest');
-  const [remoteUser, setRemoteUser] = useState('guest');
-  const [terminalType, setTerminalType] = useState('xterm');
+  const [host, setHost] = usePersistedState('rlogin-host', '');
+  const [port, setPort] = usePersistedState('rlogin-port', '513');
+  const [localUser, setLocalUser] = usePersistedState('rlogin-localUser', 'guest');
+  const [remoteUser, setRemoteUser] = usePersistedState('rlogin-remoteUser', 'guest');
+  const [terminalType, setTerminalType] = usePersistedState('rlogin-terminalType', 'xterm');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -101,7 +102,6 @@ export default function RloginClient({ onBack }: RloginClientProps) {
 
   return (
     <ProtocolClientLayout title="Rlogin Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RLogin || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -192,6 +192,8 @@ export default function RloginClient({ onBack }: RloginClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.RLogin || []} protocolId="rlogin" />
+
     </ProtocolClientLayout>
   );
 }

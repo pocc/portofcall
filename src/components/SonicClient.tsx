@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SonicClientProps {
   onBack: () => void;
 }
 
 export default function SonicClient({ onBack }: SonicClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1491');
+  const [host, setHost] = usePersistedState('sonic-host', '');
+  const [port, setPort] = usePersistedState('sonic-port', '1491');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -107,7 +108,6 @@ export default function SonicClient({ onBack }: SonicClientProps) {
 
   return (
     <ProtocolClientLayout title="Sonic Search Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Sonic || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -224,6 +224,8 @@ export default function SonicClient({ onBack }: SonicClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Sonic || []} protocolId="sonic" />
+
     </ProtocolClientLayout>
   );
 }

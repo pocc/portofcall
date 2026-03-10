@@ -427,7 +427,7 @@ curl -s -X POST https://portofcall.example/api/lpd/queue \
 # Submit a print job
 curl -s -X POST https://portofcall.example/api/lpd/print \
   -H 'Content-Type: application/json' \
-  -d '{"host":"printer.local","queue":"lp","content":"Hello from Port of Call!\n","user":"alice","jobName":"test"}' | jq .
+  -d '{"host":"printer.local","queue":"lp","content":"Hello from L4.FYI!\n","user":"alice","jobName":"test"}' | jq .
 
 # Remove a specific job
 curl -s -X POST https://portofcall.example/api/lpd/remove \

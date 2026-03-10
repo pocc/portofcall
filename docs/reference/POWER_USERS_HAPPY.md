@@ -1,4 +1,4 @@
-# Port of Call — Power User Happiness Assessment
+# L4.FYI — Power User Happiness Assessment
 
 A candid evaluation of each protocol implementation from the perspective of someone who uses that protocol professionally day-to-day. Ratings reflect how much real work you can accomplish versus a native client.
 

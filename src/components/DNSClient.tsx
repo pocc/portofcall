@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DNSClientProps {
   onBack: () => void;
@@ -48,9 +49,9 @@ const DNS_SERVERS = [
 ];
 
 export default function DNSClient({ onBack }: DNSClientProps) {
-  const [domain, setDomain] = useState('example.com');
-  const [recordType, setRecordType] = useState('A');
-  const [server, setServer] = useState('8.8.8.8');
+  const [domain, setDomain] = usePersistedState('dns-domain', 'example.com');
+  const [recordType, setRecordType] = usePersistedState('dns-recordType', 'A');
+  const [server, setServer] = usePersistedState('dns-server', '8.8.8.8');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<DNSResult[]>([]);
   const [error, setError] = useState('');
@@ -128,8 +129,6 @@ export default function DNSClient({ onBack }: DNSClientProps) {
         </div>
 
       </div>
-
-      <ApiExamples examples={apiExamples.DNS || []} />
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Query Panel */}
         <div className="lg:col-span-1">
@@ -376,6 +375,7 @@ export default function DNSClient({ onBack }: DNSClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.DNS || []} protocolId="dns" />
     </div>
   );
 }

@@ -12,9 +12,9 @@ Items that need to be done
 * [x] Categories are two lines when they should all be on one line — Changed flex-wrap to flex-nowrap with horizontal scroll
 * [x] docs/protocols has weird duplicates like 'ECHO' and 'ECHO (1)'. Please consolidate all of the protocols to be just capitalized(.md) — Deleted 70 duplicate "(1)" files, renamed lowercase files to UPPERCASE
 
-## Plan: curl-Friendly Interface for Port of Call
+## Plan: curl-Friendly Interface for L4.FYI
 Context
-Port of Call has 180+ protocol endpoints accessible via POST /api/{protocol}/{action} with JSON bodies. This works for the React SPA but is verbose from the command line. The goal: make portofcall as curl-friendly as wttr.in or cheat.sh — memorable URLs, plain text output, and a downloadable CLI wrapper. Two features shipping together.
+L4.FYI has 180+ protocol endpoints accessible via POST /api/{protocol}/{action} with JSON bodies. This works for the React SPA but is verbose from the command line. The goal: make portofcall as curl-friendly as wttr.in or cheat.sh — memorable URLs, plain text output, and a downloadable CLI wrapper. Two features shipping together.
 
 Feature 1: Short URL Routes
 URL scheme

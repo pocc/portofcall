@@ -9,20 +9,21 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface StompClientProps {
   onBack: () => void;
 }
 
 export default function StompClient({ onBack }: StompClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('61613');
-  const [username, setUsername] = useState('guest');
+  const [host, setHost] = usePersistedState('stomp-host', '');
+  const [port, setPort] = usePersistedState('stomp-port', '61613');
+  const [username, setUsername] = usePersistedState('stomp-username', 'guest');
   const [password, setPassword] = useState('guest');
-  const [vhost, setVhost] = useState('');
-  const [destination, setDestination] = useState('/queue/test');
-  const [messageBody, setMessageBody] = useState('Hello, STOMP!');
-  const [contentType, setContentType] = useState('text/plain');
+  const [vhost, setVhost] = usePersistedState('stomp-vhost', '');
+  const [destination, setDestination] = usePersistedState('stomp-destination', '/queue/test');
+  const [messageBody, setMessageBody] = usePersistedState('stomp-messageBody', 'Hello, STOMP!');
+  const [contentType, setContentType] = usePersistedState('stomp-contentType', 'text/plain');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState('');
   const [error, setError] = useState('');
@@ -162,7 +163,6 @@ export default function StompClient({ onBack }: StompClientProps) {
 
   return (
     <ProtocolClientLayout title="STOMP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.STOMP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Broker Connection" />
 
@@ -399,6 +399,8 @@ Body\\0`}
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.STOMP || []} protocolId="stomp" />
+
     </ProtocolClientLayout>
   );
 }

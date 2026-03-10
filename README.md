@@ -1,19 +1,16 @@
-# ⚓ Port of Call
+# ⚓ L4.FYI
 
 Browser-to-TCP bridge via Cloudflare Workers Sockets API. Run SSH, connect to databases, and access any TCP service directly from your browser.
 
 **Live Demo**: [l4.fyi](https://l4.fyi)
 
-## What is Port of Call?
+## What is L4.FYI?
 
-Port of Call leverages [Cloudflare Workers' Sockets API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) (released May 16, 2023) to enable browser-based access to TCP protocols that were previously impossible to reach from the web.
+L4.FYI leverages [Cloudflare Workers' Sockets API](https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/) (released May 16, 2023) to enable browser-based access to TCP protocols that were previously impossible to reach from the web.
 
 ### The Name
 
-**Port of Call** works on multiple levels:
-- 🎯 **Literal**: You're calling a port (like 22 for SSH) from the browser
-- ⚓ **Nautical**: A transitional stop where data moves between worlds
-- 🌊 **Ecosystem**: Fits Cloudflare's naming theme (Workers, Pages, Streams)
+**L4** = Layer 4 (transport layer) of the OSI model — where TCP lives. This tool bridges your browser to that layer.
 
 ## Features
 
@@ -127,26 +124,26 @@ See [SSH Authentication Guide](docs/SSH_AUTHENTICATION.md) for complete examples
 
 ### curl-Friendly Interface
 
-Port of Call supports short URL routes with plain text output, designed for the command line:
+L4.FYI supports short URL routes with plain text output, designed for the command line:
 
 ```bash
 # TCP ping
-curl portofcall.ross.gg/synping/example.com:22
+curl l4.fyi/synping/example.com:22
 
 # DNS lookup
-curl portofcall.ross.gg/dns/example.com/MX
+curl l4.fyi/dns/example.com/MX
 
 # HTTP request
-curl portofcall.ross.gg/http/example.com/robots.txt
+curl l4.fyi/http/example.com/robots.txt
 
 # SSH key exchange
-curl portofcall.ross.gg/ssh/github.com
+curl l4.fyi/ssh/github.com
 
 # WHOIS lookup
-curl portofcall.ross.gg/whois/example.com
+curl l4.fyi/whois/example.com
 
 # Force JSON output
-curl -H 'Accept: application/json' portofcall.ross.gg/dns/example.com/A
+curl -H 'Accept: application/json' l4.fyi/dns/example.com/A
 ```
 
 **Supported short routes:** `synping`, `tcp`, `http`, `https`, `dns`, `ssh`, `ftp`, `redis`, `mysql`, `postgres`, `smtp`, `whois`, `ntp`, `tls`, `ws`
@@ -164,7 +161,7 @@ Install the `poc` CLI for even shorter commands:
 
 ```bash
 # Install
-curl -sL portofcall.ross.gg/cli > /usr/local/bin/poc && chmod +x $_
+curl -sL l4.fyi/cli > /usr/local/bin/poc && chmod +x $_
 
 # Auto-detect protocol from port
 poc example.com:22        # → ssh
@@ -180,7 +177,7 @@ Features: protocol auto-detection, `--json` flag, ANSI colors (respects `NO_COLO
 
 ## Architecture
 
-Port of Call is deployed as a **single Cloudflare Worker** that:
+L4.FYI is deployed as a **single Cloudflare Worker** that:
 1. Serves the built React UI as static assets (via Workers Assets API)
 2. Provides TCP connectivity APIs (via Workers Sockets API)
 3. Uses Smart Placement to minimize latency to backend services
@@ -260,7 +257,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture.
 
 ## Smart Placement
 
-Port of Call uses Cloudflare's Smart Placement to automatically migrate Worker execution closer to your backend services:
+L4.FYI uses Cloudflare's Smart Placement to automatically migrate Worker execution closer to your backend services:
 
 ```toml
 [placement]
@@ -319,7 +316,7 @@ Establish WebSocket-to-TCP tunnel.
 
 ### Cloudflare Detection
 
-Port of Call **automatically blocks connections to Cloudflare-protected hosts**. This is a security limitation imposed by Cloudflare's architecture to prevent Workers from being used as proxies.
+L4.FYI **automatically blocks connections to Cloudflare-protected hosts**. This is a security limitation imposed by Cloudflare's architecture to prevent Workers from being used as proxies.
 
 **Example blocked domains:**
 - Any site with orange cloud in Cloudflare DNS
@@ -328,7 +325,7 @@ Port of Call **automatically blocks connections to Cloudflare-protected hosts**.
 **Workarounds:**
 - Use the origin server's IP address directly
 - Disable Cloudflare proxy (orange cloud → gray)
-- Deploy Port of Call on a non-Cloudflare platform
+- Deploy L4.FYI on a non-Cloudflare platform
 
 See [docs/CLOUDFLARE_DETECTION.md](docs/CLOUDFLARE_DETECTION.md) for complete details.
 

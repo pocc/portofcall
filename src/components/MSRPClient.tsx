@@ -7,18 +7,19 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MSRPClientProps {
   onBack: () => void;
 }
 
 export default function MSRPClient({ onBack }: MSRPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2855');
-  const [toPath, setToPath] = useState('');
-  const [fromPath, setFromPath] = useState('');
-  const [content, setContent] = useState('Hello from Port of Call');
-  const [contentType, setContentType] = useState('text/plain');
+  const [host, setHost] = usePersistedState('msrp-host', '');
+  const [port, setPort] = usePersistedState('msrp-port', '2855');
+  const [toPath, setToPath] = usePersistedState('msrp-toPath', '');
+  const [fromPath, setFromPath] = usePersistedState('msrp-fromPath', '');
+  const [content, setContent] = usePersistedState('msrp-content', 'Hello from L4.FYI');
+  const [contentType, setContentType] = usePersistedState('msrp-contentType', 'text/plain');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -148,7 +149,7 @@ export default function MSRPClient({ onBack }: MSRPClientProps) {
               value={content}
               onChange={setContent}
               onKeyDown={handleKeyDown}
-              placeholder="Hello from Port of Call"
+              placeholder="Hello from L4.FYI"
             />
           </div>
           <FormField

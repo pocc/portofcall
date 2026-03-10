@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RelpClientProps {
   onBack: () => void;
@@ -43,13 +44,13 @@ const SEVERITY_OPTIONS = [
 ];
 
 export default function RelpClient({ onBack }: RelpClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('20514');
-  const [message, setMessage] = useState('Test message from Port of Call RELP client');
-  const [facility, setFacility] = useState('1');
-  const [severity, setSeverity] = useState('6');
-  const [hostname, setHostname] = useState('portofcall');
-  const [appName, setAppName] = useState('test');
+  const [host, setHost] = usePersistedState('relp-host', '');
+  const [port, setPort] = usePersistedState('relp-port', '20514');
+  const [message, setMessage] = usePersistedState('relp-message', 'Test message from L4.FYI RELP client');
+  const [facility, setFacility] = usePersistedState('relp-facility', '1');
+  const [severity, setSeverity] = usePersistedState('relp-severity', '6');
+  const [hostname, setHostname] = usePersistedState('relp-hostname', 'portofcall');
+  const [appName, setAppName] = usePersistedState('relp-appName', 'test');
   const [connectLoading, setConnectLoading] = useState(false);
   const [sendLoading, setSendLoading] = useState(false);
   const [result, setResult] = useState<string>('');

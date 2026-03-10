@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SPICEClientProps {
   onBack: () => void;
@@ -29,8 +30,8 @@ interface SPICEResponse {
 }
 
 export default function SPICEClient({ onBack }: SPICEClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5900');
+  const [host, setHost] = usePersistedState('spice-host', '');
+  const [port, setPort] = usePersistedState('spice-port', '5900');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
 
@@ -119,7 +120,6 @@ export default function SPICEClient({ onBack }: SPICEClientProps) {
 
   return (
     <ProtocolClientLayout title="SPICE Protocol" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SPICE || []} />
       <SectionHeader stepNumber={1} title="Connection Settings" />
 
       <FormField
@@ -154,6 +154,8 @@ export default function SPICEClient({ onBack }: SPICEClientProps) {
         title="About SPICE Protocol"
         description="SPICE (Simple Protocol for Independent Computing Environments) is a remote display protocol developed by Red Hat for virtual desktop infrastructure. It's used primarily with KVM/QEMU virtual machines and provides remote display rendering, audio/video streaming, USB redirection, and clipboard sharing. SPICE uses port 5900 by default (same as VNC) but has a different protocol handshake with 'REDQ' magic bytes. This tool probes a SPICE server and displays its protocol version, capabilities, and supported channels."
       />
+      <ApiExamples examples={apiExamples.SPICE || []} protocolId="spice" />
+
     </ProtocolClientLayout>
   );
 }

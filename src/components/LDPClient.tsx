@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LDPMessage {
   type: number;
@@ -36,8 +37,8 @@ interface LDPResult {
 }
 
 export default function LDPClient({ onBack }: { onBack: () => void }) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('646');
+  const [host, setHost] = usePersistedState('ldp-host', '');
+  const [port, setPort] = usePersistedState('ldp-port', '646');
   const [timeout, setTimeout_] = useState('10000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<LDPResult | null>(null);
@@ -85,8 +86,6 @@ export default function LDPClient({ onBack }: { onBack: () => void }) {
           </div>
 
         </div>
-
-      <ApiExamples examples={apiExamples.LDP || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-slate-400 text-sm mb-1">Host</label>
@@ -240,6 +239,7 @@ export default function LDPClient({ onBack }: { onBack: () => void }) {
           )}
         </div>
       )}
+      <ApiExamples examples={apiExamples.LDP || []} protocolId="ldp" />
     </div>
   );
 }

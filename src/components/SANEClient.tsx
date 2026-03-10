@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SANEClientProps {
   onBack: () => void;
 }
 
 export default function SANEClient({ onBack }: SANEClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6566');
-  const [username, setUsername] = useState('anonymous');
+  const [host, setHost] = usePersistedState('sane-host', '');
+  const [port, setPort] = usePersistedState('sane-port', '6566');
+  const [username, setUsername] = usePersistedState('sane-username', 'anonymous');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -108,7 +109,6 @@ export default function SANEClient({ onBack }: SANEClientProps) {
 
   return (
     <ProtocolClientLayout title="SANE Network Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SANE || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="SANE Daemon Connection" />
 
@@ -223,6 +223,8 @@ export default function SANEClient({ onBack }: SANEClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SANE || []} protocolId="sane" />
+
     </ProtocolClientLayout>
   );
 }

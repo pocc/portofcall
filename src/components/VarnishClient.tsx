@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface VarnishClientProps {
   onBack: () => void;
 }
 
 export default function VarnishClient({ onBack }: VarnishClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6082');
+  const [host, setHost] = usePersistedState('varnish-host', '');
+  const [port, setPort] = usePersistedState('varnish-port', '6082');
   const [secret, setSecret] = useState('');
-  const [command, setCommand] = useState('status');
+  const [command, setCommand] = usePersistedState('varnish-command', 'status');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -153,7 +154,6 @@ export default function VarnishClient({ onBack }: VarnishClientProps) {
 
   return (
     <ProtocolClientLayout title="Varnish CLI Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Varnish || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -267,6 +267,8 @@ export default function VarnishClient({ onBack }: VarnishClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Varnish || []} protocolId="varnish" />
+
     </ProtocolClientLayout>
   );
 }

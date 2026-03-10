@@ -398,3 +398,79 @@ export function formatResponse(protocol: string, json: any, rawTarget: string, h
   const formatter = FORMATTERS[protocol] || formatGeneric;
   return formatter(json, rawTarget, resolvedHost);
 }
+
+export function formatManpageHTML(proto: string, manpage: ProtocolManpage, host?: string): string {
+  const h = host || 'l4.fyi';
+  const title = `${proto}(1) — ${manpage.fullName}`;
+  const port = manpage.defaultPort !== null ? ` (port ${manpage.defaultPort})` : '';
+
+  let synopsisHTML = '';
+  if (manpage.shortRoute) {
+    if (manpage.defaultPort !== null) {
+      synopsisHTML += `<span class="cmd">curl</span> ${h}/${proto}/&lt;host&gt;\n`;
+      synopsisHTML += `<span class="cmd">curl</span> ${h}/${proto}/&lt;host&gt;:&lt;port&gt;\n`;
+    } else {
+      synopsisHTML += `<span class="cmd">curl</span> ${h}/${proto}/&lt;host&gt;:&lt;port&gt;\n`;
+    }
+  }
+  const firstEndpoint = manpage.endpoints[0] || 'connect';
+  synopsisHTML += `<span class="cmd">curl</span> -X POST ${h}/api/${proto}/${firstEndpoint} -d '{"host":"..."}'`;
+
+  const maxPath = Math.max(...manpage.endpoints.map(e => `/api/${proto}/${e}`.length));
+  const endpointsHTML = manpage.endpoints.map(ep => {
+    const path = `/api/${proto}/${ep}`;
+    return `  POST <a href="https://${h}${path}">${path}</a>${' '.repeat(Math.max(1, maxPath - path.length + 2))}${ep}`;
+  }).join('\n');
+
+  let seeAlsoHTML = '';
+  if (manpage.shortRoute && manpage.defaultPort !== null) {
+    seeAlsoHTML = `
+<h2>SEE ALSO</h2>
+<pre>  <a href="https://${h}/${proto}/example.com">curl ${h}/${proto}/example.com</a>
+  <a href="https://${h}/${proto}/example.com:${manpage.defaultPort}">curl ${h}/${proto}/example.com:${manpage.defaultPort}</a></pre>`;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} — L4.FYI</title>
+<style>
+  :root { --bg: #1a1a2e; --fg: #e0e0e0; --accent: #00d4aa; --dim: #888; --link: #5eead4; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--fg); font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 15px; line-height: 1.6; padding: 2rem; max-width: 76ch; margin: 0 auto; }
+  h1 { color: var(--accent); font-size: 1rem; font-weight: normal; border-bottom: 1px solid #333; padding-bottom: 0.5rem; margin-bottom: 1.5rem; display: flex; justify-content: space-between; }
+  h2 { color: var(--accent); font-size: 0.9rem; font-weight: bold; margin: 1.5rem 0 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  pre { white-space: pre-wrap; word-break: break-all; }
+  a { color: var(--link); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .cmd { color: var(--accent); }
+  .port { color: var(--dim); }
+  footer { margin-top: 2rem; padding-top: 0.5rem; border-top: 1px solid #333; color: var(--dim); font-size: 0.85rem; display: flex; justify-content: space-between; }
+  footer a { color: var(--link); }
+</style>
+</head>
+<body>
+<h1><span>PORTOFCALL ${manpage.name}(1)</span><span>PORTOFCALL ${manpage.name}(1)</span></h1>
+
+<h2>NAME</h2>
+<pre>  ${proto} — ${manpage.fullName}<span class="port">${port}</span></pre>
+
+<h2>SYNOPSIS</h2>
+<pre>${synopsisHTML}</pre>
+
+<h2>ENDPOINTS</h2>
+<pre>${endpointsHTML}</pre>
+${seeAlsoHTML}
+
+<h2>TRY IT</h2>
+<pre>  <span class="cmd">curl</span> ${h}/${proto}    <span class="port"># this page, as plain text</span></pre>
+
+<footer>
+  <span><a href="https://${h}">⚓ L4.FYI</a></span>
+  <span>${h}</span>
+</footer>
+</body>
+</html>`;
+}

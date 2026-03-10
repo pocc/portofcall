@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DCERPCClientProps {
   onBack: () => void;
@@ -18,11 +19,11 @@ const WELL_KNOWN_INTERFACES = [
 ];
 
 export default function DCERPCClient({ onBack }: DCERPCClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('135');
-  const [selectedInterface, setSelectedInterface] = useState('epm');
-  const [customUuid, setCustomUuid] = useState('');
-  const [customVersion, setCustomVersion] = useState('0');
+  const [host, setHost] = usePersistedState('dcerpc-host', '');
+  const [port, setPort] = usePersistedState('dcerpc-port', '135');
+  const [selectedInterface, setSelectedInterface] = usePersistedState('dcerpc-selectedInterface', 'epm');
+  const [customUuid, setCustomUuid] = usePersistedState('dcerpc-customUuid', '');
+  const [customVersion, setCustomVersion] = usePersistedState('dcerpc-customVersion', '0');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -196,8 +197,6 @@ export default function DCERPCClient({ onBack }: DCERPCClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.DCERPC || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="dcerpc-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -380,6 +379,7 @@ export default function DCERPCClient({ onBack }: DCERPCClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.DCERPC || []} protocolId="dcerpc" />
     </div>
   );
 }

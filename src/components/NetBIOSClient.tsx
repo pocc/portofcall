@@ -170,8 +170,6 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Session Request</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.NetBIOS || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
           <div>
             <label htmlFor="netbios-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -332,6 +330,7 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.NetBIOS || []} protocolId="netbios" />
     </div>
   );
 }

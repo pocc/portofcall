@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FluentdClientProps {
   onBack: () => void;
@@ -26,10 +27,10 @@ const commonTags = [
 
 export default function FluentdClient({ onBack }: FluentdClientProps) {
   const [mode, setMode] = useState<Mode>('probe');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('24224');
-  const [tag, setTag] = useState('portofcall.probe');
-  const [recordJson, setRecordJson] = useState('{"message": "Hello from Port of Call", "level": "info"}');
+  const [host, setHost] = usePersistedState('fluentd-host', '');
+  const [port, setPort] = usePersistedState('fluentd-port', '24224');
+  const [tag, setTag] = usePersistedState('fluentd-tag', 'portofcall.probe');
+  const [recordJson, setRecordJson] = usePersistedState('fluentd-recordJson', '{"message": "Hello from L4.FYI", "level": "info"}');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

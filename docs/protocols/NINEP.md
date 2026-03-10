@@ -2,7 +2,7 @@
 
 **Port:** 564 (default) | **Protocol:** 9P2000 (binary, little-endian) | **RFC:** N/A (Plan 9 spec)
 
-Port of Call provides four 9P endpoints for probing and interacting with 9P2000 filesystem servers. These are commonly found in QEMU (virtio-9p), WSL2, Plan 9 systems, and various Linux/BSD systems using v9fs or diod.
+L4.FYI provides four 9P endpoints for probing and interacting with 9P2000 filesystem servers. These are commonly found in QEMU (virtio-9p), WSL2, Plan 9 systems, and various Linux/BSD systems using v9fs or diod.
 
 ---
 
@@ -372,7 +372,7 @@ All messages follow this structure:
 | 124 | Tstat | → | Get file metadata |
 | 125 | Rstat | ← | Stat response |
 
-Port of Call implements: Tversion, Tattach, Twalk, Topen, Tread, Tstat, Tclunk.
+L4.FYI implements: Tversion, Tattach, Twalk, Topen, Tread, Tstat, Tclunk.
 
 **Not implemented:** Tauth/Rauth (authentication), Twrite/Rwrite, Tcreate/Rcreate, Tremove/Rremove, Twstat/Rwstat.
 
@@ -762,7 +762,7 @@ Inside the VM (Linux):
 mount -t 9p -o trans=virtio,version=9p2000.L hostshare /mnt
 ```
 
-To probe from Port of Call, the VM must expose 9P on a network-reachable port (not the default virtio transport).
+To probe from L4.FYI, the VM must expose 9P on a network-reachable port (not the default virtio transport).
 
 ### WSL2 9P server
 
@@ -773,7 +773,7 @@ WSL2 uses 9P to mount Windows drives. It's not directly network-accessible, but 
 sudo diod -f -n -p 564 -e /mnt/c
 ```
 
-Then probe from Port of Call:
+Then probe from L4.FYI:
 ```bash
 curl -s https://l4.fyi/api/9p/ls \
   -H 'Content-Type: application/json' \

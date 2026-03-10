@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface XMPPClientProps {
   onBack: () => void;
 }
 
 export default function XMPPClient({ onBack }: XMPPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5222');
-  const [domain, setDomain] = useState('');
+  const [host, setHost] = usePersistedState('xmpp-host', '');
+  const [port, setPort] = usePersistedState('xmpp-port', '5222');
+  const [domain, setDomain] = usePersistedState('xmpp-domain', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -125,8 +126,6 @@ export default function XMPPClient({ onBack }: XMPPClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Server Probe</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.XMPP || []} />
         <div className="grid md:grid-cols-3 gap-4 mb-6">
           <div>
             <label htmlFor="xmpp-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -239,6 +238,7 @@ export default function XMPPClient({ onBack }: XMPPClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.XMPP || []} protocolId="xmpp" />
     </div>
   );
 }

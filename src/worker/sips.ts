@@ -502,7 +502,7 @@ export async function handleSipsInvite(request: Request): Promise<Response> {
     const sdp = [
       'v=0',
       `o=portofcall 0 0 IN IP4 0.0.0.0`,
-      's=Port of Call probe',
+      's=L4.FYI probe',
       'c=IN IP4 0.0.0.0',
       't=0 0',
       'm=audio 0 RTP/AVP 0',

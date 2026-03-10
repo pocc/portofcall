@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FINSClientProps {
   onBack: () => void;
 }
 
 export default function FINSClient({ onBack }: FINSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9600');
-  const [clientNode, setClientNode] = useState('0');
+  const [host, setHost] = usePersistedState('fins-host', '');
+  const [port, setPort] = usePersistedState('fins-port', '9600');
+  const [clientNode, setClientNode] = usePersistedState('fins-clientNode', '0');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -117,7 +118,6 @@ export default function FINSClient({ onBack }: FINSClientProps) {
 
   return (
     <ProtocolClientLayout title="Omron FINS Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.FINS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="PLC Connection" />
 
@@ -242,6 +242,8 @@ export default function FINSClient({ onBack }: FINSClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.FINS || []} protocolId="fins" />
+
     </ProtocolClientLayout>
   );
 }

@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface WinRMClientProps {
   onBack: () => void;
@@ -25,8 +26,8 @@ interface IdentifyInfo {
 }
 
 export default function WinRMClient({ onBack }: WinRMClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5985');
+  const [host, setHost] = usePersistedState('winrm-host', '');
+  const [port, setPort] = usePersistedState('winrm-port', '5985');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface BeanstalkdClientProps {
   onBack: () => void;
 }
 
 export default function BeanstalkdClient({ onBack }: BeanstalkdClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('11300');
-  const [command, setCommand] = useState('');
+  const [host, setHost] = usePersistedState('beanstalkd-host', '');
+  const [port, setPort] = usePersistedState('beanstalkd-port', '11300');
+  const [command, setCommand] = usePersistedState('beanstalkd-command', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -156,7 +157,6 @@ export default function BeanstalkdClient({ onBack }: BeanstalkdClientProps) {
 
   return (
     <ProtocolClientLayout title="Beanstalkd Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Beanstalkd || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -253,6 +253,8 @@ export default function BeanstalkdClient({ onBack }: BeanstalkdClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Beanstalkd || []} protocolId="beanstalkd" />
+
     </ProtocolClientLayout>
   );
 }

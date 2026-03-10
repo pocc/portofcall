@@ -7,13 +7,14 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GeminiClientProps {
   onBack: () => void;
 }
 
 export default function GeminiClient({ onBack }: GeminiClientProps) {
-  const [url, setUrl] = useState('');
+  const [url, setUrl] = usePersistedState('gemini-url', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

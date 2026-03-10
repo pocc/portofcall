@@ -1,14 +1,15 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TorControlClientProps {
   onBack: () => void;
 }
 
 export default function TorControlClient({ onBack }: TorControlClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9051');
+  const [host, setHost] = usePersistedState('torcontrol-host', '');
+  const [port, setPort] = usePersistedState('torcontrol-port', '9051');
   const [password, setPassword] = useState('');
-  const [infoKeys, setInfoKeys] = useState('version,config-file,traffic/read,traffic/written,uptime');
+  const [infoKeys, setInfoKeys] = usePersistedState('torcontrol-infoKeys', 'version,config-file,traffic/read,traffic/written,uptime');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

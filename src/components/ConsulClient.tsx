@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ConsulClientProps {
   onBack: () => void;
 }
 
 export default function ConsulClient({ onBack }: ConsulClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8500');
+  const [host, setHost] = usePersistedState('consul-host', '');
+  const [port, setPort] = usePersistedState('consul-port', '8500');
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -107,8 +108,6 @@ export default function ConsulClient({ onBack }: ConsulClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.Consul || []} />
         <div className="grid md:grid-cols-3 gap-4 mb-6">
           <div>
             <label htmlFor="consul-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -215,6 +214,7 @@ export default function ConsulClient({ onBack }: ConsulClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Consul || []} protocolId="consul" />
     </div>
   );
 }

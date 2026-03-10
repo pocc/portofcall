@@ -9,19 +9,20 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ClickHouseClientProps {
   onBack: () => void;
 }
 
 export default function ClickHouseClient({ onBack }: ClickHouseClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8123');
-  const [user, setUser] = useState('');
+  const [host, setHost] = usePersistedState('clickhouse-host', '');
+  const [port, setPort] = usePersistedState('clickhouse-port', '8123');
+  const [user, setUser] = usePersistedState('clickhouse-user', '');
   const [password, setPassword] = useState('');
-  const [query, setQuery] = useState('SELECT 1');
-  const [database, setDatabase] = useState('');
-  const [format, setFormat] = useState('JSONCompact');
+  const [query, setQuery] = usePersistedState('clickhouse-query', 'SELECT 1');
+  const [database, setDatabase] = usePersistedState('clickhouse-database', '');
+  const [format, setFormat] = usePersistedState('clickhouse-format', 'JSONCompact');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -162,7 +163,6 @@ export default function ClickHouseClient({ onBack }: ClickHouseClientProps) {
 
   return (
     <ProtocolClientLayout title="ClickHouse Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.ClickHouse || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -346,6 +346,8 @@ export default function ClickHouseClient({ onBack }: ClickHouseClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.ClickHouse || []} protocolId="clickhouse" />
+
     </ProtocolClientLayout>
   );
 }

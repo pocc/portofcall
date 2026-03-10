@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface PCEPResult {
   success: boolean;
@@ -24,8 +25,8 @@ interface PCEPResult {
 }
 
 export default function PCEPClient({ onBack }: { onBack: () => void }) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4189');
+  const [host, setHost] = usePersistedState('pcep-host', '');
+  const [port, setPort] = usePersistedState('pcep-port', '4189');
   const [timeout, setTimeout_] = useState('10000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<PCEPResult | null>(null);
@@ -73,8 +74,6 @@ export default function PCEPClient({ onBack }: { onBack: () => void }) {
           </div>
 
         </div>
-
-      <ApiExamples examples={apiExamples.PCEP || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-slate-400 text-sm mb-1">Host</label>
@@ -218,6 +217,7 @@ export default function PCEPClient({ onBack }: { onBack: () => void }) {
           )}
         </div>
       )}
+      <ApiExamples examples={apiExamples.PCEP || []} protocolId="pcep" />
     </div>
   );
 }

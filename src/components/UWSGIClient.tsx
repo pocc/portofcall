@@ -1,14 +1,15 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface UWSGIClientProps {
   onBack: () => void;
 }
 
 export default function UWSGIClient({ onBack }: UWSGIClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3031');
-  const [method, setMethod] = useState('GET');
-  const [path, setPath] = useState('/');
+  const [host, setHost] = usePersistedState('uwsgi-host', '');
+  const [port, setPort] = usePersistedState('uwsgi-port', '3031');
+  const [method, setMethod] = usePersistedState('uwsgi-method', 'GET');
+  const [path, setPath] = usePersistedState('uwsgi-path', '/');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

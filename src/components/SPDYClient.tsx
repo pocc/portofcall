@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SPDYClientProps {
   onBack: () => void;
 }
 
 export default function SPDYClient({ onBack }: SPDYClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('443');
+  const [host, setHost] = usePersistedState('spdy-host', '');
+  const [port, setPort] = usePersistedState('spdy-port', '443');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

@@ -87,7 +87,6 @@ export default function GaduGaduClient({ onBack }: GaduGaduClientProps) {
 
   return (
     <ProtocolClientLayout title="Gadu-Gadu Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.GaduGadu || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -171,6 +170,8 @@ export default function GaduGaduClient({ onBack }: GaduGaduClientProps) {
           description="Gadu-Gadu (GG) is a Polish instant messaging protocol using a proprietary binary format. The client authenticates with a UIN (User Identification Number) and password hashed with either GG32 or SHA-1. Default port is 8074."
         />
       </div>
+      <ApiExamples examples={apiExamples.GaduGadu || []} protocolId="gadugadu" />
+
     </ProtocolClientLayout>
   );
 }

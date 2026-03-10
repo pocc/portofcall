@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IcecastClientProps {
   onBack: () => void;
@@ -24,8 +25,8 @@ interface MountPoint {
 }
 
 export default function IcecastClient({ onBack }: IcecastClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8000');
+  const [host, setHost] = usePersistedState('icecast-host', '');
+  const [port, setPort] = usePersistedState('icecast-port', '8000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

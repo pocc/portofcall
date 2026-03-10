@@ -253,7 +253,7 @@ describe('GELF TCP Protocol', () => {
       const message: GelfMessage = {
         version: '1.1',
         host: 'portofcall-test',
-        short_message: 'Test message from Port of Call',
+        short_message: 'Test message from L4.FYI',
         full_message: 'This is a test message sent via GELF TCP protocol',
         level: 6, // INFO
         _test: true,

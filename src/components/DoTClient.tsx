@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DoTClientProps {
   onBack: () => void;
@@ -24,10 +25,10 @@ const DOT_SERVERS = [
 ];
 
 export default function DoTClient({ onBack }: DoTClientProps) {
-  const [domain, setDomain] = useState('');
-  const [server, setServer] = useState('1.1.1.1');
-  const [port, setPort] = useState('853');
-  const [recordType, setRecordType] = useState('A');
+  const [domain, setDomain] = usePersistedState('dot-domain', '');
+  const [server, setServer] = usePersistedState('dot-server', '1.1.1.1');
+  const [port, setPort] = usePersistedState('dot-port', '853');
+  const [recordType, setRecordType] = usePersistedState('dot-recordType', 'A');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -161,7 +162,6 @@ export default function DoTClient({ onBack }: DoTClientProps) {
 
   return (
     <ProtocolClientLayout title="DNS over TLS (DoT) Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.DoT || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Encrypted DNS Query" />
 
@@ -390,6 +390,8 @@ export default function DoTClient({ onBack }: DoTClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.DoT || []} protocolId="dot" />
+
     </ProtocolClientLayout>
   );
 }

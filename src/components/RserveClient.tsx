@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RserveClientProps {
   onBack: () => void;
 }
 
 export default function RserveClient({ onBack }: RserveClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6311');
-  const [expression, setExpression] = useState('R.version.string');
+  const [host, setHost] = usePersistedState('rserve-host', '');
+  const [port, setPort] = usePersistedState('rserve-port', '6311');
+  const [expression, setExpression] = usePersistedState('rserve-expression', 'R.version.string');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -187,7 +188,6 @@ export default function RserveClient({ onBack }: RserveClientProps) {
 
   return (
     <ProtocolClientLayout title="Rserve Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Rserve || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Rserve Endpoint" />
 
@@ -260,6 +260,8 @@ export default function RserveClient({ onBack }: RserveClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Rserve || []} protocolId="rserve" />
+
     </ProtocolClientLayout>
   );
 }

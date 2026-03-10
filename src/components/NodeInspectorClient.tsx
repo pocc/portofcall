@@ -4,6 +4,7 @@
  */
 
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NodeInspectorClientProps {
   onBack: () => void;
@@ -25,7 +26,7 @@ interface OutputMessage {
 }
 
 export default function NodeInspectorClient({ onBack }: NodeInspectorClientProps) {
-  const [host, setHost] = useState('localhost');
+  const [host, setHost] = usePersistedState('nodeinspector-host', 'localhost');
   const [port, setPort] = useState(9229);
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -33,8 +34,8 @@ export default function NodeInspectorClient({ onBack }: NodeInspectorClientProps
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
   const [output, setOutput] = useState<OutputMessage[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
-  const [method, setMethod] = useState('Runtime.evaluate');
-  const [params, setParams] = useState('{"expression": "1 + 1"}');
+  const [method, setMethod] = usePersistedState('nodeinspector-method', 'Runtime.evaluate');
+  const [params, setParams] = usePersistedState('nodeinspector-params', '{"expression": "1 + 1"}');
 
   const apiBase = '';
 

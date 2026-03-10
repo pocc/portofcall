@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface Quake3ClientProps {
   onBack: () => void;
@@ -19,8 +20,8 @@ interface Player {
 }
 
 export default function Quake3Client({ onBack }: Quake3ClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('27960');
+  const [host, setHost] = usePersistedState('quake3-host', '');
+  const [port, setPort] = usePersistedState('quake3-port', '27960');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

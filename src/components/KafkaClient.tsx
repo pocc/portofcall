@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface KafkaClientProps {
   onBack: () => void;
@@ -53,7 +54,7 @@ interface MetadataResult {
 type ActiveTab = 'versions' | 'metadata';
 
 export default function KafkaClient({ onBack }: KafkaClientProps) {
-  const [host, setHost] = useState('');
+  const [host, setHost] = usePersistedState('kafka-host', '');
   const [port, setPort] = useState(9092);
   const [loading, setLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<ActiveTab>('versions');
@@ -154,8 +155,6 @@ export default function KafkaClient({ onBack }: KafkaClientProps) {
             </p>
           </div>
         </div>
-
-      <ApiExamples examples={apiExamples.Kafka || []} />
         <div className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
@@ -414,6 +413,7 @@ export default function KafkaClient({ onBack }: KafkaClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Kafka || []} protocolId="kafka" />
     </div>
   );
 }

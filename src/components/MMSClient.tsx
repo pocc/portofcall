@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MMSClientProps {
   onBack: () => void;
 }
 
 export default function MMSClient({ onBack }: MMSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1755');
+  const [host, setHost] = usePersistedState('mms-host', '');
+  const [port, setPort] = usePersistedState('mms-port', '1755');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

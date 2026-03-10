@@ -167,7 +167,7 @@ Client                              Server
   |                                    |
   |<------------ 220 banner -----------|
   |                                    |
-  |-- CLIENT Port of Call DICT ... --->|
+  |-- CLIENT L4.FYI DICT ... --->|
   |<------------ 250 ok --------------|
   |                                    |
   |-- DEFINE * "word" --------------->|

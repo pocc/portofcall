@@ -803,7 +803,7 @@ export async function handleSHOUTcastSource(request: Request): Promise<Response>
     port = 8000,
     mountpoint = '/',
     password,
-    name = 'Port of Call Test',
+    name = 'L4.FYI Test',
     genre = 'Various',
     bitrate = 128,
     contentType = 'audio/mpeg',

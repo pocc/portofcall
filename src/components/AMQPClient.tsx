@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface AMQPClientProps {
   onBack: () => void;
 }
 
 export default function AMQPClient({ onBack }: AMQPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5672');
+  const [host, setHost] = usePersistedState('amqp-host', '');
+  const [port, setPort] = usePersistedState('amqp-port', '5672');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -109,8 +110,6 @@ export default function AMQPClient({ onBack }: AMQPClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.AMQP || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="amqp-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -203,6 +202,7 @@ export default function AMQPClient({ onBack }: AMQPClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.AMQP || []} protocolId="amqp" />
     </div>
   );
 }

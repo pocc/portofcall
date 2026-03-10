@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CouchDBClientProps {
   onBack: () => void;
 }
 
 export default function CouchDBClient({ onBack }: CouchDBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5984');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('couchdb-host', '');
+  const [port, setPort] = usePersistedState('couchdb-port', '5984');
+  const [username, setUsername] = usePersistedState('couchdb-username', '');
   const [password, setPassword] = useState('');
-  const [queryPath, setQueryPath] = useState('/');
+  const [queryPath, setQueryPath] = usePersistedState('couchdb-queryPath', '/');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -154,7 +155,6 @@ export default function CouchDBClient({ onBack }: CouchDBClientProps) {
 
   return (
     <ProtocolClientLayout title="Apache CouchDB Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.CouchDB || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -305,6 +305,8 @@ export default function CouchDBClient({ onBack }: CouchDBClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.CouchDB || []} protocolId="couchdb" />
+
     </ProtocolClientLayout>
   );
 }

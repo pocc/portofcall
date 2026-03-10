@@ -9,20 +9,21 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SolrClientProps {
   onBack: () => void;
 }
 
 export default function SolrClient({ onBack }: SolrClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8983');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('solr-host', '');
+  const [port, setPort] = usePersistedState('solr-port', '8983');
+  const [username, setUsername] = usePersistedState('solr-username', '');
   const [password, setPassword] = useState('');
-  const [core, setCore] = useState('');
-  const [query, setQuery] = useState('*:*');
-  const [handler, setHandler] = useState('/select');
-  const [rows, setRows] = useState('10');
+  const [core, setCore] = usePersistedState('solr-core', '');
+  const [query, setQuery] = usePersistedState('solr-query', '*:*');
+  const [handler, setHandler] = usePersistedState('solr-handler', '/select');
+  const [rows, setRows] = usePersistedState('solr-rows', '10');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -175,7 +176,6 @@ export default function SolrClient({ onBack }: SolrClientProps) {
 
   return (
     <ProtocolClientLayout title="Apache Solr Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Solr || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -361,6 +361,8 @@ export default function SolrClient({ onBack }: SolrClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Solr || []} protocolId="solr" />
+
     </ProtocolClientLayout>
   );
 }

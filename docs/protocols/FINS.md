@@ -140,7 +140,7 @@ payload of the FINS/TCP frame is a FINS command frame:
 | 6   | 0     | Response required (1 = not required) |
 | 5-0 | 0     | Reserved                             |
 
-Port of Call always sends `0x80` (command, response required).
+L4.FYI always sends `0x80` (command, response required).
 
 ### GCT (Gateway Count)
 
@@ -165,7 +165,7 @@ Decremented by each gateway hop. Default value is `0x02`, meaning the frame can 
 
 ### SID (Service ID)
 
-An arbitrary 1-byte identifier that the server echoes back. Port of Call uses incrementing SIDs
+An arbitrary 1-byte identifier that the server echoes back. L4.FYI uses incrementing SIDs
 (0x01 for controller reads, 0x02 for memory reads, 0x03 for memory writes).
 
 ### FINS Response Frame
@@ -216,7 +216,7 @@ The response frame mirrors the command frame but with:
 
 ## Memory Areas
 
-Port of Call supports word-level access to these Omron PLC memory areas:
+L4.FYI supports word-level access to these Omron PLC memory areas:
 
 | Name | Code   | Description                                            |
 |------|--------|--------------------------------------------------------|
@@ -567,7 +567,7 @@ override this with `clientNode: 10` (or any value 1-254).
 ### Connection limits
 
 Omron PLCs have a hard limit on concurrent FINS/TCP connections (typically 8 for CJ2M, 16 for
-NJ/NX). Each Port of Call API call consumes one connection for the duration of the request. If the
+NJ/NX). Each L4.FYI API call consumes one connection for the duration of the request. If the
 PLC runs out of connections, you will see FINS/TCP error `0x00000020` ("All connections are in use").
 
 ### Memory area addressing
@@ -607,11 +607,11 @@ Lower nibble bit 0 = fatal error flag, bit 1 = non-fatal error flag.
 
 ### Item count limits
 
-The FINS protocol allows reading or writing up to 999 words in a single command, but Port of Call
+The FINS protocol allows reading or writing up to 999 words in a single command, but L4.FYI
 limits this to **500 words** to stay within reasonable TCP payload sizes. For larger transfers,
 issue multiple sequential requests.
 
-### What Port of Call does NOT implement
+### What L4.FYI does NOT implement
 
 - **FINS/UDP** -- FINS over UDP with its own framing (commonly used in CJ1/CS1 series)
 - **Multiple FINS commands per connection** -- only one command (plus handshake) per connection

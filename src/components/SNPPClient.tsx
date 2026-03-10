@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SNPPClientProps {
   onBack: () => void;
 }
 
 export default function SNPPClient({ onBack }: SNPPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('444');
-  const [pagerId, setPagerId] = useState('');
-  const [message, setMessage] = useState('');
+  const [host, setHost] = usePersistedState('snpp-host', '');
+  const [port, setPort] = usePersistedState('snpp-port', '444');
+  const [pagerId, setPagerId] = usePersistedState('snpp-pagerId', '');
+  const [message, setMessage] = usePersistedState('snpp-message', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -149,7 +150,6 @@ export default function SNPPClient({ onBack }: SNPPClientProps) {
 
   return (
     <ProtocolClientLayout title="SNPP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SNPP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* Tab Selector */}
         <div className="flex gap-2 mb-6">
@@ -296,6 +296,8 @@ export default function SNPPClient({ onBack }: SNPPClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SNPP || []} protocolId="snpp" />
+
     </ProtocolClientLayout>
   );
 }

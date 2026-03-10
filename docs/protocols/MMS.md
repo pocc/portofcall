@@ -780,7 +780,7 @@ Full server discovery: COTP + Initiate + Identify + GetNameList(domains).
 
 ---
 
-## Implementation Notes (Port of Call Codebase)
+## Implementation Notes (L4.FYI Codebase)
 
 ### Bugs Fixed (2026-02-18)
 
@@ -826,4 +826,4 @@ Full server discovery: COTP + Initiate + Identify + GetNameList(domains).
 
 ## License
 
-This documentation is part of the Port of Call project. The MMS protocol is standardized by ISO (ISO 9506) and IEC (IEC 61850-8-1).
+This documentation is part of the L4.FYI project. The MMS protocol is standardized by ISO (ISO 9506) and IEC (IEC 61850-8-1).

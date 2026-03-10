@@ -2,7 +2,7 @@
 
 **Port:** 4730 (default) | **Protocol:** Text admin + Binary job | **Transport:** TCP
 
-Port of Call provides three Gearman endpoints: a connectivity probe (version + status), a text admin command executor, and a binary protocol job submitter. All three open a direct TCP connection from the Cloudflare Worker to the target Gearman job server.
+L4.FYI provides three Gearman endpoints: a connectivity probe (version + status), a text admin command executor, and a binary protocol job submitter. All three open a direct TCP connection from the Cloudflare Worker to the target Gearman job server.
 
 ---
 
@@ -343,7 +343,7 @@ Terminal responses (exactly one will be sent):
 | WORK_FAIL       | Job failed (no data returned)  |
 | WORK_EXCEPTION  | Job threw an exception (opt-in via OPTION_REQ "exceptions") |
 
-The Port of Call implementation correctly waits for the terminal response on foreground jobs, collecting any intermediate WORK_DATA, WORK_WARNING, and WORK_STATUS packets along the way.
+The L4.FYI implementation correctly waits for the terminal response on foreground jobs, collecting any intermediate WORK_DATA, WORK_WARNING, and WORK_STATUS packets along the way.
 
 ---
 

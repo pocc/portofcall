@@ -186,7 +186,6 @@ export default function OpenFlowClient({ onBack }: OpenFlowClientProps) {
 
   return (
     <ProtocolClientLayout title="OpenFlow Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.OpenFlow || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Switch Connection" />
 
@@ -266,6 +265,8 @@ export default function OpenFlowClient({ onBack }: OpenFlowClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.OpenFlow || []} protocolId="openflow" />
+
     </ProtocolClientLayout>
   );
 }

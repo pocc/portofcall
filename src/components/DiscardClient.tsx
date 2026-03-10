@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DiscardClientProps {
   onBack: () => void;
 }
 
 export default function DiscardClient({ onBack }: DiscardClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9');
-  const [data, setData] = useState('Hello from Port of Call!\n');
+  const [host, setHost] = usePersistedState('discard-host', '');
+  const [port, setPort] = usePersistedState('discard-port', '9');
+  const [data, setData] = useState('Hello from L4.FYI!\n');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -98,7 +99,6 @@ export default function DiscardClient({ onBack }: DiscardClientProps) {
 
   return (
     <ProtocolClientLayout title="Discard Protocol Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Discard || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Discard Server Configuration" />
 
@@ -200,7 +200,7 @@ export default function DiscardClient({ onBack }: DiscardClientProps) {
           <h3 className="text-sm font-semibold text-slate-300 mb-3">Example Configurations</h3>
           <div className="grid gap-2">
             <button
-              onClick={() => handleExampleServer('localhost', 'Hello from Port of Call!\n')}
+              onClick={() => handleExampleServer('localhost', 'Hello from L4.FYI!\n')}
               className="text-left text-sm bg-slate-700 hover:bg-slate-600 text-slate-300 py-2 px-3 rounded transition-colors"
             >
               <span className="font-mono text-blue-400">localhost:9</span>
@@ -317,6 +317,8 @@ export default function DiscardClient({ onBack }: DiscardClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Discard || []} protocolId="discard" />
+
     </ProtocolClientLayout>
   );
 }

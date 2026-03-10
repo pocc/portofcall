@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface JetDirectClientProps {
   onBack: () => void;
 }
 
 export default function JetDirectClient({ onBack }: JetDirectClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9100');
+  const [host, setHost] = usePersistedState('jetdirect-host', '');
+  const [port, setPort] = usePersistedState('jetdirect-port', '9100');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -104,7 +105,6 @@ export default function JetDirectClient({ onBack }: JetDirectClientProps) {
 
   return (
     <ProtocolClientLayout title="JetDirect / Raw Print Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.JetDirect || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Printer Connection" />
 
@@ -251,6 +251,8 @@ export default function JetDirectClient({ onBack }: JetDirectClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.JetDirect || []} protocolId="jetdirect" />
+
     </ProtocolClientLayout>
   );
 }

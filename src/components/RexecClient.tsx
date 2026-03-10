@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RexecClientProps {
   onBack: () => void;
 }
 
 export default function RexecClient({ onBack }: RexecClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('512');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('rexec-host', '');
+  const [port, setPort] = usePersistedState('rexec-port', '512');
+  const [username, setUsername] = usePersistedState('rexec-username', '');
   const [password, setPassword] = useState('');
-  const [command, setCommand] = useState('id');
+  const [command, setCommand] = usePersistedState('rexec-command', 'id');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -103,7 +104,6 @@ export default function RexecClient({ onBack }: RexecClientProps) {
 
   return (
     <ProtocolClientLayout title="Rexec Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Rexec || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -208,6 +208,8 @@ export default function RexecClient({ onBack }: RexecClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Rexec || []} protocolId="rexec" />
+
     </ProtocolClientLayout>
   );
 }

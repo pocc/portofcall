@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ManageSieveClientProps {
   onBack: () => void;
@@ -25,9 +26,9 @@ interface Script {
 }
 
 export default function ManageSieveClient({ onBack }: ManageSieveClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4190');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('managesieve-host', '');
+  const [port, setPort] = usePersistedState('managesieve-port', '4190');
+  const [username, setUsername] = usePersistedState('managesieve-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -160,7 +161,6 @@ export default function ManageSieveClient({ onBack }: ManageSieveClientProps) {
 
   return (
     <ProtocolClientLayout title="ManageSieve Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.ManageSieve || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -289,6 +289,8 @@ export default function ManageSieveClient({ onBack }: ManageSieveClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.ManageSieve || []} protocolId="managesieve" />
+
     </ProtocolClientLayout>
   );
 }

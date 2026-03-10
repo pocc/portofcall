@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SMBClientProps {
   onBack: () => void;
 }
 
 export default function SMBClient({ onBack }: SMBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('445');
+  const [host, setHost] = usePersistedState('smb-host', '');
+  const [port, setPort] = usePersistedState('smb-port', '445');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -73,7 +74,6 @@ export default function SMBClient({ onBack }: SMBClientProps) {
 
   return (
     <ProtocolClientLayout title="SMB Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SMB || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -120,6 +120,8 @@ export default function SMBClient({ onBack }: SMBClientProps) {
           description="SMB (Server Message Block), also known as CIFS, is a network file sharing protocol used primarily in Windows environments. This interface tests connectivity by performing an SMB2/SMB3 protocol negotiation. Port 445 is the standard SMB port. The server will respond with the negotiated dialect (SMB 2.0.2, 2.1, 3.0, 3.0.2, or 3.1.1)."
         />
       </div>
+      <ApiExamples examples={apiExamples.SMB || []} protocolId="smb" />
+
     </ProtocolClientLayout>
   );
 }

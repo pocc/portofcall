@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DNP3ClientProps {
   onBack: () => void;
@@ -14,11 +15,11 @@ const CLASS_OPTIONS = [
 ];
 
 export default function DNP3Client({ onBack }: DNP3ClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('20000');
-  const [destination, setDestination] = useState('1');
-  const [source, setSource] = useState('3');
-  const [classNum, setClassNum] = useState('0');
+  const [host, setHost] = usePersistedState('dnp3-host', '');
+  const [port, setPort] = usePersistedState('dnp3-port', '20000');
+  const [destination, setDestination] = usePersistedState('dnp3-destination', '1');
+  const [source, setSource] = usePersistedState('dnp3-source', '3');
+  const [classNum, setClassNum] = usePersistedState('dnp3-classNum', '0');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -243,8 +244,6 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
           </div>
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.DNP3 || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
           <div>
             <label htmlFor="dnp3-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -428,6 +427,7 @@ export default function DNP3Client({ onBack }: DNP3ClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.DNP3 || []} protocolId="dnp3" />
     </div>
   );
 }

@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ChargenClientProps {
   onBack: () => void;
 }
 
 export default function ChargenClient({ onBack }: ChargenClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('19');
-  const [maxBytes, setMaxBytes] = useState('10240');
+  const [host, setHost] = usePersistedState('chargen-host', '');
+  const [port, setPort] = usePersistedState('chargen-port', '19');
+  const [maxBytes, setMaxBytes] = usePersistedState('chargen-maxBytes', '10240');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -106,7 +107,6 @@ $%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk`;
 
   return (
     <ProtocolClientLayout title="CHARGEN Protocol Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Chargen || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="CHARGEN Server Configuration" />
 
@@ -304,6 +304,8 @@ $%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_\`abcdefghijk`;
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Chargen || []} protocolId="chargen" />
+
     </ProtocolClientLayout>
   );
 }

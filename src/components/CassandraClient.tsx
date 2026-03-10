@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CassandraClientProps {
   onBack: () => void;
 }
 
 export default function CassandraClient({ onBack }: CassandraClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9042');
+  const [host, setHost] = usePersistedState('cassandra-host', '');
+  const [port, setPort] = usePersistedState('cassandra-port', '9042');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -112,7 +113,6 @@ export default function CassandraClient({ onBack }: CassandraClientProps) {
 
   return (
     <ProtocolClientLayout title="Cassandra CQL Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Cassandra || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Cassandra Server Configuration" />
 
@@ -259,6 +259,8 @@ Server opcodes: SUPPORTED(0x06), READY(0x02), ERROR(0x00)`}
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Cassandra || []} protocolId="cassandra" />
+
     </ProtocolClientLayout>
   );
 }

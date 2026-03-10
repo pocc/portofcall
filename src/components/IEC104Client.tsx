@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IEC104ClientProps {
   onBack: () => void;
@@ -22,8 +23,8 @@ interface FrameInfo {
 }
 
 export default function IEC104Client({ onBack }: IEC104ClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2404');
+  const [host, setHost] = usePersistedState('iec104-host', '');
+  const [port, setPort] = usePersistedState('iec104-port', '2404');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -114,7 +115,6 @@ export default function IEC104Client({ onBack }: IEC104ClientProps) {
 
   return (
     <ProtocolClientLayout title="IEC 60870-5-104 Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.IEC104 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         {/* SCADA Safety Warning */}
         <div className="bg-red-900/30 border border-red-600/50 rounded-lg p-4 mb-6">
@@ -270,6 +270,8 @@ export default function IEC104Client({ onBack }: IEC104ClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.IEC104 || []} protocolId="iec104" />
+
     </ProtocolClientLayout>
   );
 }

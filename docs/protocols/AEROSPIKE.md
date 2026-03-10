@@ -2,7 +2,7 @@
 
 **Port:** 3000 (default) | **Protocols:** Info (type 1) + AS_MSG (type 3) | Deployed
 
-Port of Call provides three Aerospike endpoints: an HTTP connection probe, an info command executor, and KV get/put operations. All open a direct TCP connection from the Cloudflare Worker to your Aerospike node.
+L4.FYI provides three Aerospike endpoints: an HTTP connection probe, an info command executor, and KV get/put operations. All open a direct TCP connection from the Cloudflare Worker to your Aerospike node.
 
 ---
 
@@ -402,7 +402,7 @@ The digest determines which partition (and therefore which node) owns the record
 partition_id = (digest[0] | (digest[1] << 8) | (digest[2] << 16) | (digest[3] << 24)) & 0xFFF
 ```
 
-Port of Call computes the digest client-side using a pure-JavaScript RIPEMD-160 implementation and sends it in the DIGEST field (type 4) of the AS_MSG.
+L4.FYI computes the digest client-side using a pure-JavaScript RIPEMD-160 implementation and sends it in the DIGEST field (type 4) of the AS_MSG.
 
 ### Result Codes
 
@@ -439,7 +439,7 @@ Port of Call computes the digest client-side using a pure-JavaScript RIPEMD-160 
 
 ## Authentication
 
-Aerospike Enterprise supports authentication. The flow uses the AS_MSG protocol with a special `AUTHENTICATE` info message. Port of Call does not currently implement authentication -- connections are unauthenticated.
+Aerospike Enterprise supports authentication. The flow uses the AS_MSG protocol with a special `AUTHENTICATE` info message. L4.FYI does not currently implement authentication -- connections are unauthenticated.
 
 For secured clusters, the authentication handshake is:
 
@@ -461,7 +461,7 @@ Aerospike clusters are discovered through a seed node. The process:
 4. Issue the `partition-generation` command to detect partition map changes
 5. Connect to each peer and repeat to build the full cluster view
 
-Port of Call connects to a single node only. It does not perform cluster discovery, automatic failover, or partition-aware routing. All requests go to the specified host.
+L4.FYI connects to a single node only. It does not perform cluster discovery, automatic failover, or partition-aware routing. All requests go to the specified host.
 
 For multi-node clusters, you can use the `services` info command to discover peer addresses and then target specific nodes.
 

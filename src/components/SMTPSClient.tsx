@@ -9,20 +9,21 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SMTPSClientProps {
   onBack: () => void;
 }
 
 export default function SMTPSClient({ onBack }: SMTPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('465');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('smtps-host', '');
+  const [port, setPort] = usePersistedState('smtps-port', '465');
+  const [username, setUsername] = usePersistedState('smtps-username', '');
   const [password, setPassword] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
+  const [from, setFrom] = usePersistedState('smtps-from', '');
+  const [to, setTo] = usePersistedState('smtps-to', '');
+  const [subject, setSubject] = usePersistedState('smtps-subject', '');
+  const [body, setBody] = usePersistedState('smtps-body', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -168,7 +169,6 @@ export default function SMTPSClient({ onBack }: SMTPSClientProps) {
 
   return (
     <ProtocolClientLayout title="SMTPS Client (Implicit TLS)" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SMTPS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="SMTPS Server" />
 
@@ -315,6 +315,8 @@ export default function SMTPSClient({ onBack }: SMTPSClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SMTPS || []} protocolId="smtps" />
+
     </ProtocolClientLayout>
   );
 }

@@ -643,7 +643,7 @@ const payload = data.slice(8, payloadEnd);
 
 ## Reference Implementation
 
-The Port of Call MaxDB implementation provides three endpoints demonstrating progressive protocol usage:
+The L4.FYI MaxDB implementation provides three endpoints demonstrating progressive protocol usage:
 
 1. **connect** - Basic NI_CONNECT handshake
 2. **info** - Service enumeration with NI_INFO

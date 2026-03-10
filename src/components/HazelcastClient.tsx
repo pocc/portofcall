@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface HazelcastClientProps {
   onBack: () => void;
@@ -22,8 +23,8 @@ interface ProbeInfo {
 }
 
 export default function HazelcastClient({ onBack }: HazelcastClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5701');
+  const [host, setHost] = usePersistedState('hazelcast-host', '');
+  const [port, setPort] = usePersistedState('hazelcast-port', '5701');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ShadowsocksClientProps {
   onBack: () => void;
 }
 
 export default function ShadowsocksClient({ onBack }: ShadowsocksClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8388');
+  const [host, setHost] = usePersistedState('shadowsocks-host', '');
+  const [port, setPort] = usePersistedState('shadowsocks-port', '8388');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

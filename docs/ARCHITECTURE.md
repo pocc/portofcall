@@ -1,6 +1,6 @@
 # Architecture
 
-Technical architecture of Port of Call — a browser-to-TCP bridge deployed as a Cloudflare Worker.
+Technical architecture of L4.FYI — a browser-to-TCP bridge deployed as a Cloudflare Worker.
 
 ## Stack Overview
 

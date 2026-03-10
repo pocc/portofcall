@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MSNClientProps {
   onBack: () => void;
 }
 
 export default function MSNClient({ onBack }: MSNClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1863');
-  const [protocolVersion, setProtocolVersion] = useState('MSNP18');
+  const [host, setHost] = usePersistedState('msn-host', '');
+  const [port, setPort] = usePersistedState('msn-port', '1863');
+  const [protocolVersion, setProtocolVersion] = usePersistedState('msn-protocolVersion', 'MSNP18');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

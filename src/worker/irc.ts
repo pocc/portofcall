@@ -256,7 +256,7 @@ export async function handleIRCConnect(request: Request): Promise<Response> {
       // Send QUIT
       try {
         const quitWriter = socket.writable.getWriter();
-        await quitWriter.write(encoder.encode('QUIT :Port of Call test\r\n'));
+        await quitWriter.write(encoder.encode('QUIT :L4.FYI test\r\n'));
         quitWriter.releaseLock();
       } catch {
         // Socket may already be closed

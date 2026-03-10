@@ -965,7 +965,7 @@ function buildOSCARLoginRequest(screenName: string, password: string, authKey: B
   const snData = Buffer.concat([
     buildTLV(0x0001, Buffer.from(screenName, 'ascii')),
     buildTLV(0x0025, authHash),
-    buildTLV(0x0003, Buffer.from('Port of Call 1.0', 'ascii')),
+    buildTLV(0x0003, Buffer.from('L4.FYI 1.0', 'ascii')),
     buildTLV(0x0016, Buffer.from([0x01, 0x09])),  // client ID
     buildTLV(0x0017, Buffer.from([0x00, 0x01])),  // major version 1
     buildTLV(0x0018, Buffer.from([0x00, 0x00])),  // minor version 0

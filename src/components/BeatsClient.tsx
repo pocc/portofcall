@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface BeatsClientProps {
   onBack: () => void;
 }
 
 export default function BeatsClient({ onBack }: BeatsClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5044');
-  const [tag, setTag] = useState('test');
-  const [message, setMessage] = useState('Hello from Port of Call');
+  const [host, setHost] = usePersistedState('beats-host', '');
+  const [port, setPort] = usePersistedState('beats-port', '5044');
+  const [tag, setTag] = usePersistedState('beats-tag', 'test');
+  const [message, setMessage] = usePersistedState('beats-message', 'Hello from L4.FYI');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -84,7 +85,6 @@ export default function BeatsClient({ onBack }: BeatsClientProps) {
 
   return (
     <ProtocolClientLayout title="Beats Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Beats || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Logstash / Elasticsearch Target" />
 
@@ -155,6 +155,8 @@ export default function BeatsClient({ onBack }: BeatsClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Beats || []} protocolId="beats" />
+
     </ProtocolClientLayout>
   );
 }

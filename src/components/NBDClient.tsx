@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NBDResult {
   success: boolean;
@@ -22,8 +23,8 @@ interface NBDResult {
 }
 
 export default function NBDClient({ onBack }: { onBack: () => void }) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('10809');
+  const [host, setHost] = usePersistedState('nbd-host', '');
+  const [port, setPort] = usePersistedState('nbd-port', '10809');
   const [timeout, setTimeout_] = useState('10000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<NBDResult | null>(null);
@@ -71,8 +72,6 @@ export default function NBDClient({ onBack }: { onBack: () => void }) {
           </div>
 
         </div>
-
-      <ApiExamples examples={apiExamples.NBD || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className="block text-slate-400 text-sm mb-1">Host</label>
@@ -216,6 +215,7 @@ export default function NBDClient({ onBack }: { onBack: () => void }) {
           )}
         </div>
       )}
+      <ApiExamples examples={apiExamples.NBD || []} protocolId="nbd" />
     </div>
   );
 }

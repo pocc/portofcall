@@ -87,7 +87,7 @@ Send an email over SMTPS.
   "from": "user@gmail.com",
   "to": "recipient@example.com",
   "subject": "Test Email",
-  "body": "Hello from Port of Call!",
+  "body": "Hello from L4.FYI!",
   "timeout": 30000
 }
 ```

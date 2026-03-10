@@ -17,7 +17,7 @@ JavaScript, no inline images.
 
 ## Transport
 
-Port of Call opens a TLS socket to `host:port`, writes the Gemini request URL terminated with
+L4.FYI opens a TLS socket to `host:port`, writes the Gemini request URL terminated with
 `\r\n`, reads the full response until the server closes the connection, then closes the socket.
 There is no keep-alive and no pipelining — one connection per request.
 
@@ -134,7 +134,7 @@ Gemini uses two-digit status codes. The first digit is the class; the second ref
 | 62   | CERTIFICATE NOT VALID       | Human-readable error message    | No    |
 
 All codes with class 2x (20–29) have a body. All others have only the header line.
-The body in Port of Call's response will be an empty string `""` for non-2x status codes.
+The body in L4.FYI's response will be an empty string `""` for non-2x status codes.
 
 ---
 
@@ -204,7 +204,7 @@ curl -s -X POST https://l4.fyi/api/gemini/fetch \
 
 ### No redirect following
 
-Port of Call does **not** follow redirects. A `3x` response returns `success: true` with the
+L4.FYI does **not** follow redirects. A `3x` response returns `success: true` with the
 redirect URL in `meta` and an empty `body`. If you need to follow a redirect, extract `meta` and
 make a second call with that URL.
 
@@ -225,11 +225,11 @@ certificates on Gemini servers will cause the TLS handshake to fail at `socket.o
 ```
 
 or a TLS-specific error depending on the Worker runtime. Many smaller Gemini capsules use
-self-signed certificates and will be unreachable via Port of Call.
+self-signed certificates and will be unreachable via L4.FYI.
 
 ### Response body for non-2x status codes
 
-The Gemini wire protocol sends no body for non-2x responses. Port of Call sets `body` to the
+The Gemini wire protocol sends no body for non-2x responses. L4.FYI sets `body` to the
 decoded content after the `\r\n` — which is always an empty string for non-2x responses, since
 the server closes immediately after the header line.
 
@@ -246,7 +246,7 @@ If the server closes the connection before sending any bytes, the implementation
 `'No response from server'` (HTTP 500). This is distinct from a timeout, which produces
 `'Connection timeout'`.
 
-### What Port of Call does NOT implement
+### What L4.FYI does NOT implement
 
 - **Redirect following** — manual extraction of `meta` URL and re-request required
 - **Client certificates** — no TOFU or cert provisioning
@@ -272,7 +272,7 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
 agate --content ./content --addr 0.0.0.0:1965 \
   --cert cert.pem --key key.pem --hostname localhost
 
-# Note: Self-signed certs will fail TLS validation in Port of Call (see above)
+# Note: Self-signed certs will fail TLS validation in L4.FYI (see above)
 ```
 
 **Public Gemini capsules for testing:**

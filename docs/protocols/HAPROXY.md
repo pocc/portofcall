@@ -258,7 +258,7 @@ Puts a server into forced maintenance mode. Equivalent to `set server ... state 
 disable server web-backend/web1
 ```
 
-## Port of Call API Endpoints
+## L4.FYI API Endpoints
 
 The following HTTP API endpoints proxy commands to a remote HAProxy Runtime API over TCP.
 
@@ -325,7 +325,7 @@ Embedded newlines in the command string are stripped to prevent command injectio
 
 2. **Admin vs. read-only access**: HAProxy supports three access levels (`user`, `operator`, `admin`) configured on the stats socket. Only `admin` level can execute write commands.
 
-3. **Command injection**: Since HAProxy processes one command per line, embedded newlines could theoretically smuggle additional commands. Port of Call sanitizes command input by stripping `\r` and `\n` characters.
+3. **Command injection**: Since HAProxy processes one command per line, embedded newlines could theoretically smuggle additional commands. L4.FYI sanitizes command input by stripping `\r` and `\n` characters.
 
 4. **Network exposure**: Exposing the Runtime API over TCP (rather than Unix socket) should be done with caution. Use firewall rules or HAProxy's own bind ACLs to restrict access.
 

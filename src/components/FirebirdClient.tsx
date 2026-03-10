@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FirebirdClientProps {
   onBack: () => void;
@@ -25,9 +26,9 @@ interface FirebirdResponse {
 }
 
 export default function FirebirdClient({ onBack }: FirebirdClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3050');
-  const [database, setDatabase] = useState('/tmp/test.fdb');
+  const [host, setHost] = usePersistedState('firebird-host', '');
+  const [port, setPort] = usePersistedState('firebird-port', '3050');
+  const [database, setDatabase] = usePersistedState('firebird-database', '/tmp/test.fdb');
   const [result, setResult] = useState('');
   const [loading, setLoading] = useState(false);
 

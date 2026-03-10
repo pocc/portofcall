@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CDPClientProps {
   onBack: () => void;
@@ -23,20 +24,20 @@ interface CDPMessage {
 }
 
 export default function CDPClient({ onBack }: CDPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9222');
+  const [host, setHost] = usePersistedState('cdp-host', '');
+  const [port, setPort] = usePersistedState('cdp-port', '9222');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Query mode state
-  const [endpoint, setEndpoint] = useState('/json/version');
+  const [endpoint, setEndpoint] = usePersistedState('cdp-endpoint', '/json/version');
 
   // WebSocket state
   const [wsConnected, setWsConnected] = useState(false);
-  const [targetId, setTargetId] = useState('');
-  const [cdpMethod, setCdpMethod] = useState('Runtime.evaluate');
-  const [cdpParams, setCdpParams] = useState('{"expression": "document.title"}');
+  const [targetId, setTargetId] = usePersistedState('cdp-targetId', '');
+  const [cdpMethod, setCdpMethod] = usePersistedState('cdp-cdpMethod', 'Runtime.evaluate');
+  const [cdpParams, setCdpParams] = usePersistedState('cdp-cdpParams', '{"expression": "document.title"}');
   const [commandId, setCommandId] = useState(1);
   const [wsOutput, setWsOutput] = useState<string[]>([]);
 
@@ -314,7 +315,6 @@ export default function CDPClient({ onBack }: CDPClientProps) {
 
   return (
     <ProtocolClientLayout title="Chrome DevTools Protocol" onBack={onBack}>
-      <ApiExamples examples={apiExamples.CDP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -522,6 +522,8 @@ export default function CDPClient({ onBack }: CDPClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.CDP || []} protocolId="cdp" />
+
     </ProtocolClientLayout>
   );
 }

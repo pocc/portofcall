@@ -7,20 +7,21 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CollectdClientProps {
   onBack: () => void;
 }
 
 export default function CollectdClient({ onBack }: CollectdClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('25826');
-  const [plugin, setPlugin] = useState('test');
-  const [pluginInstance, setPluginInstance] = useState('');
-  const [metricType, setMetricType] = useState('gauge');
-  const [typeInstance, setTypeInstance] = useState('value');
-  const [metricHostname, setMetricHostname] = useState('portofcall');
-  const [metricValue, setMetricValue] = useState('42.0');
+  const [host, setHost] = usePersistedState('collectd-host', '');
+  const [port, setPort] = usePersistedState('collectd-port', '25826');
+  const [plugin, setPlugin] = usePersistedState('collectd-plugin', 'test');
+  const [pluginInstance, setPluginInstance] = usePersistedState('collectd-pluginInstance', '');
+  const [metricType, setMetricType] = usePersistedState('collectd-metricType', 'gauge');
+  const [typeInstance, setTypeInstance] = usePersistedState('collectd-typeInstance', 'value');
+  const [metricHostname, setMetricHostname] = usePersistedState('collectd-metricHostname', 'portofcall');
+  const [metricValue, setMetricValue] = usePersistedState('collectd-metricValue', '42.0');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

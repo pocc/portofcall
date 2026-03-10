@@ -401,7 +401,7 @@ For production workloads, use:
 
 ---
 
-## Port of Call Implementation
+## L4.FYI Implementation
 
 ### Endpoints
 
@@ -518,4 +518,4 @@ purposes. SQLI is a proprietary protocol owned by IBM. Use at your own risk.
 For production deployments, consult IBM's official Informix documentation and
 use vendor-supported drivers.
 
-**Port of Call** is not affiliated with IBM or the Informix product team.
+**L4.FYI** is not affiliated with IBM or the Informix product team.

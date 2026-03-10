@@ -7,16 +7,17 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SIPSClientProps {
   onBack: () => void;
 }
 
 export default function SIPSClient({ onBack }: SIPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5061');
-  const [domain, setDomain] = useState('');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('sips-host', '');
+  const [port, setPort] = usePersistedState('sips-port', '5061');
+  const [domain, setDomain] = usePersistedState('sips-domain', '');
+  const [username, setUsername] = usePersistedState('sips-username', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

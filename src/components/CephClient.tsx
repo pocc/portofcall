@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 const API_BASE = import.meta.env.VITE_API_BASE || '/api';
 
@@ -31,8 +32,8 @@ interface CephResult {
 }
 
 export default function CephClient({ onBack }: { onBack: () => void }) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6789');
+  const [host, setHost] = usePersistedState('ceph-host', '');
+  const [port, setPort] = usePersistedState('ceph-port', '6789');
   const [timeout, setTimeout_] = useState('10000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<CephResult | null>(null);
@@ -84,8 +85,6 @@ export default function CephClient({ onBack }: { onBack: () => void }) {
           </div>        </div>
 
       </div>
-
-      <ApiExamples examples={apiExamples.Ceph || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6 mb-6">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -287,6 +286,7 @@ export default function CephClient({ onBack }: { onBack: () => void }) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Ceph || []} protocolId="ceph" />
     </div>
   );
 }

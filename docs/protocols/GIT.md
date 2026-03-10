@@ -2,7 +2,7 @@
 
 **Port:** 9418 (default) | **Protocol:** Git pack protocol v1 | **Transport:** TCP | **Source:** `src/worker/git.ts`
 
-Port of Call provides two Git endpoints: a ref-listing probe (equivalent to `git ls-remote`) and a fetch endpoint that performs pack negotiation and parses the PACK header. Both open a direct TCP connection from the Cloudflare Worker to the target git daemon.
+L4.FYI provides two Git endpoints: a ref-listing probe (equivalent to `git ls-remote`) and a fetch endpoint that performs pack negotiation and parses the PACK header. Both open a direct TCP connection from the Cloudflare Worker to the target git daemon.
 
 ---
 

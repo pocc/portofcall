@@ -10,7 +10,7 @@
 
 ## Overview
 
-Port of Call implements the PostgreSQL Frontend/Backend Protocol v3.0 directly over TCP. No pg driver, no libpq. All five routes share a `connectAndAuthenticate()` function that handles the startup handshake and auth, then open/close a connection per request (no connection pooling).
+L4.FYI implements the PostgreSQL Frontend/Backend Protocol v3.0 directly over TCP. No pg driver, no libpq. All five routes share a `connectAndAuthenticate()` function that handles the startup handshake and auth, then open/close a connection per request (no connection pooling).
 
 ---
 
@@ -312,7 +312,7 @@ Protocol `0x00030000` = major 3, minor 0. This is the only PostgreSQL 3.0 standa
 | `D` | Describe | C→S | Extended query: describe statement or portal |
 | `S` | Sync | C→S | Extended query: flush and return to ready state |
 | `p` | PasswordMessage / SASLResponse | C→S | Auth response |
-| `X` | Terminate | C→S | Graceful disconnect (not sent by Port of Call) |
+| `X` | Terminate | C→S | Graceful disconnect (not sent by L4.FYI) |
 
 ### ErrorResponse Field Codes
 

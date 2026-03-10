@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface POP3SClientProps {
   onBack: () => void;
 }
 
 export default function POP3SClient({ onBack }: POP3SClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('995');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('pop3s-host', '');
+  const [port, setPort] = usePersistedState('pop3s-port', '995');
+  const [username, setUsername] = usePersistedState('pop3s-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface OpenVPNClientProps {
   onBack: () => void;
 }
 
 export default function OpenVPNClient({ onBack }: OpenVPNClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1194');
+  const [host, setHost] = usePersistedState('openvpn-host', '');
+  const [port, setPort] = usePersistedState('openvpn-port', '1194');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -98,7 +99,6 @@ export default function OpenVPNClient({ onBack }: OpenVPNClientProps) {
 
   return (
     <ProtocolClientLayout title="OpenVPN Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.OpenVPN || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -145,6 +145,8 @@ export default function OpenVPNClient({ onBack }: OpenVPNClientProps) {
           description="OpenVPN is an open-source SSL/TLS VPN protocol. In TCP mode, packets are prefixed with a 2-byte length header. The handshake begins with a P_CONTROL_HARD_RESET_CLIENT_V2 message containing a random session ID. The server responds with P_CONTROL_HARD_RESET_SERVER_V2 and its own session ID. This tool tests TCP mode connectivity only — UDP mode is not supported by Cloudflare Workers. Full VPN establishment requires TLS negotiation and certificate/key authentication."
         />
       </div>
+      <ApiExamples examples={apiExamples.OpenVPN || []} protocolId="openvpn" />
+
     </ProtocolClientLayout>
   );
 }

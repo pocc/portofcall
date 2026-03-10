@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface HAProxyClientProps {
   onBack: () => void;
@@ -22,9 +23,9 @@ const COMMON_COMMANDS = [
 ];
 
 export default function HAProxyClient({ onBack }: HAProxyClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9999');
-  const [command, setCommand] = useState('');
+  const [host, setHost] = usePersistedState('haproxy-host', '');
+  const [port, setPort] = usePersistedState('haproxy-port', '9999');
+  const [command, setCommand] = usePersistedState('haproxy-command', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

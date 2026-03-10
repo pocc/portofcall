@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RtspClientProps {
   onBack: () => void;
 }
 
 export default function RtspClient({ onBack }: RtspClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('554');
-  const [path, setPath] = useState('/');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('rtsp-host', '');
+  const [port, setPort] = usePersistedState('rtsp-port', '554');
+  const [path, setPath] = usePersistedState('rtsp-path', '/');
+  const [username, setUsername] = usePersistedState('rtsp-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -157,7 +158,6 @@ export default function RtspClient({ onBack }: RtspClientProps) {
 
   return (
     <ProtocolClientLayout title="RTSP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RTSP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -252,6 +252,8 @@ export default function RtspClient({ onBack }: RtspClientProps) {
           description="RTSP (Real Time Streaming Protocol, RFC 2326) is an HTTP-like text protocol for controlling streaming media servers. It's widely used in IP cameras (ONVIF), video surveillance, and streaming servers. OPTIONS discovers supported methods, while DESCRIBE retrieves stream details via SDP (Session Description Protocol). Port 554 is standard; 8554 is a common alternative."
         />
       </div>
+      <ApiExamples examples={apiExamples.RTSP || []} protocolId="rtsp" />
+
     </ProtocolClientLayout>
   );
 }

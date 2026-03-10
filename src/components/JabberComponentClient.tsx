@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface JabberComponentClientProps {
   onBack: () => void;
 }
 
 export default function JabberComponentClient({ onBack }: JabberComponentClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5275');
-  const [componentDomain, setComponentDomain] = useState('');
+  const [host, setHost] = usePersistedState('jabbercomponent-host', '');
+  const [port, setPort] = usePersistedState('jabbercomponent-port', '5275');
+  const [componentDomain, setComponentDomain] = usePersistedState('jabbercomponent-componentDomain', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

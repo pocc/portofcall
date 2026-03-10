@@ -2,7 +2,7 @@
 
 **Port:** 2947 (default) | **Protocol:** JSON over TCP | **Transport:** Newline-delimited JSON
 
-Port of Call provides five GPSD endpoints: a version probe, a device lister, a position poll, a timed watch stream, and a raw command executor. All open a direct TCP connection from the Cloudflare Worker to the target gpsd daemon.
+L4.FYI provides five GPSD endpoints: a version probe, a device lister, a position poll, a timed watch stream, and a raw command executor. All open a direct TCP connection from the Cloudflare Worker to the target gpsd daemon.
 
 ---
 

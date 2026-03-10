@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IRCSClientProps {
   onBack: () => void;
@@ -20,11 +21,11 @@ interface DisplayMessage {
 }
 
 export default function IRCSClient({ onBack }: IRCSClientProps) {
-  const [host, setHost] = useState('irc.libera.chat');
-  const [port, setPort] = useState('6697');
-  const [nickname, setNickname] = useState('');
+  const [host, setHost] = usePersistedState('ircs-host', 'irc.libera.chat');
+  const [port, setPort] = usePersistedState('ircs-port', '6697');
+  const [nickname, setNickname] = usePersistedState('ircs-nickname', '');
   const [password, setPassword] = useState('');
-  const [autoJoinChannels, setAutoJoinChannels] = useState('#portofcall');
+  const [autoJoinChannels, setAutoJoinChannels] = usePersistedState('ircs-autoJoinChannels', '#portofcall');
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(false);
 

@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LPDClientProps {
   onBack: () => void;
 }
 
 export default function LPDClient({ onBack }: LPDClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('515');
-  const [printer, setPrinter] = useState('lp');
+  const [host, setHost] = usePersistedState('lpd-host', '');
+  const [port, setPort] = usePersistedState('lpd-port', '515');
+  const [printer, setPrinter] = usePersistedState('lpd-printer', 'lp');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -151,7 +152,6 @@ export default function LPDClient({ onBack }: LPDClientProps) {
 
   return (
     <ProtocolClientLayout title="LPD Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.LPD || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="LPD Server Configuration" />
 
@@ -321,6 +321,8 @@ export default function LPDClient({ onBack }: LPDClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.LPD || []} protocolId="lpd" />
+
     </ProtocolClientLayout>
   );
 }

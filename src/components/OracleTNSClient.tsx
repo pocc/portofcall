@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface OracleTNSClientProps {
   onBack: () => void;
 }
 
 export default function OracleTNSClient({ onBack }: OracleTNSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1521');
-  const [serviceName, setServiceName] = useState('ORCL');
+  const [host, setHost] = usePersistedState('oracletns-host', '');
+  const [port, setPort] = usePersistedState('oracletns-port', '1521');
+  const [serviceName, setServiceName] = usePersistedState('oracletns-serviceName', 'ORCL');
   const [loading, setLoading] = useState(false);
   const [probing, setProbing] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -174,8 +175,6 @@ export default function OracleTNSClient({ onBack }: OracleTNSClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.OracleTNS || []} />
         <div className="grid md:grid-cols-3 gap-4 mb-6">
           <div>
             <label htmlFor="tns-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -312,6 +311,7 @@ export default function OracleTNSClient({ onBack }: OracleTNSClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.OracleTNS || []} protocolId="oracletns" />
     </div>
   );
 }

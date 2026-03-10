@@ -1,6 +1,6 @@
 # Multi-Protocol Test Server Documentation
 
-Comprehensive TCP protocol testing environment for Port of Call development.
+Comprehensive TCP protocol testing environment for L4.FYI development.
 
 ## Overview
 
@@ -1534,7 +1534,7 @@ docker-compose up -d
 
 ## License
 
-This test server configuration is part of the Port of Call project. See LICENSE for details.
+This test server configuration is part of the L4.FYI project. See LICENSE for details.
 
 ## Contributing
 
@@ -1551,4 +1551,4 @@ For questions or issues:
 
 **Last Updated**: 2024-02-16
 **Version**: 1.0
-**Compatible With**: Port of Call v1.0+
+**Compatible With**: L4.FYI v1.0+

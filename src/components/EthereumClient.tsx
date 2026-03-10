@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface EthereumClientProps {
   onBack: () => void;
 }
 
 export default function EthereumClient({ onBack }: EthereumClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('30303');
+  const [host, setHost] = usePersistedState('ethereum-host', '');
+  const [port, setPort] = usePersistedState('ethereum-port', '30303');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

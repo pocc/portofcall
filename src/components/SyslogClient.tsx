@@ -125,7 +125,6 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
 
   return (
     <ProtocolClientLayout title="Syslog Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Syslog || []} />
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Configuration & Send Panel */}
         <div className="lg:col-span-2">
@@ -313,6 +312,8 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Syslog || []} protocolId="syslog" />
+
     </ProtocolClientLayout>
   );
 }

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MemcachedClientProps {
   onBack: () => void;
@@ -14,8 +15,8 @@ interface HistoryEntry {
 }
 
 export default function MemcachedClient({ onBack }: MemcachedClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('11211');
+  const [host, setHost] = usePersistedState('memcached-host', '');
+  const [port, setPort] = usePersistedState('memcached-port', '11211');
   const [status, setStatus] = useState<Status>('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const [version, setVersion] = useState('');
@@ -169,8 +170,6 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">Memcached Client</h1>
         </div>
-
-      <ApiExamples examples={apiExamples.Memcached || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} />
@@ -311,6 +310,7 @@ export default function MemcachedClient({ onBack }: MemcachedClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Memcached || []} protocolId="memcached" />
     </div>
   );
 }

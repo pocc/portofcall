@@ -1,12 +1,10 @@
 /**
- * Port of Call - Cloudflare Worker
+ * L4.FYI - Cloudflare Worker
  *
  * A worker that leverages Cloudflare's Sockets API (released May 16, 2023)
  * to enable browser-based access to TCP protocols like SSH.
  *
- * The name "Port of Call" is a nautical pun:
- * - Literal: You're calling a port (like 22 for SSH) from the browser
- * - Metaphorical: A transitional stop where data moves between worlds
+ * L4 = Layer 4 (transport layer) of the OSI model, where TCP lives.
  */
 
 import {

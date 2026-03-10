@@ -1,6 +1,6 @@
 # Cloudflare Workers Sockets API
 
-Technical reference for the Cloudflare Workers Sockets API, the foundation of Port of Call.
+Technical reference for the Cloudflare Workers Sockets API, the foundation of L4.FYI.
 
 ## History & Timeline
 

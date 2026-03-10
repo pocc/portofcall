@@ -184,7 +184,7 @@ Sends an INVITE with a minimal SDP offer (audio-only, port 0, G.711 μ-law). Col
 ```
 v=0
 o=portofcall 0 0 IN IP4 0.0.0.0
-s=Port of Call probe
+s=L4.FYI probe
 c=IN IP4 0.0.0.0
 t=0 0
 m=audio 0 RTP/AVP 0

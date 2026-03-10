@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import AboutPage from './AboutPage';
 import ChecklistTab from './ChecklistTab';
 import ProtocolSidebar from './ProtocolSidebar';
 import ProtocolCategoryGroup from './ProtocolCategoryGroup';
@@ -209,7 +210,7 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-center sm:text-left">
             <h1 className="text-3xl font-bold text-white">
-              PORT OF CALL
+              L4.FYI
             </h1>
             <div className="flex items-center gap-2 mt-1">
               <p className="text-sm text-slate-400">
@@ -417,74 +418,7 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
       )}
 
       {/* About Tab */}
-      {activeTab === 'about' && (
-        <div className="max-w-4xl mx-auto mt-8">
-          <div className="bg-slate-800 border border-slate-600 rounded-xl p-8">
-            <h2 className="text-3xl font-bold mb-6 text-white">
-              About This Tool
-            </h2>
-            <p className="text-slate-300 text-base leading-relaxed mb-6">
-              This interface demonstrates TCP protocol implementations using Cloudflare Workers'
-              <code className="bg-slate-700 px-2 py-1 rounded mx-1">connect()</code> API.
-              Select a protocol from the Protocols tab to establish connections and interact with remote servers.
-            </p>
-            <div className="bg-green-900/30 border border-green-600/50 rounded-lg p-6 mb-6">
-              <div className="flex items-start gap-3">
-                <span className="text-green-400 text-2xl" aria-hidden="true">✓</span>
-                <div>
-                  <p className="text-green-200 text-lg font-semibold mb-2">
-                    Live Implementation
-                  </p>
-                  <p className="text-green-100/80 text-sm leading-relaxed">
-                    All {totalCount} protocols are fully functional with comprehensive testing.
-                    Connect to remote servers directly from your browser. All connections
-                    are proxied through Cloudflare's global network with Smart Placement for low latency.
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="bg-blue-900/30 border border-blue-600/50 rounded-lg p-6 mb-6">
-              <div className="flex items-start gap-3">
-                <span className="text-blue-400 text-2xl" aria-hidden="true">🌐</span>
-                <div>
-                  <p className="text-blue-200 text-lg font-semibold mb-2">
-                    Cloudflare Workers TCP Sockets
-                  </p>
-                  <p className="text-blue-100/80 text-sm leading-relaxed">
-                    Built on Cloudflare Workers' TCP Sockets API, enabling direct TCP connections from the edge.
-                    Each protocol implementation demonstrates real-world use cases and provides interactive testing capabilities.
-                  </p>
-                </div>
-              </div>
-            </div>
-            <div className="bg-orange-900/30 border border-orange-600/50 rounded-lg p-6">
-              <div className="flex items-start gap-3">
-                <span className="text-orange-400 text-2xl" aria-hidden="true">🐳</span>
-                <div>
-                  <p className="text-orange-200 text-lg font-semibold mb-2">
-                    Deploy Your Own Targets with Docker
-                  </p>
-                  <p className="text-orange-100/80 text-sm leading-relaxed mb-3">
-                    Port of Call connects to <strong>your</strong> infrastructure. Deploy protocol servers on your VPS using Docker
-                    and point Port of Call at them. Run Redis, MySQL, SSH, MQTT, or any of the {totalCount} supported protocols
-                    as Docker containers, then test them from here.
-                  </p>
-                  <div className="bg-slate-900/50 text-slate-300 rounded p-3 text-xs font-mono">
-                    <div># Example: spin up a Redis target on your VPS</div>
-                    <div>docker run -d --name redis -p 6379:6379 redis:alpine</div>
-                    <div className="mt-1"># Then test it from Port of Call</div>
-                    <div>→ Host: your-vps.example.com, Port: 6379</div>
-                  </div>
-                  <p className="text-orange-100/60 text-xs mt-3">
-                    Note: Port of Call itself runs on Cloudflare Workers (not Docker). It connects outbound to your targets via TCP.
-                    Targets behind Cloudflare proxy will be blocked — use direct IPs or gray-cloud DNS.
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {activeTab === 'about' && <AboutPage />}
 
       {/* RFCs Tab */}
       {activeTab === 'rfcs' && (() => {

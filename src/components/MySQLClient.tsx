@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MySQLClientProps {
   onBack: () => void;
 }
 
 export default function MySQLClient({ onBack }: MySQLClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3306');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('mysql-host', '');
+  const [port, setPort] = usePersistedState('mysql-port', '3306');
+  const [username, setUsername] = usePersistedState('mysql-username', '');
   const [password, setPassword] = useState('');
-  const [database, setDatabase] = useState('');
+  const [database, setDatabase] = usePersistedState('mysql-database', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -79,7 +80,6 @@ export default function MySQLClient({ onBack }: MySQLClientProps) {
 
   return (
     <ProtocolClientLayout title="MySQL Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.MySQL || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -160,6 +160,8 @@ export default function MySQLClient({ onBack }: MySQLClientProps) {
           description="MySQL is a popular relational database. This interface tests connectivity by reading the server handshake. Port 3306 is the default. Full query execution requires implementing the complete MySQL binary protocol."
         />
       </div>
+      <ApiExamples examples={apiExamples.MySQL || []} protocolId="mysql" />
+
     </ProtocolClientLayout>
   );
 }

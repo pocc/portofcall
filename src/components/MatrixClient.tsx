@@ -7,23 +7,24 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MatrixClientProps {
   onBack: () => void;
 }
 
 export default function MatrixClient({ onBack }: MatrixClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8448');
+  const [host, setHost] = usePersistedState('matrix-host', '');
+  const [port, setPort] = usePersistedState('matrix-port', '8448');
   const [accessToken, setAccessToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Query mode state
-  const [method, setMethod] = useState('GET');
-  const [path, setPath] = useState('/_matrix/client/versions');
-  const [queryBody, setQueryBody] = useState('');
+  const [method, setMethod] = usePersistedState('matrix-method', 'GET');
+  const [path, setPath] = usePersistedState('matrix-path', '/_matrix/client/versions');
+  const [queryBody, setQueryBody] = usePersistedState('matrix-queryBody', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],

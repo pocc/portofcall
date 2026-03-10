@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface AMIClientProps {
   onBack: () => void;
 }
 
 export default function AMIClient({ onBack }: AMIClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5038');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('ami-host', '');
+  const [port, setPort] = usePersistedState('ami-port', '5038');
+  const [username, setUsername] = usePersistedState('ami-username', '');
   const [secret, setSecret] = useState('');
-  const [action, setAction] = useState('');
+  const [action, setAction] = usePersistedState('ami-action', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -180,7 +181,6 @@ export default function AMIClient({ onBack }: AMIClientProps) {
 
   return (
     <ProtocolClientLayout title="Asterisk AMI Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.AMI || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="AMI Server" />
 
@@ -338,6 +338,8 @@ export default function AMIClient({ onBack }: AMIClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.AMI || []} protocolId="ami" />
+
     </ProtocolClientLayout>
   );
 }

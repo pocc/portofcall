@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface Socks4ClientProps {
   onBack: () => void;
 }
 
 export default function Socks4Client({ onBack }: Socks4ClientProps) {
-  const [proxyHost, setProxyHost] = useState('');
-  const [proxyPort, setProxyPort] = useState('1080');
-  const [destHost, setDestHost] = useState('');
-  const [destPort, setDestPort] = useState('80');
-  const [userId, setUserId] = useState('');
+  const [proxyHost, setProxyHost] = usePersistedState('socks4-proxyHost', '');
+  const [proxyPort, setProxyPort] = usePersistedState('socks4-proxyPort', '1080');
+  const [destHost, setDestHost] = usePersistedState('socks4-destHost', '');
+  const [destPort, setDestPort] = usePersistedState('socks4-destPort', '80');
+  const [userId, setUserId] = usePersistedState('socks4-userId', '');
   const [useSocks4a, setUseSocks4a] = useState(true);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -107,7 +108,6 @@ export default function Socks4Client({ onBack }: Socks4ClientProps) {
 
   return (
     <ProtocolClientLayout title="SOCKS4 Proxy Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SOCKS4 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="SOCKS4 Proxy Configuration" />
 
@@ -271,6 +271,8 @@ export default function Socks4Client({ onBack }: Socks4ClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SOCKS4 || []} protocolId="socks4" />
+
     </ProtocolClientLayout>
   );
 }

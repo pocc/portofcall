@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SybaseClientProps {
   onBack: () => void;
 }
 
 export default function SybaseClient({ onBack }: SybaseClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5000');
+  const [host, setHost] = usePersistedState('sybase-host', '');
+  const [port, setPort] = usePersistedState('sybase-port', '5000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

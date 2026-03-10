@@ -2,7 +2,7 @@
 
 ## Overview
 
-**JSON-RPC 2.0** is a stateless, transport-agnostic remote procedure call protocol encoding requests and responses as JSON objects. Port of Call provides two transports: HTTP/1.1 over raw TCP and WebSocket over raw TCP. No proxies, no `fetch()` — all connections use `cloudflare:sockets connect()`.
+**JSON-RPC 2.0** is a stateless, transport-agnostic remote procedure call protocol encoding requests and responses as JSON objects. L4.FYI provides two transports: HTTP/1.1 over raw TCP and WebSocket over raw TCP. No proxies, no `fetch()` — all connections use `cloudflare:sockets connect()`.
 
 **Spec:** [jsonrpc.org/specification](https://www.jsonrpc.org/specification)  
 **Default port (HTTP):** 8545 (Ethereum RPC convention)  
@@ -400,7 +400,7 @@ HTTP responses (both `/call` and `/batch`) stop accumulating at 512,000 bytes. I
 
 ### No TLS
 
-All three endpoints use plain TCP (`connect()` with no `secureTransport`). For TLS-wrapped JSON-RPC (e.g. HTTPS or WSS), you must terminate TLS externally (reverse proxy, Cloudflare Tunnel) before Port of Call reaches the host.
+All three endpoints use plain TCP (`connect()` with no `secureTransport`). For TLS-wrapped JSON-RPC (e.g. HTTPS or WSS), you must terminate TLS externally (reverse proxy, Cloudflare Tunnel) before L4.FYI reaches the host.
 
 ### No redirect following
 

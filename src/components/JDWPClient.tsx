@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface JDWPClientProps {
   onBack: () => void;
 }
 
 export default function JDWPClient({ onBack }: JDWPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5005');
+  const [host, setHost] = usePersistedState('jdwp-host', '');
+  const [port, setPort] = usePersistedState('jdwp-port', '5005');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -196,7 +197,6 @@ export default function JDWPClient({ onBack }: JDWPClientProps) {
 
   return (
     <ProtocolClientLayout title="JDWP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.JDWP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Java Debug Endpoint" />
 
@@ -256,6 +256,8 @@ export default function JDWPClient({ onBack }: JDWPClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.JDWP || []} protocolId="jdwp" />
+
     </ProtocolClientLayout>
   );
 }

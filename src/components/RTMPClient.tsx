@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RTMPClientProps {
   onBack: () => void;
 }
 
 export default function RTMPClient({ onBack }: RTMPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1935');
+  const [host, setHost] = usePersistedState('rtmp-host', '');
+  const [port, setPort] = usePersistedState('rtmp-port', '1935');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -95,7 +96,6 @@ export default function RTMPClient({ onBack }: RTMPClientProps) {
 
   return (
     <ProtocolClientLayout title="RTMP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RTMP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="RTMP Server Configuration" />
 
@@ -239,6 +239,8 @@ Total handshake: 6146 bytes exchanged`}
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.RTMP || []} protocolId="rtmp" />
+
     </ProtocolClientLayout>
   );
 }

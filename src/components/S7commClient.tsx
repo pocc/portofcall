@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface S7commClientProps {
   onBack: () => void;
 }
 
 export default function S7commClient({ onBack }: S7commClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('102');
-  const [rack, setRack] = useState('0');
-  const [slot, setSlot] = useState('2');
+  const [host, setHost] = usePersistedState('s7comm-host', '');
+  const [port, setPort] = usePersistedState('s7comm-port', '102');
+  const [rack, setRack] = usePersistedState('s7comm-rack', '0');
+  const [slot, setSlot] = usePersistedState('s7comm-slot', '2');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -120,7 +121,6 @@ export default function S7commClient({ onBack }: S7commClientProps) {
 
   return (
     <ProtocolClientLayout title="S7comm PLC Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.S7comm || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="PLC Connection" />
 
@@ -277,6 +277,8 @@ export default function S7commClient({ onBack }: S7commClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.S7comm || []} protocolId="s7comm" />
+
     </ProtocolClientLayout>
   );
 }

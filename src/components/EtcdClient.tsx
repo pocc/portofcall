@@ -9,23 +9,24 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface EtcdClientProps {
   onBack: () => void;
 }
 
 export default function EtcdClient({ onBack }: EtcdClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2379');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('etcd-host', '');
+  const [port, setPort] = usePersistedState('etcd-port', '2379');
+  const [username, setUsername] = usePersistedState('etcd-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Query state
-  const [path, setPath] = useState('/v3/kv/range');
-  const [queryBody, setQueryBody] = useState('');
+  const [path, setPath] = usePersistedState('etcd-path', '/v3/kv/range');
+  const [queryBody, setQueryBody] = usePersistedState('etcd-queryBody', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],
@@ -201,7 +202,6 @@ export default function EtcdClient({ onBack }: EtcdClientProps) {
 
   return (
     <ProtocolClientLayout title="etcd Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Etcd || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -364,6 +364,8 @@ export default function EtcdClient({ onBack }: EtcdClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Etcd || []} protocolId="etcd" />
+
     </ProtocolClientLayout>
   );
 }

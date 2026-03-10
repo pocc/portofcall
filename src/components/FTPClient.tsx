@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FTPClientProps {
   onBack: () => void;
@@ -20,9 +21,9 @@ interface FTPFile {
 type CommandModal = 'upload' | 'download' | 'delete' | 'rename' | 'mkdir' | 'rmdir' | null;
 
 export default function FTPClient({ onBack }: FTPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('21');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('ftp-host', '');
+  const [port, setPort] = usePersistedState('ftp-port', '21');
+  const [username, setUsername] = usePersistedState('ftp-username', '');
   const [password, setPassword] = useState('');
   const [connected, setConnected] = useState(false);
   const [currentPath, setCurrentPath] = useState('/');
@@ -463,8 +464,6 @@ export default function FTPClient({ onBack }: FTPClientProps) {
           </div>
         )}
       </div>
-
-      <ApiExamples examples={apiExamples.FTP || []} />
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Connection Panel */}
         <div className="lg:col-span-1 space-y-6">
@@ -1022,6 +1021,7 @@ export default function FTPClient({ onBack }: FTPClientProps) {
           </div>
         </div>
       )}
+      <ApiExamples examples={apiExamples.FTP || []} protocolId="ftp" />
     </div>
   );
 }

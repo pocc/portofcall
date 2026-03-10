@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RethinkDBClientProps {
   onBack: () => void;
 }
 
 export default function RethinkDBClient({ onBack }: RethinkDBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('28015');
+  const [host, setHost] = usePersistedState('rethinkdb-host', '');
+  const [port, setPort] = usePersistedState('rethinkdb-port', '28015');
   const [authKey, setAuthKey] = useState('');
   const [loading, setLoading] = useState(false);
   const [probing, setProbing] = useState(false);
@@ -149,8 +150,6 @@ export default function RethinkDBClient({ onBack }: RethinkDBClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.RethinkDB || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="rethink-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -298,6 +297,7 @@ export default function RethinkDBClient({ onBack }: RethinkDBClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.RethinkDB || []} protocolId="rethinkdb" />
     </div>
   );
 }

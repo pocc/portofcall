@@ -1,13 +1,14 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MuninClientProps {
   onBack: () => void;
 }
 
 export default function MuninClient({ onBack }: MuninClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4949');
-  const [plugin, setPlugin] = useState('');
+  const [host, setHost] = usePersistedState('munin-host', '');
+  const [port, setPort] = usePersistedState('munin-port', '4949');
+  const [plugin, setPlugin] = usePersistedState('munin-plugin', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

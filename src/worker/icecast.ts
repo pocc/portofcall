@@ -400,8 +400,8 @@ export async function handleIcecastSource(request: Request): Promise<Response> {
     const mountpoint = (body.mountpoint ?? '/stream').replace(/^([^/])/, '/$1');
     const password = body.password;
     const contentType = body.contentType ?? 'audio/mpeg';
-    const streamName = body.streamName ?? 'Port of Call Test Stream';
-    const description = body.description ?? 'Test mount by Port of Call';
+    const streamName = body.streamName ?? 'L4.FYI Test Stream';
+    const description = body.description ?? 'Test mount by L4.FYI';
     // Stream a brief burst of silence (32 bytes of MP3 silence header) then disconnect
     const burstBytes = Math.min(body.burstBytes ?? 32, 1024);
     const timeout = Math.min(body.timeout ?? 10000, 30000);

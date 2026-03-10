@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MongoDBClientProps {
   onBack: () => void;
 }
 
 export default function MongoDBClient({ onBack }: MongoDBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('27017');
+  const [host, setHost] = usePersistedState('mongodb-host', '');
+  const [port, setPort] = usePersistedState('mongodb-port', '27017');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -160,7 +161,6 @@ export default function MongoDBClient({ onBack }: MongoDBClientProps) {
 
   return (
     <ProtocolClientLayout title="MongoDB Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.MongoDB || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -323,6 +323,8 @@ export default function MongoDBClient({ onBack }: MongoDBClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.MongoDB || []} protocolId="mongodb" />
+
     </ProtocolClientLayout>
   );
 }

@@ -2,7 +2,7 @@
 
 **Port:** 5037 (ADB server) | **Protocol:** Smart Socket (text-based) | **Transport:** TCP
 
-Port of Call implements the ADB **smart socket** protocol — the text-based client-to-server protocol used by the `adb` command-line tool to communicate with the ADB server daemon on TCP port 5037. Four endpoints are provided: a generic command sender, a version probe, a device lister, and a remote shell executor.
+L4.FYI implements the ADB **smart socket** protocol — the text-based client-to-server protocol used by the `adb` command-line tool to communicate with the ADB server daemon on TCP port 5037. Four endpoints are provided: a generic command sender, a version probe, a device lister, and a remote shell executor.
 
 ---
 
@@ -425,7 +425,7 @@ ADB servers exposed to the network are a critical security risk:
 - `adb tcpip 5555` on a device exposes it to the network (the binary transport protocol has RSA key auth, but keys are often auto-accepted)
 - Port 5037 should **never** be exposed to the public internet
 
-Port of Call's Cloudflare detection blocks connections to Cloudflare-proxied hosts, but cannot prevent connections to publicly exposed ADB servers on direct IPs.
+L4.FYI's Cloudflare detection blocks connections to Cloudflare-proxied hosts, but cannot prevent connections to publicly exposed ADB servers on direct IPs.
 
 ---
 

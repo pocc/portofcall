@@ -2,7 +2,7 @@
 
 **Port:** 3310 (default) | **Protocol:** clamd TCP | **Transport:** Plain TCP
 
-Port of Call provides four ClamAV endpoints: PING (liveness check), VERSION (version query), STATS (daemon statistics), and SCAN (virus scanning via INSTREAM). All four open a direct TCP connection from the Cloudflare Worker to your clamd instance.
+L4.FYI provides four ClamAV endpoints: PING (liveness check), VERSION (version query), STATS (daemon statistics), and SCAN (virus scanning via INSTREAM). All four open a direct TCP connection from the Cloudflare Worker to your clamd instance.
 
 ---
 
@@ -16,7 +16,7 @@ ClamAV's daemon (`clamd`) listens on TCP port 3310 and accepts text commands. Co
 | n-prefix | `nCOMMAND\n` | Newline | Newline | Yes (keep-alive) |
 | z-prefix | `zCOMMAND\0` | Null byte | Null byte | Yes (keep-alive) |
 
-The n-prefix and z-prefix formats support issuing multiple commands over a single TCP connection. Port of Call uses **n-prefix** for simple commands (PING, VERSION, STATS) and **z-prefix** for INSTREAM scanning.
+The n-prefix and z-prefix formats support issuing multiple commands over a single TCP connection. L4.FYI uses **n-prefix** for simple commands (PING, VERSION, STATS) and **z-prefix** for INSTREAM scanning.
 
 ### Available clamd Commands
 
@@ -35,7 +35,7 @@ The n-prefix and z-prefix formats support issuing multiple commands over a singl
 | `FILDES` | Scan file descriptor passed over Unix socket | `stream: OK` or `stream: <name> FOUND` |
 | `VERSIONCOMMANDS` | List supported commands | Space-separated command list |
 
-Port of Call implements PING, VERSION, STATS, and INSTREAM. The path-based scan commands (SCAN, CONTSCAN, MULTISCAN) require server filesystem access and are not applicable for remote scanning.
+L4.FYI implements PING, VERSION, STATS, and INSTREAM. The path-based scan commands (SCAN, CONTSCAN, MULTISCAN) require server filesystem access and are not applicable for remote scanning.
 
 ---
 
@@ -77,7 +77,7 @@ Byte 0   Byte 1   Byte 2   Byte 3   Byte 4..N
 | `nINSTREAM\n` | `nINSTREAM` + `0x0A` | Newline (`0x0A`) | n-prefix format |
 | `zINSTREAM\0` | `zINSTREAM` + `0x00` | Null byte (`0x00`) | z-prefix format |
 
-All three variants use the same chunk framing protocol. The only difference is the command/response terminator character. Port of Call uses `zINSTREAM\0` (z-prefix) because null-terminated responses are unambiguous and cannot collide with response text content.
+All three variants use the same chunk framing protocol. The only difference is the command/response terminator character. L4.FYI uses `zINSTREAM\0` (z-prefix) because null-terminated responses are unambiguous and cannot collide with response text content.
 
 ### Scan Response Format
 
@@ -295,7 +295,7 @@ Each request opens a new TCP connection via `cloudflare:sockets`. The connection
 
 **No TLS:** clamd does not natively support TLS. The worker connects via plain TCP. If your clamd is behind a TLS-terminating proxy, connect to the proxy's plaintext backend port.
 
-**No IDSESSION/END:** The n-prefix and z-prefix commands support session mode (`IDSESSION` / `END` framing for multiplexed scanning). Port of Call does not use session mode; each request is a single command on a dedicated connection.
+**No IDSESSION/END:** The n-prefix and z-prefix commands support session mode (`IDSESSION` / `END` framing for multiplexed scanning). L4.FYI does not use session mode; each request is a single command on a dedicated connection.
 
 **No FILDES:** File descriptor passing (`FILDES`) requires a Unix domain socket, which is not available from Cloudflare Workers.
 

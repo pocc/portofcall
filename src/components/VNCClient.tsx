@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface VNCClientProps {
   onBack: () => void;
 }
 
 export default function VNCClient({ onBack }: VNCClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5900');
+  const [host, setHost] = usePersistedState('vnc-host', '');
+  const [port, setPort] = usePersistedState('vnc-port', '5900');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -101,7 +102,6 @@ export default function VNCClient({ onBack }: VNCClientProps) {
 
   return (
     <ProtocolClientLayout title="VNC (RFB) Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.VNC || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="VNC Server Configuration" />
 
@@ -249,6 +249,8 @@ Security Types:
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.VNC || []} protocolId="vnc" />
+
     </ProtocolClientLayout>
   );
 }

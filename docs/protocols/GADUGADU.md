@@ -1,6 +1,6 @@
 # Gadu-Gadu Protocol Reference
 
-A thorough power-user reference for the Gadu-Gadu (GG) instant messaging protocol as implemented in Port of Call.
+A thorough power-user reference for the Gadu-Gadu (GG) instant messaging protocol as implemented in L4.FYI.
 
 ## Overview
 

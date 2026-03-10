@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FIXClientProps {
   onBack: () => void;
 }
 
 export default function FIXClient({ onBack }: FIXClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9878');
-  const [senderCompID, setSenderCompID] = useState('PORTOFCALL');
-  const [targetCompID, setTargetCompID] = useState('TARGET');
-  const [fixVersion, setFixVersion] = useState('FIX.4.4');
+  const [host, setHost] = usePersistedState('fix-host', '');
+  const [port, setPort] = usePersistedState('fix-port', '9878');
+  const [senderCompID, setSenderCompID] = usePersistedState('fix-senderCompID', 'PORTOFCALL');
+  const [targetCompID, setTargetCompID] = usePersistedState('fix-targetCompID', 'TARGET');
+  const [fixVersion, setFixVersion] = usePersistedState('fix-fixVersion', 'FIX.4.4');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -195,7 +196,6 @@ export default function FIXClient({ onBack }: FIXClientProps) {
 
   return (
     <ProtocolClientLayout title="FIX Protocol Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.FIX || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="FIX Engine Connection" />
 
@@ -297,6 +297,8 @@ export default function FIXClient({ onBack }: FIXClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.FIX || []} protocolId="fix" />
+
     </ProtocolClientLayout>
   );
 }

@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RSHClientProps {
   onBack: () => void;
 }
 
 export default function RSHClient({ onBack }: RSHClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('514');
-  const [localUser, setLocalUser] = useState('');
-  const [remoteUser, setRemoteUser] = useState('');
-  const [command, setCommand] = useState('id');
+  const [host, setHost] = usePersistedState('rsh-host', '');
+  const [port, setPort] = usePersistedState('rsh-port', '514');
+  const [localUser, setLocalUser] = usePersistedState('rsh-localUser', '');
+  const [remoteUser, setRemoteUser] = usePersistedState('rsh-remoteUser', '');
+  const [command, setCommand] = usePersistedState('rsh-command', 'id');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -106,7 +107,6 @@ export default function RSHClient({ onBack }: RSHClientProps) {
 
   return (
     <ProtocolClientLayout title="RSH Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RSH || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -223,6 +223,8 @@ export default function RSHClient({ onBack }: RSHClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.RSH || []} protocolId="rsh" />
+
     </ProtocolClientLayout>
   );
 }

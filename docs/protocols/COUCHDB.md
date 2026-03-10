@@ -1,6 +1,6 @@
 # Apache CouchDB HTTP API Protocol Reference
 
-A power-user reference for the CouchDB HTTP REST API as implemented in Port of Call.
+A power-user reference for the CouchDB HTTP REST API as implemented in L4.FYI.
 
 ## Overview
 
@@ -537,7 +537,7 @@ Per RFC 7230 Section 4.1, chunked encoding format:
 
 The implementation correctly handles chunk extensions (`;key=value`) by stripping them before parsing the chunk size.
 
-## Port of Call Implementation Notes
+## L4.FYI Implementation Notes
 
 ### Architecture
 

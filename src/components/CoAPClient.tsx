@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CoAPClientProps {
   onBack: () => void;
@@ -15,11 +16,11 @@ interface CoAPClientProps {
 const COAP_METHODS = ['GET', 'POST', 'PUT', 'DELETE'];
 
 export default function CoAPClient({ onBack }: CoAPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5683');
-  const [path, setPath] = useState('/');
-  const [method, setMethod] = useState('GET');
-  const [payload, setPayload] = useState('');
+  const [host, setHost] = usePersistedState('coap-host', '');
+  const [port, setPort] = usePersistedState('coap-port', '5683');
+  const [path, setPath] = usePersistedState('coap-path', '/');
+  const [method, setMethod] = usePersistedState('coap-method', 'GET');
+  const [payload, setPayload] = usePersistedState('coap-payload', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

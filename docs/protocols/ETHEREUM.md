@@ -1,4 +1,4 @@
-# Ethereum Protocol — Port of Call Reference
+# Ethereum Protocol — L4.FYI Reference
 
 **Spec:** [Ethereum JSON-RPC API](https://ethereum.org/en/developers/docs/apis/json-rpc/), [DevP2P RLPx](https://github.com/ethereum/devp2p/blob/master/rlpx.md), [EIP-8](https://eips.ethereum.org/EIPS/eip-8), [EIP-695](https://eips.ethereum.org/EIPS/eip-695) (eth_chainId), [JSON-RPC 2.0](https://www.jsonrpc.org/specification)
 **Default ports:** 8545 (HTTP JSON-RPC), 30303 (DevP2P/RLPx TCP)
@@ -510,7 +510,7 @@ curl -s -X POST http://localhost:8545/ \
   -d '{"jsonrpc":"2.0","method":"eth_getBlockByNumber","params":["latest",false],"id":7}'
 ```
 
-### Using the Port of Call API
+### Using the L4.FYI API
 
 ```bash
 # Single RPC call

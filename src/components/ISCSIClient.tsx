@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ISCSIClientProps {
   onBack: () => void;
 }
 
 export default function ISCSIClient({ onBack }: ISCSIClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3260');
-  const [initiatorName, setInitiatorName] = useState('iqn.2024-01.gg.ross.portofcall:initiator');
+  const [host, setHost] = usePersistedState('iscsi-host', '');
+  const [port, setPort] = usePersistedState('iscsi-port', '3260');
+  const [initiatorName, setInitiatorName] = usePersistedState('iscsi-initiatorName', 'iqn.2024-01.gg.ross.portofcall:initiator');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

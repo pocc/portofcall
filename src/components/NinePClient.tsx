@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 type Action = 'connect' | 'stat' | 'read' | 'ls';
 
@@ -49,11 +50,11 @@ function formatTimestamp(unix: number): string {
 
 export default function NinePClient({ onBack }: NinePClientProps) {
   const [action, setAction] = useState<Action>('connect');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('564');
-  const [path, setPath] = useState('');
-  const [offset, setOffset] = useState('0');
-  const [count, setCount] = useState('4096');
+  const [host, setHost] = usePersistedState('ninep-host', '');
+  const [port, setPort] = usePersistedState('ninep-port', '564');
+  const [path, setPath] = usePersistedState('ninep-path', '');
+  const [offset, setOffset] = usePersistedState('ninep-offset', '0');
+  const [count, setCount] = usePersistedState('ninep-count', '4096');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -346,7 +347,6 @@ export default function NinePClient({ onBack }: NinePClientProps) {
 
   return (
     <ProtocolClientLayout title="9P Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.NineP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="9P Server Connection" />
 
@@ -527,6 +527,8 @@ export default function NinePClient({ onBack }: NinePClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.NineP || []} protocolId="ninep" />
+
     </ProtocolClientLayout>
   );
 }

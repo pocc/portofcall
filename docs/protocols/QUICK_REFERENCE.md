@@ -1,6 +1,6 @@
 # Protocol Implementation Quick Reference
 
-One-page reference for implementing TCP protocols in Port of Call.
+One-page reference for implementing TCP protocols in L4.FYI.
 
 ## File Structure
 

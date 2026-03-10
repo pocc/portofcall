@@ -34,7 +34,7 @@ Each protocol changelog file follows a consistent format:
 
 ## Historical Context
 
-This changelog documents work completed on **February 18, 2026** during a comprehensive review of 86 protocol implementations in the Port of Call project. The review identified and fixed hundreds of bugs across categories including:
+This changelog documents work completed on **February 18, 2026** during a comprehensive review of 86 protocol implementations in the L4.FYI project. The review identified and fixed hundreds of bugs across categories including:
 
 - **Resource leaks** (timeout handles, socket cleanup, stream locks)
 - **Security vulnerabilities** (SSRF, injection, path traversal, memory exhaustion)

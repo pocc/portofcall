@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MGCPClientProps {
   onBack: () => void;
@@ -24,16 +25,16 @@ const MGCP_COMMANDS = [
 ];
 
 export default function MGCPClient({ onBack }: MGCPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2427');
-  const [endpoint, setEndpoint] = useState('aaln/1');
+  const [host, setHost] = usePersistedState('mgcp-host', '');
+  const [port, setPort] = usePersistedState('mgcp-port', '2427');
+  const [endpoint, setEndpoint] = usePersistedState('mgcp-endpoint', 'aaln/1');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Command mode
-  const [command, setCommand] = useState('AUEP');
-  const [paramText, setParamText] = useState('');
+  const [command, setCommand] = usePersistedState('mgcp-command', 'AUEP');
+  const [paramText, setParamText] = usePersistedState('mgcp-paramText', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],

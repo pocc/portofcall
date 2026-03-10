@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MaxDBClientProps {
   onBack: () => void;
 }
 
 export default function MaxDBClient({ onBack }: MaxDBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('7200');
-  const [database, setDatabase] = useState('MAXDB');
+  const [host, setHost] = usePersistedState('maxdb-host', '');
+  const [port, setPort] = usePersistedState('maxdb-port', '7200');
+  const [database, setDatabase] = usePersistedState('maxdb-database', 'MAXDB');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -103,7 +104,6 @@ export default function MaxDBClient({ onBack }: MaxDBClientProps) {
 
   return (
     <ProtocolClientLayout title="SAP MaxDB Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.MaxDB || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -187,6 +187,8 @@ export default function MaxDBClient({ onBack }: MaxDBClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.MaxDB || []} protocolId="maxdb" />
+
     </ProtocolClientLayout>
   );
 }

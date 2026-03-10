@@ -1,6 +1,6 @@
 # Protocol Implementation Plans
 
-This directory contains detailed implementation plans for protocols that can be accessed through Port of Call's web UI.
+This directory contains detailed implementation plans for protocols that can be accessed through L4.FYI's web UI.
 
 ## ⚠️ Important: TCP vs Non-TCP Protocols
 

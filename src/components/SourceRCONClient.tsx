@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SourceRCONClientProps {
   onBack: () => void;
 }
 
 export default function SourceRCONClient({ onBack }: SourceRCONClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('27015');
+  const [host, setHost] = usePersistedState('sourcercon-host', '');
+  const [port, setPort] = usePersistedState('sourcercon-port', '27015');
   const [password, setPassword] = useState('');
-  const [command, setCommand] = useState('');
+  const [command, setCommand] = usePersistedState('sourcercon-command', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -127,7 +128,6 @@ export default function SourceRCONClient({ onBack }: SourceRCONClientProps) {
 
   return (
     <ProtocolClientLayout title="Source RCON Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SourceRCON || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -347,6 +347,8 @@ sv_rcon_maxfailures 5`}
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SourceRCON || []} protocolId="sourcercon" />
+
     </ProtocolClientLayout>
   );
 }

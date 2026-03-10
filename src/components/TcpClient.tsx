@@ -6,6 +6,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TcpClientProps {
   onBack: () => void;
@@ -132,12 +133,12 @@ function formatHex(hex: string): string {
 }
 
 export default function TcpClient({ onBack }: TcpClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('');
+  const [host, setHost] = usePersistedState('tcp-host', '');
+  const [port, setPort] = usePersistedState('tcp-port', '');
   const [data, setData] = useState('');
   const [encoding, setEncoding] = useState<'utf8' | 'hex'>('utf8');
   const [timeout, setTimeout_] = useState('10000');
-  const [maxBytes, setMaxBytes] = useState('4096');
+  const [maxBytes, setMaxBytes] = usePersistedState('tcp-maxBytes', '4096');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<TcpResult | null>(null);
   const [error, setError] = useState<string>('');

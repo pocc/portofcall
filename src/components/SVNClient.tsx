@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SVNClientProps {
   onBack: () => void;
 }
 
 export default function SVNClient({ onBack }: SVNClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3690');
+  const [host, setHost] = usePersistedState('svn-host', '');
+  const [port, setPort] = usePersistedState('svn-port', '3690');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -94,7 +95,6 @@ export default function SVNClient({ onBack }: SVNClientProps) {
 
   return (
     <ProtocolClientLayout title="SVN Protocol Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.SVN || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="SVN Server Configuration" />
 
@@ -292,6 +292,8 @@ export default function SVNClient({ onBack }: SVNClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SVN || []} protocolId="svn" />
+
     </ProtocolClientLayout>
   );
 }

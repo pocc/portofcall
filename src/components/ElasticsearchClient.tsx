@@ -7,24 +7,25 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ElasticsearchClientProps {
   onBack: () => void;
 }
 
 export default function ElasticsearchClient({ onBack }: ElasticsearchClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9200');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('elasticsearch-host', '');
+  const [port, setPort] = usePersistedState('elasticsearch-port', '9200');
+  const [username, setUsername] = usePersistedState('elasticsearch-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Query mode state
-  const [method, setMethod] = useState('GET');
-  const [path, setPath] = useState('/');
-  const [queryBody, setQueryBody] = useState('');
+  const [method, setMethod] = usePersistedState('elasticsearch-method', 'GET');
+  const [path, setPath] = usePersistedState('elasticsearch-path', '/');
+  const [queryBody, setQueryBody] = usePersistedState('elasticsearch-queryBody', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],

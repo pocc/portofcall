@@ -1,6 +1,6 @@
 # Protocol Registry
 
-Status registry for all Port of Call protocols. Derived from audit passes 3-19 and the protocol review findings.
+Status registry for all L4.FYI protocols. Derived from audit passes 3-19 and the protocol review findings.
 
 ## Summary
 

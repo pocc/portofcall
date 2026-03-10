@@ -8,7 +8,7 @@
 
 ## Overview
 
-GELF (Graylog Extended Log Format) is a structured logging format designed for centralized log aggregation. Port of Call implements the **GELF TCP transport**, which sends JSON log messages over TCP connections, with each message terminated by a null byte (`\0`).
+GELF (Graylog Extended Log Format) is a structured logging format designed for centralized log aggregation. L4.FYI implements the **GELF TCP transport**, which sends JSON log messages over TCP connections, with each message terminated by a null byte (`\0`).
 
 GELF messages are simple JSON objects with required and optional fields, plus support for custom fields prefixed with underscore (`_`).
 
@@ -314,7 +314,7 @@ docker run --name graylog -p 9000:9000 -p 12201:12201 \
 # 3. Select "GELF TCP" and click "Launch new input"
 # 4. Set port to 12201 and click "Save"
 
-# Test with Port of Call:
+# Test with L4.FYI:
 curl -X POST http://localhost:8787/api/gelf/send \
   -H "Content-Type: application/json" \
   -d '{
@@ -322,7 +322,7 @@ curl -X POST http://localhost:8787/api/gelf/send \
     "messages": [{
       "version": "1.1",
       "host": "test-app",
-      "short_message": "Test message from Port of Call",
+      "short_message": "Test message from L4.FYI",
       "level": 6,
       "_test": true
     }]
@@ -345,5 +345,5 @@ curl -X POST http://localhost:8787/api/gelf/send \
 
 - [Graylog GELF Documentation](https://go2docs.graylog.org/5-0/getting_in_log_data/gelf.html)
 - [Syslog Protocol (RFC 5424)](https://datatracker.ietf.org/doc/html/rfc5424)
-- [Syslog Implementation in Port of Call](SYSLOG.md)
+- [Syslog Implementation in L4.FYI](SYSLOG.md)
 - [Graphite Protocol](GRAPHITE.md) - Similar fire-and-forget metrics protocol

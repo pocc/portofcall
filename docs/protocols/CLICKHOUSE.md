@@ -1,6 +1,6 @@
 # ClickHouse Protocol Reference
 
-Power-user reference for the ClickHouse protocol implementation in Port of Call.
+Power-user reference for the ClickHouse protocol implementation in L4.FYI.
 
 ## Ports
 
@@ -354,7 +354,7 @@ HTTP errors return the error message in the response body with an appropriate HT
 Code: 60. DB::Exception: Table default.nonexistent doesn't exist.
 ```
 
-## Implementation: Port of Call Endpoints
+## Implementation: L4.FYI Endpoints
 
 ### POST /api/clickhouse/health
 

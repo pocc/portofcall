@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IMAPClientProps {
   onBack: () => void;
@@ -14,9 +15,9 @@ interface HistoryEntry {
 }
 
 export default function IMAPClient({ onBack }: IMAPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('143');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('imap-host', '');
+  const [port, setPort] = usePersistedState('imap-port', '143');
+  const [username, setUsername] = usePersistedState('imap-username', '');
   const [password, setPassword] = useState('');
   const [status, setStatus] = useState<Status>('idle');
   const [statusMsg, setStatusMsg] = useState('');
@@ -185,8 +186,6 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">IMAP Client</h1>
         </div>
-
-      <ApiExamples examples={apiExamples.IMAP || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} />
@@ -355,6 +354,7 @@ export default function IMAPClient({ onBack }: IMAPClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.IMAP || []} protocolId="imap" />
     </div>
   );
 }

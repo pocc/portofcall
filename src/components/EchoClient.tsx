@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface EchoClientProps {
   onBack: () => void;
 }
 
 export default function EchoClient({ onBack }: EchoClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('7');
-  const [message, setMessage] = useState('Hello, ECHO!');
+  const [host, setHost] = usePersistedState('echo-host', '');
+  const [port, setPort] = usePersistedState('echo-port', '7');
+  const [message, setMessage] = usePersistedState('echo-message', 'Hello, ECHO!');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -88,7 +89,6 @@ export default function EchoClient({ onBack }: EchoClientProps) {
 
   return (
     <ProtocolClientLayout title="ECHO Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Echo || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -171,6 +171,8 @@ export default function EchoClient({ onBack }: EchoClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Echo || []} protocolId="echo" />
+
     </ProtocolClientLayout>
   );
 }

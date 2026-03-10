@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface PerforceClientProps {
   onBack: () => void;
 }
 
 export default function PerforceClient({ onBack }: PerforceClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1666');
+  const [host, setHost] = usePersistedState('perforce-host', '');
+  const [port, setPort] = usePersistedState('perforce-port', '1666');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

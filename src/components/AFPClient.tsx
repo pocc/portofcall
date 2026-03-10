@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface AFPClientProps {
   onBack: () => void;
@@ -32,8 +33,8 @@ export default function AFPClient({ onBack }: AFPClientProps) {
   const [activeTab, setActiveTab] = useState<Tab>('probe');
 
   // Connection fields (shared)
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('548');
+  const [host, setHost] = usePersistedState('afp-host', '');
+  const [port, setPort] = usePersistedState('afp-port', '548');
 
   // Probe state
   const [probeLoading, setProbeLoading] = useState(false);
@@ -52,9 +53,9 @@ export default function AFPClient({ onBack }: AFPClientProps) {
   } | null>(null);
 
   // Auth / session state
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = usePersistedState('afp-username', '');
   const [password, setPassword] = useState('');
-  const [uam, setUam] = useState('No User Authent');
+  const [uam, setUam] = usePersistedState('afp-uam', 'No User Authent');
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState('');
   const [volumes, setVolumes] = useState<AFPVolume[]>([]);
@@ -72,9 +73,9 @@ export default function AFPClient({ onBack }: AFPClientProps) {
   const [opLoading, setOpLoading] = useState(false);
   const [opResult, setOpResult] = useState('');
   const [opError, setOpError] = useState('');
-  const [newItemName, setNewItemName] = useState('');
+  const [newItemName, setNewItemName] = usePersistedState('afp-newItemName', '');
   const [renameTarget, setRenameTarget] = useState<AFPDirEntry | null>(null);
-  const [renameTo, setRenameTo] = useState('');
+  const [renameTo, setRenameTo] = usePersistedState('afp-renameTo', '');
   const [fileContent, setFileContent] = useState<{ name: string; content: string } | null>(null);
 
   const { errors: probeErrors, validateAll: validateProbe } = useFormValidation({

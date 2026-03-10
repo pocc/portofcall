@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MPDClientProps {
   onBack: () => void;
@@ -20,10 +21,10 @@ interface MpdKeyValue {
 }
 
 export default function MPDClient({ onBack }: MPDClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6600');
+  const [host, setHost] = usePersistedState('mpd-host', '');
+  const [port, setPort] = usePersistedState('mpd-port', '6600');
   const [password, setPassword] = useState('');
-  const [command, setCommand] = useState('');
+  const [command, setCommand] = usePersistedState('mpd-command', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -178,7 +179,6 @@ export default function MPDClient({ onBack }: MPDClientProps) {
 
   return (
     <ProtocolClientLayout title="MPD Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.MPD || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="MPD Server" />
 
@@ -316,6 +316,8 @@ export default function MPDClient({ onBack }: MPDClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.MPD || []} protocolId="mpd" />
+
     </ProtocolClientLayout>
   );
 }

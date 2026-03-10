@@ -7,16 +7,17 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface KubernetesClientProps {
   onBack: () => void;
 }
 
 export default function KubernetesClient({ onBack }: KubernetesClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6443');
+  const [host, setHost] = usePersistedState('kubernetes-host', '');
+  const [port, setPort] = usePersistedState('kubernetes-port', '6443');
   const [bearerToken, setBearerToken] = useState('');
-  const [queryPath, setQueryPath] = useState('/version');
+  const [queryPath, setQueryPath] = usePersistedState('kubernetes-queryPath', '/version');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

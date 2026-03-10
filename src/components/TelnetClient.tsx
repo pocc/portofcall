@@ -1,17 +1,18 @@
 import { useState, useRef, useEffect } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TelnetClientProps {
   onBack: () => void;
 }
 
 export default function TelnetClient({ onBack }: TelnetClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('23');
+  const [host, setHost] = usePersistedState('telnet-host', '');
+  const [port, setPort] = usePersistedState('telnet-port', '23');
   const [connected, setConnected] = useState(false);
   const [terminal, setTerminal] = useState<string[]>([]);
-  const [command, setCommand] = useState('');
+  const [command, setCommand] = usePersistedState('telnet-command', '');
   const [loading, setLoading] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
@@ -179,8 +180,6 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
           </div>
         )}
       </div>
-
-      <ApiExamples examples={apiExamples.Telnet || []} />
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection Panel */}
         <div className="lg:col-span-1">
@@ -353,6 +352,7 @@ export default function TelnetClient({ onBack }: TelnetClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Telnet || []} protocolId="telnet" />
     </div>
   );
 }

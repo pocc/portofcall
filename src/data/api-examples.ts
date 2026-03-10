@@ -71,7 +71,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"pbx.example.com","port":5038,"username":"admin","secret":"s3cretP@ss","command":"sip show peers","timeout":8000}'` },
     { title: 'POST /ami/sendtext', command: `curl -X POST 'https://l4.fyi/api/ami/sendtext' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"pbx.example.com","port":5038,"username":"admin","secret":"s3cretP@ss","channel":"SIP/1001-00000042","message":"Hello from Port of Call","timeout":5000}'` },
+  -d '{"host":"pbx.example.com","port":5038,"username":"admin","secret":"s3cretP@ss","channel":"SIP/1001-00000042","message":"Hello from L4.FYI","timeout":5000}'` },
   ],
   AMQP: [
     { title: 'POST /amqp/connect', command: `curl -X POST 'https://l4.fyi/api/amqp/connect' \
@@ -473,7 +473,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"my-cluster.es.cloud.example.com","port":9243,"path":"/_cluster/health","method":"GET","username":"elastic","password":"changeme","timeout":5000}'` },
     { title: 'POST /elasticsearch/index', command: `curl -X POST 'https://l4.fyi/api/elasticsearch/index' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"localhost","port":9200,"index":"my-index","id":"1","doc":{"title":"Test Document","content":"Hello from Port of Call"},"username":"elastic","password":"changeme","https":false,"timeout":5000}'` },
+  -d '{"host":"localhost","port":9200,"index":"my-index","id":"1","doc":{"title":"Test Document","content":"Hello from L4.FYI"},"username":"elastic","password":"changeme","https":false,"timeout":5000}'` },
     { title: 'POST /elasticsearch/delete', command: `curl -X POST 'https://l4.fyi/api/elasticsearch/delete' \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":9200,"index":"my-index","id":"1","username":"elastic","password":"changeme","https":false,"timeout":5000}'` },
@@ -601,7 +601,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":8074,"uin":12345678,"password":"mypassword","timeout":5000}'` },
     { title: 'POST /gadugadu/send-message', command: `curl -X POST 'https://l4.fyi/api/gadugadu/send-message' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":8074,"uin":12345678,"password":"mypassword","recipientUin":87654321,"message":"Hello from Port of Call!","timeout":5000}'` },
+  -d '{"host":"your-server.example.com","port":8074,"uin":12345678,"password":"mypassword","recipientUin":87654321,"message":"Hello from L4.FYI!","timeout":5000}'` },
   ],
   // Untestable — job queue protocol, limited Docker availability
   Gearman: [
@@ -888,7 +888,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":515,"timeout":5000}'` },
     { title: 'POST /lpd/print', command: `curl -X POST 'https://l4.fyi/api/lpd/print' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":515,"queue":"lp0","data":"Hello from Port of Call","title":"test-job","timeout":10000}'` },
+  -d '{"host":"your-server.example.com","port":515,"queue":"lp0","data":"Hello from L4.FYI","title":"test-job","timeout":10000}'` },
     { title: 'POST /lpd/queue', command: `curl -X POST 'https://l4.fyi/api/lpd/queue' \
   -H 'Content-Type: application/json' \
   -d '{"host":"your-server.example.com","port":515,"queue":"lp0","timeout":5000}'` },
@@ -1069,7 +1069,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"demo.nats.io","port":4222,"user":"natsuser","pass":"natspass","token":"","timeout":10000}'` },
     { title: 'POST /nats/publish', command: `curl -X POST 'https://l4.fyi/api/nats/publish' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"demo.nats.io","port":4222,"user":"natsuser","pass":"natspass","token":"","subject":"events.user.signup","payload":"Hello from Port of Call","timeout":10000}'` },
+  -d '{"host":"demo.nats.io","port":4222,"user":"natsuser","pass":"natspass","token":"","subject":"events.user.signup","payload":"Hello from L4.FYI","timeout":10000}'` },
     { title: 'POST /nats/subscribe', command: `curl -X POST 'https://l4.fyi/api/nats/subscribe' \
   -H 'Content-Type: application/json' \
   -d '{"host":"demo.nats.io","port":4222,"user":"natsuser","pass":"natspass","subject":"events.>","max_msgs":5,"timeout_ms":10000,"queue_group":"workers"}'` },
@@ -1162,7 +1162,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"news.aioe.org","port":119,"username":"newsuser","password":"newspass","variant":"active","timeout":15000}'` },
     { title: 'POST /nntp/post', command: `curl -X POST 'https://l4.fyi/api/nntp/post' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"news.aioe.org","port":119,"username":"newsuser","password":"newspass","from":"user@example.com","newsgroups":"misc.test","subject":"Test Post","body":"This is a test post from Port of Call.","timeout":10000}'` },
+  -d '{"host":"news.aioe.org","port":119,"username":"newsuser","password":"newspass","from":"user@example.com","newsgroups":"misc.test","subject":"Test Post","body":"This is a test post from L4.FYI.","timeout":10000}'` },
     { title: 'POST /nntp/auth', command: `curl -X POST 'https://l4.fyi/api/nntp/auth' \
   -H 'Content-Type: application/json' \
   -d '{"host":"news.aioe.org","port":119,"username":"newsuser","password":"newspass","timeout":10000}'` },
@@ -1193,7 +1193,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":4150,"timeout":5000}'` },
     { title: 'POST /nsq/publish', command: `curl -X POST 'https://l4.fyi/api/nsq/publish' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":4150,"topic":"events","message":"Hello from Port of Call","timeout":5000}'` },
+  -d '{"host":"your-server.example.com","port":4150,"topic":"events","message":"Hello from L4.FYI","timeout":5000}'` },
     { title: 'POST /nsq/mpub', command: `curl -X POST 'https://l4.fyi/api/nsq/mpub' \
   -H 'Content-Type: application/json' \
   -d '{"host":"your-server.example.com","port":4150,"topic":"events","messages":["message one","message two","message three"],"timeout":5000}'` },
@@ -1355,7 +1355,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"localhost","port":15672,"username":"guest","password":"guest","timeout":5000}'` },
     { title: 'POST /rabbitmq/publish', command: `curl -X POST 'https://l4.fyi/api/rabbitmq/publish' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"localhost","port":15672,"username":"guest","password":"guest","vhost":"/","exchange":"amq.direct","routingKey":"test.queue","payload":"Hello from Port of Call","timeout":5000}'` },
+  -d '{"host":"localhost","port":15672,"username":"guest","password":"guest","vhost":"/","exchange":"amq.direct","routingKey":"test.queue","payload":"Hello from L4.FYI","timeout":5000}'` },
     { title: 'POST /rabbitmq/query', command: `curl -X POST 'https://l4.fyi/api/rabbitmq/query' \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":15672,"username":"guest","password":"guest","path":"/api/overview","timeout":5000}'` },
@@ -1591,7 +1591,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":22,"username":"sftpuser","password":"secret","path":"/home/sftpuser/report.csv"}'` },
     { title: 'POST /sftp/upload (501)', command: `curl -X POST 'https://l4.fyi/api/sftp/upload' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":22,"username":"sftpuser","password":"secret","path":"/home/sftpuser/hello.txt","content":"Hello from Port of Call!","encoding":"utf8"}'` },
+  -d '{"host":"your-server.example.com","port":22,"username":"sftpuser","password":"secret","path":"/home/sftpuser/hello.txt","content":"Hello from L4.FYI!","encoding":"utf8"}'` },
     { title: 'POST /sftp/delete (501)', command: `curl -X POST 'https://l4.fyi/api/sftp/delete' \
   -H 'Content-Type: application/json' \
   -d '{"host":"your-server.example.com","port":22,"username":"sftpuser","password":"secret","path":"/home/sftpuser/old-file.txt"}'` },
@@ -1671,7 +1671,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":2775,"timeout":5000}'` },
     { title: 'POST /smpp/submit', command: `curl -X POST 'https://l4.fyi/api/smpp/submit' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":2775,"systemId":"smppclient","password":"secret","sourceAddr":"12345","destAddr":"15551234567","shortMessage":"Hello from Port of Call","timeout":5000}'` },
+  -d '{"host":"your-server.example.com","port":2775,"systemId":"smppclient","password":"secret","sourceAddr":"12345","destAddr":"15551234567","shortMessage":"Hello from L4.FYI","timeout":5000}'` },
     { title: 'POST /smpp/query', command: `curl -X POST 'https://l4.fyi/api/smpp/query' \
   -H 'Content-Type: application/json' \
   -d '{"host":"your-server.example.com","port":2775,"systemId":"smppclient","password":"secret","messageId":"msg-001","timeout":5000}'` },
@@ -1682,7 +1682,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"smtp.example.com","port":25,"username":"mailuser","password":"mailpass","useTLS":false,"timeout":5000}'` },
     { title: 'POST /smtp/send', command: `curl -X POST 'https://l4.fyi/api/smtp/send' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"smtp.example.com","port":25,"username":"mailuser","password":"mailpass","from":"sender@example.com","to":"recipient@example.com","subject":"Test Message","body":"Hello from Port of Call!","timeout":10000}'` },
+  -d '{"host":"smtp.example.com","port":25,"username":"mailuser","password":"mailpass","from":"sender@example.com","to":"recipient@example.com","subject":"Test Message","body":"Hello from L4.FYI!","timeout":10000}'` },
   ],
   SMTPS: [
     { title: 'POST /smtps/connect', command: `curl -X POST 'https://l4.fyi/api/smtps/connect' \
@@ -1690,7 +1690,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"smtp.example.com","port":465,"username":"mailuser","password":"mailpass","useTLS":true,"timeout":5000}'` },
     { title: 'POST /smtps/send', command: `curl -X POST 'https://l4.fyi/api/smtps/send' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"smtp.example.com","port":465,"username":"mailuser","password":"mailpass","from":"sender@example.com","to":"recipient@example.com","subject":"Secure Test Message","body":"Hello securely from Port of Call!","timeout":10000}'` },
+  -d '{"host":"smtp.example.com","port":465,"username":"mailuser","password":"mailpass","from":"sender@example.com","to":"recipient@example.com","subject":"Secure Test Message","body":"Hello securely from L4.FYI!","timeout":10000}'` },
   ],
   // Untestable — legacy pager protocol, no standard Docker image
   SNPP: [
@@ -1887,7 +1887,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":69,"filename":"firmware.bin","timeout":15000}'` },
     { title: 'POST /tftp/write', command: `curl -X POST 'https://l4.fyi/api/tftp/write' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":69,"filename":"upload.txt","data":"Hello from Port of Call","timeout":10000}'` },
+  -d '{"host":"your-server.example.com","port":69,"filename":"upload.txt","data":"Hello from L4.FYI","timeout":10000}'` },
     { title: 'POST /tftp/options', command: `curl -X POST 'https://l4.fyi/api/tftp/options' \
   -H 'Content-Type: application/json' \
   -d '{"host":"your-server.example.com","port":69,"timeout":5000}'` },
@@ -2020,7 +2020,7 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"localhost","port":5555,"socketType":"DEALER","timeout":5000}'` },
     { title: 'POST /zmtp/send', command: `curl -X POST 'https://l4.fyi/api/zmtp/send' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"localhost","port":5555,"socketType":"PUSH","message":"Hello from Port of Call","timeout":5000}'` },
+  -d '{"host":"localhost","port":5555,"socketType":"PUSH","message":"Hello from L4.FYI","timeout":5000}'` },
     { title: 'POST /zmtp/recv', command: `curl -X POST 'https://l4.fyi/api/zmtp/recv' \
   -H 'Content-Type: application/json' \
   -d '{"host":"localhost","port":5555,"socketType":"PULL","timeout":5000}'` },

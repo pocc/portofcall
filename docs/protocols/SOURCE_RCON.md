@@ -1,4 +1,4 @@
-# Source RCON Protocol — Port of Call Reference
+# Source RCON Protocol — L4.FYI Reference
 
 **Spec:** [Valve Developer Wiki — Source RCON Protocol](https://developer.valvesoftware.com/wiki/Source_RCON_Protocol)
 **Default port:** 27015 (Source engine) — **implementation default: 25575** (see gotcha below)
@@ -223,7 +223,7 @@ This handles the common case where a server sends the auth response as two packe
 
 **Empty command output.** Some Source commands produce no output (e.g., `say`, `changelevel`). The response body in those cases is `"(No output)"`, not `""`.
 
-**No Cloudflare detection.** Unlike most other Port of Call endpoints, there is no `checkIfCloudflare()` call. Connecting to a Cloudflare-proxied host on port 27015 will result in a generic timeout or connection error, not the structured `{ isCloudflare: true }` response.
+**No Cloudflare detection.** Unlike most other L4.FYI endpoints, there is no `checkIfCloudflare()` call. Connecting to a Cloudflare-proxied host on port 27015 will result in a generic timeout or connection error, not the structured `{ isCloudflare: true }` response.
 
 **`cvarlist` truncation.** The `cvarlist` command returns hundreds of lines. Due to the 200ms drain window, you may receive a partial result. There is no multi-packet sentinel or end-of-data signaling in Source RCON.
 

@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface XMPPS2SClientProps {
   onBack: () => void;
 }
 
 export default function XMPPS2SClient({ onBack }: XMPPS2SClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5269');
-  const [fromDomain, setFromDomain] = useState('');
-  const [toDomain, setToDomain] = useState('');
+  const [host, setHost] = usePersistedState('xmpps2s-host', '');
+  const [port, setPort] = usePersistedState('xmpps2s-port', '5269');
+  const [fromDomain, setFromDomain] = usePersistedState('xmpps2s-fromDomain', '');
+  const [toDomain, setToDomain] = usePersistedState('xmpps2s-toDomain', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -95,7 +96,6 @@ export default function XMPPS2SClient({ onBack }: XMPPS2SClientProps) {
 
   return (
     <ProtocolClientLayout title="XMPP S2S (Server Federation) Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.XmppS2S || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Details" />
 
@@ -163,6 +163,8 @@ export default function XMPPS2SClient({ onBack }: XMPPS2SClientProps) {
           description="XMPP Server-to-Server (S2S) federation (RFC 6120) allows XMPP servers to exchange messages between different domains. This probes the S2S stream opening and detects advertised features like STARTTLS and Dialback. Default port is 5269."
         />
       </div>
+      <ApiExamples examples={apiExamples.XmppS2S || []} protocolId="xmpps2s" />
+
     </ProtocolClientLayout>
   );
 }

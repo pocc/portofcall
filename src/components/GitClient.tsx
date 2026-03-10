@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GitClientProps {
   onBack: () => void;
@@ -35,14 +36,14 @@ const EXAMPLE_REPOS = [
 ];
 
 export default function GitClient({ onBack }: GitClientProps) {
-  const [host, setHost] = useState('git.kernel.org');
+  const [host, setHost] = usePersistedState('git-host', 'git.kernel.org');
   const [port, setPort] = useState(9418);
-  const [repo, setRepo] = useState('/pub/scm/git/git.git');
+  const [repo, setRepo] = usePersistedState('git-repo', '/pub/scm/git/git.git');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<GitResult | null>(null);
   const [error, setError] = useState('');
   const [filter, setFilter] = useState<RefFilter>('all');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchQuery, setSearchQuery] = usePersistedState('git-searchQuery', '');
   const [history, setHistory] = useState<GitResult[]>([]);
 
   const handleBrowse = async () => {
@@ -150,8 +151,6 @@ export default function GitClient({ onBack }: GitClientProps) {
             </p>
           </div>
         </div>
-
-      <ApiExamples examples={apiExamples.Git || []} />
         <div className="space-y-4">
           <div className="flex gap-2 flex-wrap">
             {EXAMPLE_REPOS.map((example) => (
@@ -397,6 +396,7 @@ export default function GitClient({ onBack }: GitClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Git || []} protocolId="git" />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-# Claude Code Project Guidelines — Port of Call
+# Claude Code Project Guidelines — L4.FYI
 
 ## What This Is
 A browser-to-TCP bridge deployed as a Cloudflare Worker. Uses the `cloudflare:sockets` API to proxy TCP connections from the browser via WebSocket tunnels.

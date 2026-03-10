@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DICTClientProps {
   onBack: () => void;
@@ -22,11 +23,11 @@ interface DictDefinition {
 }
 
 export default function DICTClient({ onBack }: DICTClientProps) {
-  const [word, setWord] = useState('');
-  const [host, setHost] = useState('dict.org');
-  const [port, setPort] = useState('2628');
-  const [database, setDatabase] = useState('*');
-  const [strategy, setStrategy] = useState('prefix');
+  const [word, setWord] = usePersistedState('dict-word', '');
+  const [host, setHost] = usePersistedState('dict-host', 'dict.org');
+  const [port, setPort] = usePersistedState('dict-port', '2628');
+  const [database, setDatabase] = usePersistedState('dict-database', '*');
+  const [strategy, setStrategy] = usePersistedState('dict-strategy', 'prefix');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -237,7 +238,6 @@ export default function DICTClient({ onBack }: DICTClientProps) {
 
   return (
     <ProtocolClientLayout title="DICT Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.DICT || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -398,6 +398,8 @@ export default function DICTClient({ onBack }: DICTClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.DICT || []} protocolId="dict" />
+
     </ProtocolClientLayout>
   );
 }

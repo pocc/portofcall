@@ -466,7 +466,7 @@ curl -s -X POST https://l4.fyi/api/ipp/print \
   -H 'Content-Type: application/json' \
   -d '{
     "host":"192.168.1.50",
-    "data":"Hello from Port of Call!\n",
+    "data":"Hello from L4.FYI!\n",
     "jobName":"test-page",
     "mimeType":"text/plain"
   }' | jq .
@@ -489,7 +489,7 @@ curl -s -X POST https://l4.fyi/api/ipp/probe \
 
 ---
 
-## Direct Testing (without Port of Call)
+## Direct Testing (without L4.FYI)
 
 ```bash
 # Discover CUPS printers on localhost
@@ -515,7 +515,7 @@ EOF
 # Print a test page via CUPS command line
 echo "Hello World" | lp -d printer_name -
 
-# Print via HTTP POST with curl (bypass Port of Call, talk directly to printer)
+# Print via HTTP POST with curl (bypass L4.FYI, talk directly to printer)
 # Build IPP binary manually with Python, then POST:
 python3 -c "
 import struct, sys

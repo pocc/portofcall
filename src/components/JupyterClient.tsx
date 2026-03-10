@@ -9,23 +9,24 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface JupyterClientProps {
   onBack: () => void;
 }
 
 export default function JupyterClient({ onBack }: JupyterClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8888');
+  const [host, setHost] = usePersistedState('jupyter-host', '');
+  const [port, setPort] = usePersistedState('jupyter-port', '8888');
   const [token, setToken] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Query mode state
-  const [method, setMethod] = useState('GET');
-  const [path, setPath] = useState('/api');
-  const [queryBody, setQueryBody] = useState('');
+  const [method, setMethod] = usePersistedState('jupyter-method', 'GET');
+  const [path, setPath] = usePersistedState('jupyter-path', '/api');
+  const [queryBody, setQueryBody] = usePersistedState('jupyter-queryBody', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],
@@ -204,7 +205,6 @@ export default function JupyterClient({ onBack }: JupyterClientProps) {
 
   return (
     <ProtocolClientLayout title="Jupyter Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Jupyter || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -350,6 +350,8 @@ export default function JupyterClient({ onBack }: JupyterClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Jupyter || []} protocolId="jupyter" />
+
     </ProtocolClientLayout>
   );
 }

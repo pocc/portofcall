@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface Socks5ClientProps {
   onBack: () => void;
@@ -26,11 +27,11 @@ interface Socks5Result {
 }
 
 export default function Socks5Client({ onBack }: Socks5ClientProps) {
-  const [proxyHost, setProxyHost] = useState('');
-  const [proxyPort, setProxyPort] = useState('1080');
-  const [destHost, setDestHost] = useState('example.com');
-  const [destPort, setDestPort] = useState('80');
-  const [username, setUsername] = useState('');
+  const [proxyHost, setProxyHost] = usePersistedState('socks5-proxyHost', '');
+  const [proxyPort, setProxyPort] = usePersistedState('socks5-proxyPort', '1080');
+  const [destHost, setDestHost] = usePersistedState('socks5-destHost', 'example.com');
+  const [destPort, setDestPort] = usePersistedState('socks5-destPort', '80');
+  const [username, setUsername] = usePersistedState('socks5-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<Socks5Result[]>([]);
@@ -78,9 +79,6 @@ export default function Socks5Client({ onBack }: Socks5ClientProps) {
         </button>
         <h1 className="text-3xl font-bold text-white">SOCKS5 Client</h1>
       </div>
-
-
-      <ApiExamples examples={apiExamples.SOCKS5 || []} />
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Config Panel */}
         <div className="lg:col-span-1">
@@ -303,6 +301,7 @@ export default function Socks5Client({ onBack }: Socks5ClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SOCKS5 || []} protocolId="socks5" />
     </div>
   );
 }

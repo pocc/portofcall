@@ -87,8 +87,6 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
     <ProtocolClientLayout title="SFTP Client" onBack={onBack}>
       <p className="text-slate-400 text-sm mb-6">Port 22 &mdash; SSH File Transfer Protocol</p>
 
-      <ApiExamples examples={apiExamples.SFTP || []} />
-
       <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-4 mb-6 flex items-start gap-3">
         <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
@@ -159,6 +157,9 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
           </div>
         </div>
       )}
+
+      <ApiExamples examples={apiExamples.SFTP || []} protocolId="sftp" />
+
     </ProtocolClientLayout>
   );
 }

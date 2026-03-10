@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SCCPClientProps {
   onBack: () => void;
@@ -23,10 +24,10 @@ const DEVICE_TYPES = [
 ];
 
 export default function SCCPClient({ onBack }: SCCPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2000');
-  const [deviceName, setDeviceName] = useState('SEP001122334455');
-  const [deviceType, setDeviceType] = useState('8');
+  const [host, setHost] = usePersistedState('sccp-host', '');
+  const [port, setPort] = usePersistedState('sccp-port', '2000');
+  const [deviceName, setDeviceName] = usePersistedState('sccp-deviceName', 'SEP001122334455');
+  const [deviceType, setDeviceType] = usePersistedState('sccp-deviceType', '8');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

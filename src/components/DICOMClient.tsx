@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DICOMClientProps {
   onBack: () => void;
 }
 
 export default function DICOMClient({ onBack }: DICOMClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('104');
-  const [callingAE, setCallingAE] = useState('PORTOFCALL');
-  const [calledAE, setCalledAE] = useState('ANY-SCP');
+  const [host, setHost] = usePersistedState('dicom-host', '');
+  const [port, setPort] = usePersistedState('dicom-port', '104');
+  const [callingAE, setCallingAE] = usePersistedState('dicom-callingAE', 'PORTOFCALL');
+  const [calledAE, setCalledAE] = usePersistedState('dicom-calledAE', 'ANY-SCP');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -169,7 +170,6 @@ export default function DICOMClient({ onBack }: DICOMClientProps) {
 
   return (
     <ProtocolClientLayout title="DICOM Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.DICOM || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="DICOM Server Configuration" />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -292,6 +292,8 @@ export default function DICOMClient({ onBack }: DICOMClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.DICOM || []} protocolId="dicom" />
+
     </ProtocolClientLayout>
   );
 }

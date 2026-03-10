@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface VaultClientProps {
   onBack: () => void;
 }
 
 export default function VaultClient({ onBack }: VaultClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8200');
+  const [host, setHost] = usePersistedState('vault-host', '');
+  const [port, setPort] = usePersistedState('vault-port', '8200');
   const [token, setToken] = useState('');
-  const [queryPath, setQueryPath] = useState('');
+  const [queryPath, setQueryPath] = usePersistedState('vault-queryPath', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -174,7 +175,6 @@ export default function VaultClient({ onBack }: VaultClientProps) {
 
   return (
     <ProtocolClientLayout title="Vault Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Vault || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -290,6 +290,8 @@ export default function VaultClient({ onBack }: VaultClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Vault || []} protocolId="vault" />
+
     </ProtocolClientLayout>
   );
 }

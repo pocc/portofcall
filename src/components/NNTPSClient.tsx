@@ -7,16 +7,17 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NNTPSClientProps {
   onBack: () => void;
 }
 
 export default function NNTPSClient({ onBack }: NNTPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('563');
-  const [group, setGroup] = useState('');
-  const [articleNumber, setArticleNumber] = useState('');
+  const [host, setHost] = usePersistedState('nntps-host', '');
+  const [port, setPort] = usePersistedState('nntps-port', '563');
+  const [group, setGroup] = usePersistedState('nntps-group', '');
+  const [articleNumber, setArticleNumber] = usePersistedState('nntps-articleNumber', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

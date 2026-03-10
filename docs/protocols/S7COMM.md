@@ -2,7 +2,7 @@
 
 **Port:** 102 | **Protocol:** S7comm (Siemens S7 PLC) | **Transport:** TCP → TPKT → COTP → S7
 
-Port of Call implements S7comm for communicating with Siemens S7 PLCs (S7-300, S7-400, S7-1200, S7-1500) in industrial automation and SCADA environments. All three endpoints perform a full connection handshake (COTP Connection Request → S7 Setup Communication) and close cleanly on every call.
+L4.FYI implements S7comm for communicating with Siemens S7 PLCs (S7-300, S7-400, S7-1200, S7-1500) in industrial automation and SCADA environments. All three endpoints perform a full connection handshake (COTP Connection Request → S7 Setup Communication) and close cleanly on every call.
 
 ---
 
@@ -562,7 +562,7 @@ The `/api/s7comm/connect` endpoint attempts to read SZL ID 0x001C but does not f
 
 ### No password/authentication
 
-S7comm does not support authentication in the base protocol. Some PLCs have "protection levels" (1-3) that restrict write access, but this is enforced by the PLC firmware, not the protocol. Port of Call sends no authentication tokens.
+S7comm does not support authentication in the base protocol. Some PLCs have "protection levels" (1-3) that restrict write access, but this is enforced by the PLC firmware, not the protocol. L4.FYI sends no authentication tokens.
 
 ### No ISO-on-TCP mode
 

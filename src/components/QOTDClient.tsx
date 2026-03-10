@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface QOTDClientProps {
   onBack: () => void;
 }
 
 export default function QOTDClient({ onBack }: QOTDClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('17');
+  const [host, setHost] = usePersistedState('qotd-host', '');
+  const [port, setPort] = usePersistedState('qotd-port', '17');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -85,7 +86,6 @@ export default function QOTDClient({ onBack }: QOTDClientProps) {
 
   return (
     <ProtocolClientLayout title="QOTD Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.QOTD || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="QOTD Server" />
 
@@ -192,6 +192,8 @@ export default function QOTDClient({ onBack }: QOTDClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.QOTD || []} protocolId="qotd" />
+
     </ProtocolClientLayout>
   );
 }

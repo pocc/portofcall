@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DAPClientProps {
   onBack: () => void;
@@ -24,8 +25,8 @@ interface DAPMessage {
 }
 
 export default function DAPClient({ onBack }: DAPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5678');
+  const [host, setHost] = usePersistedState('dap-host', '');
+  const [port, setPort] = usePersistedState('dap-port', '5678');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -33,9 +34,9 @@ export default function DAPClient({ onBack }: DAPClientProps) {
   // WebSocket session state
   const [wsConnected, setWsConnected] = useState(false);
   const [wsOutput, setWsOutput] = useState<string[]>([]);
-  const [dapCommand, setDapCommand] = useState('initialize');
+  const [dapCommand, setDapCommand] = usePersistedState('dap-dapCommand', 'initialize');
   const [dapArgs, setDapArgs] = useState(
-    '{"clientID":"portofcall","clientName":"Port of Call","adapterID":"generic","linesStartAt1":true,"columnsStartAt1":true}',
+    '{"clientID":"portofcall","clientName":"L4.FYI","adapterID":"generic","linesStartAt1":true,"columnsStartAt1":true}',
   );
   const [seqCounter, setSeqCounter] = useState(1);
 
@@ -242,7 +243,7 @@ export default function DAPClient({ onBack }: DAPClientProps) {
     {
       label: 'initialize',
       command: 'initialize',
-      args: '{"clientID":"portofcall","clientName":"Port of Call","adapterID":"generic","linesStartAt1":true,"columnsStartAt1":true}',
+      args: '{"clientID":"portofcall","clientName":"L4.FYI","adapterID":"generic","linesStartAt1":true,"columnsStartAt1":true}',
     },
     {
       label: 'configurationDone',

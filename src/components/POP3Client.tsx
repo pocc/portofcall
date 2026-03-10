@@ -3,6 +3,7 @@ import { FormField, ActionButton, HelpSection } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface POP3ClientProps {
   onBack: () => void;
@@ -14,9 +15,9 @@ interface POP3Message {
 }
 
 export default function POP3Client({ onBack }: POP3ClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('110');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('pop3-host', '');
+  const [port, setPort] = usePersistedState('pop3-port', '110');
+  const [username, setUsername] = usePersistedState('pop3-username', '');
   const [password, setPassword] = useState('');
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -207,7 +208,7 @@ export default function POP3Client({ onBack }: POP3ClientProps) {
         )}
       </div>
 
-      <ApiExamples examples={apiExamples.POP3 || []} />
+      <ApiExamples examples={apiExamples.POP3 || []} protocolId="pop3" />
 
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection Panel */}

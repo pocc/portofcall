@@ -1,4 +1,4 @@
-# Jupyter REST API -- Port of Call Reference
+# Jupyter REST API -- L4.FYI Reference
 
 **Spec:** [Jupyter Server REST API](https://jupyter-server.readthedocs.io/en/latest/developers/rest-api.html)
 **Default port:** 8888
@@ -9,7 +9,7 @@
 
 ## Architecture: two transport paths
 
-Like the Docker implementation, Jupyter's REST API is HTTP/JSON. Port of Call uses two transport mechanisms:
+Like the Docker implementation, Jupyter's REST API is HTTP/JSON. L4.FYI uses two transport mechanisms:
 
 | Handler | Transport | Why |
 |---|---|---|

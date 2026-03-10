@@ -3,7 +3,7 @@
 **Date:** 2026-02-20
 **Reviewer Role:** Chief Architect, Cloudflare Workers Connectivity
 **Source:** Final sign-off audit of [PROTOCOL_REVIEW_18TH_PASS.md](PROTOCOL_REVIEW_18TH_PASS.md)
-**Verdict:** **CERTIFIED — Port of Call v1.0 Data Plane Baseline**
+**Verdict:** **CERTIFIED — L4.FYI v1.0 Data Plane Baseline**
 
 ---
 
@@ -139,7 +139,7 @@ No change from 18th pass assessment. 50ms is the optimal balance point. The gate
 
 ## Executive Summary
 
-> The Port of Call data plane implements end-to-end TCP flow control through a WebSocket tunnel. A 1 MiB high-water mark on `ws.bufferedAmount` gates all TCP reads, bounding Worker memory to ~1.1 MiB per connection regardless of backend throughput or session duration — protecting the 128 MiB isolate from slow-client OOM attacks. Browser-to-backend write ordering is guaranteed by a promise-chain serializer that flushes all in-flight data before writer teardown. Payloads exceeding the 1 MiB WebSocket platform limit are split via zero-copy `subarray()` views. The system is sink-limited: throughput equals the client's consumption rate, not the Worker's buffer capacity. These properties hold under adversarial conditions (fast backend, slow client, rapid close, rejected promise chains) and have been verified across 19 audit passes.
+> The L4.FYI data plane implements end-to-end TCP flow control through a WebSocket tunnel. A 1 MiB high-water mark on `ws.bufferedAmount` gates all TCP reads, bounding Worker memory to ~1.1 MiB per connection regardless of backend throughput or session duration — protecting the 128 MiB isolate from slow-client OOM attacks. Browser-to-backend write ordering is guaranteed by a promise-chain serializer that flushes all in-flight data before writer teardown. Payloads exceeding the 1 MiB WebSocket platform limit are split via zero-copy `subarray()` views. The system is sink-limited: throughput equals the client's consumption rate, not the Worker's buffer capacity. These properties hold under adversarial conditions (fast backend, slow client, rapid close, rejected promise chains) and have been verified across 19 audit passes.
 
 ---
 
@@ -161,7 +161,7 @@ No change from 18th pass assessment. 50ms is the optimal balance point. The gate
 ║   Timing:         CERTIFIED — monotonic sub-ms           ║
 ║                                                          ║
 ║   This codebase is locked as the stable baseline         ║
-║   for Port of Call v1.0.                                 ║
+║   for L4.FYI v1.0.                                 ║
 ║                                                          ║
 ╚══════════════════════════════════════════════════════════╝
 ```

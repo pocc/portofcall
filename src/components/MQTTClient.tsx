@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MQTTClientProps {
   onBack: () => void;
 }
 
 export default function MQTTClient({ onBack }: MQTTClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1883');
-  const [clientId, setClientId] = useState('');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('mqtt-host', '');
+  const [port, setPort] = usePersistedState('mqtt-port', '1883');
+  const [clientId, setClientId] = usePersistedState('mqtt-clientId', '');
+  const [username, setUsername] = usePersistedState('mqtt-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -80,7 +81,6 @@ export default function MQTTClient({ onBack }: MQTTClientProps) {
 
   return (
     <ProtocolClientLayout title="MQTT Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.MQTT || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -163,6 +163,8 @@ export default function MQTTClient({ onBack }: MQTTClientProps) {
           description="MQTT (Message Queuing Telemetry Transport) is a lightweight publish-subscribe messaging protocol designed for IoT devices and constrained networks. This interface tests connectivity by sending a CONNECT packet and parsing the CONNACK response. Port 1883 is the default for unencrypted connections, while 8883 is used for TLS/SSL."
         />
       </div>
+      <ApiExamples examples={apiExamples.MQTT || []} protocolId="mqtt" />
+
     </ProtocolClientLayout>
   );
 }

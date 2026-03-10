@@ -9,22 +9,23 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DockerClientProps {
   onBack: () => void;
 }
 
 export default function DockerClient({ onBack }: DockerClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2375');
+  const [host, setHost] = usePersistedState('docker-host', '');
+  const [port, setPort] = usePersistedState('docker-port', '2375');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // Query mode state
-  const [method, setMethod] = useState('GET');
-  const [path, setPath] = useState('/version');
-  const [queryBody, setQueryBody] = useState('');
+  const [method, setMethod] = usePersistedState('docker-method', 'GET');
+  const [path, setPath] = usePersistedState('docker-path', '/version');
+  const [queryBody, setQueryBody] = usePersistedState('docker-queryBody', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],
@@ -205,7 +206,6 @@ export default function DockerClient({ onBack }: DockerClientProps) {
 
   return (
     <ProtocolClientLayout title="Docker Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Docker || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -337,6 +337,8 @@ export default function DockerClient({ onBack }: DockerClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Docker || []} protocolId="docker" />
+
     </ProtocolClientLayout>
   );
 }

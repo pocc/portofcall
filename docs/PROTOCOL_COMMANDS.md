@@ -1,6 +1,6 @@
 # Protocol Command Reference
 
-Quick reference of all available API endpoints for [Port of Call](https://l4.fyi), organized by protocol.
+Quick reference of all available API endpoints for [L4.FYI](https://l4.fyi), organized by protocol.
 
 All endpoints accept POST requests with JSON bodies unless otherwise noted. The base URL is `https://l4.fyi`.
 
@@ -1937,7 +1937,7 @@ curl -X POST 'https://l4.fyi/api/nats/connect' \
 ```bash
 curl -X POST 'https://l4.fyi/api/nats/publish' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"demo.nats.io","port":4222,"subject":"events.user.signup","payload":"Hello from Port of Call","timeout":10000}'
+  -d '{"host":"demo.nats.io","port":4222,"subject":"events.user.signup","payload":"Hello from L4.FYI","timeout":10000}'
 ```
 
 ---

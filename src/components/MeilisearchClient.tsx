@@ -1,15 +1,16 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MeilisearchClientProps {
   onBack: () => void;
 }
 
 export default function MeilisearchClient({ onBack }: MeilisearchClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('7700');
+  const [host, setHost] = usePersistedState('meilisearch-host', '');
+  const [port, setPort] = usePersistedState('meilisearch-port', '7700');
   const [apiKey, setApiKey] = useState('');
-  const [index, setIndex] = useState('');
-  const [query, setQuery] = useState('');
+  const [index, setIndex] = usePersistedState('meilisearch-index', '');
+  const [query, setQuery] = usePersistedState('meilisearch-query', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

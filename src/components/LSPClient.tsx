@@ -6,6 +6,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LSPClientProps {
   onBack: () => void;
@@ -42,9 +43,9 @@ const SERVER_PRESETS = [
 ];
 
 export default function LSPClient({ onBack }: LSPClientProps) {
-  const [host, setHost] = useState('localhost');
-  const [port, setPort] = useState('2087');
-  const [rootUri, setRootUri] = useState('');
+  const [host, setHost] = usePersistedState('lsp-host', 'localhost');
+  const [port, setPort] = usePersistedState('lsp-port', '2087');
+  const [rootUri, setRootUri] = usePersistedState('lsp-rootUri', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<LspResult | null>(null);
   const [error, setError] = useState<string>('');

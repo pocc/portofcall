@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface EPMDClientProps {
   onBack: () => void;
 }
 
 export default function EPMDClient({ onBack }: EPMDClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4369');
-  const [nodeName, setNodeName] = useState('');
+  const [host, setHost] = usePersistedState('epmd-host', '');
+  const [port, setPort] = usePersistedState('epmd-port', '4369');
+  const [nodeName, setNodeName] = usePersistedState('epmd-nodeName', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

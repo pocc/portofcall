@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface FingerClientProps {
   onBack: () => void;
 }
 
 export default function FingerClient({ onBack }: FingerClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('79');
-  const [username, setUsername] = useState('');
-  const [remoteHost, setRemoteHost] = useState('');
+  const [host, setHost] = usePersistedState('finger-host', '');
+  const [port, setPort] = usePersistedState('finger-port', '79');
+  const [username, setUsername] = usePersistedState('finger-username', '');
+  const [remoteHost, setRemoteHost] = usePersistedState('finger-remoteHost', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -86,7 +87,6 @@ export default function FingerClient({ onBack }: FingerClientProps) {
 
   return (
     <ProtocolClientLayout title="Finger Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Finger || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Finger Server Configuration" />
 
@@ -245,6 +245,8 @@ No Plan.`}
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Finger || []} protocolId="finger" />
+
     </ProtocolClientLayout>
   );
 }

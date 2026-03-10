@@ -1,4 +1,4 @@
-# Jabber Component Protocol (XEP-0114) -- Port of Call Reference
+# Jabber Component Protocol (XEP-0114) -- L4.FYI Reference
 
 **Specification:** [XEP-0114](https://xmpp.org/extensions/xep-0114.html) (Jabber Component Protocol)
 **Default port:** 5275

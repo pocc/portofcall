@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Smoke Tests', () => {
   test('app loads and shows header', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('text=PORT OF CALL')).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator('text=L4.FYI')).toBeVisible({ timeout: 15_000 });
   });
 
   test('command palette search works', async ({ page }) => {
@@ -26,6 +26,6 @@ test.describe('Smoke Tests', () => {
     // Navigate back
     await page.locator('button', { hasText: /Back/i }).click();
     await page.waitForTimeout(1000);
-    await expect(page.locator('text=PORT OF CALL')).toBeVisible();
+    await expect(page.locator('text=L4.FYI')).toBeVisible();
   });
 });

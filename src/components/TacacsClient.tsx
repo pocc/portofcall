@@ -193,7 +193,6 @@ export default function TacacsClient({ onBack }: TacacsProps) {
         <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           Connection Settings
         </h2>
-      <ApiExamples examples={apiExamples.TACACS || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={`block text-sm mb-1 $text-slate-400`}>
@@ -534,6 +533,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.TACACS || []} protocolId="tacacs" />
     </div>
   );
 }

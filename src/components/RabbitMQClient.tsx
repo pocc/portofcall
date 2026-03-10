@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RabbitMQClientProps {
   onBack: () => void;
 }
 
 export default function RabbitMQClient({ onBack }: RabbitMQClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('15672');
-  const [username, setUsername] = useState('guest');
+  const [host, setHost] = usePersistedState('rabbitmq-host', '');
+  const [port, setPort] = usePersistedState('rabbitmq-port', '15672');
+  const [username, setUsername] = usePersistedState('rabbitmq-username', 'guest');
   const [password, setPassword] = useState('guest');
-  const [queryPath, setQueryPath] = useState('');
+  const [queryPath, setQueryPath] = usePersistedState('rabbitmq-queryPath', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -194,7 +195,6 @@ export default function RabbitMQClient({ onBack }: RabbitMQClientProps) {
 
   return (
     <ProtocolClientLayout title="RabbitMQ Management Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RabbitMQ || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -322,6 +322,8 @@ export default function RabbitMQClient({ onBack }: RabbitMQClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.RabbitMQ || []} protocolId="rabbitmq" />
+
     </ProtocolClientLayout>
   );
 }

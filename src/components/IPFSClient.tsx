@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IPFSClientProps {
   onBack: () => void;
 }
 
 export default function IPFSClient({ onBack }: IPFSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4001');
+  const [host, setHost] = usePersistedState('ipfs-host', '');
+  const [port, setPort] = usePersistedState('ipfs-port', '4001');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

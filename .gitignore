@@ -16,8 +16,7 @@ build/
 
 # Environment variables
 .env
-.env.local
-.env.*.local
+.env.*
 .dev.vars
 
 # IDE / AI tools
@@ -43,6 +42,8 @@ wrangler.toml.local
 coverage/
 .nyc_output/
 test-results/
+e2e-results/
+playwright-report/
 
 # Temp files
 *.tmp

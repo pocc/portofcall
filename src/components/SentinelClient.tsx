@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SentinelClientProps {
   onBack: () => void;
 }
 
 export default function SentinelClient({ onBack }: SentinelClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('26379');
+  const [host, setHost] = usePersistedState('sentinel-host', '');
+  const [port, setPort] = usePersistedState('sentinel-port', '26379');
   const [password, setPassword] = useState('');
-  const [command, setCommand] = useState('');
-  const [masterName, setMasterName] = useState('');
+  const [command, setCommand] = usePersistedState('sentinel-command', '');
+  const [masterName, setMasterName] = usePersistedState('sentinel-masterName', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -200,7 +201,6 @@ export default function SentinelClient({ onBack }: SentinelClientProps) {
 
   return (
     <ProtocolClientLayout title="Redis Sentinel Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Sentinel || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Sentinel Server" />
 
@@ -362,6 +362,8 @@ export default function SentinelClient({ onBack }: SentinelClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Sentinel || []} protocolId="sentinel" />
+
     </ProtocolClientLayout>
   );
 }

@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface KerberosClientProps {
   onBack: () => void;
 }
 
 export default function KerberosClient({ onBack }: KerberosClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('88');
+  const [host, setHost] = usePersistedState('kerberos-host', '');
+  const [port, setPort] = usePersistedState('kerberos-port', '88');
   const [realm, setRealm] = useState('EXAMPLE.COM');
-  const [principal, setPrincipal] = useState('user');
+  const [principal, setPrincipal] = usePersistedState('kerberos-principal', 'user');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -130,7 +131,6 @@ export default function KerberosClient({ onBack }: KerberosClientProps) {
 
   return (
     <ProtocolClientLayout title="Kerberos Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Kerberos || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="KDC Connection" />
 
@@ -346,6 +346,8 @@ export default function KerberosClient({ onBack }: KerberosClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Kerberos || []} protocolId="kerberos" />
+
     </ProtocolClientLayout>
   );
 }

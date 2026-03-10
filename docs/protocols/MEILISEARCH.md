@@ -1,4 +1,4 @@
-# Meilisearch — Port of Call Reference
+# Meilisearch — L4.FYI Reference
 
 **Protocol:** Meilisearch HTTP REST API
 **Default Port:** 7700
@@ -10,7 +10,7 @@
 
 ## Architecture
 
-Port of Call implements Meilisearch as raw HTTP/1.1 over TCP using a single shared `sendHttpRequest` helper function. Every request:
+L4.FYI implements Meilisearch as raw HTTP/1.1 over TCP using a single shared `sendHttpRequest` helper function. Every request:
 
 1. Opens a new TCP socket via `connect()` from `cloudflare:sockets`
 2. Sends a single HTTP/1.1 request with `Connection: close`
@@ -225,7 +225,7 @@ Adds or updates documents in a Meilisearch index. Documents are upserted by prim
 ```
 
 **Field notes:**
-- Meilisearch document operations are **asynchronous**. A successful response (HTTP 202) means the task was enqueued, not that documents are immediately searchable. Use `GET /tasks/{taskUid}` to check completion (not implemented in Port of Call).
+- Meilisearch document operations are **asynchronous**. A successful response (HTTP 202) means the task was enqueued, not that documents are immediately searchable. Use `GET /tasks/{taskUid}` to check completion (not implemented in L4.FYI).
 - `primaryKey` is optional. If omitted, Meilisearch infers the primary key from the first document's fields (looks for `id` by default). Once set for an index, it cannot be changed.
 - `status` will be `"enqueued"` on success. After processing, it becomes `"succeeded"` or `"failed"`.
 - `taskUid` is a monotonically increasing integer identifying the enqueued task.
@@ -529,7 +529,7 @@ When a master key is set, Meilisearch auto-generates two default keys accessible
 | Default Admin API Key | All actions except `/keys` management | Server-side operations, indexing, settings |
 | Default Search API Key | `search` action only on all indexes | Client-side search, safe to expose in frontend |
 
-Custom keys can be created with fine-grained permissions (specific indexes, specific actions, expiration dates) via `POST /keys` -- not implemented in Port of Call.
+Custom keys can be created with fine-grained permissions (specific indexes, specific actions, expiration dates) via `POST /keys` -- not implemented in L4.FYI.
 
 ---
 

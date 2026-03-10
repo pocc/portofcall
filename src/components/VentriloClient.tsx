@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface VentriloClientProps {
   onBack: () => void;
 }
 
 export default function VentriloClient({ onBack }: VentriloClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3784');
+  const [host, setHost] = usePersistedState('ventrilo-host', '');
+  const [port, setPort] = usePersistedState('ventrilo-port', '3784');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -84,7 +85,6 @@ export default function VentriloClient({ onBack }: VentriloClientProps) {
 
   return (
     <ProtocolClientLayout title="Ventrilo Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Ventrilo || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Details" />
 
@@ -130,6 +130,8 @@ export default function VentriloClient({ onBack }: VentriloClientProps) {
           description="Ventrilo is a proprietary VoIP application popular in online gaming communities. This client queries the TCP status endpoint to retrieve server name, version, user count, and channel information. Default port is 3784."
         />
       </div>
+      <ApiExamples examples={apiExamples.Ventrilo || []} protocolId="ventrilo" />
+
     </ProtocolClientLayout>
   );
 }

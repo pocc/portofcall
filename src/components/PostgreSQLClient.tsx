@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface PostgreSQLClientProps {
   onBack: () => void;
 }
 
 export default function PostgreSQLClient({ onBack }: PostgreSQLClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5432');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('postgresql-host', '');
+  const [port, setPort] = usePersistedState('postgresql-port', '5432');
+  const [username, setUsername] = usePersistedState('postgresql-username', '');
   const [password, setPassword] = useState('');
-  const [database, setDatabase] = useState('');
+  const [database, setDatabase] = usePersistedState('postgresql-database', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -78,7 +79,6 @@ export default function PostgreSQLClient({ onBack }: PostgreSQLClientProps) {
 
   return (
     <ProtocolClientLayout title="PostgreSQL Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.PostgreSQL || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -159,6 +159,8 @@ export default function PostgreSQLClient({ onBack }: PostgreSQLClientProps) {
           description="PostgreSQL is a powerful open-source relational database. This interface tests connectivity by sending a startup message. Port 5432 is the default. Full authentication requires MD5 password hashing."
         />
       </div>
+      <ApiExamples examples={apiExamples.PostgreSQL || []} protocolId="postgresql" />
+
     </ProtocolClientLayout>
   );
 }

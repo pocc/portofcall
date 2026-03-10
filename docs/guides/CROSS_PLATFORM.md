@@ -1,6 +1,6 @@
 # Cross-Platform Compatibility Guide
 
-This document outlines the measures taken to ensure Port of Call works consistently across Windows, macOS, and Linux.
+This document outlines the measures taken to ensure L4.FYI works consistently across Windows, macOS, and Linux.
 
 ## Line Endings
 

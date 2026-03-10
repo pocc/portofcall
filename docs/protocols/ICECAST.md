@@ -2,7 +2,7 @@
 
 **Port:** 8000 (default) | **Protocol:** HTTP/1.0 + HTTP/1.1 | **Transport:** TCP
 
-Port of Call provides three Icecast endpoints: a public status probe, an authenticated admin stats query, and a SOURCE mount test. All three open a direct TCP connection from the Cloudflare Worker to the target Icecast server.
+L4.FYI provides three Icecast endpoints: a public status probe, an authenticated admin stats query, and a SOURCE mount test. All three open a direct TCP connection from the Cloudflare Worker to the target Icecast server.
 
 ---
 
@@ -116,8 +116,8 @@ Authenticates a SOURCE connection and optionally sends a brief burst of silence 
 | `mountpoint` | string | `/stream` | Leading `/` added if missing. |
 | `password` | string | -- | Required. The source password from `icecast.xml`. |
 | `contentType` | string | `audio/mpeg` | MIME type for the stream. |
-| `streamName` | string | `Port of Call Test Stream` | Value of `ice-name` header. |
-| `description` | string | `Test mount by Port of Call` | Value of `ice-description` header. |
+| `streamName` | string | `L4.FYI Test Stream` | Value of `ice-name` header. |
+| `description` | string | `Test mount by L4.FYI` | Value of `ice-description` header. |
 | `burstBytes` | number | `32` | Bytes of silence to send (max 1024). |
 | `timeout` | number | `10000` | Total timeout in ms (max 30000). |
 
@@ -133,7 +133,7 @@ Authenticates a SOURCE connection and optionally sends a brief burst of silence 
   "serverResponse": "HTTP/1.0 200 OK",
   "bytesSent": 32,
   "contentType": "audio/mpeg",
-  "streamName": "Port of Call Test Stream"
+  "streamName": "L4.FYI Test Stream"
 }
 ```
 
@@ -416,7 +416,7 @@ curl -s -X POST https://portofcall.tshark.dev/api/icecast/admin \
   -d '{"host":"radio.example.com","port":8000,"username":"admin","password":"hackme"}' | jq .
 ```
 
-**Direct Icecast status (bypassing Port of Call):**
+**Direct Icecast status (bypassing L4.FYI):**
 
 ```bash
 curl -s http://radio.example.com:8000/status-json.xsl | jq .

@@ -2,7 +2,7 @@
 
 ## Overview
 
-Port of Call includes automatic detection of Cloudflare-protected hosts and prevents connection attempts to them. This is a **critical security limitation** imposed by Cloudflare's architecture.
+L4.FYI includes automatic detection of Cloudflare-protected hosts and prevents connection attempts to them. This is a **critical security limitation** imposed by Cloudflare's architecture.
 
 ## Why This Exists
 
@@ -13,7 +13,7 @@ Cloudflare Workers cannot connect to Cloudflare-proxied domains. This is by desi
 
 ## How It Works
 
-When you attempt to connect to any host via FTP, SSH, or TCP ping, Port of Call:
+When you attempt to connect to any host via FTP, SSH, or TCP ping, L4.FYI:
 
 1. **Resolves the hostname** to an IP address using DNS over HTTPS (DoH)
 2. **Checks the IP** against known Cloudflare IP ranges
@@ -85,8 +85,8 @@ If you control the domain, you can:
 2. Toggle the orange cloud icon to gray (DNS-only mode)
 3. Wait for DNS propagation (5-30 minutes)
 
-### Option 3: Use a Different Port of Call Instance
-Deploy Port of Call on a non-Cloudflare platform:
+### Option 3: Use a Different L4.FYI Instance
+Deploy L4.FYI on a non-Cloudflare platform:
 - AWS Lambda + API Gateway
 - Google Cloud Functions
 - Azure Functions
@@ -146,7 +146,7 @@ Cloudflare detection applies to:
 
 ## Common Cloudflare-Protected Services
 
-Services you **cannot** connect to via Port of Call:
+Services you **cannot** connect to via L4.FYI:
 - Any site with orange cloud icon in Cloudflare DNS
 - discord.com (uses Cloudflare)
 - stackoverflow.com (uses Cloudflare)

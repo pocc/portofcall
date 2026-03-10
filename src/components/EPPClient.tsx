@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import ProtocolClientLayout from './ProtocolClientLayout';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface EPPClientProps {
   onBack: () => void;
 }
 
 export default function EPPClient({ onBack }: EPPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('700');
-  const [clid, setClid] = useState('');
+  const [host, setHost] = usePersistedState('epp-host', '');
+  const [port, setPort] = usePersistedState('epp-port', '700');
+  const [clid, setClid] = usePersistedState('epp-clid', '');
   const [password, setPassword] = useState('');
-  const [domain, setDomain] = useState('');
+  const [domain, setDomain] = usePersistedState('epp-domain', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

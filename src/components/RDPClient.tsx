@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RDPClientProps {
   onBack: () => void;
 }
 
 export default function RDPClient({ onBack }: RDPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3389');
+  const [host, setHost] = usePersistedState('rdp-host', '');
+  const [port, setPort] = usePersistedState('rdp-port', '3389');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -103,7 +104,6 @@ export default function RDPClient({ onBack }: RDPClientProps) {
 
   return (
     <ProtocolClientLayout title="RDP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RDP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="RDP Server Configuration" />
 
@@ -214,6 +214,8 @@ Requested Protocols:
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.RDP || []} protocolId="rdp" />
+
     </ProtocolClientLayout>
   );
 }

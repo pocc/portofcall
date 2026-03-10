@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SHOUTcastClientProps {
   onBack: () => void;
 }
 
 export default function SHOUTcastClient({ onBack }: SHOUTcastClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8000');
-  const [stream, setStream] = useState('/');
+  const [host, setHost] = usePersistedState('shoutcast-host', '');
+  const [port, setPort] = usePersistedState('shoutcast-port', '8000');
+  const [stream, setStream] = usePersistedState('shoutcast-stream', '/');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

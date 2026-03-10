@@ -1,15 +1,16 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface OPCUAClientProps {
   onBack: () => void;
 }
 
 export default function OPCUAClient({ onBack }: OPCUAClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4840');
-  const [endpointUrl, setEndpointUrl] = useState('');
+  const [host, setHost] = usePersistedState('opcua-host', '');
+  const [port, setPort] = usePersistedState('opcua-port', '4840');
+  const [endpointUrl, setEndpointUrl] = usePersistedState('opcua-endpointUrl', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -264,8 +265,6 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
           </div>
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.OPCUA || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
           <div>
             <label htmlFor="opcua-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -416,6 +415,7 @@ export default function OPCUAClient({ onBack }: OPCUAClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.OPCUA || []} protocolId="opcua" />
     </div>
   );
 }

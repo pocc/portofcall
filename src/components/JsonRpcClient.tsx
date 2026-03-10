@@ -9,24 +9,25 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface JsonRpcClientProps {
   onBack: () => void;
 }
 
 export default function JsonRpcClient({ onBack }: JsonRpcClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8545');
-  const [path, setPath] = useState('/');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('jsonrpc-host', '');
+  const [port, setPort] = usePersistedState('jsonrpc-port', '8545');
+  const [path, setPath] = usePersistedState('jsonrpc-path', '/');
+  const [username, setUsername] = usePersistedState('jsonrpc-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   // RPC call state
-  const [method, setMethod] = useState('');
-  const [params, setParams] = useState('');
+  const [method, setMethod] = usePersistedState('jsonrpc-method', '');
+  const [params, setParams] = usePersistedState('jsonrpc-params', '');
 
   const { errors, validateAll } = useFormValidation({
     host: [validationRules.required('Host is required')],
@@ -130,7 +131,6 @@ export default function JsonRpcClient({ onBack }: JsonRpcClientProps) {
 
   return (
     <ProtocolClientLayout title="JSON-RPC Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.JsonRPC || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection" />
 
@@ -295,6 +295,8 @@ export default function JsonRpcClient({ onBack }: JsonRpcClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.JsonRPC || []} protocolId="jsonrpc" />
+
     </ProtocolClientLayout>
   );
 }

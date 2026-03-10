@@ -18,7 +18,7 @@
 
 **Finding:** `handleMQTTConnect` (`src/worker/mqtt.ts` line 342) destructured only `{ socket, sessionPresent }` from the `mqttConnect` result, discarding the `writer` that `mqttConnect` had already acquired via `socket.writable.getWriter()`. The very next statement (line 348) called `socket.writable.getWriter()` again on the same `WritableStream`, which was still locked. This throws `TypeError: WritableStream is already locked` unconditionally — every call to `POST /api/mqtt/connect` failed at that point regardless of server reachability.
 
-**Trigger:** User opens Port of Call, enters any valid MQTT host/port, clicks "Test Connection". The handler always reaches line 342 and always fails at line 348.
+**Trigger:** User opens L4.FYI, enters any valid MQTT host/port, clicks "Test Connection". The handler always reaches line 342 and always fails at line 348.
 
 **Fix:** Changed the destructuring at line 342 to `{ socket, writer, sessionPresent }` so the writer acquired inside `mqttConnect` is reused. Removed the redundant `getWriter()` call at the original line 348.
 

@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface BGPClientProps {
   onBack: () => void;
 }
 
 export default function BGPClient({ onBack }: BGPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('179');
-  const [localAS, setLocalAS] = useState('65000');
-  const [routerId, setRouterId] = useState('10.0.0.1');
+  const [host, setHost] = usePersistedState('bgp-host', '');
+  const [port, setPort] = usePersistedState('bgp-port', '179');
+  const [localAS, setLocalAS] = usePersistedState('bgp-localAS', '65000');
+  const [routerId, setRouterId] = usePersistedState('bgp-routerId', '10.0.0.1');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -121,7 +122,6 @@ export default function BGPClient({ onBack }: BGPClientProps) {
 
   return (
     <ProtocolClientLayout title="BGP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.BGP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="BGP Peer Connection" />
 
@@ -328,6 +328,8 @@ export default function BGPClient({ onBack }: BGPClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.BGP || []} protocolId="bgp" />
+
     </ProtocolClientLayout>
   );
 }

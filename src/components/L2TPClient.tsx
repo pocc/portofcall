@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface L2TPClientProps {
   onBack: () => void;
 }
 
 export default function L2TPClient({ onBack }: L2TPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1701');
-  const [hostname, setHostname] = useState('');
+  const [host, setHost] = usePersistedState('l2tp-host', '');
+  const [port, setPort] = usePersistedState('l2tp-port', '1701');
+  const [hostname, setHostname] = usePersistedState('l2tp-hostname', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

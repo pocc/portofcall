@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IMAPSClientProps {
   onBack: () => void;
 }
 
 export default function IMAPSClient({ onBack }: IMAPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('993');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('imaps-host', '');
+  const [port, setPort] = usePersistedState('imaps-port', '993');
+  const [username, setUsername] = usePersistedState('imaps-username', '');
   const [password, setPassword] = useState('');
-  const [mailbox, setMailbox] = useState('INBOX');
+  const [mailbox, setMailbox] = usePersistedState('imaps-mailbox', 'INBOX');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -213,7 +214,6 @@ export default function IMAPSClient({ onBack }: IMAPSClientProps) {
 
   return (
     <ProtocolClientLayout title="IMAPS Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.IMAPS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="IMAPS Server" />
 
@@ -331,6 +331,8 @@ export default function IMAPSClient({ onBack }: IMAPSClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.IMAPS || []} protocolId="imaps" />
+
     </ProtocolClientLayout>
   );
 }

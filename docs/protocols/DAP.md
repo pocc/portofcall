@@ -1,10 +1,10 @@
-# Debug Adapter Protocol (DAP) — Port of Call Reference
+# Debug Adapter Protocol (DAP) — L4.FYI Reference
 
 **Spec:** [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/specification)
 **Default port:** 5678 (debugpy), 4711 (netcoredbg), 38697 (delve/dlv)
 **Source:** `src/worker/dap.ts`
 
-DAP is Microsoft's open standard for communication between IDEs/editors and language-specific debug adapters. Unlike CDP (which is HTTP + WebSocket JSON-RPC), DAP uses **Content-Length-framed JSON over raw TCP** — the same base protocol as LSP (Language Server Protocol). The Port of Call implementation provides a health probe (initialize handshake) and a bidirectional WebSocket tunnel.
+DAP is Microsoft's open standard for communication between IDEs/editors and language-specific debug adapters. Unlike CDP (which is HTTP + WebSocket JSON-RPC), DAP uses **Content-Length-framed JSON over raw TCP** — the same base protocol as LSP (Language Server Protocol). The L4.FYI implementation provides a health probe (initialize handshake) and a bidirectional WebSocket tunnel.
 
 ---
 
@@ -140,7 +140,7 @@ The health probe sends:
 ```json
 {
   "clientID": "portofcall",
-  "clientName": "Port of Call",
+  "clientName": "L4.FYI",
   "adapterID": "probe",
   "locale": "en-US",
   "linesStartAt1": true,
@@ -349,7 +349,7 @@ If a message fails to send to the adapter:
 
 If the TCP read stream errors, the WebSocket is closed with code 1011 and reason `"DAP read error"`.
 
-**Tunnel messages (`type: "connected"` and `type: "error"`)** are Port of Call control messages, not DAP messages. They do not have `seq` numbers or follow DAP structure.
+**Tunnel messages (`type: "connected"` and `type: "error"`)** are L4.FYI control messages, not DAP messages. They do not have `seq` numbers or follow DAP structure.
 
 ---
 
@@ -405,7 +405,7 @@ If the TCP read stream errors, the WebSocket is closed with code 1011 and reason
 | xdebug | PHP | 9003 | Configure in php.ini; PHP connects to client (reverse) |
 | codelldb | C/C++/Rust | 13000 | Via VS Code extension or standalone |
 
-Note: Xdebug is unusual — it uses a **reverse** connection model where the PHP runtime connects to the IDE, not the other way around. Port of Call's probe model (client initiates) will not work with Xdebug.
+Note: Xdebug is unusual — it uses a **reverse** connection model where the PHP runtime connects to the IDE, not the other way around. L4.FYI's probe model (client initiates) will not work with Xdebug.
 
 ---
 
@@ -421,7 +421,7 @@ Note: Xdebug is unusual — it uses a **reverse** connection model where the PHP
 
 **No port validation.** The port parameter accepts any value without range checking. Invalid ports will produce a TCP connection error rather than a validation error.
 
-**Tunnel control messages are not DAP.** The `{ "type": "connected" }` and `{ "type": "error" }` messages sent over the WebSocket tunnel are Port of Call's own control messages. They do not conform to DAP's `ProtocolMessage` structure (no `seq` field). Client code must distinguish these from real DAP messages.
+**Tunnel control messages are not DAP.** The `{ "type": "connected" }` and `{ "type": "error" }` messages sent over the WebSocket tunnel are L4.FYI's own control messages. They do not conform to DAP's `ProtocolMessage` structure (no `seq` field). Client code must distinguish these from real DAP messages.
 
 **No TLS support.** DAP over TCP is unencrypted. The `cloudflare:sockets connect()` call is plain TCP. If the debug adapter requires TLS, the connection will fail. Most debug adapters do not use TLS — they rely on network-level security (VPN, SSH tunnel, etc.).
 

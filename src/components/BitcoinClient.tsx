@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface BitcoinClientProps {
   onBack: () => void;
 }
 
 export default function BitcoinClient({ onBack }: BitcoinClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8333');
-  const [network, setNetwork] = useState('mainnet');
+  const [host, setHost] = usePersistedState('bitcoin-host', '');
+  const [port, setPort] = usePersistedState('bitcoin-port', '8333');
+  const [network, setNetwork] = usePersistedState('bitcoin-network', 'mainnet');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -163,7 +164,6 @@ export default function BitcoinClient({ onBack }: BitcoinClientProps) {
 
   return (
     <ProtocolClientLayout title="Bitcoin Node Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Bitcoin || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Bitcoin Node" />
 
@@ -255,6 +255,8 @@ export default function BitcoinClient({ onBack }: BitcoinClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Bitcoin || []} protocolId="bitcoin" />
+
     </ProtocolClientLayout>
   );
 }

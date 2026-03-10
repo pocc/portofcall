@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NFSClientProps {
   onBack: () => void;
 }
 
 export default function NFSClient({ onBack }: NFSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2049');
-  const [mountPort, setMountPort] = useState('');
+  const [host, setHost] = usePersistedState('nfs-host', '');
+  const [port, setPort] = usePersistedState('nfs-port', '2049');
+  const [mountPort, setMountPort] = usePersistedState('nfs-mountPort', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

@@ -7,16 +7,17 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CVSClientProps {
   onBack: () => void;
 }
 
 export default function CVSClient({ onBack }: CVSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2401');
-  const [repository, setRepository] = useState('/cvs');
-  const [username, setUsername] = useState('anonymous');
+  const [host, setHost] = usePersistedState('cvs-host', '');
+  const [port, setPort] = usePersistedState('cvs-port', '2401');
+  const [repository, setRepository] = usePersistedState('cvs-repository', '/cvs');
+  const [username, setUsername] = usePersistedState('cvs-username', 'anonymous');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ZMTPClientProps {
   onBack: () => void;
 }
 
 export default function ZMTPClient({ onBack }: ZMTPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5555');
-  const [socketType, setSocketType] = useState('DEALER');
+  const [host, setHost] = usePersistedState('zmtp-host', '');
+  const [port, setPort] = usePersistedState('zmtp-port', '5555');
+  const [socketType, setSocketType] = usePersistedState('zmtp-socketType', 'DEALER');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -185,7 +186,6 @@ export default function ZMTPClient({ onBack }: ZMTPClientProps) {
 
   return (
     <ProtocolClientLayout title="ZMTP / ZeroMQ Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.ZMTP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="ZeroMQ Endpoint" />
 
@@ -270,6 +270,8 @@ export default function ZMTPClient({ onBack }: ZMTPClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.ZMTP || []} protocolId="zmtp" />
+
     </ProtocolClientLayout>
   );
 }

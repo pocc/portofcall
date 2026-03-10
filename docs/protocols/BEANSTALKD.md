@@ -2,7 +2,7 @@
 
 **Port:** 11300 (default) | **Protocol:** Text-based TCP | **Transport:** Plain TCP (no TLS)
 
-Port of Call provides four Beanstalkd endpoints: a stats probe, a whitelisted command executor, a job producer (put), and a job consumer (reserve). Each opens a fresh TCP connection from the Cloudflare Worker to your Beanstalkd instance.
+L4.FYI provides four Beanstalkd endpoints: a stats probe, a whitelisted command executor, a job producer (put), and a job consumer (reserve). Each opens a fresh TCP connection from the Cloudflare Worker to your Beanstalkd instance.
 
 ---
 
@@ -222,7 +222,7 @@ reserve-with-timeout <n>\r\n
 
 **Notes:**
 - When reserving from a non-default tube, the handler sends both `watch <tube>` and `ignore default` to ensure jobs come only from the requested tube. Without `ignore default`, beanstalkd would return jobs from both "default" and the requested tube.
-- The reserved job has a TTR countdown. Since Port of Call closes the connection immediately after returning the response, the server will automatically release the job back to the ready queue after TTR seconds. To actually process and delete the job, use a persistent client.
+- The reserved job has a TTR countdown. Since L4.FYI closes the connection immediately after returning the response, the server will automatically release the job back to the ready queue after TTR seconds. To actually process and delete the job, use a persistent client.
 - `TIMED_OUT` with `success: true` means the command executed correctly but no jobs were available within the `reserveTimeout` window. This is normal for empty tubes.
 
 ---
@@ -564,7 +564,7 @@ curl -s -X POST https://l4.fyi/api/beanstalkd/reserve \
 
 - Set TTR to 2-3x the expected processing time.
 - If a worker dies mid-processing, the job auto-releases after TTR.
-- Workers should call `touch` periodically for long-running jobs (not available via Port of Call since connections are ephemeral).
+- Workers should call `touch` periodically for long-running jobs (not available via L4.FYI since connections are ephemeral).
 - TTR minimum is 1 second. Setting it lower causes `BAD_FORMAT`.
 
 ### Tube naming conventions
@@ -594,7 +594,7 @@ curl -s -X POST https://l4.fyi/api/beanstalkd/command \
   -d '{"host":"beanstalkd.example.com","command":"peek-buried"}'
 ```
 
-To actually kick buried jobs, use a persistent beanstalkd client (not available via Port of Call's whitelisted commands).
+To actually kick buried jobs, use a persistent beanstalkd client (not available via L4.FYI's whitelisted commands).
 
 ### Monitoring key stats fields
 

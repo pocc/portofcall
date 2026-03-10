@@ -1,6 +1,6 @@
 # Protocol Implementation Guide
 
-Quick-start guide for implementing TCP protocols in Port of Call.
+Quick-start guide for implementing TCP protocols in L4.FYI.
 
 ## Overview
 
@@ -254,7 +254,7 @@ export function ProtocolClient() {
 
 ### External Libraries
 
-All 240+ protocol handlers in Port of Call are implemented **from scratch** with no external protocol libraries. This keeps the Worker bundle small and avoids compatibility issues with the Cloudflare Workers runtime.
+All 240+ protocol handlers in L4.FYI are implemented **from scratch** with no external protocol libraries. This keeps the Worker bundle small and avoids compatibility issues with the Cloudflare Workers runtime.
 
 | Protocol | Library | Notes |
 |----------|---------|-------|

@@ -2,7 +2,7 @@
 
 ## Overview
 
-End-to-end integration testing of Port of Call runs against real Docker services on a DigitalOcean droplet, with the production Cloudflare Worker at `l4.fyi` bridging TCP connections.
+End-to-end integration testing of L4.FYI runs against real Docker services on a DigitalOcean droplet, with the production Cloudflare Worker at `l4.fyi` bridging TCP connections.
 
 **Test path:** Local Vitest → `https://l4.fyi/api/*` → Cloudflare Worker → TCP socket → Docker service on VPS
 

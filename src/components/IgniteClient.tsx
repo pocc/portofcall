@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IgniteClientProps {
   onBack: () => void;
 }
 
 export default function IgniteClient({ onBack }: IgniteClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('10800');
+  const [host, setHost] = usePersistedState('ignite-host', '');
+  const [port, setPort] = usePersistedState('ignite-port', '10800');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -159,8 +160,6 @@ export default function IgniteClient({ onBack }: IgniteClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.Ignite || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="ignite-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -282,6 +281,7 @@ export default function IgniteClient({ onBack }: IgniteClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Ignite || []} protocolId="ignite" />
     </div>
   );
 }

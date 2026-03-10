@@ -11,7 +11,7 @@ describe('DISCARD Protocol Integration Tests', () => {
         body: JSON.stringify({
           host: 'localhost',
           port: 9,
-          data: 'Hello from Port of Call!\n',
+          data: 'Hello from L4.FYI!\n',
           timeout: 10000,
         }),
       });

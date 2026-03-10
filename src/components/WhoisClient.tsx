@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface WhoisClientProps {
   onBack: () => void;
 }
 
 export default function WhoisClient({ onBack }: WhoisClientProps) {
-  const [domain, setDomain] = useState('');
-  const [server, setServer] = useState('');
-  const [port, setPort] = useState('43');
+  const [domain, setDomain] = usePersistedState('whois-domain', '');
+  const [server, setServer] = usePersistedState('whois-server', '');
+  const [port, setPort] = usePersistedState('whois-port', '43');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -85,7 +86,6 @@ export default function WhoisClient({ onBack }: WhoisClientProps) {
 
   return (
     <ProtocolClientLayout title="WHOIS Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Whois || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Domain Information" />
 
@@ -169,6 +169,8 @@ export default function WhoisClient({ onBack }: WhoisClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Whois || []} protocolId="whois" />
+
     </ProtocolClientLayout>
   );
 }

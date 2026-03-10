@@ -8,16 +8,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface OracleClientProps {
   onBack: () => void;
 }
 
 export default function OracleClient({ onBack }: OracleClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1521');
-  const [serviceName, setServiceName] = useState('');
-  const [sid, setSid] = useState('');
+  const [host, setHost] = usePersistedState('oracle-host', '');
+  const [port, setPort] = usePersistedState('oracle-port', '1521');
+  const [serviceName, setServiceName] = usePersistedState('oracle-serviceName', '');
+  const [sid, setSid] = usePersistedState('oracle-sid', '');
   const [connectionMode, setConnectionMode] = useState<'service' | 'sid'>('service');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -143,7 +144,6 @@ export default function OracleClient({ onBack }: OracleClientProps) {
 
   return (
     <ProtocolClientLayout title="Oracle Database (TNS)" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Oracle || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -292,6 +292,8 @@ export default function OracleClient({ onBack }: OracleClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Oracle || []} protocolId="oracle" />
+
     </ProtocolClientLayout>
   );
 }

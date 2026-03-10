@@ -139,7 +139,7 @@ describe('NATS Protocol Integration Tests', () => {
           host: 'demo.nats.io',
           port: 4222,
           subject: 'test.portofcall',
-          payload: 'Hello from Port of Call test!',
+          payload: 'Hello from L4.FYI test!',
           timeout: 10000,
         }),
       });

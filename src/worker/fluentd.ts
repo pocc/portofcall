@@ -498,7 +498,7 @@ export async function handleFluentdSend(request: Request): Promise<Response> {
     const port = body.port || 24224;
     const tag = body.tag || 'portofcall.test';
     const timeout = body.timeout || 10000;
-    const record = body.record || { message: 'Hello from Port of Call' };
+    const record = body.record || { message: 'Hello from L4.FYI' };
 
     if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
       return new Response(
@@ -657,7 +657,7 @@ export async function handleFluentdBulk(request: Request): Promise<Response> {
     const port = body.port || 24224;
     const tag = body.tag || 'portofcall.bulk';
     const timeout = body.timeout || 10000;
-    const events = (body.events || [{ record: { message: 'Hello from Port of Call' } }]).slice(0, 100);
+    const events = (body.events || [{ record: { message: 'Hello from L4.FYI' } }]).slice(0, 100);
 
     if (!/^[a-zA-Z0-9._-]+$/.test(tag) || tag.length > 128) {
       return new Response(

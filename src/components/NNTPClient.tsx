@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NNTPClientProps {
   onBack: () => void;
@@ -24,9 +25,9 @@ interface ArticleSummary {
 }
 
 export default function NNTPClient({ onBack }: NNTPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('119');
-  const [group, setGroup] = useState('');
+  const [host, setHost] = usePersistedState('nntp-host', '');
+  const [port, setPort] = usePersistedState('nntp-port', '119');
+  const [group, setGroup] = usePersistedState('nntp-group', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -185,7 +186,6 @@ export default function NNTPClient({ onBack }: NNTPClientProps) {
 
   return (
     <ProtocolClientLayout title="NNTP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.NNTP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="News Server Configuration" />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
@@ -341,6 +341,8 @@ export default function NNTPClient({ onBack }: NNTPClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.NNTP || []} protocolId="nntp" />
+
     </ProtocolClientLayout>
   );
 }

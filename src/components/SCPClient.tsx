@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SCPClientProps {
   onBack: () => void;
 }
 
 export default function SCPClient({ onBack }: SCPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('22');
+  const [host, setHost] = usePersistedState('scp-host', '');
+  const [port, setPort] = usePersistedState('scp-port', '22');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

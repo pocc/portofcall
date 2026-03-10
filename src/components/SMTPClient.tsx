@@ -3,20 +3,21 @@ import { FormField, ActionButton, ResultDisplay, HelpSection } from './ProtocolC
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SMTPClientProps {
   onBack: () => void;
 }
 
 export default function SMTPClient({ onBack }: SMTPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('25');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('smtp-host', '');
+  const [port, setPort] = usePersistedState('smtp-port', '25');
+  const [username, setUsername] = usePersistedState('smtp-username', '');
   const [password, setPassword] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
+  const [from, setFrom] = usePersistedState('smtp-from', '');
+  const [to, setTo] = usePersistedState('smtp-to', '');
+  const [subject, setSubject] = usePersistedState('smtp-subject', '');
+  const [body, setBody] = usePersistedState('smtp-body', '');
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -151,7 +152,7 @@ export default function SMTPClient({ onBack }: SMTPClientProps) {
         )}
       </div>
 
-      <ApiExamples examples={apiExamples.SMTP || []} />
+      <ApiExamples examples={apiExamples.SMTP || []} protocolId="smtp" />
 
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection Panel */}

@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GearmanClientProps {
   onBack: () => void;
 }
 
 export default function GearmanClient({ onBack }: GearmanClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4730');
-  const [command, setCommand] = useState('');
+  const [host, setHost] = usePersistedState('gearman-host', '');
+  const [port, setPort] = usePersistedState('gearman-port', '4730');
+  const [command, setCommand] = usePersistedState('gearman-command', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -158,7 +159,6 @@ export default function GearmanClient({ onBack }: GearmanClientProps) {
 
   return (
     <ProtocolClientLayout title="Gearman Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Gearman || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Connection" />
 
@@ -255,6 +255,8 @@ export default function GearmanClient({ onBack }: GearmanClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.Gearman || []} protocolId="gearman" />
+
     </ProtocolClientLayout>
   );
 }

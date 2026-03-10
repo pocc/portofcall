@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TarantoolClientProps {
   onBack: () => void;
 }
 
 export default function TarantoolClient({ onBack }: TarantoolClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3301');
+  const [host, setHost] = usePersistedState('tarantool-host', '');
+  const [port, setPort] = usePersistedState('tarantool-port', '3301');
   const [loading, setLoading] = useState(false);
   const [probing, setProbing] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -155,8 +156,6 @@ export default function TarantoolClient({ onBack }: TarantoolClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.Tarantool || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="tarantool-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -278,6 +277,7 @@ export default function TarantoolClient({ onBack }: TarantoolClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Tarantool || []} protocolId="tarantool" />
     </div>
   );
 }

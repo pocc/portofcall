@@ -1,16 +1,17 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DiameterClientProps {
   onBack: () => void;
 }
 
 export default function DiameterClient({ onBack }: DiameterClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3868');
-  const [originHost, setOriginHost] = useState('l4.fyi');
-  const [originRealm, setOriginRealm] = useState('ross.gg');
+  const [host, setHost] = usePersistedState('diameter-host', '');
+  const [port, setPort] = usePersistedState('diameter-port', '3868');
+  const [originHost, setOriginHost] = usePersistedState('diameter-originHost', 'l4.fyi');
+  const [originRealm, setOriginRealm] = usePersistedState('diameter-originRealm', 'ross.gg');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -161,8 +162,6 @@ export default function DiameterClient({ onBack }: DiameterClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.Diameter || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="diameter-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -308,6 +307,7 @@ export default function DiameterClient({ onBack }: DiameterClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Diameter || []} protocolId="diameter" />
     </div>
   );
 }

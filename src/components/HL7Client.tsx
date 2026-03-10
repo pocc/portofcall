@@ -9,19 +9,20 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface HL7ClientProps {
   onBack: () => void;
 }
 
 export default function HL7Client({ onBack }: HL7ClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2575');
-  const [messageType, setMessageType] = useState('ADT^A01');
-  const [sendingApp, setSendingApp] = useState('PortOfCall');
-  const [sendingFac, setSendingFac] = useState('TestFacility');
-  const [receivingApp, setReceivingApp] = useState('');
-  const [receivingFac, setReceivingFac] = useState('');
+  const [host, setHost] = usePersistedState('hl7-host', '');
+  const [port, setPort] = usePersistedState('hl7-port', '2575');
+  const [messageType, setMessageType] = usePersistedState('hl7-messageType', 'ADT^A01');
+  const [sendingApp, setSendingApp] = usePersistedState('hl7-sendingApp', 'PortOfCall');
+  const [sendingFac, setSendingFac] = usePersistedState('hl7-sendingFac', 'TestFacility');
+  const [receivingApp, setReceivingApp] = usePersistedState('hl7-receivingApp', '');
+  const [receivingFac, setReceivingFac] = usePersistedState('hl7-receivingFac', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -179,7 +180,6 @@ export default function HL7Client({ onBack }: HL7ClientProps) {
 
   return (
     <ProtocolClientLayout title="HL7 v2.x Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.HL7 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -302,6 +302,8 @@ export default function HL7Client({ onBack }: HL7ClientProps) {
           description="HL7 (Health Level Seven) v2.x is the most widely deployed healthcare data exchange standard. Messages use pipe-delimited segments (MSH, PID, OBR, OBX) wrapped in MLLP framing over TCP. Common message types include ADT (Admission/Discharge/Transfer), ORU (Lab Results), and ORM (Orders). Port 2575 is the standard MLLP port. HL7 v2.x has no built-in encryption — secure transmission requires VPN or TLS wrappers."
         />
       </div>
+      <ApiExamples examples={apiExamples.HL7 || []} protocolId="hl7" />
+
     </ProtocolClientLayout>
   );
 }

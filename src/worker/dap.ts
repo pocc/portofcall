@@ -204,7 +204,7 @@ export async function handleDAPHealth(request: Request): Promise<Response> {
       command: 'initialize',
       arguments: {
         clientID: 'portofcall',
-        clientName: 'Port of Call',
+        clientName: 'L4.FYI',
         adapterID: 'probe',
         locale: 'en-US',
         linesStartAt1: true,

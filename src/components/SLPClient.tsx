@@ -213,7 +213,6 @@ export default function SLPClient({ onBack }: SLPProps) {
         <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           Connection Settings
         </h2>
-      <ApiExamples examples={apiExamples.SLP || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
             <label className={`block text-sm mb-1 $text-slate-400`}>Host</label>
@@ -576,6 +575,7 @@ export default function SLPClient({ onBack }: SLPProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.SLP || []} protocolId="slp" />
     </div>
   );
 }

@@ -5,7 +5,7 @@
 
 function buildLanding(host: string): string {
   return `
-  ⚓ Port of Call — Browser-to-TCP bridge via Cloudflare Workers
+  ⚓ L4.FYI — Browser-to-TCP bridge via Cloudflare Workers
 
   USAGE
     curl ${host}/:protocol/:target

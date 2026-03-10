@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface UUCPClientProps {
   onBack: () => void;
 }
 
 export default function UUCPClient({ onBack }: UUCPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('540');
-  const [systemName, setSystemName] = useState('probe');
+  const [host, setHost] = usePersistedState('uucp-host', '');
+  const [port, setPort] = usePersistedState('uucp-port', '540');
+  const [systemName, setSystemName] = usePersistedState('uucp-systemName', 'probe');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

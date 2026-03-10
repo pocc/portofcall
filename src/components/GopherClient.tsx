@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GopherClientProps {
   onBack: () => void;
@@ -71,10 +72,10 @@ function getTypeColor(type: string): string {
 }
 
 export default function GopherClient({ onBack }: GopherClientProps) {
-  const [host, setHost] = useState('gopher.floodgap.com');
-  const [port, setPort] = useState('70');
-  const [selector, setSelector] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [host, setHost] = usePersistedState('gopher-host', 'gopher.floodgap.com');
+  const [port, setPort] = usePersistedState('gopher-port', '70');
+  const [selector, setSelector] = usePersistedState('gopher-selector', '');
+  const [searchQuery, setSearchQuery] = usePersistedState('gopher-searchQuery', '');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [items, setItems] = useState<GopherItem[]>([]);
@@ -267,7 +268,6 @@ export default function GopherClient({ onBack }: GopherClientProps) {
 
   return (
     <ProtocolClientLayout title="Gopher Browser" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Gopher || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Gopher Server" />
 
@@ -511,6 +511,8 @@ export default function GopherClient({ onBack }: GopherClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Gopher || []} protocolId="gopher" />
+
     </ProtocolClientLayout>
   );
 }

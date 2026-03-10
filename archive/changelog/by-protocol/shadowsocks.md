@@ -47,7 +47,7 @@ Created `docs/protocols/SHADOWSOCKS.md` from scratch (734 lines). Contents:
 10. **Cloudflare detection** — DoH-based IP check before connection; HTTP 403 with helpful error message if behind Cloudflare
 11. **Security considerations** — Not a vulnerability scanner; does not exploit, brute-force, or intercept; server fingerprinting limited to TCP open + silence; rate limiting recommendations
 12. **Direct Shadowsocks usage reference** — Server setup (shadowsocks-rust example), client setup (sslocal), browser/app configuration, JSON config file format
-13. **Testing** — Docker one-liner for local shadowsocks-libev server; curl examples for testing via Port of Call; expected outputs for silent server and wrong port
+13. **Testing** — Docker one-liner for local shadowsocks-libev server; curl examples for testing via L4.FYI; expected outputs for silent server and wrong port
 14. **Resources** — Official GitHub org, shadowsocks-rust, SIP004/SIP007 specs, clients for Windows/macOS/Android, Outline, academic security research, alternative protocols (V2Ray, Trojan, Wireguard)
 15. **Comparison table** — Shadowsocks vs. SOCKS5 across 8 dimensions (encryption, auth, detection resistance, performance, setup, censorship bypass, overhead, use case)
 16. **Implementation notes** — Why TCP-only probe, why not implement full encryption, timeout behavior (10s connection + 500ms banner), error handling (HTTP status codes)

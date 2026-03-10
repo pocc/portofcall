@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ModbusClientProps {
   onBack: () => void;
@@ -14,12 +15,12 @@ const FUNCTION_CODE_OPTIONS = [
 ];
 
 export default function ModbusClient({ onBack }: ModbusClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('502');
-  const [unitId, setUnitId] = useState('1');
-  const [functionCode, setFunctionCode] = useState('3');
-  const [address, setAddress] = useState('0');
-  const [quantity, setQuantity] = useState('10');
+  const [host, setHost] = usePersistedState('modbus-host', '');
+  const [port, setPort] = usePersistedState('modbus-port', '502');
+  const [unitId, setUnitId] = usePersistedState('modbus-unitId', '1');
+  const [functionCode, setFunctionCode] = usePersistedState('modbus-functionCode', '3');
+  const [address, setAddress] = usePersistedState('modbus-address', '0');
+  const [quantity, setQuantity] = usePersistedState('modbus-quantity', '10');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -183,8 +184,6 @@ export default function ModbusClient({ onBack }: ModbusClientProps) {
           </div>
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.Modbus || []} />
         <div className="grid md:grid-cols-3 gap-4 mb-6">
           <div>
             <label htmlFor="modbus-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -383,6 +382,7 @@ export default function ModbusClient({ onBack }: ModbusClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Modbus || []} protocolId="modbus" />
     </div>
   );
 }

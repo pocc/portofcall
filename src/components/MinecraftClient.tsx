@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface MinecraftClientProps {
   onBack: () => void;
@@ -23,8 +24,8 @@ interface ServerStatus {
 }
 
 export default function MinecraftClient({ onBack }: MinecraftClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('25565');
+  const [host, setHost] = usePersistedState('minecraft-host', '');
+  const [port, setPort] = usePersistedState('minecraft-port', '25565');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -157,7 +158,6 @@ export default function MinecraftClient({ onBack }: MinecraftClientProps) {
 
   return (
     <ProtocolClientLayout title="Minecraft Server List Ping" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Minecraft || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Server Address" />
 
@@ -341,6 +341,8 @@ export default function MinecraftClient({ onBack }: MinecraftClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Minecraft || []} protocolId="minecraft" />
+
     </ProtocolClientLayout>
   );
 }

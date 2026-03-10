@@ -2,7 +2,7 @@
 
 **Ports:** 61616 (OpenWire), 61613 (STOMP), 8161 (Admin/Jolokia) | **Source:** `src/worker/activemq.ts`
 
-Port of Call implements eight ActiveMQ endpoints spanning three protocols: an OpenWire binary probe on port 61616, STOMP text-frame messaging on port 61613, and Jolokia REST queries on port 8161. No TLS -- plain TCP and HTTP only.
+L4.FYI implements eight ActiveMQ endpoints spanning three protocols: an OpenWire binary probe on port 61616, STOMP text-frame messaging on port 61613, and Jolokia REST queries on port 8161. No TLS -- plain TCP and HTTP only.
 
 **Compatible brokers:** ActiveMQ Classic, ActiveMQ Artemis. STOMP endpoints also work with RabbitMQ (with STOMP plugin) and any STOMP 1.0-1.2 broker, though the admin/info/durable endpoints are ActiveMQ-specific.
 

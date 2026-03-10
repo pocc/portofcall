@@ -1,6 +1,6 @@
 # GPT Review Artifacts
 
-This folder contains GPT-generated protocol review artifacts for the Port of Call codebase.
+This folder contains GPT-generated protocol review artifacts for the L4.FYI codebase.
 
 ## Files
 - `PROTOCOL-REVIEW-TRACKER.md` - Per-protocol review matrix across all `src/worker/*.ts` protocol modules.

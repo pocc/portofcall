@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface InformixClientProps {
   onBack: () => void;
 }
 
 export default function InformixClient({ onBack }: InformixClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9088');
+  const [host, setHost] = usePersistedState('informix-host', '');
+  const [port, setPort] = usePersistedState('informix-port', '9088');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

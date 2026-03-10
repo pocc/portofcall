@@ -2,11 +2,11 @@
 
 ## Overview
 
-Port of Call provides **TCP tunneling** for SSH connections. The Worker creates a secure WebSocket tunnel to the SSH server, and the **browser-side SSH client handles authentication** (password, private key, etc.).
+L4.FYI provides **TCP tunneling** for SSH connections. The Worker creates a secure WebSocket tunnel to the SSH server, and the **browser-side SSH client handles authentication** (password, private key, etc.).
 
 ## Authentication Methods
 
-Port of Call supports passing all common SSH authentication options to browser-side SSH clients:
+L4.FYI supports passing all common SSH authentication options to browser-side SSH clients:
 
 - ✅ **Password authentication** (`password`)
 - ✅ **Public key authentication** (`publickey`)
@@ -19,7 +19,7 @@ Port of Call supports passing all common SSH authentication options to browser-s
 ┌─────────────┐          ┌──────────────────┐          ┌─────────────┐
 │   Browser   │          │  Cloudflare      │          │ SSH Server  │
 │  SSH Client │◄────────►│  Worker (Tunnel) │◄────────►│             │
-│ (xterm.js)  │ WebSocket│  (Port of Call)  │   TCP    │ (port 22)   │
+│ (xterm.js)  │ WebSocket│  (L4.FYI)  │   TCP    │ (port 22)   │
 └─────────────┘          └──────────────────┘          └─────────────┘
       ▲
       │
@@ -395,7 +395,7 @@ const sshOptions = {
 
 ## Supported Private Key Formats
 
-Port of Call passes private keys to browser-side SSH clients (like ssh2.js), which support:
+L4.FYI passes private keys to browser-side SSH clients (like ssh2.js), which support:
 
 - ✅ **OpenSSH format** (modern, recommended)
   ```
@@ -479,7 +479,7 @@ ssh-keygen -p -f ~/.ssh/id_rsa -m openssh
 
 ## Browser-Side SSH Clients
 
-Port of Call works with any browser-side SSH client that supports WebSocket tunneling:
+L4.FYI works with any browser-side SSH client that supports WebSocket tunneling:
 
 ### Recommended Libraries
 
@@ -504,7 +504,7 @@ import { Client } from 'ssh2';
 const term = new Terminal();
 term.open(document.getElementById('terminal'));
 
-// Connect to Port of Call WebSocket tunnel
+// Connect to L4.FYI WebSocket tunnel
 const ws = new WebSocket('wss://l4.fyi/api/ssh/connect?host=ssh.example.com&port=22');
 
 ws.onmessage = (event) => {
@@ -606,5 +606,5 @@ interface SSHConnectionOptions {
 ## Related Documentation
 
 - [Cloudflare Detection](./CLOUDFLARE_DETECTION.md) - Limitations with Cloudflare-protected hosts
-- [Project Overview](./PROJECT_OVERVIEW.md) - How Port of Call works
+- [Project Overview](./PROJECT_OVERVIEW.md) - How L4.FYI works
 - [Sockets API](./SOCKETS_API.md) - TCP tunnel architecture

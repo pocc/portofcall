@@ -16,7 +16,7 @@ a 32-bit length prefix followed by the data, padded with zero bytes to the next 
 boundary. There is no framing layer and no native TLS support (stunnel is the conventional
 workaround for encrypted Firebird traffic).
 
-Port of Call implements three protocol operations directly in TypeScript with no native
+L4.FYI implements three protocol operations directly in TypeScript with no native
 Firebird client library:
 
 | Operation | Opcode sequence |

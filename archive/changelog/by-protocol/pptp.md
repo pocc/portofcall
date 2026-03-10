@@ -6,7 +6,7 @@
 
 ## Summary
 
-- The previous doc was a 28-line generic stub: no endpoints, no request/response schemas, no wire   format details, no result codes, and nothing specific to the Port of Call implementation.
+- The previous doc was a 28-line generic stub: no endpoints, no request/response schemas, no wire   format details, no result codes, and nothing specific to the L4.FYI implementation.
 
 ## Bugs Found and Fixed
 

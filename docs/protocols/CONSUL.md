@@ -1,4 +1,4 @@
-# Consul — Port of Call Reference
+# Consul — L4.FYI Reference
 
 **Protocol:** Consul HTTP API
 **Default Port:** 8500 (HTTP)
@@ -10,7 +10,7 @@
 
 ## Architecture
 
-Port of Call implements Consul as raw HTTP/1.1 over TCP. There are **two internal socket helper functions**:
+L4.FYI implements Consul as raw HTTP/1.1 over TCP. There are **two internal socket helper functions**:
 
 - `sendHttpGet` — used by `/health` and `/services`. Top-level `import { connect } from 'cloudflare:sockets'`.
 - `sendConsulHttpRequest` — used by all KV, service health, and session endpoints. Uses `await import('cloudflare:sockets' as string)` (dynamic import workaround). Supports GET, PUT, and DELETE methods with an optional request body.

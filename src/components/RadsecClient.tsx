@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RadsecClientProps {
   onBack: () => void;
 }
 
 export default function RadsecClient({ onBack }: RadsecClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2083');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('radsec-host', '');
+  const [port, setPort] = usePersistedState('radsec-port', '2083');
+  const [username, setUsername] = usePersistedState('radsec-username', '');
   const [password, setPassword] = useState('');
-  const [nasIdentifier, setNasIdentifier] = useState('portofcall');
+  const [nasIdentifier, setNasIdentifier] = usePersistedState('radsec-nasIdentifier', 'portofcall');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -94,7 +95,6 @@ export default function RadsecClient({ onBack }: RadsecClientProps) {
 
   return (
     <ProtocolClientLayout title="RadSec Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Radsec || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="RadSec Server" />
 
@@ -188,6 +188,8 @@ export default function RadsecClient({ onBack }: RadsecClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Radsec || []} protocolId="radsec" />
+
     </ProtocolClientLayout>
   );
 }

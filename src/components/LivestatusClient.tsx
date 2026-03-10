@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LivestatusClientProps {
   onBack: () => void;
@@ -20,9 +21,9 @@ const EXAMPLE_QUERIES = [
 ];
 
 export default function LivestatusClient({ onBack }: LivestatusClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6557');
-  const [query, setQuery] = useState('');
+  const [host, setHost] = usePersistedState('livestatus-host', '');
+  const [port, setPort] = usePersistedState('livestatus-port', '6557');
+  const [query, setQuery] = usePersistedState('livestatus-query', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

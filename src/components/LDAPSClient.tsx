@@ -7,18 +7,19 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LDAPSClientProps {
   onBack: () => void;
 }
 
 export default function LDAPSClient({ onBack }: LDAPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('636');
-  const [bindDN, setBindDN] = useState('');
+  const [host, setHost] = usePersistedState('ldaps-host', '');
+  const [port, setPort] = usePersistedState('ldaps-port', '636');
+  const [bindDN, setBindDN] = usePersistedState('ldaps-bindDN', '');
   const [password, setPassword] = useState('');
-  const [baseDN, setBaseDN] = useState('');
-  const [filter, setFilter] = useState('(objectClass=*)');
+  const [baseDN, setBaseDN] = usePersistedState('ldaps-baseDN', '');
+  const [filter, setFilter] = usePersistedState('ldaps-filter', '(objectClass=*)');
   const [connectLoading, setConnectLoading] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [result, setResult] = useState<string>('');

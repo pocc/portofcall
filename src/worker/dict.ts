@@ -442,7 +442,7 @@ async function dictSession(
     }
 
     // Send CLIENT identification (RFC 2229 Section 3.1: CLIENT text — no quotes)
-    await sendCommand(writer, reader, 'CLIENT Port of Call DICT Client', timeout, buf);
+    await sendCommand(writer, reader, 'CLIENT L4.FYI DICT Client', timeout, buf);
 
     // Send the actual command
     const response = await sendCommand(writer, reader, command, timeout, buf);

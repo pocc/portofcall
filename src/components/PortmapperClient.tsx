@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface PortmapperClientProps {
   onBack: () => void;
@@ -24,8 +25,8 @@ interface MappingEntry {
 }
 
 export default function PortmapperClient({ onBack }: PortmapperClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('111');
+  const [host, setHost] = usePersistedState('portmapper-host', '');
+  const [port, setPort] = usePersistedState('portmapper-port', '111');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -149,7 +150,6 @@ export default function PortmapperClient({ onBack }: PortmapperClientProps) {
 
   return (
     <ProtocolClientLayout title="Portmapper / rpcbind Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Portmapper || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -224,6 +224,8 @@ export default function PortmapperClient({ onBack }: PortmapperClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Portmapper || []} protocolId="portmapper" />
+
     </ProtocolClientLayout>
   );
 }

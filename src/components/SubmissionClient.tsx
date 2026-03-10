@@ -1,20 +1,21 @@
 import { useState } from 'react';
 import { FormField, ActionButton, ResultDisplay, HelpSection } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SubmissionClientProps {
   onBack: () => void;
 }
 
 export default function SubmissionClient({ onBack }: SubmissionClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('587');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('submission-host', '');
+  const [port, setPort] = usePersistedState('submission-port', '587');
+  const [username, setUsername] = usePersistedState('submission-username', '');
   const [password, setPassword] = useState('');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
+  const [from, setFrom] = usePersistedState('submission-from', '');
+  const [to, setTo] = usePersistedState('submission-to', '');
+  const [subject, setSubject] = usePersistedState('submission-subject', '');
+  const [body, setBody] = usePersistedState('submission-body', '');
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

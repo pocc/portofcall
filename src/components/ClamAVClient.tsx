@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ClamAVClientProps {
   onBack: () => void;
 }
 
 export default function ClamAVClient({ onBack }: ClamAVClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3310');
+  const [host, setHost] = usePersistedState('clamav-host', '');
+  const [port, setPort] = usePersistedState('clamav-port', '3310');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -103,7 +104,6 @@ export default function ClamAVClient({ onBack }: ClamAVClientProps) {
 
   return (
     <ProtocolClientLayout title="ClamAV Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.ClamAV || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="ClamAV Daemon Configuration" />
 
@@ -239,6 +239,8 @@ export default function ClamAVClient({ onBack }: ClamAVClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.ClamAV || []} protocolId="clamav" />
+
     </ProtocolClientLayout>
   );
 }

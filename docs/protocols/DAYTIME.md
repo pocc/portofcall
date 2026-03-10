@@ -45,7 +45,7 @@ Client                          Server
 1. Client sends an empty UDP datagram to port 13 on the server.
 2. Server responds with a single UDP datagram containing the date/time string.
 
-The UDP variant is not implemented in Port of Call (Cloudflare Workers only support TCP sockets).
+The UDP variant is not implemented in L4.FYI (Cloudflare Workers only support TCP sockets).
 
 ### Response Format
 
@@ -78,7 +78,7 @@ JJJJJ YY-MM-DD HH:MM:SS TT L H msADV UTC(NIST) OTM
 | UTC(NIST) | Source identifier |
 | OTM | On-Time Marker (`*` = good, `#` = not locked) |
 
-## Port of Call Implementation
+## L4.FYI Implementation
 
 **File:** `src/worker/daytime.ts`
 **API Endpoint:** `POST /api/daytime/query` (also supports `/api/daytime/get` for backward compatibility)

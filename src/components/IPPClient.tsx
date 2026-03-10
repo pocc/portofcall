@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IPPClientProps {
   onBack: () => void;
 }
 
 export default function IPPClient({ onBack }: IPPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('631');
-  const [printerUri, setPrinterUri] = useState('');
+  const [host, setHost] = usePersistedState('ipp-host', '');
+  const [port, setPort] = usePersistedState('ipp-port', '631');
+  const [printerUri, setPrinterUri] = usePersistedState('ipp-printerUri', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -98,7 +99,6 @@ export default function IPPClient({ onBack }: IPPClientProps) {
 
   return (
     <ProtocolClientLayout title="IPP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.IPP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -180,6 +180,8 @@ export default function IPPClient({ onBack }: IPPClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.IPP || []} protocolId="ipp" />
+
     </ProtocolClientLayout>
   );
 }

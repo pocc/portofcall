@@ -236,7 +236,7 @@ nc localhost 19 | head -n 10
 
 ---
 
-## Direct Testing (without Port of Call)
+## Direct Testing (without L4.FYI)
 
 ```bash
 # netcat -- connect and receive (Ctrl-C to stop)

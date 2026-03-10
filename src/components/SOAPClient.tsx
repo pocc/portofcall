@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SOAPClientProps {
   onBack: () => void;
@@ -46,11 +47,11 @@ const SAMPLE_ENVELOPES = {
 };
 
 export default function SOAPClient({ onBack }: SOAPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('80');
-  const [path, setPath] = useState('/');
-  const [soapAction, setSoapAction] = useState('');
-  const [soapBody, setSoapBody] = useState('');
+  const [host, setHost] = usePersistedState('soap-host', '');
+  const [port, setPort] = usePersistedState('soap-port', '80');
+  const [path, setPath] = usePersistedState('soap-path', '/');
+  const [soapAction, setSoapAction] = usePersistedState('soap-soapAction', '');
+  const [soapBody, setSoapBody] = usePersistedState('soap-soapBody', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

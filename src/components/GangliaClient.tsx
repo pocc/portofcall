@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GangliaClientProps {
   onBack: () => void;
@@ -35,8 +36,8 @@ interface GangliaCluster {
 }
 
 export default function GangliaClient({ onBack }: GangliaClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8649');
+  const [host, setHost] = usePersistedState('ganglia-host', '');
+  const [port, setPort] = usePersistedState('ganglia-port', '8649');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

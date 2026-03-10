@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GraphiteClientProps {
   onBack: () => void;
@@ -20,8 +21,8 @@ const TEMPLATES = [
 ];
 
 export default function GraphiteClient({ onBack }: GraphiteClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('2003');
+  const [host, setHost] = usePersistedState('graphite-host', '');
+  const [port, setPort] = usePersistedState('graphite-port', '2003');
   const [metrics, setMetrics] = useState<MetricEntry[]>([{ name: '', value: '' }]);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -125,8 +126,6 @@ export default function GraphiteClient({ onBack }: GraphiteClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Carbon Receiver</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.Graphite || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="graphite-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -274,6 +273,7 @@ export default function GraphiteClient({ onBack }: GraphiteClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Graphite || []} protocolId="graphite" />
     </div>
   );
 }

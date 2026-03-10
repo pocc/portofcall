@@ -47,7 +47,7 @@ Criteria: power-user feature parity, spec completeness, security, accessibility,
 
 ### IMPROVEMENT-FCGI-2 — `SCRIPT_FILENAME` with arbitrary path enables file disclosure on connected server (LOW/SECURITY)
 **Line:** 479
-**Issue:** `scriptFilename` is user-controlled with no path validation. On a PHP-FPM server accessible from Port of Call, setting `SCRIPT_FILENAME=/etc/passwd` causes PHP-FPM to attempt to parse `/etc/passwd` as PHP, potentially exposing its content in the error output. This is the well-known "Nginx + FastCGI injection" attack. Since Port of Call already requires the user to supply the target host (implying authorization), this is a documentation note rather than a code fix, but should be called out in the UI.
+**Issue:** `scriptFilename` is user-controlled with no path validation. On a PHP-FPM server accessible from L4.FYI, setting `SCRIPT_FILENAME=/etc/passwd` causes PHP-FPM to attempt to parse `/etc/passwd` as PHP, potentially exposing its content in the error output. This is the well-known "Nginx + FastCGI injection" attack. Since L4.FYI already requires the user to supply the target host (implying authorization), this is a documentation note rather than a code fix, but should be called out in the UI.
 **Fix (documentation):** Add a comment in the request handler and API docs noting that `scriptFilename` must be within the server's document root.
 
 ---

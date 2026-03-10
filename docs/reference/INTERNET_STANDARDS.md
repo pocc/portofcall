@@ -90,7 +90,7 @@ Workers operate at Layer 4+ (TCP). Cannot access lower network layers:
 
 ## Already Implemented
 
-For reference, Port of Call already implements these Internet Standards:
+For reference, L4.FYI already implements these Internet Standards:
 
 - **SMTP** (Simple Mail Transfer Protocol) - RFC 5321
 - **HTTP** - RFCs 9110-9114
@@ -140,4 +140,4 @@ When evaluating new protocols for implementation, check:
 4. ✅ Does it have clear documentation and specifications?
 5. ✅ Would it provide value to users?
 
-If all checks pass, the protocol is likely feasible for Port of Call.
+If all checks pass, the protocol is likely feasible for L4.FYI.

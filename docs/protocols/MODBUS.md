@@ -338,7 +338,7 @@ bit operations.
 | Holding Registers    | 0x03    | 0x06/0x10| 125          | 0–65535       |
 | Input Registers      | 0x04    | —        | 125          | 0–65535       |
 
-Port of Call does **not** implement FC 0x06 (Write Single Register). Use
+L4.FYI does **not** implement FC 0x06 (Write Single Register). Use
 `/api/modbus/write/registers` with a single-element `values` array instead:
 
 ```json
@@ -416,11 +416,11 @@ Modbus has two address conventions that cause constant confusion:
 
 | Convention        | Register 1 | Register 100 | Description                           |
 |-------------------|------------|--------------|---------------------------------------|
-| **Port of Call**  | `address: 0` | `address: 99` | **0-based** (PDU addressing)         |
+| **L4.FYI**  | `address: 0` | `address: 99` | **0-based** (PDU addressing)         |
 | Classic Modicon   | 40001      | 40100        | 1-based with type prefix (4xxxx = holding) |
 | Some HMI tools    | 1          | 100          | 1-based without prefix               |
 
-Port of Call uses **0-based PDU addressing** directly. If your device documentation shows register
+L4.FYI uses **0-based PDU addressing** directly. If your device documentation shows register
 40001, send `address: 0`. If it shows 40100, send `address: 99`.
 
 ### Scanning device register maps
@@ -478,7 +478,7 @@ value is not found (shouldn't happen for the four allowed codes).
 register read. This is intentional — the goal is reachability, not data access. Only a TCP-level
 failure (host unreachable, connection refused, timeout) returns HTTP 500 with `success: false`.
 
-### What Port of Call does NOT implement
+### What L4.FYI does NOT implement
 
 - **FC 0x06** (Write Single Register) — use `/write/registers` with a single-element array
 - **FC 0x0F** (Write Multiple Coils) — no endpoint exists

@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LDAPClientProps {
   onBack: () => void;
 }
 
 export default function LDAPClient({ onBack }: LDAPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('389');
-  const [bindDN, setBindDN] = useState('');
+  const [host, setHost] = usePersistedState('ldap-host', '');
+  const [port, setPort] = usePersistedState('ldap-port', '389');
+  const [bindDN, setBindDN] = usePersistedState('ldap-bindDN', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -78,7 +79,6 @@ export default function LDAPClient({ onBack }: LDAPClientProps) {
 
   return (
     <ProtocolClientLayout title="LDAP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.LDAP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -152,6 +152,8 @@ export default function LDAPClient({ onBack }: LDAPClientProps) {
           description="LDAP (Lightweight Directory Access Protocol) is a protocol for accessing and maintaining distributed directory information services. This interface tests connectivity by sending a BIND request. Port 389 is the default for unencrypted LDAP, while 636 is used for LDAPS (LDAP over TLS/SSL). Leave Bind DN empty for anonymous bind, or provide credentials for authenticated access."
         />
       </div>
+      <ApiExamples examples={apiExamples.LDAP || []} protocolId="ldap" />
+
     </ProtocolClientLayout>
   );
 }

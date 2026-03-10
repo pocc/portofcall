@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RiakClientProps {
   onBack: () => void;
 }
 
 export default function RiakClient({ onBack }: RiakClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8087');
+  const [host, setHost] = usePersistedState('riak-host', '');
+  const [port, setPort] = usePersistedState('riak-port', '8087');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

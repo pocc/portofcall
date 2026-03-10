@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface AMQPSClientProps {
   onBack: () => void;
 }
 
 export default function AMQPSClient({ onBack }: AMQPSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5671');
+  const [host, setHost] = usePersistedState('amqps-host', '');
+  const [port, setPort] = usePersistedState('amqps-port', '5671');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -119,7 +120,6 @@ export default function AMQPSClient({ onBack }: AMQPSClientProps) {
 
   return (
     <ProtocolClientLayout title="AMQPS Client (Secure AMQP)" onBack={onBack}>
-      <ApiExamples examples={apiExamples.AMQPS || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Secure Broker Connection" />
 
@@ -171,6 +171,8 @@ export default function AMQPSClient({ onBack }: AMQPSClientProps) {
         description="AMQPS is AMQP 0-9-1 protocol with implicit TLS/SSL encryption (RFC 5672). It uses port 5671 instead of AMQP's standard port 5672. AMQPS is used by RabbitMQ, Azure Service Bus, and Amazon MQ for secure message broker connections. The TLS handshake occurs before any AMQP protocol data is exchanged, ensuring all communication is encrypted. Common authentication mechanisms include PLAIN, AMQPLAIN, and EXTERNAL."
         showKeyboardShortcut={true}
       />
+      <ApiExamples examples={apiExamples.AMQPS || []} protocolId="amqps" />
+
     </ProtocolClientLayout>
   );
 }

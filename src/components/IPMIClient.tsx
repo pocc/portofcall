@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IPMIClientProps {
   onBack: () => void;
 }
 
 export default function IPMIClient({ onBack }: IPMIClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('623');
+  const [host, setHost] = usePersistedState('ipmi-host', '');
+  const [port, setPort] = usePersistedState('ipmi-port', '623');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

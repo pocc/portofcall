@@ -5,13 +5,13 @@
  */
 
 const CLI_SCRIPT = `#!/usr/bin/env bash
-# poc — Port of Call CLI
-# Install: curl -sL portofcall.ross.gg/cli > /usr/local/bin/poc && chmod +x $_
+# poc — L4.FYI CLI
+# Install: curl -sL l4.fyi/cli > /usr/local/bin/poc && chmod +x $_
 # Usage:  poc [options] [protocol] target [extra]
 
 set -euo pipefail
 
-BASE_URL="\${POC_URL:-https://portofcall.ross.gg}"
+BASE_URL="\${POC_URL:-https://l4.fyi}"
 FORMAT="text"
 TIMEOUT=""
 PROTOCOL=""
@@ -70,7 +70,7 @@ Auto-detection:
   poc host:123   → ntp
 
 Environment:
-  POC_URL     Base URL (default: https://portofcall.ross.gg)
+  POC_URL     Base URL (default: https://l4.fyi)
   NO_COLOR    Disable colors when set
 HELP
   exit 0

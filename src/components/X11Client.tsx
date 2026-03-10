@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface X11ClientProps {
   onBack: () => void;
 }
 
 export default function X11Client({ onBack }: X11ClientProps) {
-  const [host, setHost] = useState('');
-  const [display, setDisplay] = useState('0');
-  const [authName, setAuthName] = useState('');
+  const [host, setHost] = usePersistedState('x11-host', '');
+  const [display, setDisplay] = usePersistedState('x11-display', '0');
+  const [authName, setAuthName] = usePersistedState('x11-authName', '');
   const [authData, setAuthData] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -125,7 +126,6 @@ export default function X11Client({ onBack }: X11ClientProps) {
 
   return (
     <ProtocolClientLayout title="X11 Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.X11 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="X11 Server Configuration" />
         <div className="grid md:grid-cols-3 gap-4 mb-4">
@@ -227,6 +227,8 @@ export default function X11Client({ onBack }: X11ClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.X11 || []} protocolId="x11" />
+
     </ProtocolClientLayout>
   );
 }

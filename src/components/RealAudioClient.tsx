@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RealAudioClientProps {
   onBack: () => void;
 }
 
 export default function RealAudioClient({ onBack }: RealAudioClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('7070');
-  const [streamPath, setStreamPath] = useState('/');
+  const [host, setHost] = usePersistedState('realaudio-host', '');
+  const [port, setPort] = usePersistedState('realaudio-port', '7070');
+  const [streamPath, setStreamPath] = usePersistedState('realaudio-streamPath', '/');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

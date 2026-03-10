@@ -2,7 +2,7 @@
 
 **Ports:** 6789 (v1 legacy / combined), 3300 (v2 msgr2-only) | **Protocol:** MSGR v1 / MSGR v2 | **Transport:** TCP
 
-Port of Call provides six Ceph endpoints: a banner-level connection probe, a lightweight banner-only probe, a full MSGR v1 handshake with CONNECT/CONNECT_REPLY exchange, and three MGR REST API endpoints for health, OSD, and pool data.
+L4.FYI provides six Ceph endpoints: a banner-level connection probe, a lightweight banner-only probe, a full MSGR v1 handshake with CONNECT/CONNECT_REPLY exchange, and three MGR REST API endpoints for health, OSD, and pool data.
 
 ---
 
@@ -377,7 +377,7 @@ Offset  Size  Field                Encoding
 | 0   | REVISION_1 | Protocol revision 1 |
 | 1   | COMPRESSION | On-wire compression support |
 
-After the banner exchange, MSGR v2 uses a frame-based protocol with optional TLS negotiation. The full v2 handshake is not implemented in Port of Call because it requires CephX authentication or TLS, which are not practical for unauthenticated probing.
+After the banner exchange, MSGR v2 uses a frame-based protocol with optional TLS negotiation. The full v2 handshake is not implemented in L4.FYI because it requires CephX authentication or TLS, which are not practical for unauthenticated probing.
 
 ---
 
@@ -399,7 +399,7 @@ After the banner exchange, MSGR v2 uses a frame-based protocol with optional TLS
 
 **No CephX authentication:** the CONNECT message is sent without authorization data. All production Ceph clusters require CephX auth, so the CONNECT_REPLY will be BADAUTHORIZER (tag 11) or CHALLENGE_AUTHORIZER (tag 16). This is expected and sufficient to confirm a live, responsive monitor.
 
-**MSGR v2 handshake incomplete:** after the v2 banner+payload exchange, the protocol requires frame-based negotiation including optional TLS. Port of Call extracts the feature flags from the banner payload but does not continue the v2 handshake.
+**MSGR v2 handshake incomplete:** after the v2 banner+payload exchange, the protocol requires frame-based negotiation including optional TLS. L4.FYI extracts the feature flags from the banner payload but does not continue the v2 handshake.
 
 **No TLS:** connections are plain TCP. Ceph's `ms_cluster_mode` and `ms_service_mode` settings may require encrypted connections. If the monitor is configured with `ms_mon_cluster_mode = secure` and no `crc` or `secure` fallback, the connection will be rejected at the frame level (after v2 banner exchange).
 
@@ -518,7 +518,7 @@ Ceph monitors in production are typically discovered via:
 2. **ceph.conf:** `mon_host = 10.0.1.5:6789, 10.0.1.6:6789, 10.0.1.7:6789`
 3. **Ceph keyring + monmap:** embedded in the bootstrap keyring
 
-Port of Call requires you to specify the monitor address directly. Use `dig SRV _ceph-mon._tcp.yourdomain.com` to find monitor addresses if your cluster uses DNS discovery.
+L4.FYI requires you to specify the monitor address directly. Use `dig SRV _ceph-mon._tcp.yourdomain.com` to find monitor addresses if your cluster uses DNS discovery.
 
 ---
 

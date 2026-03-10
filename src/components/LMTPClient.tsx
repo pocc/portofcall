@@ -9,18 +9,19 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LMTPClientProps {
   onBack: () => void;
 }
 
 export default function LMTPClient({ onBack }: LMTPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('24');
-  const [from, setFrom] = useState('');
-  const [to, setTo] = useState('');
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
+  const [host, setHost] = usePersistedState('lmtp-host', '');
+  const [port, setPort] = usePersistedState('lmtp-port', '24');
+  const [from, setFrom] = usePersistedState('lmtp-from', '');
+  const [to, setTo] = usePersistedState('lmtp-to', '');
+  const [subject, setSubject] = usePersistedState('lmtp-subject', '');
+  const [body, setBody] = usePersistedState('lmtp-body', '');
   const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -153,7 +154,6 @@ export default function LMTPClient({ onBack }: LMTPClientProps) {
 
   return (
     <ProtocolClientLayout title="LMTP Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.LMTP || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="LMTP Server" />
 
@@ -278,6 +278,8 @@ export default function LMTPClient({ onBack }: LMTPClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.LMTP || []} protocolId="lmtp" />
+
     </ProtocolClientLayout>
   );
 }

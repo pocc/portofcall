@@ -286,7 +286,7 @@ export default function LiveDemo({ onBack }: LiveDemoProps) {
 
       <div className="mt-8 text-center text-slate-500 text-sm">
         <p>
-          These are {examples.length} of 244+ protocols supported by Port of Call.{' '}
+          These are {examples.length} of 244+ protocols supported by L4.FYI.{' '}
           <button onClick={onBack} className="text-blue-400 hover:text-blue-300 underline">
             Browse all protocols
           </button>

@@ -7,19 +7,20 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NSCAClientProps {
   onBack: () => void;
 }
 
 export default function NSCAClient({ onBack }: NSCAClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5667');
-  const [hostName, setHostName] = useState('');
-  const [service, setService] = useState('');
-  const [returnCode, setReturnCode] = useState('0');
+  const [host, setHost] = usePersistedState('nsca-host', '');
+  const [port, setPort] = usePersistedState('nsca-port', '5667');
+  const [hostName, setHostName] = usePersistedState('nsca-hostName', '');
+  const [service, setService] = usePersistedState('nsca-service', '');
+  const [returnCode, setReturnCode] = usePersistedState('nsca-returnCode', '0');
   const [output, setOutput] = useState('');
-  const [encryption, setEncryption] = useState('1');
+  const [encryption, setEncryption] = usePersistedState('nsca-encryption', '1');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

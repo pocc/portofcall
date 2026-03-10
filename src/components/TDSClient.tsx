@@ -1,14 +1,15 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TDSClientProps {
   onBack: () => void;
 }
 
 export default function TDSClient({ onBack }: TDSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1433');
+  const [host, setHost] = usePersistedState('tds-host', '');
+  const [port, setPort] = usePersistedState('tds-port', '1433');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -93,8 +94,6 @@ export default function TDSClient({ onBack }: TDSClientProps) {
 
           <h2 className="text-xl font-semibold text-white">Connection</h2>
         </div>
-
-      <ApiExamples examples={apiExamples.TDS || []} />
         <div className="grid md:grid-cols-2 gap-4 mb-6">
           <div>
             <label htmlFor="tds-host" className="block text-sm font-medium text-slate-300 mb-1">
@@ -187,6 +186,7 @@ export default function TDSClient({ onBack }: TDSClientProps) {
           </p>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.TDS || []} protocolId="tds" />
     </div>
   );
 }

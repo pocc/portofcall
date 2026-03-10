@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface CouchbaseClientProps {
   onBack: () => void;
 }
 
 export default function CouchbaseClient({ onBack }: CouchbaseClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('11210');
+  const [host, setHost] = usePersistedState('couchbase-host', '');
+  const [port, setPort] = usePersistedState('couchbase-port', '11210');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

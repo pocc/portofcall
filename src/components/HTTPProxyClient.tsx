@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface HTTPProxyClientProps {
   onBack: () => void;
 }
 
 export default function HTTPProxyClient({ onBack }: HTTPProxyClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3128');
-  const [targetUrl, setTargetUrl] = useState('http://example.com/');
-  const [targetHost, setTargetHost] = useState('example.com');
-  const [targetPort, setTargetPort] = useState('443');
+  const [host, setHost] = usePersistedState('httpproxy-host', '');
+  const [port, setPort] = usePersistedState('httpproxy-port', '3128');
+  const [targetUrl, setTargetUrl] = usePersistedState('httpproxy-targetUrl', 'http://example.com/');
+  const [targetHost, setTargetHost] = usePersistedState('httpproxy-targetHost', 'example.com');
+  const [targetPort, setTargetPort] = usePersistedState('httpproxy-targetPort', '443');
   const [proxyAuth, setProxyAuth] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -173,7 +174,6 @@ export default function HTTPProxyClient({ onBack }: HTTPProxyClientProps) {
 
   return (
     <ProtocolClientLayout title="HTTP Proxy Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.HTTPProxy || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Proxy Server" />
 
@@ -294,6 +294,8 @@ export default function HTTPProxyClient({ onBack }: HTTPProxyClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.HTTPProxy || []} protocolId="httpproxy" />
+
     </ProtocolClientLayout>
   );
 }

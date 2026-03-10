@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TeamSpeakClientProps {
   onBack: () => void;
@@ -20,9 +21,9 @@ interface TSKeyValue {
 }
 
 export default function TeamSpeakClient({ onBack }: TeamSpeakClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('10011');
-  const [command, setCommand] = useState('');
+  const [host, setHost] = usePersistedState('teamspeak-host', '');
+  const [port, setPort] = usePersistedState('teamspeak-port', '10011');
+  const [command, setCommand] = usePersistedState('teamspeak-command', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -180,7 +181,6 @@ export default function TeamSpeakClient({ onBack }: TeamSpeakClientProps) {
 
   return (
     <ProtocolClientLayout title="TeamSpeak Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.TeamSpeak || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="TeamSpeak Server" />
 
@@ -326,6 +326,8 @@ export default function TeamSpeakClient({ onBack }: TeamSpeakClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.TeamSpeak || []} protocolId="teamspeak" />
+
     </ProtocolClientLayout>
   );
 }

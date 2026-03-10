@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface PJLinkClientProps {
   onBack: () => void;
 }
 
 export default function PJLinkClient({ onBack }: PJLinkClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4352');
+  const [host, setHost] = usePersistedState('pjlink-host', '');
+  const [port, setPort] = usePersistedState('pjlink-port', '4352');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
@@ -143,7 +144,6 @@ export default function PJLinkClient({ onBack }: PJLinkClientProps) {
 
   return (
     <ProtocolClientLayout title="PJLink Projector Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.PJLink || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Projector Connection" />
 
@@ -294,6 +294,8 @@ export default function PJLinkClient({ onBack }: PJLinkClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.PJLink || []} protocolId="pjlink" />
+
     </ProtocolClientLayout>
   );
 }

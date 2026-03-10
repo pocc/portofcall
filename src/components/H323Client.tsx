@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface H323ClientProps {
   onBack: () => void;
@@ -25,10 +26,10 @@ interface CallMessage {
 }
 
 export default function H323Client({ onBack }: H323ClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1720');
-  const [callingNumber, setCallingNumber] = useState('1000');
-  const [calledNumber, setCalledNumber] = useState('2000');
+  const [host, setHost] = usePersistedState('h323-host', '');
+  const [port, setPort] = usePersistedState('h323-port', '1720');
+  const [callingNumber, setCallingNumber] = usePersistedState('h323-callingNumber', '1000');
+  const [calledNumber, setCalledNumber] = usePersistedState('h323-calledNumber', '2000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -151,7 +152,6 @@ export default function H323Client({ onBack }: H323ClientProps) {
 
   return (
     <ProtocolClientLayout title="H.323 Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.H323 || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="H.323 Gateway Configuration" />
         <div className="grid md:grid-cols-2 gap-4 mb-4">
@@ -280,6 +280,8 @@ export default function H323Client({ onBack }: H323ClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.H323 || []} protocolId="h323" />
+
     </ProtocolClientLayout>
   );
 }

@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RMIClientProps {
   onBack: () => void;
 }
 
 export default function RMIClient({ onBack }: RMIClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1099');
+  const [host, setHost] = usePersistedState('rmi-host', '');
+  const [port, setPort] = usePersistedState('rmi-port', '1099');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -188,7 +189,6 @@ export default function RMIClient({ onBack }: RMIClientProps) {
 
   return (
     <ProtocolClientLayout title="Java RMI Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.RMI || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="RMI Registry Endpoint" />
 
@@ -248,6 +248,8 @@ export default function RMIClient({ onBack }: RMIClientProps) {
           showKeyboardShortcut={true}
         />
       </div>
+      <ApiExamples examples={apiExamples.RMI || []} protocolId="rmi" />
+
     </ProtocolClientLayout>
   );
 }

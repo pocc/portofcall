@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RedisClientProps {
   onBack: () => void;
@@ -45,10 +46,10 @@ function parseRedisArgs(input: string): string[] {
 }
 
 export default function RedisClient({ onBack }: RedisClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6379');
+  const [host, setHost] = usePersistedState('redis-host', '');
+  const [port, setPort] = usePersistedState('redis-port', '6379');
   const [password, setPassword] = useState('');
-  const [database, setDatabase] = useState('0');
+  const [database, setDatabase] = usePersistedState('redis-database', '0');
   const [status, setStatus] = useState<Status>('idle');
   const [statusMsg, setStatusMsg] = useState('');
   const [version, setVersion] = useState('');
@@ -219,8 +220,6 @@ export default function RedisClient({ onBack }: RedisClientProps) {
           </button>
           <h1 className="text-3xl font-bold text-white">Redis Client</h1>
         </div>
-
-      <ApiExamples examples={apiExamples.Redis || []} />
         {status !== 'idle' && (
           <div className="flex items-center gap-2">
             <div className={`w-2 h-2 rounded-full ${statusDot}`} />
@@ -382,6 +381,7 @@ export default function RedisClient({ onBack }: RedisClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Redis || []} protocolId="redis" />
     </div>
   );
 }

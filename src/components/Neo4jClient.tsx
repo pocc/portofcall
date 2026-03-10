@@ -9,14 +9,15 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface Neo4jClientProps {
   onBack: () => void;
 }
 
 export default function Neo4jClient({ onBack }: Neo4jClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('7687');
+  const [host, setHost] = usePersistedState('neo4j-host', '');
+  const [port, setPort] = usePersistedState('neo4j-port', '7687');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -109,7 +110,6 @@ export default function Neo4jClient({ onBack }: Neo4jClientProps) {
 
   return (
     <ProtocolClientLayout title="Neo4j Bolt Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Neo4j || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -303,6 +303,8 @@ export default function Neo4jClient({ onBack }: Neo4jClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Neo4j || []} protocolId="neo4j" />
+
     </ProtocolClientLayout>
   );
 }

@@ -7,15 +7,16 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TURNClientProps {
   onBack: () => void;
 }
 
 export default function TURNClient({ onBack }: TURNClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3478');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('turn-host', '');
+  const [port, setPort] = usePersistedState('turn-port', '3478');
+  const [username, setUsername] = usePersistedState('turn-username', '');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');

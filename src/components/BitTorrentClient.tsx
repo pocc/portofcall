@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface BitTorrentClientProps {
   onBack: () => void;
 }
 
 export default function BitTorrentClient({ onBack }: BitTorrentClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6881');
-  const [infoHash, setInfoHash] = useState('');
+  const [host, setHost] = usePersistedState('bittorrent-host', '');
+  const [port, setPort] = usePersistedState('bittorrent-port', '6881');
+  const [infoHash, setInfoHash] = usePersistedState('bittorrent-infoHash', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -107,7 +108,6 @@ export default function BitTorrentClient({ onBack }: BitTorrentClientProps) {
 
   return (
     <ProtocolClientLayout title="BitTorrent Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.BitTorrent || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="Connection Details" />
 
@@ -167,6 +167,8 @@ export default function BitTorrentClient({ onBack }: BitTorrentClientProps) {
           description="BitTorrent (BEP 3) is a peer-to-peer file sharing protocol. The handshake is the first message exchanged between peers, containing the protocol identifier, extension flags, torrent info_hash, and peer_id. The peer_id encodes the client software and version using Azureus-style (-XX1234-) encoding. Extension flags in the reserved bytes indicate support for DHT (BEP 5), Extension Protocol (BEP 10), and Fast Extension (BEP 6). A random info_hash can be used to probe whether a host is running a BitTorrent client."
         />
       </div>
+      <ApiExamples examples={apiExamples.BitTorrent || []} protocolId="bittorrent" />
+
     </ProtocolClientLayout>
   );
 }

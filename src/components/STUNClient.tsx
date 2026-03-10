@@ -1,12 +1,13 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface STUNClientProps {
   onBack: () => void;
 }
 
 export default function STUNClient({ onBack }: STUNClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3478');
+  const [host, setHost] = usePersistedState('stun-host', '');
+  const [port, setPort] = usePersistedState('stun-port', '3478');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

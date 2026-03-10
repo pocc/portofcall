@@ -1,6 +1,6 @@
 # Protocol Curl Tests
 
-Working curl tests against public servers using the [Port of Call](https://l4.fyi) API.
+Working curl tests against public servers using the [L4.FYI](https://l4.fyi) API.
 
 Each test targets a publicly accessible server. Tests are grouped by testability status. All commands use the base URL `https://l4.fyi`.
 
@@ -347,7 +347,7 @@ curl -X POST 'https://l4.fyi/api/nats/connect' \
 ```bash
 curl -X POST 'https://l4.fyi/api/nats/publish' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"demo.nats.io","port":4222,"subject":"test.portofcall","payload":"Hello from Port of Call","timeout":10000}'
+  -d '{"host":"demo.nats.io","port":4222,"subject":"test.portofcall","payload":"Hello from L4.FYI","timeout":10000}'
 ```
 
 #### Subscribe to messages
@@ -555,7 +555,7 @@ curl -X POST 'https://l4.fyi/api/activemq/connect' \
 ```bash
 curl -X POST 'https://l4.fyi/api/activemq/send' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":61613,"username":"admin","password":"admin","destination":"/queue/test","body":"Hello from Port of Call","contentType":"text/plain","timeout":8000}'
+  -d '{"host":"your-server.example.com","port":61613,"username":"admin","password":"admin","destination":"/queue/test","body":"Hello from L4.FYI","contentType":"text/plain","timeout":8000}'
 ```
 
 #### Subscribe to queue
@@ -867,7 +867,7 @@ Requires a Fluentd server with the forward input plugin.
 ```bash
 curl -X POST 'https://l4.fyi/api/fluentd/send' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":24224,"tag":"app.logs","record":{"message":"Hello from Port of Call","level":"info"},"timeout":5000}'
+  -d '{"host":"your-server.example.com","port":24224,"tag":"app.logs","record":{"message":"Hello from L4.FYI","level":"info"},"timeout":5000}'
 ```
 
 ---
@@ -1629,7 +1629,7 @@ curl -X POST 'https://l4.fyi/api/redis/connect' \
 ```bash
 curl -X POST 'https://l4.fyi/api/redis/command' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":6379,"command":["SET","test-key","Hello from Port of Call"],"timeout":5000}'
+  -d '{"host":"your-server.example.com","port":6379,"command":["SET","test-key","Hello from L4.FYI"],"timeout":5000}'
 ```
 
 #### GET
@@ -1801,7 +1801,7 @@ curl -X POST 'https://l4.fyi/api/sftp/list' \
 ```bash
 curl -X POST 'https://l4.fyi/api/sftp/upload' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":22,"username":"sftpuser","password":"secret","path":"/home/sftpuser/hello.txt","content":"Hello from Port of Call!","encoding":"utf8","timeout":10000}'
+  -d '{"host":"your-server.example.com","port":22,"username":"sftpuser","password":"secret","path":"/home/sftpuser/hello.txt","content":"Hello from L4.FYI!","encoding":"utf8","timeout":10000}'
 ```
 
 #### Download file
@@ -1899,7 +1899,7 @@ curl -X POST 'https://l4.fyi/api/smtp/connect' \
 ```bash
 curl -X POST 'https://l4.fyi/api/smtp/send' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":25,"username":"mailuser","password":"mailpass","from":"sender@example.com","to":"recipient@example.com","subject":"Test","body":"Hello from Port of Call!","timeout":10000}'
+  -d '{"host":"your-server.example.com","port":25,"username":"mailuser","password":"mailpass","from":"sender@example.com","to":"recipient@example.com","subject":"Test","body":"Hello from L4.FYI!","timeout":10000}'
 ```
 
 #### Connect SMTPS (TLS)
@@ -2225,7 +2225,7 @@ curl -X POST 'https://l4.fyi/api/tftp/get' \
 ```bash
 curl -X POST 'https://l4.fyi/api/tftp/write' \
   -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":69,"filename":"upload.txt","data":"Hello from Port of Call","timeout":10000}'
+  -d '{"host":"your-server.example.com","port":69,"filename":"upload.txt","data":"Hello from L4.FYI","timeout":10000}'
 ```
 
 ---

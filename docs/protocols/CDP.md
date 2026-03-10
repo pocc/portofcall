@@ -1,11 +1,11 @@
-# Chrome DevTools Protocol (CDP) — Port of Call Reference
+# Chrome DevTools Protocol (CDP) — L4.FYI Reference
 
 **Spec:** [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/)
 **Default port:** 9222
 **Source:** `src/worker/cdp.ts`
 **Tests:** `tests/cdp.test.ts`
 
-CDP is Chrome/Chromium's remote debugging and automation protocol. The Port of Call implementation covers both the HTTP discovery API (GET-only, raw TCP) and a bidirectional WebSocket tunnel to Chrome's CDP endpoint.
+CDP is Chrome/Chromium's remote debugging and automation protocol. The L4.FYI implementation covers both the HTTP discovery API (GET-only, raw TCP) and a bidirectional WebSocket tunnel to Chrome's CDP endpoint.
 
 ---
 

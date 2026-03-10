@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface BattlenetClientProps {
   onBack: () => void;
@@ -28,10 +29,10 @@ interface BattlenetResponse {
 }
 
 export default function BattlenetClient({ onBack }: BattlenetClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6112');
-  const [protocolId, setProtocolId] = useState('1');
-  const [timeout, setTimeout] = useState('15000');
+  const [host, setHost] = usePersistedState('battlenet-host', '');
+  const [port, setPort] = usePersistedState('battlenet-port', '6112');
+  const [protocolId, setProtocolId] = usePersistedState('battlenet-protocolId', '1');
+  const [timeout, setTimeout] = usePersistedState('battlenet-timeout', '15000');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState('');
 
@@ -110,7 +111,6 @@ export default function BattlenetClient({ onBack }: BattlenetClientProps) {
 
   return (
     <ProtocolClientLayout title="Battle.net BNCS Protocol" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Battlenet || []} />
       <SectionHeader stepNumber={1} title="Connection Settings" />
 
       <FormField
@@ -165,6 +165,8 @@ export default function BattlenetClient({ onBack }: BattlenetClientProps) {
         title="About Battle.net BNCS Protocol"
         description="Battle.net BNCS (Battle.net Chat Server) is the protocol used by classic Blizzard games including Diablo, StarCraft, Warcraft II/III, and Diablo II. The protocol operates on TCP port 6112 and uses a binary format with 0xFF header bytes. Each message includes a protocol selector (0x01 for Game, 0x02 for BNFTP, 0x03 for Telnet/Chat) followed by SID_* messages. Classic Battle.net realms include useast.battle.net, uswest.battle.net, asia.battle.net, and europe.battle.net. Note: Classic BNCS is different from modern Battle.net used by newer Blizzard games."
       />
+      <ApiExamples examples={apiExamples.Battlenet || []} protocolId="battlenet" />
+
     </ProtocolClientLayout>
   );
 }

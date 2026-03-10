@@ -9,16 +9,17 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface IdentClientProps {
   onBack: () => void;
 }
 
 export default function IdentClient({ onBack }: IdentClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('113');
-  const [serverPort, setServerPort] = useState('22');
-  const [clientPort, setClientPort] = useState('12345');
+  const [host, setHost] = usePersistedState('ident-host', '');
+  const [port, setPort] = usePersistedState('ident-port', '113');
+  const [serverPort, setServerPort] = usePersistedState('ident-serverPort', '22');
+  const [clientPort, setClientPort] = usePersistedState('ident-clientPort', '12345');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -111,7 +112,6 @@ export default function IdentClient({ onBack }: IdentClientProps) {
 
   return (
     <ProtocolClientLayout title="IDENT Client" onBack={onBack}>
-      <ApiExamples examples={apiExamples.Ident || []} />
       <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
         <SectionHeader stepNumber={1} title="IDENT Server" />
 
@@ -230,6 +230,8 @@ export default function IdentClient({ onBack }: IdentClientProps) {
           </div>
         </div>
       </div>
+      <ApiExamples examples={apiExamples.Ident || []} protocolId="ident" />
+
     </ProtocolClientLayout>
   );
 }

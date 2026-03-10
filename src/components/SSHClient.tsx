@@ -146,6 +146,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
             setStatus('connected');
             setStatusMsg('');
             term.writeln('\x1b[1;32m✓ Connected\x1b[0m\r\n');
+            term.focus();
             // Wire up user input after connection (dispose previous listener to avoid duplicates)
             onDataRef.current?.dispose();
             onDataRef.current = term.onData((data) => {

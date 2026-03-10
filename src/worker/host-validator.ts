@@ -26,8 +26,13 @@ const BLOCKED_IPV4_CIDRS: Array<{ addr: number; mask: number }> = [
   { addr: 0xF0000000, mask: 0xF0000000 },  // 240.0.0.0/4    (reserved / Class E)
 ];
 
-function ipv4ToInt(ip: string): number {
+function ipv4ToInt(ip: string): number | null {
   const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  for (const p of parts) {
+    const n = Number(p);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+  }
   return (
     (parseInt(parts[0], 10) * 16777216 +   // 256^3
      parseInt(parts[1], 10) * 65536 +       // 256^2
@@ -37,7 +42,8 @@ function ipv4ToInt(ip: string): number {
 }
 
 function isBlockedIPv4(ip: string): boolean {
-  const ipInt = ipv4ToInt(ip) >>> 0;
+  const ipInt = ipv4ToInt(ip);
+  if (ipInt === null) return true; // Malformed → block by default
   return BLOCKED_IPV4_CIDRS.some(
     ({ addr, mask }) => ((ipInt & mask) >>> 0) === (addr >>> 0),
   );
@@ -47,7 +53,7 @@ function isBlockedIPv4(ip: string): boolean {
  * Expand an IPv6 address to its full 8-group form for reliable matching.
  * Handles :: shorthand and mixed IPv4-mapped notation.
  */
-function expandIPv6(ip: string): string {
+function expandIPv6(ip: string): string | null {
   let addr = ip.toLowerCase().replace(/\s/g, '');
 
   // Handle IPv4-mapped/compatible suffix (e.g. ::ffff:127.0.0.1 → ::ffff:7f00:0001)
@@ -55,6 +61,7 @@ function expandIPv6(ip: string): string {
   if (v4Suffix) {
     const a = parseInt(v4Suffix[1], 10), b = parseInt(v4Suffix[2], 10);
     const c = parseInt(v4Suffix[3], 10), d = parseInt(v4Suffix[4], 10);
+    if (a > 255 || b > 255 || c > 255 || d > 255) return null;
     const hi = ((a << 8) | b).toString(16);
     const lo = ((c << 8) | d).toString(16);
     addr = addr.replace(v4Suffix[0], `:${hi}:${lo}`);
@@ -62,20 +69,29 @@ function expandIPv6(ip: string): string {
 
   // Expand :: shorthand
   const halves = addr.split('::');
+  if (halves.length > 2) return null; // Multiple :: is invalid
   if (halves.length === 2) {
     const left = halves[0] ? halves[0].split(':') : [];
     const right = halves[1] ? halves[1].split(':') : [];
     const fill = 8 - left.length - right.length;
+    if (fill < 0) return null; // Too many groups
     const mid = Array(fill).fill('0');
     addr = [...left, ...mid, ...right].join(':');
   }
 
   // Pad each group to 4 hex digits
-  return addr.split(':').map(g => g.padStart(4, '0')).join(':');
+  const groups = addr.split(':');
+  if (groups.length !== 8) return null; // Must have exactly 8 groups
+  // Validate each group is valid hex
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+  }
+  return groups.map(g => g.padStart(4, '0')).join(':');
 }
 
 function isBlockedIPv6(ip: string): boolean {
   const expanded = expandIPv6(ip);
+  if (expanded === null) return true; // Malformed → block by default
   const groups = expanded.split(':');
   const first = parseInt(groups[0], 16);
 
@@ -118,6 +134,14 @@ function isBlockedIPv6(ip: string): boolean {
     return isBlockedIPv4(embeddedIPv4);
   }
 
+  // 64:ff9b:1::/48 — NAT64 local-use prefix (RFC 8215): embedded IPv4 in last two groups
+  if (expanded.startsWith('0064:ff9b:0001')) {
+    const hi = parseInt(groups[6], 16);
+    const lo = parseInt(groups[7], 16);
+    const embeddedIPv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+    return isBlockedIPv4(embeddedIPv4);
+  }
+
   return false;
 }
 
@@ -135,7 +159,8 @@ export function isBlockedHost(host: string): boolean {
     let bare = trimmed;
     if (bare.startsWith('[')) {
       const closeBracket = bare.indexOf(']');
-      bare = closeBracket !== -1 ? bare.slice(1, closeBracket) : bare.slice(1, -1);
+      if (closeBracket === -1) return true; // Malformed bracket notation → block
+      bare = bare.slice(1, closeBracket);
     }
     return isBlockedIPv6(bare);
   }
@@ -150,8 +175,11 @@ export function isBlockedHost(host: string): boolean {
   if (/^\d+$/.test(trimmed)) return true;
   // Hex notation (e.g. 0x7f000001 = 127.0.0.1)
   if (/^0x[0-9a-f]+$/i.test(trimmed)) return true;
+  // Dotted hex (e.g. 0x7f.0x00.0x00.0x01 — some resolvers accept per-octet hex)
+  if (/^0x[0-9a-f]+(\.(0x)?[0-9a-f]+)+$/i.test(trimmed)) return true;
   // Octal or mixed-radix dotted (e.g. 0177.0.0.1 — leading zero triggers octal in some resolvers)
-  if (/^0\d/.test(trimmed) && /^\d+(\.\d+)*$/.test(trimmed)) return true;
+  // Check ANY octet for leading zero, not just the first
+  if (/^\d+(\.\d+)+$/.test(trimmed) && trimmed.split('.').some(o => /^0\d/.test(o))) return true;
   // Shortened dotted-decimal (e.g. 127.1 = 127.0.0.1, 10.1.1 = 10.1.0.1)
   if (/^\d{1,3}\.\d{1,3}$/.test(trimmed) || /^\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(trimmed)) return true;
 
@@ -159,7 +187,6 @@ export function isBlockedHost(host: string): boolean {
   const lower = trimmed.toLowerCase();
   return (
     lower === 'localhost' ||
-    lower === 'metadata.google.internal' ||
     lower.endsWith('.internal') ||
     lower.endsWith('.local') ||
     lower.endsWith('.localhost')

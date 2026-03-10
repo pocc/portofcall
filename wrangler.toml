@@ -26,3 +26,14 @@ id = "58bdaee877ab4378815034882860c5c2"
 [observability.logs]
 enabled = true
 invocation_logs = true
+
+# Dev-only environment: allows connections to localhost/private IPs for Docker testing.
+# Usage: npx wrangler dev --env dev --port 8787
+# NEVER deploy with this env — it disables SSRF protection.
+[env.dev]
+vars = { ALLOW_PRIVATE_HOSTS = "true" }
+routes = []
+
+[[env.dev.kv_namespaces]]
+binding = "CHECKLIST"
+id = "58bdaee877ab4378815034882860c5c2"

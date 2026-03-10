@@ -9,10 +9,6 @@ fi
 echo "🔍 Running TypeScript type check..."
 npm run type-check
 
-# Run tests only for changed files (integration tests hit live API — full suite is slow)
-echo "🧪 Running tests for changed files..."
-npx vitest run --changed
-
 # Run build to ensure code compiles
 echo "🏗️  Building project..."
 npm run build

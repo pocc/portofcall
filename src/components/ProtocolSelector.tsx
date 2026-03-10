@@ -38,7 +38,7 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
   const [activeTab, setActiveTab] = useState<TabType>(getTabFromHash);
   const [selectedCategory, setSelectedCategory] = useState<'all' | ProtocolCategory>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deprecated'>('all');
-  const [sortBy, setSortBy] = useState<SortOption>('popularity');
+  const [sortBy, setSortBy] = useState<SortOption>('category');
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(-1);
@@ -94,6 +94,7 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
         case 'year-desc': return b.year - a.year;
         case 'port-asc': return a.port - b.port;
         case 'port-desc': return b.port - a.port;
+        case 'category':
         case 'popularity':
         default: {
           const keyDiff = sortKey(a) - sortKey(b);
@@ -119,6 +120,9 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
 
   // Flat list for keyboard navigation
   const flatProtocolIds = useMemo(() => {
+    if (sortBy !== 'category') {
+      return sortedProtocols.map(p => p.id);
+    }
     const ids: string[] = [];
     for (const [cat, protos] of protocolsByCategory) {
       if (!collapsedCategories.has(cat)) {
@@ -126,7 +130,7 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
       }
     }
     return ids;
-  }, [protocolsByCategory, collapsedCategories]);
+  }, [sortBy, sortedProtocols, protocolsByCategory, collapsedCategories]);
 
   const focusedId = focusedIndex >= 0 && focusedIndex < flatProtocolIds.length ? flatProtocolIds[focusedIndex] : undefined;
 
@@ -336,24 +340,78 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
               </div>
             )}
 
-            {/* Category groups */}
-            {categoryOrder.map(cat => {
-              const catProtocols = protocolsByCategory.get(cat);
-              if (!catProtocols || catProtocols.length === 0) return null;
-              return (
-                <ProtocolCategoryGroup
-                  key={cat}
-                  category={cat}
-                  protocols={catProtocols}
-                  isCollapsed={collapsedCategories.has(cat)}
-                  onToggleCollapse={toggleCollapse}
-                  onSelect={onSelect}
-                  onToggleFavorite={toggleFavorite}
-                  isFavorite={isFavorite}
-                  focusedId={focusedId}
-                />
-              );
-            })}
+            {/* Category groups or flat table */}
+            {sortBy === 'category' ? (
+              categoryOrder.map(cat => {
+                const catProtocols = protocolsByCategory.get(cat);
+                if (!catProtocols || catProtocols.length === 0) return null;
+                return (
+                  <ProtocolCategoryGroup
+                    key={cat}
+                    category={cat}
+                    protocols={catProtocols}
+                    isCollapsed={collapsedCategories.has(cat)}
+                    onToggleCollapse={toggleCollapse}
+                    onSelect={onSelect}
+                    onToggleFavorite={toggleFavorite}
+                    isFavorite={isFavorite}
+                    focusedId={focusedId}
+                  />
+                );
+              })
+            ) : (
+              <div className="bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-auto" />
+                    <col className="w-24" />
+                    <col className="w-16 hidden md:table-column" />
+                    <col className="w-10" />
+                  </colgroup>
+                  <thead>
+                    <tr className="border-b border-slate-600">
+                      <th className="text-left py-1.5 px-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Protocol</th>
+                      <th className="text-left py-1.5 px-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Port</th>
+                      <th className="text-left py-1.5 px-3 hidden md:table-cell text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Year</th>
+                      <th className="w-10"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sortedProtocols.map((protocol, idx) => (
+                      <tr
+                        key={protocol.id}
+                        onClick={() => onSelect(protocol.id)}
+                        className={`cursor-pointer transition-colors border-b border-slate-700/50 hover:bg-slate-700/50 ${idx % 2 === 0 ? 'bg-slate-800/30' : ''} ${protocol.status === 'deprecated' ? 'opacity-50' : ''} ${focusedId === protocol.id ? 'bg-indigo-900/30' : ''}`}
+                      >
+                        <td className="py-1.5 px-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base" aria-hidden="true">{protocol.icon}</span>
+                            <span className="font-medium text-white">{protocol.name}</span>
+                            {protocol.status === 'deprecated' && (
+                              <span className="text-[9px] uppercase text-red-400">DEP</span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-1.5 px-3 font-mono text-xs text-slate-400">
+                          :{protocol.port}
+                        </td>
+                        <td className="py-1.5 px-3 hidden md:table-cell text-xs text-slate-500">
+                          {protocol.year}
+                        </td>
+                        <td className="py-1.5 px-3 text-right">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleFavorite(protocol.id); }}
+                            className={`text-xs ${isFavorite(protocol.id) ? 'text-yellow-400' : 'text-slate-600 hover:text-yellow-400'}`}
+                          >
+                            {isFavorite(protocol.id) ? '★' : '☆'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}

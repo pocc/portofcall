@@ -170,6 +170,7 @@ export default function ProtocolSidebar({
         </h3>
         <div className="space-y-1">
           {[
+            { value: 'category' as SortOption, label: 'Category' },
             { value: 'popularity' as SortOption, label: 'Commonality' },
             { value: 'year-asc' as SortOption, label: 'Year (Oldest)' },
             { value: 'year-desc' as SortOption, label: 'Year (Newest)' },

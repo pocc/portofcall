@@ -29,4 +29,4 @@ export interface RFCEntry {
   layer: 'L2' | 'L3' | 'L4/L7' | 'Application';
 }
 
-export type SortOption = 'popularity' | 'year-asc' | 'year-desc' | 'port-asc' | 'port-desc';
+export type SortOption = 'category' | 'popularity' | 'year-asc' | 'year-desc' | 'port-asc' | 'port-desc';

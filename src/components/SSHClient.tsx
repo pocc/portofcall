@@ -235,7 +235,9 @@ export default function SSHClient({ onBack }: SSHClientProps) {
         )}
       </div>
 
-      <div className="grid lg:grid-cols-4 gap-6">
+      <ApiExamples examples={apiExamples.SSH || []} protocolId="ssh" />
+
+      <div className="grid lg:grid-cols-4 gap-6 mt-6">
         {/* Connection panel */}
         <div className="lg:col-span-1">
           <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
@@ -416,7 +418,6 @@ export default function SSHClient({ onBack }: SSHClientProps) {
           </div>
         </div>
       </div>
-      <ApiExamples examples={apiExamples.SSH || []} protocolId="ssh" />
     </div>
   );
 }

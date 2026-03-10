@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo } from 'react';
 
 export interface CurlExample {
   title: string;
+  description?: string;
   command: string;
 }
 
@@ -27,11 +28,10 @@ function substituteValues(command: string, protocolId: string): string {
 }
 
 export default function ApiExamples({ examples, protocolId }: ApiExamplesProps) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [storageVersion, setStorageVersion] = useState(0);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     return () => { clearTimeout(copyTimerRef.current); };
@@ -66,69 +66,66 @@ export default function ApiExamples({ examples, protocolId }: ApiExamplesProps) 
   };
 
   return (
-    <div className="mt-8">
+    <div className="mt-8 rounded-xl border border-slate-700 bg-slate-900/60 overflow-hidden">
+      {/* Section header — always visible, acts as toggle */}
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-blue-500/40 rounded-lg px-2 py-1.5 -ml-2 group"
+        className="w-full flex items-center justify-between px-5 py-4 hover:bg-slate-800/50 transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500/40"
         aria-expanded={open}
       >
-        <svg
-          className={`w-3.5 h-3.5 text-slate-500 transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
-          fill="none"
-          viewBox="0 0 24 24"
-          stroke="currentColor"
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-        </svg>
-        <span className="font-mono text-xs text-blue-400/70 group-hover:text-blue-400">{'{ }'}</span>
-        <span className="font-medium">API Reference</span>
-        <span className="text-xs text-slate-500">({examples.length} endpoint{examples.length !== 1 ? 's' : ''})</span>
+        <div className="flex items-center gap-3">
+          <span className="font-mono text-sm text-blue-400">{'{ }'}</span>
+          <span className="font-semibold text-white text-sm">API Reference</span>
+          <span className="text-xs text-slate-500 bg-slate-800 px-2 py-0.5 rounded-full">
+            {examples.length} endpoint{examples.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-500">
+            {protocolId ? 'Curl commands pre-filled with your connection details' : 'Use these curl commands to interact with the API directly'}
+          </span>
+          <svg
+            className={`w-4 h-4 text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            strokeWidth={2}
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
       </button>
 
       {open && (
-        <div
-          ref={panelRef}
-          className="mt-3 rounded-xl border border-slate-700/50 bg-slate-900/60 backdrop-blur-sm overflow-hidden animate-in fade-in duration-200"
-        >
-          <div className="px-4 py-3 border-b border-slate-700/40 flex items-center justify-between">
-            <p className="text-xs text-slate-500">
-              {protocolId
-                ? 'Curl commands populated with your connection details.'
-                : 'Use these curl commands to interact with the API directly.'}
-            </p>
-            <button
-              onClick={() => setOpen(false)}
-              className="text-slate-500 hover:text-slate-300 transition-colors p-1 rounded"
-              aria-label="Close API examples"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-
-          <div className="max-h-[400px] overflow-y-auto divide-y divide-slate-800/60">
-            {processedExamples.map((example, i) => (
-              <div key={i} className="px-4 py-3 hover:bg-slate-800/30 transition-colors">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-slate-300 font-mono">{example.title}</span>
-                  <button
-                    onClick={() => handleCopy(example.command, i)}
-                    className={`text-xs px-2 py-0.5 rounded-md transition-all duration-200 ${
-                      copiedIndex === i
-                        ? 'text-emerald-400 bg-emerald-500/10'
-                        : 'text-slate-500 hover:text-white hover:bg-slate-700/50'
-                    }`}
-                  >
-                    {copiedIndex === i ? 'Copied!' : 'Copy'}
-                  </button>
-                </div>
-                <pre className="text-xs text-emerald-400/80 bg-slate-950/50 rounded-lg p-3 overflow-x-auto font-mono whitespace-pre leading-relaxed border border-slate-800/40">
-                  {example.command}
-                </pre>
+        <div className="divide-y divide-slate-800/60 border-t border-slate-700/60">
+          {processedExamples.map((example, i) => (
+            <div key={i} className="px-5 py-4 hover:bg-slate-800/20 transition-colors">
+              {/* Endpoint title + copy button */}
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-sm font-semibold text-slate-200 font-mono">{example.title}</span>
+                <button
+                  onClick={() => handleCopy(example.command, i)}
+                  className={`text-xs px-2.5 py-1 rounded-md transition-all duration-200 ${
+                    copiedIndex === i
+                      ? 'text-emerald-400 bg-emerald-500/10'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-700/50'
+                  }`}
+                >
+                  {copiedIndex === i ? 'Copied!' : 'Copy'}
+                </button>
               </div>
-            ))}
-          </div>
+
+              {/* Human-readable description */}
+              {example.description && (
+                <p className="text-xs text-slate-400 mb-3 leading-relaxed">{example.description}</p>
+              )}
+
+              {/* Curl command */}
+              <pre className="text-xs text-emerald-400/80 bg-slate-950/50 rounded-lg p-3 overflow-x-auto font-mono whitespace-pre leading-relaxed border border-slate-800/40">
+                {example.command}
+              </pre>
+            </div>
+          ))}
         </div>
       )}
     </div>

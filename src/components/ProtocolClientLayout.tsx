@@ -1,4 +1,5 @@
-import { ReactNode } from 'react';
+import { ReactNode, Children, isValidElement } from 'react';
+import ApiExamples from './ApiExamples';
 
 interface ProtocolClientLayoutProps {
   title: string;
@@ -7,6 +8,12 @@ interface ProtocolClientLayoutProps {
 }
 
 export default function ProtocolClientLayout({ title, onBack, children }: ProtocolClientLayoutProps) {
+  // Hoist any <ApiExamples> child so it renders between the header and the main content,
+  // making it immediately visible instead of buried at the bottom of the page.
+  const childArray = Children.toArray(children);
+  const apiExamplesChild = childArray.find(child => isValidElement(child) && child.type === ApiExamples);
+  const otherChildren = childArray.filter(child => !(isValidElement(child) && child.type === ApiExamples));
+
   return (
     <div className="max-w-4xl mx-auto px-4 pb-12">
       <div className="mb-8 flex items-center gap-4">
@@ -23,7 +30,8 @@ export default function ProtocolClientLayout({ title, onBack, children }: Protoc
         <div className="h-6 w-px bg-slate-700" aria-hidden="true" />
         <h1 className="text-2xl font-bold text-white tracking-tight">{title}</h1>
       </div>
-      {children}
+      {apiExamplesChild}
+      {otherChildren}
     </div>
   );
 }

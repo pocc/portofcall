@@ -16,7 +16,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "broker.example.com",
   "port": 61613,
   "username": "admin",
-  "password": "admin",
+  "password": "",
   "timeout": 8000
 }'` },
     { title: 'POST /activemq/subscribe', command: `curl -X POST 'https://l4.fyi/api/activemq/subscribe' \\
@@ -25,7 +25,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "broker.example.com",
   "port": 61613,
   "username": "admin",
-  "password": "admin",
+  "password": "",
   "destination": "/queue/orders.incoming",
   "maxMessages": 10,
   "timeout": 15000
@@ -36,7 +36,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "broker.example.com",
   "port": 61613,
   "username": "admin",
-  "password": "admin",
+  "password": "",
   "destination": "/queue/orders.incoming",
   "body": "{\\"orderId\\": \\"ORD-12345\\",\\"status\\": \\"pending\\"}",
   "contentType": "application/json",
@@ -48,7 +48,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "broker.example.com",
   "port": 61613,
   "username": "admin",
-  "password": "admin",
+  "password": "",
   "destination": "/topic/events.notifications",
   "subscriptionId": "sub-notify-001",
   "timeout": 15000
@@ -59,7 +59,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "broker.example.com",
   "port": 61613,
   "username": "admin",
-  "password": "admin",
+  "password": "",
   "subscriptionId": "sub-notify-001",
   "timeout": 8000
 }'` },
@@ -83,7 +83,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "broker.example.com",
   "port": 8161,
   "username": "admin",
-  "password": "admin",
+  "password": "",
   "brokerName": "production-broker",
   "action": "brokerInfo",
   "timeout": 10000
@@ -161,7 +161,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pbx.example.com",
   "port": 5038,
   "username": "admin",
-  "secret": "s3cretP@ss",
+  "secret": "",
   "action": "CoreShowChannels",
   "timeout": 8000
 }'` },
@@ -171,7 +171,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pbx.example.com",
   "port": 5038,
   "username": "admin",
-  "secret": "s3cretP@ss",
+  "secret": "",
   "channel": "SIP/1001",
   "context": "default",
   "exten": "2001",
@@ -184,7 +184,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pbx.example.com",
   "port": 5038,
   "username": "admin",
-  "secret": "s3cretP@ss",
+  "secret": "",
   "channel": "SIP/1001-00000042",
   "timeout": 5000
 }'` },
@@ -194,7 +194,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pbx.example.com",
   "port": 5038,
   "username": "admin",
-  "secret": "s3cretP@ss",
+  "secret": "",
   "command": "sip show peers",
   "timeout": 8000
 }'` },
@@ -204,7 +204,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pbx.example.com",
   "port": 5038,
   "username": "admin",
-  "secret": "s3cretP@ss",
+  "secret": "",
   "channel": "SIP/1001-00000042",
   "message": "Hello from L4.FYI",
   "timeout": 5000
@@ -225,7 +225,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq.example.com",
   "port": 5672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "exchange": "events",
   "exchangeType": "topic",
@@ -240,7 +240,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq.example.com",
   "port": 5672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "queue": "order-processing",
   "maxMessages": 5,
@@ -252,7 +252,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq.example.com",
   "port": 5672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "exchange": "events",
   "exchangeType": "topic",
@@ -267,7 +267,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq.example.com",
   "port": 5672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "queue": "notifications",
   "exchange": "events",
@@ -280,7 +280,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq.example.com",
   "port": 5672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "queue": "order-processing",
   "ack": false,
@@ -300,7 +300,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq-tls.example.com",
   "port": 5671,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "exchange": "secure-events",
   "routingKey": "audit.login",
   "message": "{\\"user\\": \\"admin\\",\\"ip\\": \\"10.0.1.55\\"}"
@@ -311,7 +311,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "rabbitmq-tls.example.com",
   "port": 5671,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "queue": "audit-log",
   "maxMessages": 10
 }'` },
@@ -511,7 +511,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 9042,
   "cql": "SELECT * FROM system.local",
   "username": "cassandra",
-  "password": "cassandra",
+  "password": "",
   "timeout": 8000
 }'` },
     { title: 'POST /cassandra/prepare', command: `curl -X POST 'https://l4.fyi/api/cassandra/prepare' \\
@@ -524,7 +524,7 @@ const examples: Record<string, CurlExample[]> = {
     "550e8400-e29b-41d4-a716-446655440000"
   ],
   "username": "cassandra",
-  "password": "cassandra",
+  "password": "",
   "timeout": 8000
 }'` },
   ],
@@ -627,7 +627,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "fileserver.example.com",
   "port": 445,
   "username": "jdoe",
-  "password": "P@ssw0rd",
+  "password": "",
   "domain": "CORP",
   "timeout": 10000
 }'` },
@@ -637,7 +637,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "fileserver.example.com",
   "port": 445,
   "username": "jdoe",
-  "password": "P@ssw0rd",
+  "password": "",
   "share": "shared-docs",
   "path": "reports/2026",
   "timeout": 15000
@@ -648,7 +648,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "fileserver.example.com",
   "port": 445,
   "username": "jdoe",
-  "password": "P@ssw0rd",
+  "password": "",
   "share": "shared-docs",
   "path": "reports/2026/summary.txt",
   "timeout": 15000
@@ -659,7 +659,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "fileserver.example.com",
   "port": 445,
   "username": "jdoe",
-  "password": "P@ssw0rd",
+  "password": "",
   "share": "shared-docs",
   "path": "reports/2026/notes.txt",
   "content": "Meeting notes from Q1 review",
@@ -671,7 +671,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "fileserver.example.com",
   "port": 445,
   "username": "jdoe",
-  "password": "P@ssw0rd",
+  "password": "",
   "share": "shared-docs",
   "path": "reports/2026/summary.txt",
   "timeout": 15000
@@ -723,7 +723,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 8123,
   "query": "SELECT count() FROM system.tables",
   "username": "default",
-  "password": "clickpass",
+  "password": "",
   "database": "analytics",
   "timeout": 10000
 }'` },
@@ -812,7 +812,7 @@ const examples: Record<string, CurlExample[]> = {
   "path": "/_all_dbs",
   "method": "GET",
   "username": "admin",
-  "password": "couchpass",
+  "password": "",
   "timeout": 8000
 }'` },
   ],
@@ -831,7 +831,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 2401,
   "root": "/cvsroot",
   "username": "developer",
-  "password": "cvspass",
+  "password": "",
   "timeout": 8000
 }'` },
     { title: 'POST /cvs/list', command: `curl -X POST 'https://l4.fyi/api/cvs/list' \\
@@ -1156,7 +1156,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "db2.example.com",
   "port": 50000,
   "username": "db2admin",
-  "password": "db2pass",
+  "password": "",
   "database": "SAMPLE",
   "timeout": 8000
 }'` },
@@ -1173,7 +1173,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "db2.example.com",
   "port": 50000,
   "username": "db2admin",
-  "password": "db2pass",
+  "password": "",
   "database": "SAMPLE",
   "sql": "SELECT * FROM SYSIBM.SYSDUMMY1",
   "timeout": 10000
@@ -1184,7 +1184,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "db2.example.com",
   "port": 50000,
   "username": "db2admin",
-  "password": "db2pass",
+  "password": "",
   "database": "SAMPLE",
   "sql": "SELECT * FROM employees WHERE dept_id = ?",
   "timeout": 10000
@@ -1195,7 +1195,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "db2.example.com",
   "port": 50000,
   "username": "db2admin",
-  "password": "db2pass",
+  "password": "",
   "database": "SAMPLE",
   "sql": "UPDATE employees SET salary = salary * 1.05 WHERE dept_id = 10",
   "timeout": 10000
@@ -1206,7 +1206,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "db2.example.com",
   "port": 50000,
   "username": "db2admin",
-  "password": "db2pass",
+  "password": "",
   "database": "SAMPLE",
   "procedure": "GET_EMPLOYEE_COUNT",
   "timeout": 10000
@@ -1236,7 +1236,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 9200,
   "username": "elastic",
-  "password": "changeme",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /elasticsearch/query', command: `curl -X POST 'https://l4.fyi/api/elasticsearch/query' \\
@@ -1247,7 +1247,7 @@ const examples: Record<string, CurlExample[]> = {
   "path": "/_cat/indices",
   "method": "GET",
   "username": "elastic",
-  "password": "changeme",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /elasticsearch/https', command: `curl -X POST 'https://l4.fyi/api/elasticsearch/https' \\
@@ -1258,7 +1258,7 @@ const examples: Record<string, CurlExample[]> = {
   "path": "/_cluster/health",
   "method": "GET",
   "username": "elastic",
-  "password": "changeme",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /elasticsearch/index', command: `curl -X POST 'https://l4.fyi/api/elasticsearch/index' \\
@@ -1273,7 +1273,7 @@ const examples: Record<string, CurlExample[]> = {
     "content": "Hello from L4.FYI"
   },
   "username": "elastic",
-  "password": "changeme",
+  "password": "",
   "https": false,
   "timeout": 5000
 }'` },
@@ -1285,7 +1285,7 @@ const examples: Record<string, CurlExample[]> = {
   "index": "my-index",
   "id": "1",
   "username": "elastic",
-  "password": "changeme",
+  "password": "",
   "https": false,
   "timeout": 5000
 }'` },
@@ -1296,7 +1296,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 9200,
   "index": "new-index",
   "username": "elastic",
-  "password": "changeme",
+  "password": "",
   "https": false,
   "shards": 1,
   "replicas": 0,
@@ -1425,7 +1425,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass"
+  "password": ""
 }'` },
     { title: 'POST /ftp/list', command: `curl -X POST 'https://l4.fyi/api/ftp/list' \\
     -H 'Content-Type: application/json' \\
@@ -1433,7 +1433,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "path": "/pub",
   "mlsd": true
 }'` },
@@ -1443,7 +1443,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass"
+  "password": ""
 }'` },
     { title: 'POST /ftp/stat', command: `curl -X POST 'https://l4.fyi/api/ftp/stat' \\
     -H 'Content-Type: application/json' \\
@@ -1451,7 +1451,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "remotePath": "/pub/readme.txt"
 }'` },
     { title: 'POST /ftp/nlst', command: `curl -X POST 'https://l4.fyi/api/ftp/nlst' \\
@@ -1460,7 +1460,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "path": "/pub"
 }'` },
     { title: 'POST /ftp/site', command: `curl -X POST 'https://l4.fyi/api/ftp/site' \\
@@ -1469,7 +1469,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "command": "CHMOD 755 /pub/script.sh"
 }'` },
     { title: 'POST /ftp/upload (multipart)', command: `curl -X POST 'https://l4.fyi/api/ftp/upload' \
@@ -1485,7 +1485,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "remotePath": "/pub/readme.txt"
 }'` },
     { title: 'POST /ftp/delete', command: `curl -X POST 'https://l4.fyi/api/ftp/delete' \\
@@ -1494,7 +1494,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "remotePath": "/uploads/old-file.txt"
 }'` },
     { title: 'POST /ftp/mkdir', command: `curl -X POST 'https://l4.fyi/api/ftp/mkdir' \\
@@ -1503,7 +1503,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "dirPath": "/uploads/new-folder"
 }'` },
     { title: 'POST /ftp/rename', command: `curl -X POST 'https://l4.fyi/api/ftp/rename' \\
@@ -1512,7 +1512,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftp.example.com",
   "port": 21,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "fromPath": "/uploads/old-name.txt",
   "toPath": "/uploads/new-name.txt"
 }'` },
@@ -1531,7 +1531,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /ftps/list', command: `curl -X POST 'https://l4.fyi/api/ftps/list' \\
@@ -1540,7 +1540,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "path": "/documents",
   "timeout": 5000
 }'` },
@@ -1550,7 +1550,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "remotePath": "/uploads/report.pdf",
   "content": "base64encodedcontent",
   "timeout": 10000
@@ -1561,7 +1561,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "remotePath": "/documents/report.pdf",
   "timeout": 10000
 }'` },
@@ -1571,7 +1571,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "remotePath": "/uploads/old-file.txt",
   "timeout": 5000
 }'` },
@@ -1581,7 +1581,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "dirPath": "/uploads/archive",
   "timeout": 5000
 }'` },
@@ -1591,7 +1591,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ftps.example.com",
   "port": 990,
   "username": "ftpuser",
-  "password": "ftppass",
+  "password": "",
   "fromPath": "/uploads/draft.txt",
   "toPath": "/uploads/final.txt",
   "timeout": 5000
@@ -1612,7 +1612,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 8074,
   "uin": 12345678,
-  "password": "mypassword",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /gadugadu/send-message', command: `curl -X POST 'https://l4.fyi/api/gadugadu/send-message' \\
@@ -1621,7 +1621,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 8074,
   "uin": 12345678,
-  "password": "mypassword",
+  "password": "",
   "recipientUin": 87654321,
   "message": "Hello from L4.FYI!",
   "timeout": 5000
@@ -1899,7 +1899,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "imap.example.com",
   "port": 143,
   "username": "user@example.com",
-  "password": "mailpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /imap/list', command: `curl -X POST 'https://l4.fyi/api/imap/list' \\
@@ -1908,7 +1908,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "imap.example.com",
   "port": 143,
   "username": "user@example.com",
-  "password": "mailpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /imap/select', command: `curl -X POST 'https://l4.fyi/api/imap/select' \\
@@ -1917,7 +1917,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "imap.example.com",
   "port": 143,
   "username": "user@example.com",
-  "password": "mailpass",
+  "password": "",
   "mailbox": "INBOX",
   "timeout": 5000
 }'` },
@@ -1929,7 +1929,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "imap.example.com",
   "port": 993,
   "username": "user@example.com",
-  "password": "mailpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /imaps/list', command: `curl -X POST 'https://l4.fyi/api/imaps/list' \\
@@ -1938,7 +1938,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "imap.example.com",
   "port": 993,
   "username": "user@example.com",
-  "password": "mailpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /imaps/select', command: `curl -X POST 'https://l4.fyi/api/imaps/select' \\
@@ -1947,7 +1947,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "imap.example.com",
   "port": 993,
   "username": "user@example.com",
-  "password": "mailpass",
+  "password": "",
   "mailbox": "INBOX",
   "timeout": 5000
 }'` },
@@ -2233,7 +2233,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ldap.example.com",
   "port": 389,
   "bindDn": "cn=admin,dc=example,dc=com",
-  "password": "adminpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /ldap/search', command: `curl -X POST 'https://l4.fyi/api/ldap/search' \\
@@ -2242,7 +2242,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ldap.example.com",
   "port": 389,
   "bindDn": "cn=admin,dc=example,dc=com",
-  "password": "adminpass",
+  "password": "",
   "baseDn": "ou=users,dc=example,dc=com",
   "filter": "(objectClass=person)",
   "scope": 2,
@@ -2260,7 +2260,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ldap.example.com",
   "port": 389,
   "bindDn": "cn=admin,dc=example,dc=com",
-  "password": "adminpass",
+  "password": "",
   "entry": {
     "dn": "cn=John Doe,ou=users,dc=example,dc=com",
     "attributes": {
@@ -2281,7 +2281,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ldap.example.com",
   "port": 389,
   "bindDn": "cn=admin,dc=example,dc=com",
-  "password": "adminpass",
+  "password": "",
   "dn": "cn=John Doe,ou=users,dc=example,dc=com",
   "changes": [
     {
@@ -2300,7 +2300,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ldap.example.com",
   "port": 389,
   "bindDn": "cn=admin,dc=example,dc=com",
-  "password": "adminpass",
+  "password": "",
   "dn": "cn=John Doe,ou=users,dc=example,dc=com",
   "timeout": 5000
 }'` },
@@ -2310,7 +2310,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "ldap.example.com",
   "port": 389,
   "bindDn": "cn=admin,dc=example,dc=com",
-  "password": "adminpass",
+  "password": "",
   "baseDn": "ou=users,dc=example,dc=com",
   "filter": "(objectClass=person)",
   "pageSize": 50,
@@ -2416,7 +2416,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "mail.example.com",
   "port": 4190,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /managesieve/putscript', command: `curl -X POST 'https://l4.fyi/api/managesieve/putscript' \\
@@ -2425,7 +2425,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "mail.example.com",
   "port": 4190,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "name": "vacation",
   "content": "require "vacation"; vacation "I am away";",
   "timeout": 5000
@@ -2436,7 +2436,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "mail.example.com",
   "port": 4190,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "name": "vacation",
   "timeout": 5000
 }'` },
@@ -2446,7 +2446,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "mail.example.com",
   "port": 4190,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "name": "vacation",
   "timeout": 5000
 }'` },
@@ -2456,7 +2456,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "mail.example.com",
   "port": 4190,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "name": "vacation",
   "timeout": 5000
 }'` },
@@ -2483,7 +2483,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 7210,
   "username": "DBADMIN",
-  "password": "secret",
+  "password": "",
   "database": "MAXDB1",
   "timeout": 5000
 }'` },
@@ -2738,7 +2738,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 1883,
   "clientId": "portofcall-test",
   "username": "mqttuser",
-  "password": "mqttpass",
+  "password": "",
   "cleanSession": true,
   "keepAlive": 60,
   "timeout": 10000
@@ -2750,7 +2750,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 1883,
   "clientId": "portofcall-pub",
   "username": "mqttuser",
-  "password": "mqttpass",
+  "password": "",
   "topic": "sensors/temperature",
   "payload": "22.5",
   "qos": 1,
@@ -2793,7 +2793,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 3306,
   "username": "root",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "timeout": 5000
 }'` },
@@ -2803,7 +2803,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 3306,
   "username": "root",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "query": "SELECT * FROM users LIMIT 10",
   "timeout": 10000
@@ -2814,7 +2814,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 3306,
   "username": "root",
-  "password": "secret",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /mysql/tables', command: `curl -X POST 'https://l4.fyi/api/mysql/tables' \\
@@ -2823,7 +2823,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 3306,
   "username": "root",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "timeout": 5000
 }'` },
@@ -2843,7 +2843,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 8875,
   "username": "testuser",
-  "password": "testpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /napster/browse', command: `curl -X POST 'https://l4.fyi/api/napster/browse' \\
@@ -3023,7 +3023,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 7687,
   "username": "neo4j",
-  "password": "secret",
+  "password": "",
   "query": "MATCH (n) RETURN n LIMIT 10",
   "database": "neo4j",
   "timeout": 10000
@@ -3034,7 +3034,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 7687,
   "username": "neo4j",
-  "password": "secret",
+  "password": "",
   "query": "MATCH (n:Person {name: $name}) RETURN n",
   "params": {
     "name": "Alice"
@@ -3048,7 +3048,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 7687,
   "username": "neo4j",
-  "password": "secret"
+  "password": ""
 }'` },
     { title: 'POST /neo4j/create', command: `curl -X POST 'https://l4.fyi/api/neo4j/create' \\
     -H 'Content-Type: application/json' \\
@@ -3056,7 +3056,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 7687,
   "username": "neo4j",
-  "password": "secret",
+  "password": "",
   "label": "Person",
   "properties": {
     "name": "Alice",
@@ -3155,7 +3155,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "news.aioe.org",
   "port": 119,
   "username": "newsuser",
-  "password": "newspass",
+  "password": "",
   "variant": "active",
   "timeout": 15000
 }'` },
@@ -3165,7 +3165,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "news.aioe.org",
   "port": 119,
   "username": "newsuser",
-  "password": "newspass",
+  "password": "",
   "from": "user@example.com",
   "newsgroups": "misc.test",
   "subject": "Test Post",
@@ -3178,7 +3178,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "news.aioe.org",
   "port": 119,
   "username": "newsuser",
-  "password": "newspass",
+  "password": "",
   "timeout": 10000
 }'` },
   ],
@@ -3392,7 +3392,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 1521,
   "sid": "ORCL",
   "username": "scott",
-  "password": "tiger",
+  "password": "",
   "timeout": 10000
 }'` },
     { title: 'POST /oracle-tns/sql', command: `curl -X POST 'https://l4.fyi/api/oracle-tns/sql' \\
@@ -3402,7 +3402,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 1521,
   "sid": "ORCL",
   "username": "scott",
-  "password": "tiger",
+  "password": "",
   "sql": "SELECT * FROM emp WHERE rownum <= 10",
   "timeout": 10000
 }'` },
@@ -3448,7 +3448,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "projector.local",
   "port": 4352,
   "action": "on",
-  "password": "JBMIAProjectorLink",
+  "password": "",
   "timeout": 5000
 }'` },
   ],
@@ -3459,7 +3459,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pop.example.com",
   "port": 110,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /pop3/list', command: `curl -X POST 'https://l4.fyi/api/pop3/list' \\
@@ -3468,7 +3468,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pop.example.com",
   "port": 110,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /pop3/retrieve', command: `curl -X POST 'https://l4.fyi/api/pop3/retrieve' \\
@@ -3477,7 +3477,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pop.example.com",
   "port": 110,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "messageId": 1,
   "timeout": 10000
 }'` },
@@ -3487,7 +3487,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pop.example.com",
   "port": 110,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "msgnum": 1,
   "timeout": 5000
 }'` },
@@ -3497,7 +3497,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pop.example.com",
   "port": 110,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /pop3/top', command: `curl -X POST 'https://l4.fyi/api/pop3/top' \\
@@ -3506,7 +3506,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "pop.example.com",
   "port": 110,
   "username": "user@example.com",
-  "password": "secret",
+  "password": "",
   "msgnum": 1,
   "lines": 20,
   "timeout": 5000
@@ -3551,7 +3551,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5432,
   "username": "postgres",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "timeout": 5000
 }'` },
@@ -3561,7 +3561,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5432,
   "username": "postgres",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "query": "SELECT * FROM users LIMIT 10",
   "timeout": 10000
@@ -3572,7 +3572,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5432,
   "username": "postgres",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "query": "SELECT * FROM users WHERE id = $1",
   "timeout": 5000
@@ -3583,7 +3583,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5432,
   "username": "postgres",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "channel": "events",
   "waitMs": 5000,
@@ -3595,7 +3595,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5432,
   "username": "postgres",
-  "password": "secret",
+  "password": "",
   "database": "mydb",
   "channel": "events",
   "payload": "user_signup:42",
@@ -3642,7 +3642,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 15672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /rabbitmq/publish', command: `curl -X POST 'https://l4.fyi/api/rabbitmq/publish' \\
@@ -3651,7 +3651,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 15672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "exchange": "amq.direct",
   "routingKey": "test.queue",
@@ -3664,7 +3664,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 15672,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "path": "/api/overview",
   "timeout": 5000
 }'` },
@@ -3684,8 +3684,8 @@ const examples: Record<string, CurlExample[]> = {
   "host": "radius.example.com",
   "port": 2083,
   "username": "testuser",
-  "password": "testpass",
-  "secret": "radiussecret",
+  "password": "",
+  "secret": "",
   "timeout": 5000
 }'` },
     { title: 'POST /radsec/accounting', command: `curl -X POST 'https://l4.fyi/api/radsec/accounting' \\
@@ -3694,7 +3694,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "radius.example.com",
   "port": 2083,
   "username": "testuser",
-  "secret": "radiussecret",
+  "secret": "",
   "sessionId": "sess-001",
   "timeout": 5000
 }'` },
@@ -3706,7 +3706,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 25575,
-  "password": "minecraft",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /rcon/command', command: `curl -X POST 'https://l4.fyi/api/rcon/command' \\
@@ -3714,7 +3714,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 25575,
-  "password": "minecraft",
+  "password": "",
   "command": "list",
   "timeout": 5000
 }'` },
@@ -3858,7 +3858,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 512,
   "username": "admin",
-  "password": "secret",
+  "password": "",
   "command": "uptime",
   "timeout": 5000
 }'` },
@@ -4036,7 +4036,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 873,
   "module": "backups",
   "username": "rsyncuser",
-  "password": "rsyncpass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /rsync/module', command: `curl -X POST 'https://l4.fyi/api/rsync/module' \\
@@ -4084,7 +4084,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 554,
   "path": "/live/stream1",
   "username": "admin",
-  "password": "camera123",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /rtsp/describe', command: `curl -X POST 'https://l4.fyi/api/rtsp/describe' \\
@@ -4094,7 +4094,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 554,
   "path": "/cam/realmonitor",
   "username": "admin",
-  "password": "camera123",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /rtsp/session', command: `curl -X POST 'https://l4.fyi/api/rtsp/session' \\
@@ -4104,7 +4104,7 @@ const examples: Record<string, CurlExample[]> = {
   "port": 554,
   "path": "/live/stream1",
   "username": "admin",
-  "password": "camera123",
+  "password": "",
   "timeout_ms": 5000
 }'` },
   ],
@@ -4253,7 +4253,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "path": "/home/sftpuser"
 }'` },
     { title: 'POST /sftp/download (501)', command: `curl -X POST 'https://l4.fyi/api/sftp/download' \\
@@ -4262,7 +4262,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "path": "/home/sftpuser/report.csv"
 }'` },
     { title: 'POST /sftp/upload (501)', command: `curl -X POST 'https://l4.fyi/api/sftp/upload' \\
@@ -4271,7 +4271,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "path": "/home/sftpuser/hello.txt",
   "content": "Hello from L4.FYI!",
   "encoding": "utf8"
@@ -4282,7 +4282,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "path": "/home/sftpuser/old-file.txt"
 }'` },
     { title: 'POST /sftp/mkdir (501)', command: `curl -X POST 'https://l4.fyi/api/sftp/mkdir' \\
@@ -4291,7 +4291,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "path": "/home/sftpuser/new-directory"
 }'` },
     { title: 'POST /sftp/rename (501)', command: `curl -X POST 'https://l4.fyi/api/sftp/rename' \\
@@ -4300,7 +4300,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "oldPath": "/home/sftpuser/draft.txt",
   "newPath": "/home/sftpuser/final.txt"
 }'` },
@@ -4310,7 +4310,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 22,
   "username": "sftpuser",
-  "password": "secret",
+  "password": "",
   "path": "/home/sftpuser/report.csv"
 }'` },
   ],
@@ -4346,7 +4346,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5060,
   "username": "1001",
-  "password": "sippass",
+  "password": "",
   "realm": "sip.example.com",
   "timeout": 5000
 }'` },
@@ -4383,7 +4383,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5061,
   "username": "1001",
-  "password": "sippass",
+  "password": "",
   "realm": "sip.example.com",
   "timeout": 5000
 }'` },
@@ -4435,7 +4435,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 445,
   "username": "admin",
-  "password": "P@ssw0rd",
+  "password": "",
   "domain": "WORKGROUP",
   "timeout": 5000
 }'` },
@@ -4445,7 +4445,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 445,
   "username": "admin",
-  "password": "P@ssw0rd",
+  "password": "",
   "share": "shared",
   "timeout": 5000
 }'` },
@@ -4455,7 +4455,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 445,
   "username": "admin",
-  "password": "P@ssw0rd",
+  "password": "",
   "share": "shared",
   "path": "documents/report.pdf",
   "timeout": 5000
@@ -4482,7 +4482,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 2775,
   "systemId": "smppclient",
-  "password": "secret",
+  "password": "",
   "sourceAddr": "12345",
   "destAddr": "15551234567",
   "shortMessage": "Hello from L4.FYI",
@@ -4494,7 +4494,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 2775,
   "systemId": "smppclient",
-  "password": "secret",
+  "password": "",
   "messageId": "msg-001",
   "timeout": 5000
 }'` },
@@ -4506,7 +4506,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "smtp.example.com",
   "port": 25,
   "username": "mailuser",
-  "password": "mailpass",
+  "password": "",
   "useTLS": false,
   "timeout": 5000
 }'` },
@@ -4516,7 +4516,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "smtp.example.com",
   "port": 25,
   "username": "mailuser",
-  "password": "mailpass",
+  "password": "",
   "from": "sender@example.com",
   "to": "recipient@example.com",
   "subject": "Test Message",
@@ -4531,7 +4531,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "smtp.example.com",
   "port": 465,
   "username": "mailuser",
-  "password": "mailpass",
+  "password": "",
   "useTLS": true,
   "timeout": 5000
 }'` },
@@ -4541,7 +4541,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "smtp.example.com",
   "port": 465,
   "username": "mailuser",
-  "password": "mailpass",
+  "password": "",
   "from": "sender@example.com",
   "to": "recipient@example.com",
   "subject": "Secure Test Message",
@@ -4598,7 +4598,7 @@ const examples: Record<string, CurlExample[]> = {
   "targetHost": "example.com",
   "targetPort": 443,
   "username": "proxyuser",
-  "password": "proxypass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /socks5/relay', command: `curl -X POST 'https://l4.fyi/api/socks5/relay' \\
@@ -4609,7 +4609,7 @@ const examples: Record<string, CurlExample[]> = {
   "targetHost": "example.com",
   "targetPort": 80,
   "username": "proxyuser",
-  "password": "proxypass",
+  "password": "",
   "data": "GET / HTTP/1.1\\r\\nHost: example.com\\r\\n\\r\\n",
   "timeout": 5000
 }'` },
@@ -4670,7 +4670,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 1491,
-  "password": "SecretPassword",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /sonic/push', command: `curl -X POST 'https://l4.fyi/api/sonic/push' \\
@@ -4678,7 +4678,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 1491,
-  "password": "SecretPassword",
+  "password": "",
   "collection": "articles",
   "bucket": "default",
   "object": "article:1",
@@ -4690,7 +4690,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 1491,
-  "password": "SecretPassword",
+  "password": "",
   "collection": "articles",
   "bucket": "default",
   "terms": "brown fox",
@@ -4701,7 +4701,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 1491,
-  "password": "SecretPassword",
+  "password": "",
   "collection": "articles",
   "bucket": "default",
   "word": "bro",
@@ -4714,7 +4714,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 27015,
-  "password": "sourcepass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /source-rcon/command', command: `curl -X POST 'https://l4.fyi/api/rcon/command' \\
@@ -4722,7 +4722,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 27015,
-  "password": "sourcepass",
+  "password": "",
   "command": "status",
   "timeout": 5000
 }'` },
@@ -4743,7 +4743,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "your-server.example.com",
   "port": 5900,
-  "password": "spicepass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /spice/channels', command: `curl -X POST 'https://l4.fyi/api/spice/channels' \\
@@ -4755,35 +4755,51 @@ const examples: Record<string, CurlExample[]> = {
 }'` },
   ],
   SSH: [
-    { title: 'POST /ssh/connect', command: `curl -X POST 'https://l4.fyi/api/ssh/connect' \\
+    {
+      title: 'POST /ssh/connect',
+      description: 'Attempt a full SSH login to a remote server. Provide the host, port, username, and password — the API will try to authenticate and return whether the connection succeeded or failed.',
+      command: `curl -X POST 'https://l4.fyi/api/ssh/connect' \\
     -H 'Content-Type: application/json' \\
     -d '{
   "host": "your-server.example.com",
   "port": 22,
   "username": "admin",
-  "password": "secret",
+  "password": "",
   "timeout": 10000
-}'` },
-    { title: 'POST /ssh/disconnect', command: `curl -X POST 'https://l4.fyi/api/ssh/disconnect' \\
+}'`,
+    },
+    {
+      title: 'POST /ssh/disconnect',
+      description: 'Close an active SSH session. Pass the host and port of the server you want to disconnect from — the API will cleanly end the session.',
+      command: `curl -X POST 'https://l4.fyi/api/ssh/disconnect' \\
     -H 'Content-Type: application/json' \\
     -d '{
   "host": "your-server.example.com",
   "port": 22
-}'` },
-    { title: 'POST /ssh/kexinit', command: `curl -X POST 'https://l4.fyi/api/ssh/kexinit' \\
+}'`,
+    },
+    {
+      title: 'POST /ssh/kexinit',
+      description: 'Check whether a server is running SSH — without logging in. This triggers the initial SSH handshake (called "key exchange") and returns what encryption methods the server supports. Useful for quickly probing a port.',
+      command: `curl -X POST 'https://l4.fyi/api/ssh/kexinit' \\
     -H 'Content-Type: application/json' \\
     -d '{
   "host": "your-server.example.com",
   "port": 22,
   "timeout": 5000
-}'` },
-    { title: 'POST /ssh/auth', command: `curl -X POST 'https://l4.fyi/api/ssh/auth' \\
+}'`,
+    },
+    {
+      title: 'POST /ssh/auth',
+      description: 'Find out what login methods a server accepts (e.g. password, public key) without actually logging in. Useful for auditing or troubleshooting authentication issues on a remote server.',
+      command: `curl -X POST 'https://l4.fyi/api/ssh/auth' \\
     -H 'Content-Type: application/json' \\
     -d '{
   "host": "your-server.example.com",
   "port": 22,
   "timeout": 5000
-}'` },
+}'`,
+    },
   ],
   STOMP: [
     { title: 'POST /stomp/connect', command: `curl -X POST 'https://l4.fyi/api/stomp/connect' \\
@@ -4792,7 +4808,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 61613,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "vhost": "/",
   "timeout": 5000
 }'` },
@@ -4802,7 +4818,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 61613,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "destination": "/queue/orders",
   "body": "{\\"orderId\\": \\"ORD-12345\\",\\"status\\": \\"placed\\"}",
   "contentType": "application/json",
@@ -4814,7 +4830,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 61613,
   "username": "guest",
-  "password": "guest",
+  "password": "",
   "destination": "/queue/orders",
   "maxMessages": 5,
   "timeout": 10000
@@ -4872,8 +4888,8 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 49,
   "username": "netadmin",
-  "password": "tacpass",
-  "secret": "tacacskey",
+  "password": "",
+  "secret": "",
   "timeout": 5000
 }'` },
   ],
@@ -4898,7 +4914,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 3301,
   "username": "admin",
-  "password": "secret",
+  "password": "",
   "expression": "return box.info.version",
   "timeout": 5000
 }'` },
@@ -4908,7 +4924,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "localhost",
   "port": 3301,
   "username": "admin",
-  "password": "secret",
+  "password": "",
   "query": "SELECT * FROM users LIMIT 10",
   "timeout": 5000
 }'` },
@@ -4927,7 +4943,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 1433,
   "username": "sa",
-  "password": "YourStrong!Passw0rd",
+  "password": "",
   "database": "master",
   "timeout": 5000
 }'` },
@@ -4937,7 +4953,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 1433,
   "username": "sa",
-  "password": "YourStrong!Passw0rd",
+  "password": "",
   "database": "master",
   "sql": "SELECT @@VERSION",
   "timeout": 5000
@@ -4957,7 +4973,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 10011,
   "username": "serveradmin",
-  "password": "tspass",
+  "password": "",
   "command": "serverinfo",
   "timeout": 5000
 }'` },
@@ -4967,7 +4983,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 10011,
   "username": "serveradmin",
-  "password": "tspass",
+  "password": "",
   "channelName": "General Chat",
   "timeout": 5000
 }'` },
@@ -4977,7 +4993,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 10011,
   "username": "serveradmin",
-  "password": "tspass",
+  "password": "",
   "targetId": 1,
   "message": "Server restarting in 5 minutes",
   "timeout": 5000
@@ -4988,7 +5004,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 10011,
   "username": "serveradmin",
-  "password": "tspass",
+  "password": "",
   "clientId": 42,
   "reason": "AFK timeout",
   "timeout": 5000
@@ -4999,7 +5015,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 10011,
   "username": "serveradmin",
-  "password": "tspass",
+  "password": "",
   "clientId": 42,
   "duration": 3600,
   "reason": "Repeated violations",
@@ -5027,7 +5043,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 23,
   "username": "admin",
-  "password": "secret",
+  "password": "",
   "timeout": 10000
 }'` },
   ],
@@ -5115,7 +5131,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 6082,
-  "secret": "varnishsecret",
+  "secret": "",
   "command": "status",
   "timeout": 5000
 }'` },
@@ -5124,7 +5140,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 6082,
-  "secret": "varnishsecret",
+  "secret": "",
   "expression": "req.url ~ /api/",
   "timeout": 5000
 }'` },
@@ -5133,7 +5149,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "localhost",
   "port": 6082,
-  "secret": "varnishsecret",
+  "secret": "",
   "param": "default_ttl",
   "timeout": 5000
 }'` },
@@ -5213,7 +5229,7 @@ const examples: Record<string, CurlExample[]> = {
     -d '{
   "host": "your-server.example.com",
   "port": 5900,
-  "password": "vncpass",
+  "password": "",
   "timeout": 5000
 }'` },
   ],
@@ -5278,7 +5294,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5222,
   "username": "alice",
-  "password": "xmpppass",
+  "password": "",
   "timeout": 5000
 }'` },
     { title: 'POST /xmpp/message', command: `curl -X POST 'https://l4.fyi/api/xmpp/message' \\
@@ -5287,7 +5303,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5222,
   "username": "alice",
-  "password": "xmpppass",
+  "password": "",
   "to": "bob@example.com",
   "body": "Hello Bob!",
   "timeout": 5000
@@ -5298,7 +5314,7 @@ const examples: Record<string, CurlExample[]> = {
   "host": "your-server.example.com",
   "port": 5222,
   "username": "alice",
-  "password": "xmpppass",
+  "password": "",
   "timeout": 5000
 }'` },
   ],

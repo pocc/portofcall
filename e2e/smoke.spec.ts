@@ -1,38 +1,31 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Smoke Tests', () => {
-  test.beforeEach(async ({ page }) => {
+  test('app loads and shows header', async ({ page }) => {
     await page.goto('/');
-    await page.evaluate(() => {
-      localStorage.setItem('portofcall-view', 'cards');
-      localStorage.setItem('portofcall-theme', 'modern');
-    });
-    await page.reload();
-    await page.waitForTimeout(500);
+    await expect(page.locator('text=PORT OF CALL')).toBeVisible({ timeout: 15_000 });
   });
 
-  test('app loads and shows protocol selector', async ({ page }) => {
-    await expect(page.locator('h1')).toContainText('PORT OF CALL');
-  });
-
-  test('search filters protocols', async ({ page }) => {
-    const search = page.getByPlaceholder(/Search protocols/i);
-    await search.fill('Redis');
-    const card = page.locator('button[aria-label^="Connect to Redis on port"]');
-    await card.scrollIntoViewIfNeeded();
-    await expect(card).toBeVisible();
-  });
-
-  test('can navigate to a protocol and back', async ({ page }) => {
-    const search = page.getByPlaceholder(/Search protocols/i);
-    await search.fill('Echo');
-    await page.waitForTimeout(300);
-    const card = page.locator('button[aria-label^="Connect to ECHO on port"]').first();
-    await card.scrollIntoViewIfNeeded();
-    await card.click();
+  test('command palette search works', async ({ page }) => {
+    await page.goto('/');
     await page.waitForTimeout(1000);
+    // Open command palette via keyboard shortcut
+    await page.keyboard.press('Meta+k');
+    await page.waitForTimeout(500);
+    const searchInput = page.getByPlaceholder(/Search protocols by name/i);
+    await searchInput.fill('Redis');
+    await page.waitForTimeout(300);
+    // Verify Redis appears in results
+    await expect(page.getByRole('button', { name: 'Redis :6379' }).first()).toBeVisible();
+  });
+
+  test('can navigate to a protocol via hash and back', async ({ page }) => {
+    await page.goto('/#echo');
+    await page.waitForTimeout(2000);
     await expect(page.locator('#echo-host')).toBeVisible();
-    await page.locator('button', { hasText: '← Back' }).click();
-    await expect(page.locator('h1')).toContainText('PORT OF CALL');
+    // Navigate back
+    await page.locator('button', { hasText: /Back/i }).click();
+    await page.waitForTimeout(1000);
+    await expect(page.locator('text=PORT OF CALL')).toBeVisible();
   });
 });

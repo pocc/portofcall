@@ -2,8 +2,10 @@ import { type Page, expect } from '@playwright/test';
 
 export async function fillField(page: Page, id: string, value: string): Promise<void> {
   const field = page.locator(`#${id}`);
-  await field.clear();
+  await field.click();
   await field.fill(value);
+  // Verify the value was set (React controlled inputs can be tricky)
+  await expect(field).toHaveValue(value, { timeout: 2000 });
 }
 
 export async function clickAction(page: Page, buttonText: string): Promise<void> {

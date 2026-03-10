@@ -12,6 +12,11 @@
  *   /api/beanstalkd/command    — execute whitelisted commands
  *   /api/beanstalkd/put        — enqueue a job into a tube
  *   /api/beanstalkd/reserve    — dequeue the next ready job
+ *   /api/beanstalkd/delete     — permanently remove a reserved job
+ *   /api/beanstalkd/release    — return a reserved job to ready state
+ *   /api/beanstalkd/bury       — move a reserved job to buried state
+ *   /api/beanstalkd/kick       — move buried jobs back to ready state
+ *   /api/beanstalkd/touch      — reset TTR countdown for a reserved job
  *
  * Response formats handled:
  *   Single-line:  INSERTED <id>\r\n, USING <tube>\r\n, NOT_FOUND\r\n, etc.
@@ -711,6 +716,433 @@ export async function handleBeanstalkdReserve(request: Request): Promise<Respons
     return new Response(JSON.stringify({
       success: false,
       error: error instanceof Error ? error.message : 'Beanstalkd reserve failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Beanstalkd delete — permanently remove a reserved job
+ * POST /api/beanstalkd/delete
+ *
+ * Protocol: "delete <id>\r\n" → "DELETED\r\n" or "NOT_FOUND\r\n"
+ */
+export async function handleBeanstalkdDelete(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; jobId: number; timeout?: number;
+    };
+    const { host, port = 11300, jobId, timeout = 8000 } = body;
+
+    if (!host || jobId === undefined || jobId === null) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, jobId' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+        await writer.write(new TextEncoder().encode(`delete ${jobId}\r\n`));
+        const resp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const status = resp.split('\r\n')[0] || resp;
+
+        return new Response(JSON.stringify({
+          success: status === 'DELETED',
+          host, port, jobId, rtt, status,
+          message: status === 'DELETED'
+            ? `Job ${jobId} deleted`
+            : `Delete failed: ${status}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd delete failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Beanstalkd release — return a reserved job to ready state
+ * POST /api/beanstalkd/release
+ *
+ * Protocol: "release <id> <pri> <delay>\r\n" → "RELEASED\r\n", "BURIED\r\n", or "NOT_FOUND\r\n"
+ */
+export async function handleBeanstalkdRelease(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; jobId: number;
+      priority?: number; delay?: number; timeout?: number;
+    };
+    const { host, port = 11300, jobId, timeout = 8000 } = body;
+    const priority = body.priority ?? 1024;
+    const delay = body.delay ?? 0;
+
+    if (!host || jobId === undefined || jobId === null) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, jobId' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+        await writer.write(new TextEncoder().encode(`release ${jobId} ${priority} ${delay}\r\n`));
+        const resp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const status = resp.split('\r\n')[0] || resp;
+
+        return new Response(JSON.stringify({
+          success: status === 'RELEASED',
+          host, port, jobId, rtt, status, priority, delay,
+          message: status === 'RELEASED'
+            ? `Job ${jobId} released back to ready state` + (delay > 0 ? ` (delayed ${delay}s)` : '')
+            : `Release failed: ${status}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd release failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Beanstalkd bury — move a reserved job to buried state
+ * POST /api/beanstalkd/bury
+ *
+ * Protocol: "bury <id> <pri>\r\n" → "BURIED\r\n" or "NOT_FOUND\r\n"
+ */
+export async function handleBeanstalkdBury(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; jobId: number;
+      priority?: number; timeout?: number;
+    };
+    const { host, port = 11300, jobId, timeout = 8000 } = body;
+    const priority = body.priority ?? 1024;
+
+    if (!host || jobId === undefined || jobId === null) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, jobId' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+        await writer.write(new TextEncoder().encode(`bury ${jobId} ${priority}\r\n`));
+        const resp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const status = resp.split('\r\n')[0] || resp;
+
+        return new Response(JSON.stringify({
+          success: status === 'BURIED',
+          host, port, jobId, rtt, status, priority,
+          message: status === 'BURIED'
+            ? `Job ${jobId} buried with priority ${priority}`
+            : `Bury failed: ${status}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd bury failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Beanstalkd kick — move buried/delayed jobs back to ready state
+ * POST /api/beanstalkd/kick
+ *
+ * Protocol: "kick <bound>\r\n" → "KICKED <count>\r\n"
+ * Optional: "use <tube>\r\n" first to target a specific tube
+ */
+export async function handleBeanstalkdKick(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; bound?: number;
+      tube?: string; timeout?: number;
+    };
+    const { host, port = 11300, tube = 'default', timeout = 8000 } = body;
+    const bound = body.bound ?? 1;
+
+    if (!host) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (bound < 1) {
+      return new Response(JSON.stringify({ success: false, error: 'Bound must be >= 1' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (/[\r\n]/.test(tube)) {
+      return new Response(JSON.stringify({ success: false, error: 'Tube name must not contain newline characters' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const enc = new TextEncoder();
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+
+        if (tube !== 'default') {
+          await writer.write(enc.encode(`use ${tube}\r\n`));
+          const useResp = await readBeanstalkdResponse(reader, timeout);
+          if (!useResp.startsWith(`USING ${tube}`)) {
+            return new Response(JSON.stringify({
+              success: false, host, port, error: `USE failed: ${useResp}`,
+            }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+          }
+        }
+
+        await writer.write(enc.encode(`kick ${bound}\r\n`));
+        const resp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const status = resp.split('\r\n')[0] || resp;
+
+        let kicked = 0;
+        if (status.startsWith('KICKED ')) {
+          kicked = parseInt(status.split(' ')[1] || '0', 10);
+        }
+
+        return new Response(JSON.stringify({
+          success: status.startsWith('KICKED'),
+          host, port, tube, rtt, status, bound, kicked,
+          message: status.startsWith('KICKED')
+            ? `Kicked ${kicked} job${kicked !== 1 ? 's' : ''} in tube '${tube}'`
+            : `Kick failed: ${status}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd kick failed',
+    }), { status: 500, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
+/**
+ * Handle Beanstalkd touch — reset TTR countdown for a reserved job
+ * POST /api/beanstalkd/touch
+ *
+ * Protocol: "touch <id>\r\n" → "TOUCHED\r\n" or "NOT_FOUND\r\n"
+ */
+export async function handleBeanstalkdTouch(request: Request): Promise<Response> {
+  try {
+    if (request.method !== 'POST') {
+      return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), {
+        status: 405, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const body = await request.json() as {
+      host: string; port?: number; jobId: number; timeout?: number;
+    };
+    const { host, port = 11300, jobId, timeout = 8000 } = body;
+
+    if (!host || jobId === undefined || jobId === null) {
+      return new Response(JSON.stringify({ success: false, error: 'Missing required: host, jobId' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    if (typeof port !== 'number' || isNaN(port) || port < 1 || port > 65535) {
+      return new Response(JSON.stringify({ success: false, error: 'Port must be between 1 and 65535' }), {
+        status: 400, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+
+    const cfCheck = await checkIfCloudflare(host);
+    if (cfCheck.isCloudflare && cfCheck.ip) {
+      return new Response(JSON.stringify({
+        success: false, error: getCloudflareErrorMessage(host, cfCheck.ip), isCloudflare: true,
+      }), { status: 403, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    const socket = connect(`${host}:${port}`);
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('Connection timeout')), timeout);
+    });
+
+    try {
+      await Promise.race([socket.opened, timeoutPromise]);
+      const reader = socket.readable.getReader();
+      const writer = socket.writable.getWriter();
+      try {
+        const startTime = Date.now();
+        await writer.write(new TextEncoder().encode(`touch ${jobId}\r\n`));
+        const resp = await readBeanstalkdResponse(reader, timeout);
+        const rtt = Date.now() - startTime;
+        const status = resp.split('\r\n')[0] || resp;
+
+        return new Response(JSON.stringify({
+          success: status === 'TOUCHED',
+          host, port, jobId, rtt, status,
+          message: status === 'TOUCHED'
+            ? `Job ${jobId} TTR reset`
+            : `Touch failed: ${status}`,
+        }), { headers: { 'Content-Type': 'application/json' } });
+      } finally {
+        reader.releaseLock();
+        writer.releaseLock();
+        socket.close();
+      }
+    } catch (error) {
+      socket.close();
+      throw error;
+    }
+  } catch (error) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: error instanceof Error ? error.message : 'Beanstalkd touch failed',
     }), { status: 500, headers: { 'Content-Type': 'application/json' } });
   }
 }

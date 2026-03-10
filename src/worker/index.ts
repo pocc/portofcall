@@ -153,7 +153,7 @@ import { handleOracleTNSConnect, handleOracleTNSProbe, handleOracleQuery, handle
 import { handleIdentQuery } from './ident';
 import { handleZabbixConnect, handleZabbixAgent, handleZabbixDiscovery } from './zabbix';
 import { handleMpdStatus, handleMpdCommand, handleMpdPlay, handleMpdPause, handleMpdNext, handleMpdPrev, handleMpdAdd, handleMpdSeek } from './mpd';
-import { handleBeanstalkdConnect, handleBeanstalkdCommand, handleBeanstalkdPut, handleBeanstalkdReserve } from './beanstalkd';
+import { handleBeanstalkdConnect, handleBeanstalkdCommand, handleBeanstalkdPut, handleBeanstalkdReserve, handleBeanstalkdDelete, handleBeanstalkdRelease, handleBeanstalkdBury, handleBeanstalkdKick, handleBeanstalkdTouch } from './beanstalkd';
 import { handleBeatsSend, handleBeatsConnect, handleBeatsTLS } from './beats';
 import { handleClamAVPing, handleClamAVVersion, handleClamAVStats, handleClamAVScan } from './clamav';
 import { handleLMTPConnect, handleLMTPSend } from './lmtp';
@@ -305,6 +305,7 @@ export interface Env {
   ENVIRONMENT: string;
   ASSETS: Fetcher;
   CHECKLIST: KVNamespace;
+  ALLOW_PRIVATE_HOSTS?: string;
 }
 
 export default {
@@ -387,6 +388,10 @@ export default {
         return cloudflareGuardResponse;
       }
 
+      // In local dev mode (ALLOW_PRIVATE_HOSTS=true), skip SSRF checks
+      // to allow Docker integration testing against localhost containers.
+      const allowPrivate = env.ALLOW_PRIVATE_HOSTS === 'true';
+
       // SSRF prevention: block private/internal IPs at the router level.
       // Extracts host from query params and JSON body to cover all handler conventions.
       if (url.pathname.startsWith('/api/')) {
@@ -408,17 +413,43 @@ export default {
           normalizeHost(guardBody?.proxyHost),
         ].filter((h): h is string => h !== null);
 
-        for (const h of hostsToCheck) {
-          if (isBlockedHost(h)) {
-            return new Response(JSON.stringify({
-              success: false,
-              error: `Connections to private/internal addresses are not allowed: ${h}`,
-            }), {
-              status: 403,
-              headers: { 'Content-Type': 'application/json' },
-            });
+        if (!allowPrivate) {
+          for (const h of hostsToCheck) {
+            if (isBlockedHost(h)) {
+              return new Response(JSON.stringify({
+                success: false,
+                error: `Connections to private/internal addresses are not allowed: ${h}`,
+              }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json' },
+              });
+            }
           }
         }
+      }
+
+      // --- POST-only enforcement for API routes ---
+      // All /api/ routes must use POST (connections to external servers should
+      // never be triggered by GET, which is linkable/prefetchable/cacheable).
+      // Exceptions: WebSocket upgrades, the checklist read endpoint, and the
+      // WebSocket tunnel endpoint (/api/connect).
+      if (
+        url.pathname.startsWith('/api/') &&
+        request.method !== 'POST' &&
+        !isWebSocketUpgrade &&
+        url.pathname !== '/api/checklist' &&
+        url.pathname !== '/api/connect'
+      ) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Method not allowed. Use POST.',
+        }), {
+          status: 405,
+          headers: {
+            'Content-Type': 'application/json',
+            'Allow': 'POST',
+          },
+        });
       }
 
       // --- CLI script route ---
@@ -429,8 +460,8 @@ export default {
       // --- Short URL routes (curl-friendly) ---
       const shortRoute = matchShortRoute(url.pathname);
       if (shortRoute) {
-        // SSRF guard on parsed host
-        if (isBlockedHost(shortRoute.host)) {
+        // SSRF guard on parsed host (skipped in dev mode)
+        if (!allowPrivate && isBlockedHost(shortRoute.host)) {
           return new Response(JSON.stringify({
             success: false,
             error: `Connections to private/internal addresses are not allowed: ${shortRoute.host}`,
@@ -2219,6 +2250,26 @@ export default {
 
     if (url.pathname === '/api/beanstalkd/reserve') {
       return handleBeanstalkdReserve(request);
+    }
+
+    if (url.pathname === '/api/beanstalkd/delete') {
+      return handleBeanstalkdDelete(request);
+    }
+
+    if (url.pathname === '/api/beanstalkd/release') {
+      return handleBeanstalkdRelease(request);
+    }
+
+    if (url.pathname === '/api/beanstalkd/bury') {
+      return handleBeanstalkdBury(request);
+    }
+
+    if (url.pathname === '/api/beanstalkd/kick') {
+      return handleBeanstalkdKick(request);
+    }
+
+    if (url.pathname === '/api/beanstalkd/touch') {
+      return handleBeanstalkdTouch(request);
     }
 
     // Beats (Elastic Beats/Lumberjack) API endpoints

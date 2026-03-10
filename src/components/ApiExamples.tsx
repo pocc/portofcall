@@ -28,7 +28,7 @@ function substituteValues(command: string, protocolId: string): string {
 }
 
 export default function ApiExamples({ examples, protocolId }: ApiExamplesProps) {
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [storageVersion, setStorageVersion] = useState(0);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -66,7 +66,7 @@ export default function ApiExamples({ examples, protocolId }: ApiExamplesProps) 
   };
 
   return (
-    <div className="mt-8 rounded-xl border border-slate-700 bg-slate-900/60 overflow-hidden">
+    <div className="mt-8 mb-10 rounded-xl border border-slate-700 bg-slate-900/60 overflow-hidden">
       {/* Section header — always visible, acts as toggle */}
       <button
         onClick={() => setOpen(!open)}

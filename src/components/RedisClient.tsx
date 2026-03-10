@@ -234,6 +234,8 @@ export default function RedisClient({ onBack }: RedisClientProps) {
         )}
       </div>
 
+      <ApiExamples examples={apiExamples.Redis || []} protocolId="redis" />
+
       <div className="grid lg:grid-cols-4 gap-6">
         {/* Connection panel */}
         <div className="lg:col-span-1">
@@ -381,7 +383,6 @@ export default function RedisClient({ onBack }: RedisClientProps) {
           </div>
         </div>
       </div>
-      <ApiExamples examples={apiExamples.Redis || []} protocolId="redis" />
     </div>
   );
 }

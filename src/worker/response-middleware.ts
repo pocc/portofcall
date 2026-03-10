@@ -8,7 +8,11 @@
 export function addSecurityHeaders(request: Request, response: Response): Response {
   // WebSocket 101 responses don't support custom headers in Workers
   if (response.status === 101) return response;
-  const wrapped = new Response(response.body, response);
+  const wrapped = new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: new Headers(response.headers),
+  });
   wrapped.headers.set('X-Frame-Options', 'DENY');
   wrapped.headers.set('X-Content-Type-Options', 'nosniff');
   wrapped.headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains; preload');

@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "npx tsx scripts/generate-manpages.ts && tsc && vite build",
     "preview": "vite preview",
     "worker:dev": "wrangler dev",
     "worker:deploy": "wrangler deploy",

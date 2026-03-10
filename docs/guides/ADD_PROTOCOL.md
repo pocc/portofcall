@@ -8,7 +8,7 @@ Before starting, **ALWAYS**:
 1. ✅ Check the git log / branch history - Avoid duplicate work
 2. ✅ Verify protocol is TCP-based (consult [IMPOSSIBLE.md](../reference/IMPOSSIBLE.md))
 3. ✅ Review implemented protocols in [IMPLEMENTED.md](../reference/IMPLEMENTED.md)
-4. ✅ Read the full documentation in [docs/](docs/)
+4. ✅ Read the full documentation in [docs/](../)
 
 ## Quick Start Checklist
 
@@ -27,7 +27,7 @@ git checkout -b feat/{protocol}
 ### 3. Research Phase
 - [ ] Read RFC or official protocol specification
 - [ ] Study [TCP_PROTOCOLS.md](../reference/TCP_PROTOCOLS.md) for protocol details
-- [ ] Check if protocol-specific docs exist in [protocols/](protocols/)
+- [ ] Check if protocol-specific docs exist in [protocols/](../protocols/)
 - [ ] Review implementation patterns in [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)
 
 ## Implementation Process
@@ -248,10 +248,10 @@ docker run -d -p 6379:6379 redis:latest
 
 Create or update:
 
-1. **[protocols/{PROTOCOL}.md](protocols/)** - Implementation details
+1. **[protocols/{PROTOCOL}.md](../protocols/)** - Implementation details
 2. **[IMPLEMENTED.md](../reference/IMPLEMENTED.md)** - Add to implemented list
 3. Merge your feature branch
-4. **[README.md](README.md)** - Update if adding major feature
+4. **[README.md](../README.md)** - Update if adding major feature
 
 ## Completion Checklist
 
@@ -296,24 +296,24 @@ npm run worker:deploy
 Study these for patterns:
 
 ### Simple Protocols (Start Here)
-- **Echo** - [protocols/ECHO.md](protocols/ECHO.md)
-- **Whois** - [protocols/WHOIS.md](protocols/WHOIS.md)
-- **Redis** - [protocols/REDIS.md](protocols/REDIS.md)
+- **Echo** - [protocols/echo.md](../protocols/echo.md)
+- **Whois** - [protocols/whois.md](../protocols/whois.md)
+- **Redis** - [protocols/redis.md](../protocols/redis.md)
 
 ### Medium Complexity
-- **MQTT** - [protocols/MQTT.md](protocols/MQTT.md)
-- **IRC** - [protocols/IRC.md](protocols/IRC.md)
-- **MySQL** - [protocols/MYSQL.md](protocols/MYSQL.md)
+- **MQTT** - [protocols/mqtt.md](../protocols/mqtt.md)
+- **IRC** - [protocols/irc.md](../protocols/irc.md)
+- **MySQL** - [protocols/mysql.md](../protocols/mysql.md)
 
 ### Advanced
-- **SSH** - [protocols/SSH.md](protocols/SSH.md)
-- **FTP** - See [FTP_CODE_REVIEW.md](FTP_CODE_REVIEW.md)
+- **SSH** - [protocols/ssh.md](../protocols/ssh.md)
+- **FTP** - See [FTP Code Review](../../archive/FTP_CODE_REVIEW.md)
 
 ## Common Pitfalls
 
 ❌ **Avoid**:
 - Implementing UDP-based protocols (not supported)
-- Forgetting to update mutex.md
+- Forgetting to update IMPLEMENTED.md
 - Skipping security validation
 - Not handling Cloudflare-protected hosts
 - Hardcoding credentials
@@ -332,10 +332,10 @@ Study these for patterns:
 ## Getting Help
 
 - **Patterns**: [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)
-- **Quick Reference**: [protocols/QUICK_REFERENCE.md](protocols/QUICK_REFERENCE.md)
-- **Security**: [CLOUDFLARE_DETECTION.md](CLOUDFLARE_DETECTION.md)
+- **Quick Reference**: [protocols/QUICK_REFERENCE.md](../protocols/QUICK_REFERENCE.md)
+- **Security**: [CLOUDFLARE_DETECTION.md](../reference/CLOUDFLARE_DETECTION.md)
 - **Testing**: [API_TESTING.md](API_TESTING.md)
-- **Architecture**: [ARCHITECTURE.md](ARCHITECTURE.md)
+- **Architecture**: [ARCHITECTURE.md](../ARCHITECTURE.md)
 
 ## After Completion
 
@@ -343,7 +343,7 @@ When you finish implementing a protocol:
 
 1. ✅ Update [IMPLEMENTED.md](../reference/IMPLEMENTED.md)
 2. ✅ Move to "Completed This Session" in the git log / branch history
-3. ✅ Create protocol documentation in [protocols/](protocols/)
+3. ✅ Create protocol documentation in [protocols/](../protocols/)
 4. ✅ Deploy to production
 5. ✅ Test live deployment
 6. ✅ **Reread this guide before starting next protocol**

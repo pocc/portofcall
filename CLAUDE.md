@@ -9,7 +9,7 @@ Live: https://l4.fyi
 - **Frontend:** Vite 7 + React 19 + TypeScript + Tailwind CSS 3
 - **Backend:** Cloudflare Worker (`src/worker/index.ts`)
 - **Terminal UI:** xterm.js (SSH, Telnet clients)
-- **Protocols:** 240+ TCP protocol implementations
+- **Protocols:** 234 TCP protocol implementations
 
 ## Commands
 - `npm run dev` — Vite dev server (port 5173)
@@ -22,13 +22,15 @@ Live: https://l4.fyi
 **ALWAYS run `npm run build` before marking a feature complete.** This catches TypeScript errors, unused variables, and build breakage.
 
 ## Project Structure
-- `src/worker/` — Cloudflare Worker (240+ protocol handlers)
-- `src/worker/index.ts` — Main router, pipe functions, TCP ping
+- `src/worker/` — Cloudflare Worker (234 protocol handlers)
+- `src/worker/index.ts` — Main router (SSRF guard, Cloudflare detection, API dispatch)
 - `src/worker/host-validator.ts` — SSRF prevention
 - `src/worker/cloudflare-detector.ts` — Cloudflare IP detection
-- `src/components/` — React UI (240+ protocol clients)
+- `src/worker/websocket-pipe.ts` — WebSocket↔TCP pipe, backpressure, TCP ping
+- `src/components/` — React UI (234 protocol clients)
 - `src/App.tsx` — React root with lazy-loaded protocol components
 - `docs/` — Architecture, protocol specs, changelogs
+- `docs/ARCHITECTURE.md` — Detailed data plane design, scaling limits, security architecture
 
 ## Security — Already Implemented
 The following security measures are **already in place**. Do NOT flag these as missing in reviews:
@@ -39,10 +41,10 @@ The following security measures are **already in place**. Do NOT flag these as m
 - **Backpressure Control:** WebSocket-to-TCP pipe functions handle backpressure with two thresholds: 1 MiB outbound HWM (pauses TCP reads when `ws.bufferedAmount` exceeds it) and 4 MiB inbound HWM (hard-closes the connection if the TCP write queue exceeds it). See `websocket-pipe.ts`.
 - **Resource Cleanup:** All stream readers/writers released in `finally` blocks.
 - **Error Sanitization:** Internal portofcall errors (checklist, config, etc.) are sanitized to "Internal server error" before reaching the client. **SSH and protocol errors are intentionally passed through raw** — users own the servers they connect to and need real error messages for debugging. Do NOT sanitize `/api/ssh/`, `/api/connect`, or `/api/tcp` error responses.
-- **Credential Security:** All HTTP handlers require `POST` with credentials in the JSON body — never in URL query params. **Known limitation:** WebSocket upgrade requests are inherently GET-only, so 7 WS handlers (imap, imaps, redis, mqtt, irc, ircs, rexec) still read credentials from query params. These are protected by Origin validation. SSH already uses the message-body pattern (credentials sent in the first WS message after upgrade). Do NOT flag WS query params as a security gap unless proposing to migrate them to the SSH-style first-message pattern.
+- **Credential Security:** All HTTP handlers require `POST` with credentials in the JSON body — never in URL query params. WebSocket upgrade requests are inherently GET-only, so all WS handlers use the first-message pattern (credentials sent in the first WS message after upgrade, not in URL query params). Do NOT flag WS credential handling as a security gap.
 
 ## Docker Testing — IMPORTANT
-All compose files have `mem_limit` set to prevent runaway memory usage (host has 36GB RAM). See `docs/prompts/DOCKER_TESTING.md` for the full testing prompt.
+All compose files have `mem_limit` set to prevent runaway memory usage (host has 36GB RAM).
 
 **Key rules:**
 - **Never run all compose files at once.** Only start the stacks you need for a specific test.

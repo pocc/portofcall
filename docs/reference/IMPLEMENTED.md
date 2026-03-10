@@ -1508,7 +1508,7 @@ This document tracks all protocols that have been fully implemented in Port of C
 
 ## Summary
 
-- **Total Implemented**: 111 protocols + 1 security feature
+- **Total Implemented**: 119 protocols + 1 security feature (partial list; see `src/worker/*.ts` for full set of 234 protocol handlers)
 - **Deployed & Passing**: 14 protocols
 - **Awaiting Deployment**: 70 protocols
 - **Real-World Usage Tests**: 403 integration tests covering all protocols with realistic hosts/ports/parameters

@@ -237,7 +237,6 @@ All endpoints accept POST requests with JSON bodies unless otherwise noted. The 
 - [X11](#x11)
 - [XMPP](#xmpp)
 - [XMPP S2S](#xmpp-s2s)
-- [XMPP S2S (TLS)](#xmpp-s2s-tls)
 - [YMSG](#ymsg)
 - [Zabbix](#zabbix)
 - [ZMTP](#zmtp)
@@ -1071,6 +1070,7 @@ curl -X POST 'https://l4.fyi/api/finger/query' \
 | `/api/ftp/delete` | POST | Delete file |
 | `/api/ftp/mkdir` | POST | Create directory |
 | `/api/ftp/rename` | POST | Rename file |
+| `/api/ftp/rmdir` | POST | Remove directory |
 
 ### Curl Examples
 
@@ -1614,6 +1614,7 @@ curl -X POST 'https://l4.fyi/api/kafka/produce' \
 | `/api/ldaps/add` | POST | Add entry |
 | `/api/ldaps/modify` | POST | Modify entry |
 | `/api/ldaps/delete` | POST | Delete entry |
+| `/api/ldaps/paged-search` | POST | Paged search entries |
 
 ---
 
@@ -3060,20 +3061,10 @@ curl -X POST 'https://l4.fyi/api/whois/lookup' \
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/xmpp-s2s/ping` | POST | Ping remote server |
-| `/api/xmpp-s2s/connect` | POST | S2S stream init |
-| `/api/xmpp-s2s/s2s-connect` | POST | Full S2S connect |
-| `/api/xmpp-s2s/dialback` | POST | Dialback verify |
-
----
-
-## XMPP S2S (TLS)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
 | `/api/xmpps2s/probe` | POST | Probe S2S TLS |
 | `/api/xmpps2s/federation` | POST | Federation test |
-| `/api/xmpps2s/dialback` | POST | TLS dialback |
+| `/api/xmpps2s/dialback` | POST | Dialback verify |
+| `/api/xmpps2s/ping` | POST | Ping remote server |
 
 ---
 

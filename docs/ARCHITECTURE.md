@@ -10,7 +10,7 @@ Technical architecture of Port of Call — a browser-to-TCP bridge deployed as a
 │  ┌────────────────────────────────────────────┐  │
 │  │  React 19 UI (TypeScript)                  │  │
 │  │  - Vite 7 dev/build                        │  │
-│  │  - 244 protocol clients                    │  │
+│  │  - 234 protocol clients                    │  │
 │  │  - WebSocket connections                   │  │
 │  └────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
@@ -20,7 +20,7 @@ Technical architecture of Port of Call — a browser-to-TCP bridge deployed as a
 │  ┌────────────────────────────────────────────┐  │
 │  │  Worker Runtime (128 MiB isolate)          │  │
 │  │  - Serves static React build               │  │
-│  │  - 244 protocol handler endpoints          │  │
+│  │  - 234 protocol handler endpoints          │  │
 │  │  - WebSocket upgrades → TCP tunnels        │  │
 │  │  - SSRF host validation                    │  │
 │  │  - Backpressure-aware data plane           │  │
@@ -40,7 +40,7 @@ Technical architecture of Port of Call — a browser-to-TCP bridge deployed as a
 portofcall/
 ├── src/
 │   ├── worker/
-│   │   ├── index.ts              # Worker entry: router, pipe functions, TCP ping
+│   │   ├── index.ts              # Worker entry: router
 │   │   ├── host-validator.ts     # SSRF prevention (IP/hostname blocklist)
 │   │   ├── cloudflare-detector.ts # Cloudflare IP detection
 │   │   ├── ssh.ts                # SSH protocol (banner, kex, auth)
@@ -56,7 +56,7 @@ portofcall/
 │   ├── PROTOCOL_REGISTRY.md      # Protocol status and scaling limits
 │   ├── GETTING_STARTED.md        # Quick start guide
 │   ├── PROJECT_OVERVIEW.md       # High-level overview
-│   ├── protocols/                # 319 protocol specification files
+│   ├── protocols/                # Protocol specification files
 │   ├── reference/                # Technical references (Sockets API, TCP list, etc.)
 │   ├── guides/                   # Implementation and testing guides
 │   └── changelog/                # Bug fixes by protocol + audit pass reports
@@ -100,7 +100,7 @@ reader.read()               ← Backend's TCP window closes
 ws.send(chunk)              ← Throughput = client consumption rate
 ```
 
-The Worker never buffers more than ~1.1 MiB **outbound** per connection (1 MiB HWM + ~64 KB in-flight read). Inbound (browser → backend) uses a separate 4 MiB high-water mark. Worst-case bidirectional memory per connection is ~5.1 MiB.
+The Worker never buffers more than ~1.1 MiB **outbound** per connection (1 MiB HWM + ~64 KB in-flight read), though during chunking of oversized payloads the buffer may spike briefly as multiple 1 MiB slices are sent in a tight loop. Inbound (browser → backend) uses a separate 4 MiB hard limit — if `queuedBytes` exceeds 4 MiB the connection is terminated with close code 1013 (not a pause/drain mechanism). Worst-case bidirectional memory per connection is ~5.1 MiB.
 
 **Payload Chunking (1 MiB WebSocket Limit):**
 
@@ -126,7 +126,7 @@ The `error` handler calls `writer.close()` directly (not chained) for immediate 
 
 ### TCP Ping
 
-**Source:** `src/worker/index.ts` (function `handleTcpPing`)
+**Source:** `src/worker/websocket-pipe.ts` (function `handleTcpPing`)
 
 Measures TCP handshake RTT using `performance.now()` (monotonic, sub-millisecond). Results are rounded to 2 decimal places. Reported RTT includes ~0.5-5ms of Worker scheduling overhead, which is inherent to the execution model.
 
@@ -137,7 +137,7 @@ Measures TCP handshake RTT using `performance.now()` (monotonic, sub-millisecond
 | Memory per bulk-transfer connection | ~5.1 MiB worst case (1 MiB outbound HWM + 4 MiB inbound HWM + ~64 KB in-flight) |
 | Memory per interactive connection | ~67 KB (typical) |
 | Max concurrent bulk transfers | ~25 (in 128 MiB isolate, bidirectional worst case) |
-| Max concurrent interactive sessions | ~1,700 |
+| Max concurrent interactive sessions | ~1,900 |
 | Worker CPU time limit | 30s per request (Paid plan) |
 | WebSocket message size limit | 1 MiB |
 | Backpressure drain interval | 50ms |
@@ -219,7 +219,7 @@ WebSocket-to-TCP tunnel. Returns `101 Switching Protocols`. Data flows bidirecti
 
 ### Protocol Handlers
 
-244 protocol-specific endpoints (e.g., `/api/ssh/connect`, `/api/redis/send`, `/api/mysql/query`). Each validates input, connects to the target, and returns protocol-specific responses.
+234 protocol-specific endpoints (e.g., `/api/ssh/connect`, `/api/redis/send`, `/api/mysql/query`). Each validates input, connects to the target, and returns protocol-specific responses.
 
 ## Deployment
 

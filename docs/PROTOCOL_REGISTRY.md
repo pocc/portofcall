@@ -6,10 +6,10 @@ Status registry for all Port of Call protocols. Derived from audit passes 3-19 a
 
 | Metric | Count |
 |--------|-------|
-| Total protocols implemented | 244 |
-| Protocol spec docs | 319 |
+| Total protocols implemented | 234 |
+| Protocol spec docs | 269 |
 | Protocols reviewed (changelog) | 151 |
-| Protocols awaiting review | 93 |
+| Protocols awaiting review | 83 |
 | Critical bugs fixed | 200+ |
 | Medium bugs fixed | 30+ |
 
@@ -29,7 +29,7 @@ Status registry for all Port of Call protocols. Derived from audit passes 3-19 a
 | DNS Variants | 4 | 80-100% | 100% | 100% | Excellent |
 | Chat/Messaging | 12 | 60-90% | 100% | 92% | Good |
 | Other | 110 | 50-100% | 97% | 91% | Good |
-| **Total** | **244** | **69% avg** | **97%** | **92%** | **Good** |
+| **Total** | **234** | **69% avg** | **97%** | **92%** | **Good** |
 
 ## Known Critical Gaps
 
@@ -41,7 +41,8 @@ These were identified in the 13th pass findings and remain tracked:
 | SFTP | All operations return HTTP 501 (not deployed) | CRITICAL | Known — architectural limitation: SFTP requires stateful bidirectional SSH channel; HTTP request/response model incompatible; needs WebSocket-based session handler |
 | SSH | Window exhaustion silently drops terminal input (RFC 4254 §5.2) | CRITICAL | **Fixed** — drain loop with `inputQueue` respects remote window, waits for `WINDOW_ADJUST`; 4 MiB backpressure cap added |
 | SMTP/SMTPS/Submission | Dot-stuffing regex fails on first-line dots | CRITICAL | **Fixed** — regex `/(^|\r\n)\./g` correctly handles first body line (preceded by `\r\n` from header/body separator); line-ending normalization ensures CRLF |
-| DNP3, IEC 104, S7comm | No SELECT/operation validation before industrial writes | CRITICAL | Known |
+| IEC 104, S7comm | No SELECT/operation validation before industrial writes | CRITICAL | Known |
+| DNP3 | SELECT-before-OPERATE validation | CRITICAL | **Fixed** — full SBO sequence implemented |
 
 ## Data Plane Certification
 
@@ -88,7 +89,7 @@ The WebSocket-to-TCP tunnel was certified "Industrial Grade" after 19 audit pass
 |----------|---------------|----------------------------------|
 | Bulk transfer (bidirectional worst case) | ~5.1 MiB | ~25 |
 | Bulk transfer (unidirectional) | ~1.1 MiB | ~102 |
-| Interactive SSH/Redis (no backpressure) | ~67 KB | ~1,700 |
+| Interactive SSH/Redis (no backpressure) | ~67 KB | ~1,900 |
 | Mixed (80% interactive, 20% bulk) | ~274 KB | ~410 |
 
 ## Non-TCP Protocols (Not Implementable on Workers)

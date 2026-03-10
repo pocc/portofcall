@@ -151,3 +151,23 @@ curl localhost:8787/cli → bash script
 curl localhost:8787/ → landing page
 Browser visit → SPA loads normally
 Run existing test suite to confirm no regressions
+
+## Protocol Reviews Remaining
+
+### Implemented but Not Reviewed (81 protocols)
+
+These protocols are implemented in `src/worker/` but lack code reviews. See `docs/changelog/by-protocol/` for review template.
+
+**Review Priority:**
+1. High-traffic: HTTP, WEBSOCKET, PROMETHEUS, GRAFANA
+2. Legacy/Simple RFCs: CHARGEN, DAYTIME, DISCARD, TIME, IDENT, DICT, ACTIVEUSERS (quick wins)
+3. Security-critical TLS variants: FTPS, IMAPS, SMTPS, NNTPS, SIPS
+4. Industrial: MODBUS, DNP3, S7COMM, IEC104
+5. Modern databases: CLICKHOUSE, COUCHBASE, MEILISEARCH, TARANTOOL
+
+### Cannot Be Implemented (2 protocols with spec files)
+
+- `docs/protocols/GRPC.md` → move to `docs/protocols/non-tcp/` (requires HTTP/2 ALPN)
+- `docs/protocols/HTTP2.md` → move to `docs/protocols/non-tcp/` (requires TLS ALPN)
+
+See `docs/reference/IMPOSSIBLE.md` for details.

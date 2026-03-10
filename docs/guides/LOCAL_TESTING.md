@@ -378,3 +378,29 @@ jobs:
       - run: sleep 5  # Wait for Worker to start
       - run: API_BASE=http://localhost:8787/api npm test
 ```
+
+## Troubleshooting
+
+**Q: "Protocol not found" error**
+- Ensure protocol is registered in `src/worker/index.ts`
+- Check import paths are correct
+
+**Q: "Connection refused"**
+- Verify host/port are correct
+- Check if service is running
+- Test with `telnet <host> <port>` first
+
+**Q: "Cloudflare protected host" error**
+- See [CLOUDFLARE_DETECTION.md](../reference/CLOUDFLARE_DETECTION.md)
+- Use origin IP instead of domain
+
+**Q: Tests failing (infrastructure tests like FTP, Redis, MySQL)**
+- Tests default to `https://l4.fyi` — they cannot reach `localhost`
+- Start `npx wrangler dev --port 8787` and run with `API_BASE=http://localhost:8787/api npm test`
+- Start the required Docker container (see sections above)
+- Check test credentials match the Docker container config
+
+**Q: Tests failing ("Unexpected end of JSON input")**
+- Check test files for double `/api/api/` URL patterns
+- Ensure `API_BASE` does not already include `/api` when tests append `/api/`
+- If using `vitest.config.ts` env override, use `http://localhost:8787/api` (with `/api`)

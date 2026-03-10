@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SSHClientProps {
   onBack: () => void;
@@ -14,9 +15,9 @@ type AuthMethod = 'password' | 'privateKey';
 type Status = 'idle' | 'connecting' | 'connected' | 'disconnected';
 
 export default function SSHClient({ onBack }: SSHClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('22');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('ssh-host', '');
+  const [port, setPort] = usePersistedState('ssh-port', '22');
+  const [username, setUsername] = usePersistedState('ssh-username', '');
   const [authMethod, setAuthMethod] = useState<AuthMethod>('password');
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
@@ -146,7 +147,13 @@ export default function SSHClient({ onBack }: SSHClientProps) {
             setStatus('connected');
             setStatusMsg('');
             term.writeln('\x1b[1;32m✓ Connected\x1b[0m\r\n');
-            term.focus();
+            // Focus terminal — delay slightly so xterm's internal textarea is ready
+            requestAnimationFrame(() => {
+              term.focus();
+              // Also directly focus xterm's hidden textarea as a fallback
+              const textarea = termDivRef.current?.querySelector('textarea');
+              if (textarea) textarea.focus();
+            });
             // Wire up user input after connection (dispose previous listener to avoid duplicates)
             onDataRef.current?.dispose();
             onDataRef.current = term.onData((data) => {
@@ -401,7 +408,14 @@ export default function SSHClient({ onBack }: SSHClientProps) {
               </button>
             </div>
             {/* xterm.js mounts here — give it a fixed height */}
-            <div ref={termDivRef} role="application" aria-label="SSH terminal" className="h-[480px] rounded overflow-hidden" />
+            <div
+              ref={termDivRef}
+              role="application"
+              aria-label="SSH terminal"
+              className="h-[480px] rounded overflow-hidden"
+              tabIndex={0}
+              onClick={() => termRef.current?.focus()}
+            />
           </div>
         </div>
       </div>

@@ -270,6 +270,11 @@
   white-space: nowrap;
 }
 
+/* Ensure xterm's hidden textarea sits above the scanline overlay */
+[data-theme="retro"] .xterm-helper-textarea {
+  z-index: 20 !important;
+}
+
 /* Monospace Everything */
 [data-theme="retro"] * {
   font-family: 'Courier New', 'VT323', monospace !important;

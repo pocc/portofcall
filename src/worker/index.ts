@@ -299,6 +299,7 @@ import { getManpage } from './manpages';
 import { serveCLIScript } from './cli-script';
 import { serveCurlLandingPage } from './curl-landing';
 import { checkIfCloudflare } from './cloudflare-detector';
+import { trackUsage, getUsageStats } from './usage-tracker';
 
 export interface Env {
   ENVIRONMENT: string;
@@ -308,7 +309,7 @@ export interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const upgradeHeader = request.headers.get('Upgrade');
     const isWebSocketUpgrade = upgradeHeader?.toLowerCase() === 'websocket';
 
@@ -445,6 +446,7 @@ export default {
         request.method !== 'POST' &&
         !isWebSocketUpgrade &&
         url.pathname !== '/api/checklist' &&
+        url.pathname !== '/api/usage' &&
         url.pathname !== '/api/connect'
       ) {
         return new Response(JSON.stringify({
@@ -457,6 +459,15 @@ export default {
             'Allow': 'POST',
           },
         });
+      }
+
+      // --- Usage tracking for /api/{protocol}/... routes ---
+      if (url.pathname.startsWith('/api/')) {
+        const parts = url.pathname.split('/');
+        const protocol = parts[2];
+        if (protocol && protocol !== 'checklist' && protocol !== 'usage') {
+          ctx.waitUntil(trackUsage(env.CHECKLIST, protocol));
+        }
       }
 
       // --- CLI script route ---
@@ -494,6 +505,8 @@ export default {
         // Per-target global rate limit (same guard as API routes)
         const shortRateLimitResponse = await maybeBlockByTargetRateLimit(env.CHECKLIST, shortRoute.host);
         if (shortRateLimitResponse) return shortRateLimitResponse;
+
+        ctx.waitUntil(trackUsage(env.CHECKLIST, shortRoute.protocol));
 
         const clientType = detectClient(request);
         if (clientType === 'browser') {
@@ -4420,6 +4433,13 @@ export default {
         }
         const data = (await env.CHECKLIST.get('state', 'json') as Record<string, Record<string, boolean>>) ?? {};
         if (!data[body.protocolId]) data[body.protocolId] = {};
+        // Append-only: once an item is checked, it cannot be unchecked.
+        if (!body.checked && data[body.protocolId][body.item]) {
+          return new Response(JSON.stringify({ success: false, error: 'Cannot uncheck a verified item' }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
         data[body.protocolId][body.item] = body.checked;
         await env.CHECKLIST.put('state', JSON.stringify(data));
         return new Response(JSON.stringify({ success: true }), {
@@ -4427,6 +4447,14 @@ export default {
         });
       }
       return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Protocol usage stats
+    if (url.pathname === '/api/usage') {
+      const stats = await getUsageStats(env.CHECKLIST);
+      return new Response(JSON.stringify({ success: true, usage: stats }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
     }
 
     // Return 404 for unknown API routes instead of falling through to SPA (M-8)

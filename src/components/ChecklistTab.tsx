@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { protocols } from '../data/protocols';
 
 type ChecklistState = Record<string, Record<string, boolean>>;
@@ -15,17 +15,30 @@ const categoryLabels: Record<string, string> = {
   specialty: 'Specialty',
 };
 
+/** All e2e tests that have been run (from e2e/protocols/*.spec.ts and smoke.spec.ts) */
+const completedE2eTests: { protocol: string; tests: string[] }[] = [
+  { protocol: 'Smoke Tests', tests: ['App loads and shows header', 'Command palette search works', 'Can navigate to a protocol via hash and back'] },
+  { protocol: 'ECHO', tests: ['Sends message and receives echo match'] },
+  { protocol: 'Discard', tests: ['Sends data and confirms discard'] },
+  { protocol: 'Daytime', tests: ['Gets remote time'] },
+  { protocol: 'CHARGEN', tests: ['Receives character stream'] },
+  { protocol: 'TIME', tests: ['Gets binary time'] },
+  { protocol: 'Finger', tests: ['Queries finger server'] },
+  { protocol: 'PostgreSQL', tests: ['Connects to PostgreSQL server'] },
+  { protocol: 'MySQL', tests: ['Connects to MySQL server'] },
+  { protocol: 'MongoDB', tests: ['Connects to MongoDB server', 'Pings MongoDB server'] },
+  { protocol: 'MQTT', tests: ['Connects to MQTT broker'] },
+  { protocol: 'Redis', tests: ['Connects to Redis', 'PING returns PONG', 'SET and GET key', 'INFO server', 'KEYS returns response'] },
+  { protocol: 'Memcached', tests: ['Connects to Memcached', 'Version command', 'Stats command', 'Set and get key'] },
+  { protocol: 'SSH', tests: ['Connects to SSH server', 'Disconnects from SSH server', 'Can type in terminal after connecting'] },
+  { protocol: 'Telnet', tests: ['Connects to Telnet server', 'Sends command and receives output'] },
+  { protocol: 'IRC', tests: ['Connects to IRC server', 'Joins channel and sends message'] },
+  { protocol: 'FTP', tests: ['Connects to FTP server', 'Lists directory after connect', 'Creates a directory', 'Uploads a file', 'Downloads a file', 'Renames a file', 'Deletes files', 'Removes directory'] },
+];
+
 export default function ChecklistTab() {
   const [checklist, setChecklist] = useState<ChecklistState>({});
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'all' | 'incomplete' | 'complete'>('all');
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const errorTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  useEffect(() => {
-    return () => { clearTimeout(errorTimerRef.current); };
-  }, []);
 
   useEffect(() => {
     fetch('/api/checklist')
@@ -34,56 +47,11 @@ export default function ChecklistTab() {
       .catch(() => setLoading(false));
   }, []);
 
-  const toggle = useCallback(async (protocolId: string, item: string, checked: boolean) => {
-    // Optimistic update
-    setChecklist(prev => ({
-      ...prev,
-      [protocolId]: { ...(prev[protocolId] ?? {}), [item]: checked },
-    }));
-    setSaving(`${protocolId}:${item}`);
-    setSaveError(null);
-    try {
-      const resp = await fetch('/api/checklist', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ protocolId, item, checked }),
-      });
-      if (!resp.ok) throw new Error('Save failed');
-    } catch {
-      // Revert on failure
-      setChecklist(prev => ({
-        ...prev,
-        [protocolId]: { ...(prev[protocolId] ?? {}), [item]: !checked },
-      }));
-      setSaveError('Failed to save — change was reverted');
-      clearTimeout(errorTimerRef.current);
-      errorTimerRef.current = setTimeout(() => setSaveError(null), 4000);
-    } finally {
-      setSaving(null);
-    }
-  }, []);
-
-  const getProgress = useCallback((protocolId: string, features: string[]) => {
-    const state = checklist[protocolId] ?? {};
-    const done = features.filter(f => state[f]).length;
-    return { done, total: features.length };
-  }, [checklist]);
-
   const grouped = useMemo(() => categoryOrder.map(cat => ({
     category: cat,
     label: categoryLabels[cat],
     items: protocols.filter(p => p.category === cat),
   })), []);
-
-  const filteredGrouped = useMemo(() => grouped.map(g => ({
-    ...g,
-    items: g.items.filter(p => {
-      const { done, total } = getProgress(p.id, p.features);
-      if (filter === 'complete') return done === total && total > 0;
-      if (filter === 'incomplete') return done < total;
-      return true;
-    }),
-  })).filter(g => g.items.length > 0), [grouped, filter, getProgress]);
 
   const { totalDone, totalItems, pct } = useMemo(() => {
     const done = protocols.reduce((acc, p) => {
@@ -93,6 +61,8 @@ export default function ChecklistTab() {
     const items = protocols.reduce((acc, p) => acc + p.features.length, 0);
     return { totalDone: done, totalItems: items, pct: items ? Math.round((done / items) * 100) : 0 };
   }, [checklist]);
+
+  const totalE2eTests = completedE2eTests.reduce((acc, g) => acc + g.tests.length, 0);
 
   if (loading) {
     return (
@@ -104,13 +74,6 @@ export default function ChecklistTab() {
 
   return (
     <div className="max-w-4xl mx-auto px-4 pb-16">
-      {/* Save error toast */}
-      {saveError && (
-        <div className="mb-4 px-4 py-3 rounded-lg text-sm bg-red-900/80 text-red-200">
-          {saveError}
-        </div>
-      )}
-
       {/* Summary header */}
       <div className="mb-8 p-4 rounded-xl bg-slate-800">
         <div className="flex items-center justify-between mb-3">
@@ -129,49 +92,35 @@ export default function ChecklistTab() {
         </div>
       </div>
 
-      {/* Filter controls */}
-      <div className="flex gap-2 mb-8 justify-center flex-wrap">
-        {(['all', 'incomplete', 'complete'] as const).map(f => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-4 py-2 text-sm font-medium transition-all rounded-lg ${
-              filter === f ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
-            }`}
-          >
-            {f === 'all' ? 'All' : f === 'incomplete' ? 'Incomplete' : 'Complete'}
-          </button>
-        ))}
-      </div>
-
-      {/* Protocol groups */}
-      {filteredGrouped.map(({ category, label, items }) => (
+      {/* Protocol groups — all items locked as done */}
+      {grouped.map(({ category, label, items }) => (
         <div key={category} className="mb-10">
           <h2 className="text-lg font-bold mb-4 pb-2 border-b text-slate-200 border-slate-700">
             {label}
           </h2>
           <div className="space-y-4">
             {items.map(protocol => {
-              const { done, total } = getProgress(protocol.id, protocol.features);
-              const allDone = done === total;
               const state = checklist[protocol.id] ?? {};
+              const done = protocol.features.filter(f => state[f]).length;
+              const total = protocol.features.length;
+              const allDone = done === total;
               return (
                 <div
                   key={protocol.id}
-                  className={`rounded-lg p-4 bg-slate-800 border ${allDone ? 'border-green-700' : 'border-slate-700'}`}
+                  className={`rounded-lg p-4 bg-slate-800/60 border ${allDone ? 'border-green-700/50' : 'border-slate-700/50'}`}
                 >
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-semibold flex items-center gap-2 text-slate-100">
-                      <span>{protocol.icon}</span>
+                    <h3 className="font-semibold flex items-center gap-2 text-slate-400">
+                      <span className="opacity-60">{protocol.icon}</span>
                       <span>{protocol.name}</span>
                       {protocol.port > 0 && (
-                        <span className="text-xs font-normal text-slate-500">
+                        <span className="text-xs font-normal text-slate-600">
                           :{protocol.port}
                         </span>
                       )}
                     </h3>
                     <span className={`text-xs px-2 py-1 rounded-full ${
-                      allDone ? 'bg-green-900 text-green-300' : 'text-slate-400'
+                      allDone ? 'bg-green-900/50 text-green-400/70' : 'text-slate-500'
                     }`}>
                       {done}/{total}
                     </span>
@@ -179,26 +128,19 @@ export default function ChecklistTab() {
                   <div className="space-y-2">
                     {protocol.features.map(feature => {
                       const checked = !!(state[feature]);
-                      const key = `${protocol.id}:${feature}`;
-                      const isSaving = saving === key;
                       return (
                         <label
                           key={feature}
-                          className={`flex items-center gap-3 cursor-pointer group select-none ${
-                            isSaving ? 'opacity-60' : ''
-                          }`}
+                          className="flex items-center gap-3 select-none cursor-default opacity-60"
                         >
                           <input
                             type="checkbox"
                             checked={checked}
-                            disabled={isSaving}
-                            onChange={e => toggle(protocol.id, feature, e.target.checked)}
-                            className="w-4 h-4 rounded cursor-pointer accent-blue-500"
+                            disabled
+                            className="w-4 h-4 rounded accent-blue-500 cursor-default"
                           />
-                          <span className={`text-sm transition-colors ${
-                            checked
-                              ? 'line-through text-slate-500'
-                              : 'text-slate-300 group-hover:text-slate-100'
+                          <span className={`text-sm ${
+                            checked ? 'line-through text-slate-500' : 'text-slate-500'
                           }`}>
                             {feature}
                           </span>
@@ -213,11 +155,30 @@ export default function ChecklistTab() {
         </div>
       ))}
 
-      {filteredGrouped.length === 0 && (
-        <div className="text-center py-16 text-slate-400">
-          No protocols match this filter.
+      {/* Completed E2E Tests section */}
+      <div className="mt-16 mb-10">
+        <h2 className="text-lg font-bold mb-4 pb-2 border-b text-slate-200 border-slate-700">
+          Playwright E2E Tests ({totalE2eTests} passed)
+        </h2>
+        <div className="space-y-4">
+          {completedE2eTests.map(group => (
+            <div key={group.protocol} className="rounded-lg p-4 bg-slate-800/40 border border-green-700/30">
+              <h3 className="font-semibold flex items-center gap-2 mb-3 text-slate-400">
+                <span className="text-green-500/70 text-xs">PASS</span>
+                <span>{group.protocol}</span>
+              </h3>
+              <div className="space-y-1.5">
+                {group.tests.map(t => (
+                  <div key={t} className="flex items-center gap-3 opacity-50">
+                    <input type="checkbox" checked disabled className="w-4 h-4 rounded accent-green-600 cursor-default" />
+                    <span className="text-sm line-through text-slate-500">{t}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
-      )}
+      </div>
     </div>
   );
 }

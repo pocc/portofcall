@@ -7,14 +7,15 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SpamAssassinClientProps {
   onBack: () => void;
 }
 
 export default function SpamAssassinClient({ onBack }: SpamAssassinClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('783');
+  const [host, setHost] = usePersistedState('spamassassin-host', '');
+  const [port, setPort] = usePersistedState('spamassassin-port', '783');
   const [message, setMessage] = useState(
     'From: sender@example.com\r\n' +
     'To: recipient@example.com\r\n' +
@@ -22,7 +23,7 @@ export default function SpamAssassinClient({ onBack }: SpamAssassinClientProps) 
     '\r\n' +
     'This is a test email message for SpamAssassin analysis.\r\n'
   );
-  const [command, setCommand] = useState<'CHECK' | 'SYMBOLS' | 'REPORT'>('SYMBOLS');
+  const [command, setCommand] = usePersistedState('spamassassin-command', 'SYMBOLS');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -222,7 +223,7 @@ export default function SpamAssassinClient({ onBack }: SpamAssassinClientProps) 
           <select
             id="spamd-command"
             value={command}
-            onChange={(e) => setCommand(e.target.value as 'CHECK' | 'SYMBOLS' | 'REPORT')}
+            onChange={(e) => setCommand(e.target.value)}
             className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
             <option value="SYMBOLS">SYMBOLS (score + matched rules)</option>

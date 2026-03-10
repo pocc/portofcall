@@ -9,17 +9,18 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GaduGaduClientProps {
   onBack: () => void;
 }
 
 export default function GaduGaduClient({ onBack }: GaduGaduClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('8074');
-  const [uin, setUin] = useState('');
+  const [host, setHost] = usePersistedState('gadugadu-host', '');
+  const [port, setPort] = usePersistedState('gadugadu-port', '8074');
+  const [uin, setUin] = usePersistedState('gadugadu-uin', '');
   const [password, setPassword] = useState('');
-  const [hashType, setHashType] = useState<'gg32' | 'sha1'>('sha1');
+  const [hashType, setHashType] = usePersistedState('gadugadu-hashType', 'sha1');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -145,7 +146,7 @@ export default function GaduGaduClient({ onBack }: GaduGaduClientProps) {
             </label>
             <select
               value={hashType}
-              onChange={(e) => setHashType(e.target.value as 'gg32' | 'sha1')}
+              onChange={(e) => setHashType(e.target.value)}
               className="w-full bg-slate-700 border border-slate-500 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-blue-400"
             >
               <option value="sha1">SHA-1 (recommended)</option>

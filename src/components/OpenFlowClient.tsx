@@ -9,15 +9,16 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface OpenFlowClientProps {
   onBack: () => void;
 }
 
 export default function OpenFlowClient({ onBack }: OpenFlowClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('6653');
-  const [version, setVersion] = useState('4');
+  const [host, setHost] = usePersistedState('openflow-host', '');
+  const [port, setPort] = usePersistedState('openflow-port', '6653');
+  const [version, setVersion] = usePersistedState('openflow-version', '4');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

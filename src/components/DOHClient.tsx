@@ -7,6 +7,7 @@ import ProtocolClientLayout, {
   HelpSection,
 } from './ProtocolClientLayout';
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface DOHClientProps {
   onBack: () => void;
@@ -42,10 +43,10 @@ interface DOHResult {
 }
 
 export default function DOHClient({ onBack }: DOHClientProps) {
-  const [domain, setDomain] = useState('');
-  const [recordType, setRecordType] = useState('A');
-  const [resolver, setResolver] = useState(DOH_RESOLVERS[0].value);
-  const [customResolver, setCustomResolver] = useState('');
+  const [domain, setDomain] = usePersistedState('doh-domain', '');
+  const [recordType, setRecordType] = usePersistedState('doh-recordType', 'A');
+  const [resolver, setResolver] = usePersistedState('doh-resolver', DOH_RESOLVERS[0].value);
+  const [customResolver, setCustomResolver] = usePersistedState('doh-customResolver', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');

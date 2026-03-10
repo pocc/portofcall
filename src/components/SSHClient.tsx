@@ -11,14 +11,13 @@ interface SSHClientProps {
   onBack: () => void;
 }
 
-type AuthMethod = 'password' | 'privateKey';
 type Status = 'idle' | 'connecting' | 'connected' | 'disconnected';
 
 export default function SSHClient({ onBack }: SSHClientProps) {
   const [host, setHost] = usePersistedState('ssh-host', '');
   const [port, setPort] = usePersistedState('ssh-port', '22');
   const [username, setUsername] = usePersistedState('ssh-username', '');
-  const [authMethod, setAuthMethod] = useState<AuthMethod>('password');
+  const [authMethod, setAuthMethod] = usePersistedState('ssh-authMethod', 'password');
   const [password, setPassword] = useState('');
   const [privateKey, setPrivateKey] = useState('');
   const [passphrase, setPassphrase] = useState('');
@@ -288,7 +287,7 @@ export default function SSHClient({ onBack }: SSHClientProps) {
                 <select
                   id="ssh-auth-method"
                   value={authMethod}
-                  onChange={(e) => setAuthMethod(e.target.value as AuthMethod)}
+                  onChange={(e) => setAuthMethod(e.target.value)}
                   disabled={status === 'connected' || status === 'connecting'}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 >

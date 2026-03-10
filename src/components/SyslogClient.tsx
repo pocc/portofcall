@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SyslogClientProps {
   onBack: () => void;
@@ -34,11 +35,11 @@ const SEVERITY_INFO = [
 ];
 
 export default function SyslogClient({ onBack }: SyslogClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('514');
-  const [severity, setSeverity] = useState(6); // Informational
-  const [message, setMessage] = useState('');
-  const [format, setFormat] = useState<'rfc5424' | 'rfc3164'>('rfc5424');
+  const [host, setHost] = usePersistedState('syslog-host', '');
+  const [port, setPort] = usePersistedState('syslog-port', '514');
+  const [severity, setSeverity] = usePersistedState('syslog-severity', '6');
+  const [message, setMessage] = usePersistedState('syslog-message', '');
+  const [format, setFormat] = usePersistedState('syslog-format', 'rfc5424');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -65,7 +66,7 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
         body: JSON.stringify({
           host,
           port: parseInt(port, 10),
-          severity,
+          severity: parseInt(severity, 10),
           facility: 16, // Local0
           message,
           hostname: 'portofcall',
@@ -87,8 +88,8 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
 
         // Add to log history
         const newEntry: LogEntry = {
-          severity,
-          severityName: SEVERITY_INFO[severity].name,
+          severity: parseInt(severity, 10),
+          severityName: SEVERITY_INFO[parseInt(severity, 10)].name,
           message,
           timestamp: new Date(),
           formatted: data.formatted || '',
@@ -114,7 +115,7 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
   };
 
   const handleQuickLog = (sev: number, msg: string) => {
-    setSeverity(sev);
+    setSeverity(String(sev));
     setMessage(msg);
   };
 
@@ -164,7 +165,7 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
                 <select
                   id="syslog-severity"
                   value={severity}
-                  onChange={(e) => setSeverity(parseInt(e.target.value, 10))}
+                  onChange={(e) => setSeverity(e.target.value)}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                   aria-required="true"
                 >
@@ -183,7 +184,7 @@ export default function SyslogClient({ onBack }: SyslogClientProps) {
                 <select
                   id="syslog-format"
                   value={format}
-                  onChange={(e) => setFormat(e.target.value as 'rfc5424' | 'rfc3164')}
+                  onChange={(e) => setFormat(e.target.value)}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="rfc5424">RFC 5424 (Modern)</option>

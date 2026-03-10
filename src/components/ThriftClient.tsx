@@ -1,17 +1,18 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ThriftClientProps {
   onBack: () => void;
 }
 
 export default function ThriftClient({ onBack }: ThriftClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('9090');
-  const [method, setMethod] = useState('getName');
-  const [transport, setTransport] = useState<'framed' | 'buffered'>('framed');
-  const [args, setArgs] = useState('');
+  const [host, setHost] = usePersistedState('thrift-host', '');
+  const [port, setPort] = usePersistedState('thrift-port', '9090');
+  const [method, setMethod] = usePersistedState('thrift-method', 'getName');
+  const [transport, setTransport] = usePersistedState('thrift-transport', 'framed');
+  const [args, setArgs] = usePersistedState('thrift-args', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -254,7 +255,7 @@ export default function ThriftClient({ onBack }: ThriftClientProps) {
             <select
               id="thrift-transport"
               value={transport}
-              onChange={(e) => setTransport(e.target.value as 'framed' | 'buffered')}
+              onChange={(e) => setTransport(e.target.value)}
               className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               <option value="framed">Framed (default)</option>

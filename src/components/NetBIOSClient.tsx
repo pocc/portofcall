@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface NetBIOSClientProps {
   onBack: () => void;
@@ -16,10 +17,10 @@ const SUFFIX_OPTIONS = [
 ];
 
 export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('139');
-  const [calledName, setCalledName] = useState('*SMBSERVER');
-  const [calledSuffix, setCalledSuffix] = useState(0x20);
+  const [host, setHost] = usePersistedState('netbios-host', '');
+  const [port, setPort] = usePersistedState('netbios-port', '139');
+  const [calledName, setCalledName] = usePersistedState('netbios-calledName', '*SMBSERVER');
+  const [calledSuffix, setCalledSuffix] = usePersistedState('netbios-calledSuffix', '32');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -42,7 +43,7 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
           host,
           port: parseInt(port, 10),
           calledName,
-          calledSuffix,
+          calledSuffix: parseInt(calledSuffix, 10),
           timeout: 10000,
         }),
       });
@@ -232,7 +233,7 @@ export default function NetBIOSClient({ onBack }: NetBIOSClientProps) {
             <select
               id="netbios-suffix"
               value={calledSuffix}
-              onChange={(e) => setCalledSuffix(parseInt(e.target.value, 10))}
+              onChange={(e) => setCalledSuffix(e.target.value)}
               className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
               {SUFFIX_OPTIONS.map((opt) => (

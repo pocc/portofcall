@@ -9,6 +9,7 @@ import ProtocolClientLayout, {
 import { useFormValidation, validationRules } from '../hooks/useFormValidation';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface ActiveMQClientProps {
   onBack: () => void;
@@ -20,8 +21,8 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
   const [activeTab, setActiveTab] = useState<Tab>('probe');
 
   // ── Shared connection fields ──────────────────────────────────────────────
-  const [host, setHost] = useState('');
-  const [username, setUsername] = useState('');
+  const [host, setHost] = usePersistedState('activemq-host', '');
+  const [username, setUsername] = usePersistedState('activemq-username', '');
   const [password, setPassword] = useState('');
 
   // ── Probe ─────────────────────────────────────────────────────────────────
@@ -38,29 +39,29 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
 
   // ── Send ──────────────────────────────────────────────────────────────────
   const [sendPort, setSendPort] = useState('61613');
-  const [destination, setDestination] = useState('/queue/test');
-  const [messageBody, setMessageBody] = useState('Hello from Port of Call!');
+  const [destination, setDestination] = usePersistedState('activemq-destination', '/queue/test');
+  const [messageBody, setMessageBody] = usePersistedState('activemq-messageBody', 'Hello from Port of Call!');
   const [persistent, setPersistent] = useState(true);
-  const [priority, setPriority] = useState('4');
+  const [priority, setPriority] = usePersistedState('activemq-priority', '4');
   const [sendLoading, setSendLoading] = useState(false);
   const [sendResult, setSendResult] = useState('');
   const [sendError, setSendError] = useState('');
 
   // ── Receive ───────────────────────────────────────────────────────────────
   const [receivePort, setReceivePort] = useState('61613');
-  const [receiveDest, setReceiveDest] = useState('/queue/test');
-  const [maxMessages, setMaxMessages] = useState('10');
-  const [selector, setSelector] = useState('');
+  const [receiveDest, setReceiveDest] = usePersistedState('activemq-receiveDest', '/queue/test');
+  const [maxMessages, setMaxMessages] = usePersistedState('activemq-maxMessages', '10');
+  const [selector, setSelector] = usePersistedState('activemq-selector', '');
   const [receiveLoading, setReceiveLoading] = useState(false);
   const [receiveResult, setReceiveResult] = useState('');
   const [receiveError, setReceiveError] = useState('');
 
   // ── Admin ─────────────────────────────────────────────────────────────────
-  const [adminPort, setAdminPort] = useState('8161');
+  const [adminPort, setAdminPort] = usePersistedState('activemq-adminPort', '8161');
   const [adminPassword, setAdminPassword] = useState('admin');
-  const [brokerName, setBrokerName] = useState('localhost');
-  const [adminAction, setAdminAction] = useState<'brokerInfo' | 'listQueues' | 'listTopics' | 'queueStats'>('brokerInfo');
-  const [queueName, setQueueName] = useState('');
+  const [brokerName, setBrokerName] = usePersistedState('activemq-brokerName', 'localhost');
+  const [adminAction, setAdminAction] = usePersistedState('activemq-adminAction', 'brokerInfo');
+  const [queueName, setQueueName] = usePersistedState('activemq-queueName', '');
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminResult, setAdminResult] = useState('');
   const [adminError, setAdminError] = useState('');
@@ -620,7 +621,7 @@ export default function ActiveMQClient({ onBack }: ActiveMQClientProps) {
               <label className="block text-sm font-medium text-slate-300 mb-1">Action</label>
               <select
                 value={adminAction}
-                onChange={e => setAdminAction(e.target.value as typeof adminAction)}
+                onChange={e => setAdminAction(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               >
                 <option value="brokerInfo">Broker Info</option>

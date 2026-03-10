@@ -1,14 +1,15 @@
 import { useState } from 'react';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface OpenTSDBClientProps {
   onBack: () => void;
 }
 
 export default function OpenTSDBClient({ onBack }: OpenTSDBClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('4242');
-  const [suggestType, setSuggestType] = useState<'metrics' | 'tagk' | 'tagv'>('metrics');
-  const [suggestQuery, setSuggestQuery] = useState('');
+  const [host, setHost] = usePersistedState('opentsdb-host', '');
+  const [port, setPort] = usePersistedState('opentsdb-port', '4242');
+  const [suggestType, setSuggestType] = usePersistedState('opentsdb-suggestType', 'metrics');
+  const [suggestQuery, setSuggestQuery] = usePersistedState('opentsdb-suggestQuery', '');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<string>('');
   const [error, setError] = useState<string>('');
@@ -293,7 +294,7 @@ export default function OpenTSDBClient({ onBack }: OpenTSDBClientProps) {
                 <select
                   id="suggest-type"
                   value={suggestType}
-                  onChange={(e) => setSuggestType(e.target.value as 'metrics' | 'tagk' | 'tagv')}
+                  onChange={(e) => setSuggestType(e.target.value)}
                   className="w-full bg-slate-700 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="metrics">Metrics</option>

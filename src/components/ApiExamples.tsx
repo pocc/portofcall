@@ -19,10 +19,10 @@ function substituteValues(command: string, protocolId: string): string {
   const database = localStorage.getItem(`${prefix}database`) || '';
 
   let result = command;
-  if (host) result = result.replace(/"host":"[^"]*"/g, `"host":"${host}"`);
-  if (port) result = result.replace(/"port":\d+/g, `"port":${port}`);
-  if (username) result = result.replace(/"username":"[^"]*"/g, `"username":"${username}"`);
-  if (database) result = result.replace(/"database":"[^"]*"/g, `"database":"${database}"`);
+  if (host) result = result.replace(/"host":\s*"[^"]*"/g, `"host": "${host}"`);
+  if (port) result = result.replace(/"port":\s*\d+/g, `"port": ${port}`);
+  if (username) result = result.replace(/"username":\s*"[^"]*"/g, `"username": "${username}"`);
+  if (database) result = result.replace(/"database":\s*"[^"]*"/g, `"database": "${database}"`);
   return result;
 }
 
@@ -123,7 +123,7 @@ export default function ApiExamples({ examples, protocolId }: ApiExamplesProps) 
                     {copiedIndex === i ? 'Copied!' : 'Copy'}
                   </button>
                 </div>
-                <pre className="text-xs text-emerald-400/80 bg-slate-950/50 rounded-lg p-3 overflow-x-auto font-mono whitespace-pre-wrap break-all leading-relaxed border border-slate-800/40">
+                <pre className="text-xs text-emerald-400/80 bg-slate-950/50 rounded-lg p-3 overflow-x-auto font-mono whitespace-pre leading-relaxed border border-slate-800/40">
                   {example.command}
                 </pre>
               </div>

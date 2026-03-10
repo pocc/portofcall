@@ -1771,18 +1771,35 @@ const examples: Record<string, CurlExample[]> = {
   -d '{"host":"your-server.example.com","port":5900,"timeout":5000}'` },
   ],
   SSH: [
-    { title: 'POST /ssh/connect', command: `curl -X POST 'https://l4.fyi/api/ssh/connect' \
-  -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":22,"username":"admin","password":"secret","timeout":10000}'` },
-    { title: 'POST /ssh/disconnect', command: `curl -X POST 'https://l4.fyi/api/ssh/disconnect' \
-  -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":22}'` },
-    { title: 'POST /ssh/kexinit', command: `curl -X POST 'https://l4.fyi/api/ssh/kexinit' \
-  -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":22,"timeout":5000}'` },
-    { title: 'POST /ssh/auth', command: `curl -X POST 'https://l4.fyi/api/ssh/auth' \
-  -H 'Content-Type: application/json' \
-  -d '{"host":"your-server.example.com","port":22,"timeout":5000}'` },
+    { title: 'POST /ssh/connect', command: `curl -X POST 'https://l4.fyi/api/ssh/connect' \\
+    -H 'Content-Type: application/json' \\
+    -d '{
+  "host": "your-server.example.com",
+  "port": 22,
+  "username": "admin",
+  "password": "secret",
+  "timeout": 10000
+}'` },
+    { title: 'POST /ssh/disconnect', command: `curl -X POST 'https://l4.fyi/api/ssh/disconnect' \\
+    -H 'Content-Type: application/json' \\
+    -d '{
+  "host": "your-server.example.com",
+  "port": 22
+}'` },
+    { title: 'POST /ssh/kexinit', command: `curl -X POST 'https://l4.fyi/api/ssh/kexinit' \\
+    -H 'Content-Type: application/json' \\
+    -d '{
+  "host": "your-server.example.com",
+  "port": 22,
+  "timeout": 5000
+}'` },
+    { title: 'POST /ssh/auth', command: `curl -X POST 'https://l4.fyi/api/ssh/auth' \\
+    -H 'Content-Type: application/json' \\
+    -d '{
+  "host": "your-server.example.com",
+  "port": 22,
+  "timeout": 5000
+}'` },
   ],
   STOMP: [
     { title: 'POST /stomp/connect', command: `curl -X POST 'https://l4.fyi/api/stomp/connect' \

@@ -32,7 +32,7 @@
 /* Scanline Effect */
 [data-theme="retro"] .retro-screen::before {
   content: "";
-  position: absolute;
+  position: fixed;
   top: 0;
   left: 0;
   right: 0;
@@ -48,6 +48,21 @@
   z-index: 10;
 }
 
+/* CRT Vignette (barrel distortion simulation) */
+[data-theme="retro"] .retro-screen::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(
+    ellipse at center,
+    transparent 55%,
+    rgba(0, 0, 0, 0.3) 75%,
+    rgba(0, 0, 0, 0.6) 100%
+  );
+  pointer-events: none;
+  z-index: 11;
+}
+
 /* CRT Flicker Animation */
 [data-theme="retro"] .retro-flicker {
   animation: flicker 0.15s infinite;
@@ -59,19 +74,50 @@
   100% { opacity: 0.97; }
 }
 
-/* Text Glow Effect */
+/* Text Glow Effect — Multi-layer phosphor bleed */
 [data-theme="retro"] .retro-text {
   color: var(--retro-fg-green);
   text-shadow:
+    0 0 2px var(--retro-fg-green),
     0 0 5px var(--retro-glow),
-    0 0 10px var(--retro-glow);
+    0 0 10px var(--retro-glow),
+    0 0 20px rgba(0, 255, 0, 0.08);
 }
 
 [data-theme="retro"] .retro-text-amber {
   color: var(--retro-fg-amber);
   text-shadow:
+    0 0 2px var(--retro-fg-amber),
     0 0 5px rgba(255, 176, 0, 0.4),
-    0 0 10px rgba(255, 176, 0, 0.4);
+    0 0 10px rgba(255, 176, 0, 0.3),
+    0 0 20px rgba(255, 176, 0, 0.08);
+}
+
+/* Retro glow highlight for active items */
+[data-theme="retro"] .retro-glow {
+  text-shadow:
+    0 0 4px var(--retro-fg-green),
+    0 0 8px var(--retro-glow),
+    0 0 16px var(--retro-glow),
+    0 0 30px rgba(0, 255, 0, 0.15);
+}
+
+/* Retro link styling */
+[data-theme="retro"] .retro-link {
+  color: var(--retro-fg-amber);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+[data-theme="retro"] .retro-link:hover {
+  color: var(--retro-fg-green);
+  text-shadow: 0 0 8px var(--retro-glow);
+}
+
+/* Retro border shorthand */
+[data-theme="retro"] .retro-border {
+  border-bottom: 1px solid rgba(0, 255, 0, 0.3);
 }
 
 /* Typewriter Effect */

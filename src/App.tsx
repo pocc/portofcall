@@ -4,6 +4,9 @@ import './App.css';
 import ProtocolSelector from './components/ProtocolSelector';
 import ThemeToggle from './components/ThemeToggle';
 import { useTheme } from './contexts/ThemeContext';
+import { useRecentProtocols } from './hooks/useRecentProtocols';
+import { useFavorites } from './hooks/useFavorites';
+import BootScreen from './components/BootScreen';
 
 // --- Error Boundary ---
 interface ErrorBoundaryState { hasError: boolean; error?: Error }
@@ -539,6 +542,8 @@ function App() {
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>(getHashProtocol);
   const { theme } = useTheme();
   const online = useOnlineStatus();
+  const { recent, addRecent } = useRecentProtocols();
+  const { favorites, toggleFavorite, isFavorite } = useFavorites();
 
   // Sync hash → state
   useEffect(() => {
@@ -551,11 +556,12 @@ function App() {
   const selectProtocol = useCallback((p: Protocol) => {
     if (p) {
       window.location.hash = p;
+      addRecent(p);
     } else {
       history.pushState(null, '', window.location.pathname);
     }
     setSelectedProtocol(p);
-  }, []);
+  }, [addRecent]);
 
   const handleBack = useCallback(() => selectProtocol(null), [selectProtocol]);
 
@@ -1021,12 +1027,13 @@ function App() {
       case 'shadowsocks':
         return <ShadowsocksClient onBack={handleBack} />;
       default:
-        return <ProtocolSelector onSelect={selectProtocol} />;
+        return <ProtocolSelector onSelect={selectProtocol as (id: string) => void} favorites={favorites} toggleFavorite={toggleFavorite} isFavorite={isFavorite} recent={recent} />;
     }
   };
 
   return (
     <div className={`min-h-screen ${theme === 'retro' ? 'retro-screen retro-boot' : 'bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900'}`}>
+      {theme === 'retro' && <BootScreen />}
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 bg-blue-600 text-white px-4 py-2 rounded">
         Skip to content
       </a>

@@ -256,7 +256,6 @@ services:
       mongod
       --auth
       --bind_ip_all
-      --setParameter socketCheckIntervalMS=900000
     volumes:
       - ./docker/mongodb/init.js:/docker-entrypoint-initdb.d/init.js:ro
       - mongodb_data:/data/db
@@ -271,7 +270,7 @@ services:
     container_name: testserver-memcached
     ports:
       - "11211:11211"
-    command: memcached -m 64 -t 900
+    command: memcached -m 64 -t 4 -o idle_timeout=900
     mem_limit: 128m
     restart: unless-stopped
     networks:

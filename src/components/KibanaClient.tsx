@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import { SectionHeader, FormField, ActionButton, StatusMessage, ConnectionInfo, ResultDisplay } from './SharedComponents';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface KibanaStatusResult {
   success: boolean;
@@ -28,11 +28,9 @@ interface KibanaSavedObjectsResult {
 }
 
 export default function KibanaClient({ onBack }: { onBack: () => void }) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('5601');
+  const [host, setHost] = usePersistedState('kibana-host', '');
+  const [port, setPort] = usePersistedState('kibana-port', '5601');
   const [activeTab, setActiveTab] = useState<'status' | 'objects'>('status');
 
   // Status state
@@ -96,35 +94,35 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
   ];
 
   const tabs = [
-    { id: 'status' as const, label: isRetro ? '[STATUS]' : 'Server Status' },
-    { id: 'objects' as const, label: isRetro ? '[OBJECTS]' : 'Saved Objects' },
+    { id: 'status' as const, label: 'Server Status' },
+    { id: 'objects' as const, label: 'Saved Objects' },
   ];
 
   const healthColor = (state: string) => {
     switch (state?.toLowerCase()) {
-      case 'green': case 'available': return isRetro ? 'text-green-400' : 'text-green-400';
-      case 'yellow': case 'degraded': return isRetro ? 'text-yellow-400' : 'text-yellow-400';
-      case 'red': case 'unavailable': return isRetro ? 'text-red-400' : 'text-red-400';
-      default: return isRetro ? 'text-green-600' : 'text-slate-400';
+      case 'green': case 'available': return 'text-green-400';
+      case 'yellow': case 'degraded': return 'text-yellow-400';
+      case 'red': case 'unavailable': return 'text-red-400';
+      default: return 'text-slate-400';
     }
   };
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <button onClick={onBack} className={isRetro ? 'retro-button' : 'text-slate-400 hover:text-slate-200 transition-colors'}>
-          {isRetro ? '← BACK' : '← Back'}
+        <button onClick={onBack} className="text-slate-400 hover:text-slate-200 transition-colors">
+          ← Back
         </button>
-        <h2 className={isRetro ? 'retro-title' : 'text-2xl font-bold text-white'}>
-          {isRetro ? '>>> KIBANA CLIENT <<<' : '📊 Kibana Client'}
+        <h2 className="text-2xl font-bold text-white">
+          📊 Kibana Client
         </h2>
       </div>
 
       <ConnectionInfo
         items={[
-          { label: isRetro ? 'PORT' : 'Default Port', value: '5601' },
-          { label: isRetro ? 'TYPE' : 'Protocol', value: 'HTTP REST API' },
-          { label: isRetro ? 'SPEC' : 'Platform', value: 'Elastic Stack' },
+          { label: 'Default Port', value: '5601' },
+          { label: 'Protocol', value: 'HTTP REST API' },
+          { label: 'Platform', value: 'Elastic Stack' },
         ]}
       />
 
@@ -136,15 +134,12 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
       </div>
 
       {/* Tab selector */}
-      <div className={`flex gap-2 ${isRetro ? 'font-mono' : ''}`}>
+      <div className="flex gap-2">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={isRetro
-              ? `px-3 py-1 border ${activeTab === tab.id ? 'bg-green-900 text-green-400 border-green-500' : 'border-green-800 text-green-700 hover:text-green-500'}`
-              : `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab.id ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`
-            }
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab.id ? 'bg-purple-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
           >
             {tab.label}
           </button>
@@ -162,7 +157,7 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
             variant="primary"
             ariaLabel="Check Kibana status"
           >
-            {isRetro ? 'CHECK STATUS' : 'Check Status'}
+            Check Status
           </ActionButton>
 
           {statusError && <StatusMessage type="error" message={statusError} />}
@@ -187,30 +182,27 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
               )}
 
               {statusResult.health && (
-                <div className={isRetro
-                  ? 'border border-green-800 p-3 font-mono text-xs'
-                  : 'bg-slate-800 rounded-lg p-4 border border-slate-700'
-                }>
-                  <h4 className={isRetro ? 'text-green-500 mb-2' : 'text-white font-semibold mb-3'}>
-                    {isRetro ? '--- HEALTH ---' : 'Health Status'}
+                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                  <h4 className="text-white font-semibold mb-3">
+                    Health Status
                   </h4>
                   <div className="space-y-1">
                     <div>
-                      <span className={isRetro ? 'text-green-600' : 'text-slate-400'}>State: </span>
+                      <span className="text-slate-400">State: </span>
                       <span className={healthColor(statusResult.health.state)}>
                         {statusResult.health.state?.toUpperCase() || 'UNKNOWN'}
                       </span>
                     </div>
                     {statusResult.health.title && (
                       <div>
-                        <span className={isRetro ? 'text-green-600' : 'text-slate-400'}>Title: </span>
-                        <span className={isRetro ? 'text-green-400' : 'text-white'}>{statusResult.health.title}</span>
+                        <span className="text-slate-400">Title: </span>
+                        <span className="text-white">{statusResult.health.title}</span>
                       </div>
                     )}
                     {statusResult.health.nickname && (
                       <div>
-                        <span className={isRetro ? 'text-green-600' : 'text-slate-400'}>Nickname: </span>
-                        <span className={isRetro ? 'text-green-400' : 'text-white'}>{statusResult.health.nickname}</span>
+                        <span className="text-slate-400">Nickname: </span>
+                        <span className="text-white">{statusResult.health.nickname}</span>
                       </div>
                     )}
                   </div>
@@ -233,15 +225,12 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
           <SectionHeader stepNumber={2} title="Saved Objects" />
 
           {/* Object type selector */}
-          <div className={`flex flex-wrap gap-2 mb-4 ${isRetro ? 'font-mono text-xs' : ''}`}>
+          <div className="flex flex-wrap gap-2 mb-4">
             {objectTypes.map(t => (
               <button
                 key={t.value}
                 onClick={() => setObjectType(t.value)}
-                className={isRetro
-                  ? `px-2 py-0.5 border ${objectType === t.value ? 'border-green-500 text-green-400' : 'border-green-800 text-green-700 hover:text-green-500'}`
-                  : `px-3 py-1 text-xs rounded transition-colors ${objectType === t.value ? 'bg-purple-600 text-white' : 'bg-slate-700 text-purple-400 hover:bg-slate-600'}`
-                }
+                className={`px-3 py-1 text-xs rounded transition-colors ${objectType === t.value ? 'bg-purple-600 text-white' : 'bg-slate-700 text-purple-400 hover:bg-slate-600'}`}
               >
                 {t.label}
               </button>
@@ -255,7 +244,7 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
             variant="primary"
             ariaLabel="Search saved objects"
           >
-            {isRetro ? 'SEARCH OBJECTS' : 'Search Objects'}
+            Search Objects
           </ActionButton>
 
           {objectsError && <StatusMessage type="error" message={objectsError} />}
@@ -271,28 +260,22 @@ export default function KibanaClient({ onBack }: { onBack: () => void }) {
               />
 
               {objectsResult.objects.length > 0 && (
-                <div className={isRetro
-                  ? 'border border-green-800 p-3 font-mono text-xs'
-                  : 'bg-slate-800 rounded-lg p-4 border border-slate-700'
-                }>
-                  <h4 className={isRetro ? 'text-green-500 mb-2' : 'text-white font-semibold mb-3'}>
-                    {isRetro ? `--- ${objectsResult.type.toUpperCase()}S ---` : `${objectsResult.type} Results`}
+                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                  <h4 className="text-white font-semibold mb-3">
+                    {`${objectsResult.type} Results`}
                   </h4>
                   <div className="space-y-2 max-h-80 overflow-y-auto">
                     {objectsResult.objects.map((obj, i) => (
-                      <div key={i} className={isRetro
-                        ? 'border-b border-green-900 pb-2'
-                        : 'border-b border-slate-700 pb-2'
-                      }>
-                        <div className={isRetro ? 'text-green-400' : 'text-white font-medium'}>
+                      <div key={i} className="border-b border-slate-700 pb-2">
+                        <div className="text-white font-medium">
                           {obj.title}
                         </div>
                         {obj.description && (
-                          <div className={isRetro ? 'text-green-700 pl-2' : 'text-slate-400 text-sm pl-2'}>
+                          <div className="text-slate-400 text-sm pl-2">
                             {obj.description.substring(0, 150)}
                           </div>
                         )}
-                        <div className={isRetro ? 'text-green-900' : 'text-slate-500 text-xs'}>
+                        <div className="text-slate-500 text-xs">
                           ID: {obj.id?.substring(0, 20)} | Updated: {obj.updated ? new Date(obj.updated).toLocaleDateString() : 'N/A'}
                         </div>
                       </div>

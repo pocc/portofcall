@@ -2,11 +2,8 @@ import { useState, useEffect, useCallback, lazy, Suspense, Component, createRef 
 import type { ReactNode, ErrorInfo } from 'react';
 import './App.css';
 import ProtocolSelector from './components/ProtocolSelector';
-import ThemeToggle from './components/ThemeToggle';
-import { useTheme } from './contexts/ThemeContext';
 import { useRecentProtocols } from './hooks/useRecentProtocols';
 import { useFavorites } from './hooks/useFavorites';
-import BootScreen from './components/BootScreen';
 
 // --- Error Boundary ---
 interface ErrorBoundaryState { hasError: boolean; error?: Error }
@@ -540,7 +537,6 @@ function getHashProtocol(): Protocol {
 
 function App() {
   const [selectedProtocol, setSelectedProtocol] = useState<Protocol>(getHashProtocol);
-  const { theme } = useTheme();
   const online = useOnlineStatus();
   const { recent, addRecent } = useRecentProtocols();
   const { favorites, toggleFavorite, isFavorite } = useFavorites();
@@ -1032,8 +1028,7 @@ function App() {
   };
 
   return (
-    <div className={`min-h-screen ${theme === 'retro' ? 'retro-screen retro-boot' : 'bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900'}`}>
-      {theme === 'retro' && <BootScreen />}
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900">
       <a href="#main-content" className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 bg-blue-600 text-white px-4 py-2 rounded">
         Skip to content
       </a>
@@ -1042,10 +1037,7 @@ function App() {
           You appear to be offline. Connections will fail until your network is restored.
         </div>
       )}
-      <nav aria-label="Site controls">
-        <ThemeToggle />
-      </nav>
-      <main id="main-content" className="container mx-auto px-4 pt-14 pb-8">
+      <main id="main-content" className="container mx-auto px-4 pt-6 pb-8">
         <ErrorBoundary onReset={handleBack}>
           <Suspense fallback={<LoadingFallback />}>{renderProtocolClient()}</Suspense>
         </ErrorBoundary>

@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface WebSocketProps {
   onBack: () => void;
@@ -38,13 +38,11 @@ interface ProbeResult {
 }
 
 export default function WebSocketClient({ onBack }: WebSocketProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('80');
-  const [path, setPath] = useState('/');
-  const [protocols, setProtocols] = useState('');
+  const [host, setHost] = usePersistedState('websocket-host', '');
+  const [port, setPort] = usePersistedState('websocket-port', '80');
+  const [path, setPath] = usePersistedState('websocket-path', '/');
+  const [protocols, setProtocols] = usePersistedState('websocket-protocols', '');
   const [sendPing, setSendPing] = useState(true);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ProbeResult | null>(null);
@@ -85,12 +83,12 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
-          className={`${isRetro ? 'retro-button' : 'bg-slate-700 hover:bg-slate-600'} text-white px-3 py-2 rounded-lg transition-colors`}
+          className={`$bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg transition-colors`}
         >
           ← Back
         </button>
         <div className="flex items-center gap-3">
-          <div className={`w-12 h-12 ${isRetro ? 'retro-card' : 'bg-gradient-to-br from-indigo-500 to-indigo-700'} rounded-xl flex items-center justify-center`}>
+          <div className={`w-12 h-12 $bg-gradient-to-br from-indigo-500 to-indigo-700 rounded-xl flex items-center justify-center`}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M4 12h4l2-8 4 16 2-8h4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white" />
               <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" fill="none" className="text-white/40" />
@@ -98,8 +96,8 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
           </div>
 
           <div>
-            <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>WebSocket Client</h1>
-            <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+            <h1 className={`text-2xl font-bold $text-white`}>WebSocket Client</h1>
+            <p className="text-slate-400">
               WebSocket Protocol · Port 80/443 · RFC 6455
             </p>
           </div>
@@ -107,52 +105,52 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
       </div>
 
       {/* Connection Form */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           WebSocket Handshake Probe
         </h2>
       <ApiExamples examples={apiExamples.WebSocket || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Host</label>
             <input
               type="text"
               value={host}
               onChange={(e) => setHost(e.target.value)}
               placeholder="echo.websocket.org"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-indigo-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Port</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Port</label>
             <input
               type="text"
               value={port}
               onChange={(e) => setPort(e.target.value)}
               placeholder="80"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-indigo-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Path</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Path</label>
             <input
               type="text"
               value={path}
               onChange={(e) => setPath(e.target.value)}
               placeholder="/"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-indigo-500`}
             />
           </div>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               Sub-Protocols (optional, comma-separated)
             </label>
             <input
@@ -161,12 +159,12 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
               onChange={(e) => setProtocols(e.target.value)}
               placeholder="chat, superchat"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-indigo-500`}
             />
           </div>
           <div className="flex items-end">
-            <label className={`flex items-center gap-2 cursor-pointer ${isRetro ? 'retro-text' : 'text-white'}`}>
+            <label className={`flex items-center gap-2 cursor-pointer $text-white`}>
               <input
                 type="checkbox"
                 checked={sendPing}
@@ -183,8 +181,6 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
           className={`px-6 py-2 rounded-lg font-medium transition-colors ${
             loading || !host
               ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
-              : isRetro
-              ? 'retro-button'
               : 'bg-indigo-600 hover:bg-indigo-500 text-white'
           }`}
         >
@@ -194,16 +190,16 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
 
       {/* Result */}
       {result && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Probe Result
           </h2>
 
           {!result.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{result.error}</p>
               {result.rawResponse && (
-                <pre className={`mt-2 text-xs overflow-x-auto ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                <pre className={`mt-2 text-xs overflow-x-auto $text-slate-400`}>
                   {result.rawResponse}
                 </pre>
               )}
@@ -212,70 +208,70 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
             <>
               {/* Summary Cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Status</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Status</p>
                   <p className={`text-lg font-bold ${result.statusCode === 101 ? 'text-green-400' : 'text-red-400'}`}>
                     {result.statusCode}
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Upgrade</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Upgrade</p>
                   <p className={`text-lg font-bold ${result.websocketUpgrade ? 'text-green-400' : 'text-red-400'}`}>
                     {result.websocketUpgrade ? 'OK' : 'FAIL'}
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {result.connectTimeMs}ms
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {result.totalTimeMs}ms
                   </p>
                 </div>
               </div>
 
               {/* Handshake Details */}
-              <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden mb-4`}>
+              <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden mb-4`}>
                 <table className="w-full text-sm">
                   <tbody>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</td>
-                      <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Host</td>
+                      <td className={`px-4 py-2 $text-white`}>
                         {result.host}:{result.port}{result.path}
                       </td>
                     </tr>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Response</td>
-                      <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Response</td>
+                      <td className={`px-4 py-2 $text-white`}>
                         {result.statusCode} {result.statusText}
                       </td>
                     </tr>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Accept Key</td>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Accept Key</td>
                       <td className={`px-4 py-2 ${result.acceptKeyValid ? 'text-green-400' : 'text-red-400'}`}>
                         {result.acceptKeyValid ? 'Valid (SHA-1 verified)' : 'Invalid'}
                       </td>
                     </tr>
                     {result.server && (
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Server</td>
-                        <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>{result.server}</td>
+                      <tr className="border-b border-slate-700">
+                        <td className={`px-4 py-2 font-medium $text-slate-400`}>Server</td>
+                        <td className={`px-4 py-2 $text-white`}>{result.server}</td>
                       </tr>
                     )}
                     {result.negotiatedProtocol && (
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Protocol</td>
-                        <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-indigo-300'}`}>{result.negotiatedProtocol}</td>
+                      <tr className="border-b border-slate-700">
+                        <td className={`px-4 py-2 font-medium $text-slate-400`}>Protocol</td>
+                        <td className={`px-4 py-2 $text-indigo-300`}>{result.negotiatedProtocol}</td>
                       </tr>
                     )}
                     {result.negotiatedExtensions && (
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Extensions</td>
-                        <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-indigo-300'}`}>{result.negotiatedExtensions}</td>
+                      <tr className="border-b border-slate-700">
+                        <td className={`px-4 py-2 font-medium $text-slate-400`}>Extensions</td>
+                        <td className={`px-4 py-2 $text-indigo-300`}>{result.negotiatedExtensions}</td>
                       </tr>
                     )}
                   </tbody>
@@ -284,8 +280,8 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
 
               {/* Ping/Pong Result */}
               {result.pingResponse && (
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-4 mb-4`}>
-                  <h3 className={`text-sm font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-4 mb-4`}>
+                  <h3 className={`text-sm font-medium mb-2 $text-white`}>
                     Ping/Pong Test
                   </h3>
                   {result.pingResponse.received ? (
@@ -294,7 +290,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
                         {result.pingResponse.isPong ? 'Pong received' : `Response: ${result.pingResponse.opcodeName}`}
                       </span>
                       {result.pingResponse.payloadLength !== undefined && (
-                        <span className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+                        <span className="text-slate-400">
                           ({result.pingResponse.payloadLength} bytes)
                         </span>
                       )}
@@ -308,16 +304,16 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
               {/* Response Headers */}
               {result.serverHeaders && Object.keys(result.serverHeaders).length > 0 && (
                 <div className="mt-4">
-                  <h3 className={`text-sm font-medium mb-2 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                  <h3 className={`text-sm font-medium mb-2 $text-slate-400`}>
                     Response Headers
                   </h3>
-                  <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden`}>
+                  <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden`}>
                     <table className="w-full text-sm">
                       <tbody>
                         {Object.entries(result.serverHeaders).map(([key, value], i) => (
-                          <tr key={i} className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                            <td className={`px-4 py-1 font-mono text-xs ${isRetro ? 'retro-text' : 'text-indigo-300'}`}>{key}</td>
-                            <td className={`px-4 py-1 font-mono text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>{value}</td>
+                          <tr key={i} className="border-b border-slate-700">
+                            <td className={`px-4 py-1 font-mono text-xs $text-indigo-300`}>{key}</td>
+                            <td className={`px-4 py-1 font-mono text-xs $text-slate-300`}>{value}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -332,8 +328,8 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
 
       {/* History */}
       {history.length > 0 && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Probe History
           </h2>
           <div className="space-y-2">
@@ -341,18 +337,18 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
               <div
                 key={i}
                 className={`flex items-center justify-between p-3 rounded-lg ${
-                  isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'
+                  'bg-slate-900/50 border border-slate-700'
                 }`}
               >
                 <div>
-                  <span className={`font-mono ${isRetro ? 'retro-text' : 'text-white'}`}>
+                  <span className={`font-mono $text-white`}>
                     {item.host}:{item.port}{item.path}
                   </span>
                   <span className={`ml-3 text-sm ${item.websocketUpgrade ? 'text-green-400' : 'text-red-400'}`}>
                     {item.statusCode} {item.websocketUpgrade ? 'Upgraded' : 'Failed'}
                   </span>
                 </div>
-                <span className={`text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                <span className={`text-sm $text-slate-400`}>
                   {item.totalTimeMs}ms
                 </span>
               </div>
@@ -362,19 +358,19 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
       )}
 
       {/* Protocol Info */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           About WebSocket
         </h2>
-        <div className={`space-y-3 text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>
+        <div className={`space-y-3 text-sm $text-slate-300`}>
           <p>
             WebSocket provides
-            <strong className={isRetro ? 'retro-text' : 'text-white'}> full-duplex, bidirectional communication</strong> over
+            <strong className="text-white"> full-duplex, bidirectional communication</strong> over
             a single TCP connection. It starts as an HTTP/1.1 upgrade request, then switches to the WebSocket framing protocol.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Key Features</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Key Features</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>Full-duplex bidirectional comms</li>
                 <li>Low overhead framing (2-14 bytes)</li>
@@ -384,7 +380,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
               </ul>
             </div>
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Common Uses</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Common Uses</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>Chat applications</li>
                 <li>Live data feeds / dashboards</li>
@@ -394,7 +390,7 @@ export default function WebSocketClient({ onBack }: WebSocketProps) {
               </ul>
             </div>
           </div>
-          <div className={`mt-3 p-3 rounded-lg ${isRetro ? 'border border-yellow-500/30' : 'bg-yellow-500/10 border border-yellow-500/20'}`}>
+          <div className={`mt-3 p-3 rounded-lg $bg-yellow-500/10 border border-yellow-500/20`}>
             <p className="text-yellow-300 text-xs">
               <strong>Note:</strong> This tool performs a raw TCP-level WebSocket handshake probe.
               It sends an HTTP Upgrade request, verifies the 101 response and Sec-WebSocket-Accept hash,

@@ -1,11 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import ChecklistTab from './ChecklistTab';
 import ProtocolSidebar from './ProtocolSidebar';
 import ProtocolCategoryGroup from './ProtocolCategoryGroup';
 import CommandPalette from './CommandPalette';
-import ProtocolCard from './ProtocolCard';
-import type { ProtocolCategory, SortOption, ViewMode } from '../types/protocols';
+import type { ProtocolCategory, SortOption } from '../types/protocols';
 import type { RFCEntry } from '../types/protocols';
 import { protocols, nonImplementableRFCs, categoryOrder, sortKey } from '../data/protocols';
 
@@ -23,6 +21,13 @@ interface ProtocolSelectorProps {
 const tabHashes = ['about', 'rfcs', 'checklist'] as const;
 type TabType = 'protocols' | 'about' | 'rfcs' | 'checklist';
 
+const tabLabels: Record<TabType, string> = {
+  protocols: 'Protocols',
+  about: 'About',
+  rfcs: 'RFCs',
+  checklist: 'Checklist',
+};
+
 function getTabFromHash(): TabType {
   const hash = window.location.hash.replace('#', '');
   if (tabHashes.includes(hash as typeof tabHashes[number])) return hash as TabType;
@@ -30,13 +35,10 @@ function getTabFromHash(): TabType {
 }
 
 export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, isFavorite, recent }: ProtocolSelectorProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
   const [activeTab, setActiveTab] = useState<TabType>(getTabFromHash);
   const [selectedCategory, setSelectedCategory] = useState<'all' | ProtocolCategory>('all');
   const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'deprecated'>('all');
   const [sortBy, setSortBy] = useState<SortOption>('popularity');
-  const [viewMode, setViewMode] = useState<ViewMode>(() => (localStorage.getItem('portofcall-view') as ViewMode) || 'cards');
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState(-1);
@@ -49,11 +51,6 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
     } catch { return new Set(); }
   });
   const mainRef = useRef<HTMLDivElement>(null);
-
-  const changeViewMode = useCallback((mode: ViewMode) => {
-    setViewMode(mode);
-    localStorage.setItem('portofcall-view', mode);
-  }, []);
 
   const switchTab = useCallback((tab: TabType) => {
     setActiveTab(tab);
@@ -175,7 +172,6 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
       }
       if (e.key === '?') {
         e.preventDefault();
-        // Could open a help modal
         return;
       }
       const num = parseInt(e.key);
@@ -195,7 +191,6 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
   // Scroll focused item into view
   useEffect(() => {
     if (focusedId) {
-      // The card/row for this id should become visible
       const el = document.querySelector(`[aria-label*="${focusedId}"]`);
       el?.scrollIntoView({ block: 'nearest' });
     }
@@ -206,23 +201,23 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
   return (
     <div className="max-w-7xl mx-auto">
       {/* Header */}
-      <div className={`mb-8 ${isRetro ? 'retro-box' : ''}`}>
+      <div className="mb-8">
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="text-center sm:text-left">
-            <h1 className={`text-3xl font-bold ${isRetro ? 'retro-text retro-typewriter' : 'text-white'}`}>
-              {isRetro ? '> PORT OF CALL' : 'PORT OF CALL'}
+            <h1 className="text-3xl font-bold text-white">
+              PORT OF CALL
             </h1>
             <div className="flex items-center gap-2 mt-1">
-              <p className={`text-sm ${isRetro ? 'retro-text' : 'text-slate-400'}`}>
+              <p className="text-sm text-slate-400">
                 {totalCount} TCP Protocol Clients
               </p>
-              <span className={`text-[10px] ${isRetro ? 'retro-text-amber' : 'text-slate-600'}`}>
-                {isRetro ? '|' : '·'} Powered by{' '}
+              <span className="text-[10px] text-slate-600">
+                · Powered by{' '}
                 <a
                   href="https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className={isRetro ? 'retro-link' : 'text-indigo-400 hover:text-indigo-300 underline'}
+                  className="text-indigo-400 hover:text-indigo-300 underline"
                 >
                   Workers Sockets
                 </a>
@@ -235,29 +230,23 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
             {/* Mobile menu button */}
             <button
               onClick={() => setMobileMenuOpen(true)}
-              className={`lg:hidden px-3 py-2 text-sm ${
-                isRetro ? 'retro-button retro-text' : 'bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600'
-              }`}
+              className="lg:hidden px-3 py-2 text-sm bg-slate-700 text-slate-300 rounded-lg hover:bg-slate-600"
               aria-label="Open menu"
             >
-              {isRetro ? '[MENU]' : '☰'}
+              ☰
             </button>
 
             {(['protocols', 'about', 'rfcs', 'checklist'] as const).map(tab => (
               <button
                 key={tab}
                 onClick={() => switchTab(tab)}
-                className={`px-4 py-2 text-sm font-medium transition-all ${
-                  isRetro
-                    ? `retro-button ${activeTab === tab ? 'retro-text retro-glow' : 'retro-text-amber'}`
-                    : `rounded-lg ${
-                        activeTab === tab
-                          ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
-                          : 'text-slate-400 hover:text-white hover:bg-slate-700'
-                      }`
+                className={`px-4 py-2 text-sm font-medium transition-all rounded-lg ${
+                  activeTab === tab
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/25'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
                 }`}
               >
-                {isRetro && activeTab === tab ? `>> ${tab.charAt(0).toUpperCase() + tab.slice(1)} <<` : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                {tabLabels[tab]}
               </button>
             ))}
           </div>
@@ -283,8 +272,6 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
             onStatusFilterChange={setStatusFilter}
             sortBy={sortBy}
             onSortChange={setSortBy}
-            viewMode={viewMode}
-            onViewModeChange={changeViewMode}
             onOpenCommandPalette={() => setCommandPaletteOpen(true)}
             favorites={favorites}
             recent={recent}
@@ -298,26 +285,41 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
             {/* Favorites section at top if any */}
             {favorites.length > 0 && (
               <div className="mb-6">
-                <h3 className={`text-xs uppercase tracking-wider font-semibold mb-3 px-1 ${
-                  isRetro ? 'retro-text-amber' : 'text-slate-500'
-                }`}>
-                  {isRetro ? '> FAVORITES' : '★ Favorites'}
+                <h3 className="text-xs uppercase tracking-wider font-semibold mb-3 px-1 text-slate-500">
+                  ★ Favorites
                 </h3>
-                <div className={isRetro ? 'retro-grid' : 'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3'}>
-                  {favorites.map(id => {
-                    const p = protocols.find(pr => pr.id === id);
-                    if (!p) return null;
-                    return (
-                      <ProtocolCard
-                        key={p.id}
-                        protocol={p}
-                        onSelect={onSelect}
-                        onToggleFavorite={toggleFavorite}
-                        isFavorite={true}
-                        isFocused={focusedId === p.id}
-                      />
-                    );
-                  })}
+                <div className="bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <tbody>
+                      {favorites.map(id => {
+                        const p = protocols.find(pr => pr.id === id);
+                        if (!p) return null;
+                        return (
+                          <tr
+                            key={p.id}
+                            onClick={() => onSelect(p.id)}
+                            className="cursor-pointer transition-colors border-b border-slate-700/50 hover:bg-slate-700/50"
+                          >
+                            <td className="py-1.5 px-3">
+                              <div className="flex items-center gap-2">
+                                <span className="text-base" aria-hidden="true">{p.icon}</span>
+                                <span className="font-medium text-white">{p.name}</span>
+                              </div>
+                            </td>
+                            <td className="py-1.5 px-3 font-mono text-xs text-slate-400">:{p.port}</td>
+                            <td className="py-1.5 px-3 text-right">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); toggleFavorite(p.id); }}
+                                className="text-xs text-yellow-400"
+                              >
+                                ★
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
@@ -337,7 +339,6 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
                   onToggleFavorite={toggleFavorite}
                   isFavorite={isFavorite}
                   focusedId={focusedId}
-                  viewMode={viewMode}
                 />
               );
             })}
@@ -348,23 +349,23 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
       {/* About Tab */}
       {activeTab === 'about' && (
         <div className="max-w-4xl mx-auto mt-8">
-          <div className={`${isRetro ? 'retro-box' : 'bg-slate-800 border border-slate-600 rounded-xl'} p-8`}>
-            <h2 className={`text-3xl font-bold mb-6 ${isRetro ? 'retro-text retro-glow' : 'text-white'}`}>
+          <div className="bg-slate-800 border border-slate-600 rounded-xl p-8">
+            <h2 className="text-3xl font-bold mb-6 text-white">
               About This Tool
             </h2>
-            <p className={`${isRetro ? 'retro-text' : 'text-slate-300'} text-base leading-relaxed mb-6`}>
+            <p className="text-slate-300 text-base leading-relaxed mb-6">
               This interface demonstrates TCP protocol implementations using Cloudflare Workers'
-              <code className={`${isRetro ? 'retro-text-amber' : 'bg-slate-700'} px-2 py-1 rounded mx-1`}>connect()</code> API.
+              <code className="bg-slate-700 px-2 py-1 rounded mx-1">connect()</code> API.
               Select a protocol from the Protocols tab to establish connections and interact with remote servers.
             </p>
-            <div className={`${isRetro ? 'retro-box' : 'bg-green-900/30 border border-green-600/50 rounded-lg'} p-6 mb-6`}>
+            <div className="bg-green-900/30 border border-green-600/50 rounded-lg p-6 mb-6">
               <div className="flex items-start gap-3">
-                <span className={`${isRetro ? 'retro-text' : 'text-green-400'} text-2xl`} aria-hidden="true">✓</span>
+                <span className="text-green-400 text-2xl" aria-hidden="true">✓</span>
                 <div>
-                  <p className={`${isRetro ? 'retro-text font-bold' : 'text-green-200'} text-lg font-semibold mb-2`}>
+                  <p className="text-green-200 text-lg font-semibold mb-2">
                     Live Implementation
                   </p>
-                  <p className={`${isRetro ? 'retro-text' : 'text-green-100/80'} text-sm leading-relaxed`}>
+                  <p className="text-green-100/80 text-sm leading-relaxed">
                     All {totalCount} protocols are fully functional with comprehensive testing.
                     Connect to remote servers directly from your browser. All connections
                     are proxied through Cloudflare's global network with Smart Placement for low latency.
@@ -372,39 +373,39 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
                 </div>
               </div>
             </div>
-            <div className={`${isRetro ? 'retro-box' : 'bg-blue-900/30 border border-blue-600/50 rounded-lg'} p-6 mb-6`}>
+            <div className="bg-blue-900/30 border border-blue-600/50 rounded-lg p-6 mb-6">
               <div className="flex items-start gap-3">
-                <span className={`${isRetro ? 'retro-text' : 'text-blue-400'} text-2xl`} aria-hidden="true">🌐</span>
+                <span className="text-blue-400 text-2xl" aria-hidden="true">🌐</span>
                 <div>
-                  <p className={`${isRetro ? 'retro-text font-bold' : 'text-blue-200'} text-lg font-semibold mb-2`}>
+                  <p className="text-blue-200 text-lg font-semibold mb-2">
                     Cloudflare Workers TCP Sockets
                   </p>
-                  <p className={`${isRetro ? 'retro-text' : 'text-blue-100/80'} text-sm leading-relaxed`}>
+                  <p className="text-blue-100/80 text-sm leading-relaxed">
                     Built on Cloudflare Workers' TCP Sockets API, enabling direct TCP connections from the edge.
                     Each protocol implementation demonstrates real-world use cases and provides interactive testing capabilities.
                   </p>
                 </div>
               </div>
             </div>
-            <div className={`${isRetro ? 'retro-box' : 'bg-orange-900/30 border border-orange-600/50 rounded-lg'} p-6`}>
+            <div className="bg-orange-900/30 border border-orange-600/50 rounded-lg p-6">
               <div className="flex items-start gap-3">
-                <span className={`${isRetro ? 'retro-text' : 'text-orange-400'} text-2xl`} aria-hidden="true">🐳</span>
+                <span className="text-orange-400 text-2xl" aria-hidden="true">🐳</span>
                 <div>
-                  <p className={`${isRetro ? 'retro-text font-bold' : 'text-orange-200'} text-lg font-semibold mb-2`}>
+                  <p className="text-orange-200 text-lg font-semibold mb-2">
                     Deploy Your Own Targets with Docker
                   </p>
-                  <p className={`${isRetro ? 'retro-text' : 'text-orange-100/80'} text-sm leading-relaxed mb-3`}>
+                  <p className="text-orange-100/80 text-sm leading-relaxed mb-3">
                     Port of Call connects to <strong>your</strong> infrastructure. Deploy protocol servers on your VPS using Docker
                     and point Port of Call at them. Run Redis, MySQL, SSH, MQTT, or any of the {totalCount} supported protocols
                     as Docker containers, then test them from here.
                   </p>
-                  <div className={`${isRetro ? 'retro-text-amber' : 'bg-slate-900/50 text-slate-300'} rounded p-3 text-xs font-mono`}>
+                  <div className="bg-slate-900/50 text-slate-300 rounded p-3 text-xs font-mono">
                     <div># Example: spin up a Redis target on your VPS</div>
                     <div>docker run -d --name redis -p 6379:6379 redis:alpine</div>
                     <div className="mt-1"># Then test it from Port of Call</div>
                     <div>→ Host: your-vps.example.com, Port: 6379</div>
                   </div>
-                  <p className={`${isRetro ? 'retro-text' : 'text-orange-100/60'} text-xs mt-3`}>
+                  <p className="text-orange-100/60 text-xs mt-3">
                     Note: Port of Call itself runs on Cloudflare Workers (not Docker). It connects outbound to your targets via TCP.
                     Targets behind Cloudflare proxy will be blocked — use direct IPs or gray-cloud DNS.
                   </p>
@@ -469,48 +470,48 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
 
         return (
           <div className="max-w-7xl mx-auto mt-8">
-            <div className={`${isRetro ? 'retro-box' : 'bg-slate-800 border border-slate-600 rounded-xl'} p-6`}>
-              <h2 className={`text-3xl font-bold mb-6 ${isRetro ? 'retro-text retro-glow' : 'text-white'}`}>
+            <div className="bg-slate-800 border border-slate-600 rounded-xl p-6">
+              <h2 className="text-3xl font-bold mb-6 text-white">
                 Comprehensive Protocol RFC List
               </h2>
-              <p className={`${isRetro ? 'retro-text' : 'text-slate-300'} text-sm mb-6`}>
+              <p className="text-slate-300 text-sm mb-6">
                 All protocol RFCs including Layer 2, 3, and 4 protocols. Shows implementation status on Cloudflare Workers TCP Sockets API.
                 Click RFC or Year column headers to sort.
               </p>
               <div className="overflow-x-auto">
-                <table className={`w-full ${isRetro ? 'retro-text' : 'text-sm'}`}>
+                <table className="w-full text-sm">
                   <thead>
-                    <tr className={isRetro ? 'retro-border' : 'border-b-2 border-slate-600'}>
-                      <th className={`text-left py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'}`}>Protocol</th>
+                    <tr className="border-b-2 border-slate-600">
+                      <th className="text-left py-3 px-4 text-slate-300 font-semibold">Protocol</th>
                       <th
-                        className={`text-left py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'} cursor-pointer hover:text-blue-400`}
+                        className="text-left py-3 px-4 text-slate-300 font-semibold cursor-pointer hover:text-blue-400"
                         onClick={() => handleRFCSort('rfc')}
                       >
                         RFC <SortIndicator column="rfc" />
                       </th>
                       <th
-                        className={`text-center py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'} cursor-pointer hover:text-blue-400`}
+                        className="text-center py-3 px-4 text-slate-300 font-semibold cursor-pointer hover:text-blue-400"
                         onClick={() => handleRFCSort('year')}
                       >
                         Year Created <SortIndicator column="year" />
                       </th>
-                      <th className={`text-center py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'}`}>Layer</th>
-                      <th className={`text-left py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'}`}>Description</th>
-                      <th className={`text-center py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'}`}>Workers Compatible</th>
-                      <th className={`text-center py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300 font-semibold'}`}>Implemented</th>
+                      <th className="text-center py-3 px-4 text-slate-300 font-semibold">Layer</th>
+                      <th className="text-left py-3 px-4 text-slate-300 font-semibold">Description</th>
+                      <th className="text-center py-3 px-4 text-slate-300 font-semibold">Workers Compatible</th>
+                      <th className="text-center py-3 px-4 text-slate-300 font-semibold">Implemented</th>
                     </tr>
                   </thead>
                   <tbody>
                     {sortedRFCEntries.map((entry, idx) => (
                       <tr
                         key={`${entry.name}-${entry.rfc}`}
-                        className={`${isRetro ? 'retro-border' : 'border-b border-slate-700'} ${idx % 2 === 0 ? (isRetro ? '' : 'bg-slate-800/50') : ''}`}
+                        className={`border-b border-slate-700 ${idx % 2 === 0 ? 'bg-slate-800/50' : ''}`}
                       >
-                        <td className={`py-3 px-4 ${isRetro ? 'retro-text' : 'text-white font-medium'}`}>
+                        <td className="py-3 px-4 text-white font-medium">
                           {entry.implemented && entry.protocolId ? (
                             <button
                               onClick={() => onSelect(entry.protocolId!)}
-                              className={`flex items-center gap-2 ${isRetro ? 'retro-link' : 'text-blue-400 hover:text-blue-300 underline decoration-blue-400/40 hover:decoration-blue-300 underline-offset-2 transition-colors'} text-left`}
+                              className="flex items-center gap-2 text-blue-400 hover:text-blue-300 underline decoration-blue-400/40 hover:decoration-blue-300 underline-offset-2 transition-colors text-left"
                             >
                               <span className="text-xl" aria-hidden="true">{entry.icon}</span>
                               <span className="whitespace-nowrap">{entry.name}</span>
@@ -522,53 +523,53 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
                             </div>
                           )}
                         </td>
-                        <td className={`py-3 px-4 ${isRetro ? 'retro-text-amber' : 'text-blue-400'}`}>
+                        <td className="py-3 px-4 text-blue-400">
                           {entry.rfc ? (
                             <a
                               href={`https://www.rfc-editor.org/rfc/rfc${entry.rfc}.html`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className={isRetro ? 'retro-link' : 'hover:underline'}
+                              className="hover:underline"
                             >
                               RFC {entry.rfc}
                             </a>
                           ) : (
-                            <span className={isRetro ? 'retro-text' : 'text-slate-500'}>N/A</span>
+                            <span className="text-slate-500">N/A</span>
                           )}
                         </td>
-                        <td className={`py-3 px-4 text-center ${isRetro ? 'retro-text' : 'text-slate-300'}`}>
+                        <td className="py-3 px-4 text-center text-slate-300">
                           {entry.year}
                         </td>
-                        <td className={`py-3 px-4 text-center ${isRetro ? 'retro-text' : 'text-slate-400'}`}>
+                        <td className="py-3 px-4 text-center text-slate-400">
                           <span className={`px-2 py-1 rounded text-xs ${
-                            entry.layer === 'L2' ? (isRetro ? '' : 'bg-red-900/30 text-red-300') :
-                            entry.layer === 'L3' ? (isRetro ? '' : 'bg-orange-900/30 text-orange-300') :
-                            entry.layer === 'L4/L7' ? (isRetro ? '' : 'bg-yellow-900/30 text-yellow-300') :
-                            (isRetro ? '' : 'bg-green-900/30 text-green-300')
+                            entry.layer === 'L2' ? 'bg-red-900/30 text-red-300' :
+                            entry.layer === 'L3' ? 'bg-orange-900/30 text-orange-300' :
+                            entry.layer === 'L4/L7' ? 'bg-yellow-900/30 text-yellow-300' :
+                            'bg-green-900/30 text-green-300'
                           }`}>
                             {entry.layer}
                           </span>
                         </td>
-                        <td className={`py-3 px-4 ${isRetro ? 'retro-text' : 'text-slate-300'} text-xs`}>
+                        <td className="py-3 px-4 text-slate-300 text-xs">
                           {entry.description}
                           {entry.reason && (
-                            <div className={`mt-1 ${isRetro ? 'retro-text-amber' : 'text-slate-500 italic'}`}>
+                            <div className="mt-1 text-slate-500 italic">
                               {entry.reason}
                             </div>
                           )}
                         </td>
                         <td className="py-3 px-4 text-center">
                           {entry.workersCompatible ? (
-                            <span className={`inline-flex items-center ${isRetro ? 'retro-text' : 'text-green-400'}`}>✓ Yes</span>
+                            <span className="inline-flex items-center text-green-400">✓ Yes</span>
                           ) : (
-                            <span className={`inline-flex items-center ${isRetro ? 'retro-text-amber' : 'text-red-400'}`}>✗ No</span>
+                            <span className="inline-flex items-center text-red-400">✗ No</span>
                           )}
                         </td>
                         <td className="py-3 px-4 text-center">
                           {entry.implemented ? (
-                            <span className={`inline-flex items-center ${isRetro ? 'retro-text' : 'text-green-400'}`}>✓ Yes</span>
+                            <span className="inline-flex items-center text-green-400">✓ Yes</span>
                           ) : (
-                            <span className={`inline-flex items-center ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>✗ No</span>
+                            <span className="inline-flex items-center text-slate-500">✗ No</span>
                           )}
                         </td>
                       </tr>
@@ -576,11 +577,11 @@ export default function ProtocolSelector({ onSelect, favorites, toggleFavorite, 
                   </tbody>
                 </table>
               </div>
-              <div className={`mt-6 ${isRetro ? 'retro-box' : 'bg-slate-700/50 rounded-lg'} p-4`}>
-                <p className={`text-xs ${isRetro ? 'retro-text' : 'text-slate-400'} mb-2`}>
-                  <strong className={isRetro ? 'retro-text' : 'text-slate-300'}>Legend:</strong>
+              <div className="mt-6 bg-slate-700/50 rounded-lg p-4">
+                <p className="text-xs text-slate-400 mb-2">
+                  <strong className="text-slate-300">Legend:</strong>
                 </p>
-                <ul className={`text-xs ${isRetro ? 'retro-text' : 'text-slate-400'} space-y-1 ml-4`}>
+                <ul className="text-xs text-slate-400 space-y-1 ml-4">
                   <li>• <strong>Workers Compatible:</strong> Whether the protocol can be implemented using Cloudflare Workers TCP Sockets API</li>
                   <li>• <strong>Implemented:</strong> Whether this protocol has been implemented in this application (includes both active and deprecated protocols)</li>
                   <li>• <strong>Layer:</strong> OSI model layer - L2 (Data Link), L3 (Network), L4/L7 (Transport/Application), Application (TCP-based)</li>

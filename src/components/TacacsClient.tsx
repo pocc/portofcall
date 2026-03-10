@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface TacacsProps {
   onBack: () => void;
@@ -47,16 +47,14 @@ interface AuthResult {
 type TabType = 'probe' | 'authenticate';
 
 export default function TacacsClient({ onBack }: TacacsProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
   // Connection settings
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('49');
+  const [host, setHost] = usePersistedState('tacacs-host', '');
+  const [port, setPort] = usePersistedState('tacacs-port', '49');
   const [secret, setSecret] = useState('');
 
   // Auth fields
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = usePersistedState('tacacs-username', '');
   const [password, setPassword] = useState('');
 
   // State
@@ -132,16 +130,16 @@ export default function TacacsClient({ onBack }: TacacsProps) {
   const statusColor = (status: string) => {
     switch (status) {
       case 'PASS':
-        return isRetro ? 'text-green-400' : 'text-green-400';
+        return 'text-green-400';
       case 'FAIL':
       case 'ERROR':
-        return isRetro ? 'text-red-400' : 'text-red-400';
+        return 'text-red-400';
       case 'GETPASS':
       case 'GETUSER':
       case 'GETDATA':
-        return isRetro ? 'text-yellow-400' : 'text-yellow-400';
+        return 'text-yellow-400';
       default:
-        return isRetro ? 'text-gray-400' : 'text-slate-400';
+        return 'text-slate-400';
     }
   };
 
@@ -150,12 +148,12 @@ export default function TacacsClient({ onBack }: TacacsProps) {
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
-          className={`${isRetro ? 'retro-button' : 'bg-slate-700 hover:bg-slate-600'} text-white px-3 py-2 rounded-lg transition-colors`}
+          className={`$bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg transition-colors`}
         >
           ← Back
         </button>
         <div className="flex items-center gap-3">
-          <div className={`w-12 h-12 ${isRetro ? 'retro-card' : 'bg-gradient-to-br from-purple-500 to-purple-700'} rounded-xl flex items-center justify-center`}>
+          <div className={`w-12 h-12 $bg-gradient-to-br from-purple-500 to-purple-700 rounded-xl flex items-center justify-center`}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" stroke="currentColor" strokeWidth="1.5" fill="none" className="text-white" />
               <path d="M12 6v2M12 16v2M6 12h2M16 12h2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-white" />
@@ -165,8 +163,8 @@ export default function TacacsClient({ onBack }: TacacsProps) {
           </div>
 
           <div>
-            <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>TACACS+ Client</h1>
-            <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+            <h1 className={`text-2xl font-bold $text-white`}>TACACS+ Client</h1>
+            <p className="text-slate-400">
               Terminal Access Controller Access-Control System Plus · Port 49 · RFC 8907
             </p>
           </div>
@@ -181,11 +179,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 rounded-lg font-medium transition-colors ${
               activeTab === tab
-                ? isRetro
-                  ? 'retro-button-active'
-                  : 'bg-purple-600 text-white'
-                : isRetro
-                ? 'retro-button'
+                ? 'bg-purple-600 text-white'
                 : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
             }`}
           >
@@ -195,14 +189,14 @@ export default function TacacsClient({ onBack }: TacacsProps) {
       </div>
 
       {/* Connection Form */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           Connection Settings
         </h2>
       <ApiExamples examples={apiExamples.TACACS || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               Host
             </label>
             <input
@@ -211,14 +205,12 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               onChange={(e) => setHost(e.target.value)}
               placeholder="tacacs-server.example.com"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro
-                  ? 'retro-input'
-                  : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-purple-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               Port
             </label>
             <input
@@ -227,14 +219,12 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               onChange={(e) => setPort(e.target.value)}
               placeholder="49"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro
-                  ? 'retro-input'
-                  : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-purple-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               Shared Secret (optional)
             </label>
             <input
@@ -243,9 +233,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               onChange={(e) => setSecret(e.target.value)}
               placeholder="Leave empty for unencrypted"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro
-                  ? 'retro-input'
-                  : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-purple-500`}
             />
           </div>
@@ -255,7 +243,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
         {activeTab === 'authenticate' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+              <label className={`block text-sm mb-1 $text-slate-400`}>
                 Username
               </label>
               <input
@@ -264,14 +252,12 @@ export default function TacacsClient({ onBack }: TacacsProps) {
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="admin"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro
-                    ? 'retro-input'
-                    : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-purple-500`}
               />
             </div>
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+              <label className={`block text-sm mb-1 $text-slate-400`}>
                 Password
               </label>
               <input
@@ -280,9 +266,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="password"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro
-                    ? 'retro-input'
-                    : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-purple-500`}
               />
             </div>
@@ -295,8 +279,6 @@ export default function TacacsClient({ onBack }: TacacsProps) {
           className={`px-6 py-2 rounded-lg font-medium transition-colors ${
             loading || !host || (activeTab === 'authenticate' && !username)
               ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
-              : isRetro
-              ? 'retro-button'
               : 'bg-purple-600 hover:bg-purple-500 text-white'
           }`}
         >
@@ -312,77 +294,77 @@ export default function TacacsClient({ onBack }: TacacsProps) {
 
       {/* Probe Result */}
       {activeTab === 'probe' && probeResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Probe Result
           </h2>
 
           {!probeResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{probeResult.error}</p>
             </div>
           ) : (
             <>
               {/* Summary Cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Version</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Version</p>
+                  <p className={`text-lg font-bold $text-white`}>
                     {probeResult.serverVersion?.major}.{probeResult.serverVersion?.minor}
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Reply Status</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Reply Status</p>
                   <p className={`text-lg font-bold ${statusColor(probeResult.reply?.status || '')}`}>
                     {probeResult.reply?.status || 'N/A'}
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {probeResult.connectTimeMs}ms
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {probeResult.totalTimeMs}ms
                   </p>
                 </div>
               </div>
 
               {/* Detail Table */}
-              <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden`}>
+              <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden`}>
                 <table className="w-full text-sm">
                   <tbody>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</td>
-                      <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>{probeResult.host}:{probeResult.port}</td>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Host</td>
+                      <td className={`px-4 py-2 $text-white`}>{probeResult.host}:{probeResult.port}</td>
                     </tr>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Response Type</td>
-                      <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>{probeResult.responseType}</td>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Response Type</td>
+                      <td className={`px-4 py-2 $text-white`}>{probeResult.responseType}</td>
                     </tr>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Encrypted</td>
-                      <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Encrypted</td>
+                      <td className={`px-4 py-2 $text-white`}>
                         {probeResult.flags?.encrypted ? 'Yes' : 'No (unencrypted mode)'}
                       </td>
                     </tr>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Single Connect</td>
-                      <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Single Connect</td>
+                      <td className={`px-4 py-2 $text-white`}>
                         {probeResult.flags?.singleConnect ? 'Supported' : 'Not supported'}
                       </td>
                     </tr>
-                    <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                      <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Session ID</td>
-                      <td className={`px-4 py-2 font-mono ${isRetro ? 'retro-text' : 'text-white'}`}>{probeResult.sessionId}</td>
+                    <tr className="border-b border-slate-700">
+                      <td className={`px-4 py-2 font-medium $text-slate-400`}>Session ID</td>
+                      <td className={`px-4 py-2 font-mono $text-white`}>{probeResult.sessionId}</td>
                     </tr>
                     {probeResult.reply?.serverMsg && (
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Server Message</td>
-                        <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>{probeResult.reply.serverMsg}</td>
+                      <tr className="border-b border-slate-700">
+                        <td className={`px-4 py-2 font-medium $text-slate-400`}>Server Message</td>
+                        <td className={`px-4 py-2 $text-white`}>{probeResult.reply.serverMsg}</td>
                       </tr>
                     )}
                   </tbody>
@@ -395,13 +377,13 @@ export default function TacacsClient({ onBack }: TacacsProps) {
 
       {/* Auth Result */}
       {activeTab === 'authenticate' && authResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Authentication Result
           </h2>
 
           {!authResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{authResult.error}</p>
             </div>
           ) : (
@@ -409,26 +391,26 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               {/* Auth Status */}
               <div className={`p-4 rounded-lg mb-4 ${
                 authResult.authenticated
-                  ? isRetro ? 'border border-green-500/30' : 'bg-green-500/10 border border-green-500/20'
-                  : isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'
+                  ? 'bg-green-500/10 border border-green-500/20'
+                  : 'bg-red-500/10 border border-red-500/20'
               }`}>
                 <div className="flex items-center gap-3">
                   <span className={`text-2xl font-bold ${authResult.authenticated ? 'text-green-400' : 'text-red-400'}`}>
                     {authResult.authenticated ? 'PASS' : authResult.finalStatus}
                   </span>
-                  <span className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+                  <span className="text-slate-400">
                     User: {authResult.username} @ {authResult.host}:{authResult.port}
                   </span>
                 </div>
                 {authResult.finalMessage && (
-                  <p className={`mt-2 ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>{authResult.finalMessage}</p>
+                  <p className={`mt-2 $text-slate-300`}>{authResult.finalMessage}</p>
                 )}
               </div>
 
               {/* Steps */}
               {authResult.steps && authResult.steps.length > 0 && (
                 <div className="mb-4">
-                  <h3 className={`text-sm font-medium mb-2 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                  <h3 className={`text-sm font-medium mb-2 $text-slate-400`}>
                     Authentication Flow
                   </h3>
                   <div className="space-y-2">
@@ -436,20 +418,20 @@ export default function TacacsClient({ onBack }: TacacsProps) {
                       <div
                         key={i}
                         className={`flex items-center gap-3 p-2 rounded-lg ${
-                          isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'
+                          'bg-slate-900/50 border border-slate-700'
                         }`}
                       >
                         <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                          isRetro ? 'bg-green-900/50 text-green-400' : 'bg-purple-500/20 text-purple-400'
+                          'bg-purple-500/20 text-purple-400'
                         }`}>
                           {i + 1}
                         </span>
-                        <span className={isRetro ? 'retro-text' : 'text-white'}>{step.step}</span>
+                        <span className="text-white">{step.step}</span>
                         <span className={`ml-auto font-mono text-sm ${statusColor(step.status)}`}>
                           {step.status}
                         </span>
                         {step.message && (
-                          <span className={`text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                          <span className={`text-sm $text-slate-400`}>
                             {step.message}
                           </span>
                         )}
@@ -461,15 +443,15 @@ export default function TacacsClient({ onBack }: TacacsProps) {
 
               {/* Timing */}
               <div className="grid grid-cols-2 gap-4">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {authResult.connectTimeMs}ms
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {authResult.totalTimeMs}ms
                   </p>
                 </div>
@@ -481,8 +463,8 @@ export default function TacacsClient({ onBack }: TacacsProps) {
 
       {/* Probe History */}
       {probeHistory.length > 0 && activeTab === 'probe' && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Probe History
           </h2>
           <div className="space-y-2">
@@ -490,18 +472,18 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               <div
                 key={i}
                 className={`flex items-center justify-between p-3 rounded-lg ${
-                  isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'
+                  'bg-slate-900/50 border border-slate-700'
                 }`}
               >
                 <div>
-                  <span className={`font-mono ${isRetro ? 'retro-text' : 'text-white'}`}>
+                  <span className={`font-mono $text-white`}>
                     {item.host}:{item.port}
                   </span>
                   <span className={`ml-3 text-sm ${statusColor(item.reply?.status || '')}`}>
                     {item.reply?.status || 'OK'}
                   </span>
                 </div>
-                <span className={`text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                <span className={`text-sm $text-slate-400`}>
                   {item.totalTimeMs}ms
                 </span>
               </div>
@@ -511,19 +493,19 @@ export default function TacacsClient({ onBack }: TacacsProps) {
       )}
 
       {/* Protocol Info */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           About TACACS+
         </h2>
-        <div className={`space-y-3 text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>
+        <div className={`space-y-3 text-sm $text-slate-300`}>
           <p>
             TACACS+ (Terminal Access Controller Access-Control System Plus) is a protocol for
-            <strong className={isRetro ? 'retro-text' : 'text-white'}> AAA (Authentication, Authorization, Accounting)</strong> used
+            <strong className="text-white"> AAA (Authentication, Authorization, Accounting)</strong> used
             primarily for network device administration.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Key Features</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Key Features</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>Full packet body encryption (MD5-based)</li>
                 <li>Separate AAA functions</li>
@@ -533,7 +515,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               </ul>
             </div>
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Common Uses</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Common Uses</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>Cisco router/switch access control</li>
                 <li>Network device administration</li>
@@ -543,7 +525,7 @@ export default function TacacsClient({ onBack }: TacacsProps) {
               </ul>
             </div>
           </div>
-          <div className={`mt-3 p-3 rounded-lg ${isRetro ? 'border border-yellow-500/30' : 'bg-yellow-500/10 border border-yellow-500/20'}`}>
+          <div className={`mt-3 p-3 rounded-lg $bg-yellow-500/10 border border-yellow-500/20`}>
             <p className="text-yellow-300 text-xs">
               <strong>Note:</strong> Without a shared secret, probes are sent in unencrypted mode
               (TAC_PLUS_UNENCRYPTED_FLAG). Most production servers require encrypted connections.

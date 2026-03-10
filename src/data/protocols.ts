@@ -20,13 +20,7 @@ export const categoryConfig: Record<'all' | ProtocolCategory, { label: string; i
   specialty: { label: 'Specialty',     icon: '⚡' },
 };
 
-export const categoryOrder: ProtocolCategory[] = ['databases', 'messaging', 'email', 'remote', 'files', 'web', 'network', 'specialty'];
-
-export const retroBarChars = (tier: PopularityTier): string => {
-  const fills: Record<PopularityTier, number> = { ubiquitous: 10, common: 7, moderate: 4, rare: 1, niche: 1 };
-  const filled = fills[tier];
-  return '#'.repeat(filled) + '.'.repeat(10 - filled);
-};
+export const categoryOrder: ProtocolCategory[] = ['remote', 'files', 'databases', 'messaging', 'email', 'web', 'network', 'specialty'];
 
 export const sortKey = (p: { status: ProtocolStatus; popularity: PopularityTier }): number => {
   if (p.status === 'deprecated') return 100;

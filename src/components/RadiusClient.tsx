@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface RadiusProps {
   onBack: () => void;
@@ -54,18 +54,16 @@ interface AuthResult {
 type TabType = 'probe' | 'authenticate';
 
 export default function RadiusClient({ onBack }: RadiusProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
   // Connection settings
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('1812');
+  const [host, setHost] = usePersistedState('radius-host', '');
+  const [port, setPort] = usePersistedState('radius-port', '1812');
   const [secret, setSecret] = useState('');
 
   // Auth fields
-  const [username, setUsername] = useState('');
+  const [username, setUsername] = usePersistedState('radius-username', '');
   const [password, setPassword] = useState('');
-  const [nasIdentifier, setNasIdentifier] = useState('portofcall');
+  const [nasIdentifier, setNasIdentifier] = usePersistedState('radius-nasIdentifier', 'portofcall');
 
   // State
   const [activeTab, setActiveTab] = useState<TabType>('probe');
@@ -147,7 +145,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
       case 11: // Access-Challenge
         return 'text-yellow-400';
       default:
-        return isRetro ? 'retro-text' : 'text-blue-400';
+        return 'text-blue-400';
     }
   };
 
@@ -157,12 +155,12 @@ export default function RadiusClient({ onBack }: RadiusProps) {
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
-          className={`${isRetro ? 'retro-button' : 'bg-slate-700 hover:bg-slate-600'} text-white px-3 py-2 rounded-lg transition-colors`}
+          className={`$bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg transition-colors`}
         >
           ← Back
         </button>
         <div className="flex items-center gap-3">
-          <div className={`w-12 h-12 ${isRetro ? 'retro-card' : 'bg-gradient-to-br from-orange-500 to-orange-700'} rounded-xl flex items-center justify-center`}>
+          <div className={`w-12 h-12 $bg-gradient-to-br from-orange-500 to-orange-700 rounded-xl flex items-center justify-center`}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" fill="none" className="text-white" />
               <circle cx="12" cy="12" r="5" stroke="currentColor" strokeWidth="1.5" fill="none" className="text-white" />
@@ -172,8 +170,8 @@ export default function RadiusClient({ onBack }: RadiusProps) {
             </svg>
           </div>
           <div>
-            <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>RADIUS Client</h1>
-            <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+            <h1 className={`text-2xl font-bold $text-white`}>RADIUS Client</h1>
+            <p className="text-slate-400">
               Remote Authentication Dial-In User Service · Port 1812 · RFC 2865
             </p>
           </div>
@@ -188,11 +186,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 rounded-lg font-medium transition-colors ${
               activeTab === tab
-                ? isRetro
-                  ? 'retro-button-active'
-                  : 'bg-orange-600 text-white'
-                : isRetro
-                ? 'retro-button'
+                ? 'bg-orange-600 text-white'
                 : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
             }`}
           >
@@ -202,13 +196,13 @@ export default function RadiusClient({ onBack }: RadiusProps) {
       </div>
 
       {/* Connection Form */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           Connection Settings
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               RADIUS Server
             </label>
             <input
@@ -217,14 +211,12 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               onChange={(e) => setHost(e.target.value)}
               placeholder="radius.example.com"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro
-                  ? 'retro-input'
-                  : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-orange-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               Port
             </label>
             <input
@@ -233,14 +225,12 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               onChange={(e) => setPort(e.target.value)}
               placeholder="1812"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro
-                  ? 'retro-input'
-                  : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-orange-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+            <label className={`block text-sm mb-1 $text-slate-400`}>
               Shared Secret
             </label>
             <input
@@ -249,9 +239,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               onChange={(e) => setSecret(e.target.value)}
               placeholder="testing123"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro
-                  ? 'retro-input'
-                  : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-orange-500`}
             />
           </div>
@@ -261,7 +249,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
         {activeTab === 'authenticate' && (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+              <label className={`block text-sm mb-1 $text-slate-400`}>
                 Username
               </label>
               <input
@@ -270,14 +258,12 @@ export default function RadiusClient({ onBack }: RadiusProps) {
                 onChange={(e) => setUsername(e.target.value)}
                 placeholder="testuser"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro
-                    ? 'retro-input'
-                    : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-orange-500`}
               />
             </div>
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+              <label className={`block text-sm mb-1 $text-slate-400`}>
                 Password
               </label>
               <input
@@ -286,14 +272,12 @@ export default function RadiusClient({ onBack }: RadiusProps) {
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="password"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro
-                    ? 'retro-input'
-                    : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-orange-500`}
               />
             </div>
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+              <label className={`block text-sm mb-1 $text-slate-400`}>
                 NAS-Identifier
               </label>
               <input
@@ -302,9 +286,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
                 onChange={(e) => setNasIdentifier(e.target.value)}
                 placeholder="portofcall"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro
-                    ? 'retro-input'
-                    : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-orange-500`}
               />
             </div>
@@ -317,8 +299,6 @@ export default function RadiusClient({ onBack }: RadiusProps) {
           className={`px-6 py-2 rounded-lg font-medium transition-colors ${
             loading || !host || (activeTab === 'authenticate' && !username)
               ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
-              : isRetro
-              ? 'retro-button'
               : 'bg-orange-600 hover:bg-orange-500 text-white'
           }`}
         >
@@ -334,40 +314,40 @@ export default function RadiusClient({ onBack }: RadiusProps) {
 
       {/* Probe Result */}
       {activeTab === 'probe' && probeResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Probe Result
           </h2>
 
           {!probeResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{probeResult.error}</p>
             </div>
           ) : (
             <>
               {/* Summary Cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Response</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Response</p>
                   <p className={`text-lg font-bold ${codeColor(probeResult.responseCode)}`}>
                     {probeResult.responseCodeName}
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Code</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Code</p>
+                  <p className={`text-lg font-bold $text-white`}>
                     {probeResult.responseCode}
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {probeResult.connectTimeMs}ms
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {probeResult.totalTimeMs}ms
                   </p>
                 </div>
@@ -375,33 +355,33 @@ export default function RadiusClient({ onBack }: RadiusProps) {
 
               {/* Reply Messages */}
               {probeResult.replyMessages && probeResult.replyMessages.length > 0 && (
-                <div className={`mb-4 p-4 rounded-lg ${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'}`}>
-                  <h3 className={`text-sm font-medium mb-2 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                <div className={`mb-4 p-4 rounded-lg $bg-slate-900/50 border border-slate-700`}>
+                  <h3 className={`text-sm font-medium mb-2 $text-slate-400`}>
                     Reply Messages
                   </h3>
                   {probeResult.replyMessages.map((msg, i) => (
-                    <p key={i} className={isRetro ? 'retro-text' : 'text-white'}>{msg}</p>
+                    <p key={i} className="text-white">{msg}</p>
                   ))}
                 </div>
               )}
 
               {/* Attributes */}
               {probeResult.attributes && probeResult.attributes.length > 0 && (
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden`}>
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Attribute</th>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Value</th>
+                      <tr className="border-b border-slate-700">
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Attribute</th>
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Value</th>
                       </tr>
                     </thead>
                     <tbody>
                       {probeResult.attributes.map((attr, i) => (
-                        <tr key={i} className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                          <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                        <tr key={i} className="border-b border-slate-700">
+                          <td className={`px-4 py-2 font-medium $text-slate-400`}>
                             {attr.typeName}
                           </td>
-                          <td className={`px-4 py-2 font-mono text-xs ${isRetro ? 'retro-text' : 'text-white'}`}>
+                          <td className={`px-4 py-2 font-mono text-xs $text-white`}>
                             {attr.stringValue || attr.hex || `${attr.intValue}`}
                           </td>
                         </tr>
@@ -412,9 +392,9 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               )}
 
               {/* Authenticator */}
-              <div className={`mt-4 ${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3`}>
-                <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Response Authenticator</p>
-                <p className={`font-mono text-xs mt-1 ${isRetro ? 'retro-text' : 'text-white'} break-all`}>
+              <div className={`mt-4 $bg-slate-900/50 border border-slate-700 rounded-lg p-3`}>
+                <p className={`text-xs $text-slate-400`}>Response Authenticator</p>
+                <p className={`font-mono text-xs mt-1 $text-white break-all`}>
                   {probeResult.authenticator}
                 </p>
               </div>
@@ -425,13 +405,13 @@ export default function RadiusClient({ onBack }: RadiusProps) {
 
       {/* Auth Result */}
       {activeTab === 'authenticate' && authResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Authentication Result
           </h2>
 
           {!authResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{authResult.error}</p>
             </div>
           ) : (
@@ -439,21 +419,21 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               {/* Auth Status Banner */}
               <div className={`p-4 rounded-lg mb-4 ${
                 authResult.authenticated
-                  ? isRetro ? 'border border-green-500/30' : 'bg-green-500/10 border border-green-500/20'
+                  ? 'bg-green-500/10 border border-green-500/20'
                   : authResult.hasChallenge
-                  ? isRetro ? 'border border-yellow-500/30' : 'bg-yellow-500/10 border border-yellow-500/20'
-                  : isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'
+                  ? 'bg-yellow-500/10 border border-yellow-500/20'
+                  : 'bg-red-500/10 border border-red-500/20'
               }`}>
                 <div className="flex items-center gap-3">
                   <span className={`text-2xl font-bold ${codeColor(authResult.responseCode)}`}>
                     {authResult.responseCodeName}
                   </span>
-                  <span className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+                  <span className="text-slate-400">
                     User: {authResult.username} @ {authResult.host}:{authResult.port}
                   </span>
                 </div>
                 {authResult.hasChallenge && (
-                  <p className={`mt-2 text-sm ${isRetro ? 'retro-text-dim' : 'text-yellow-300'}`}>
+                  <p className={`mt-2 text-sm $text-yellow-300`}>
                     Server sent an Access-Challenge (multi-factor or additional step required)
                   </p>
                 )}
@@ -461,33 +441,33 @@ export default function RadiusClient({ onBack }: RadiusProps) {
 
               {/* Reply Messages */}
               {authResult.replyMessages && authResult.replyMessages.length > 0 && (
-                <div className={`mb-4 p-4 rounded-lg ${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'}`}>
-                  <h3 className={`text-sm font-medium mb-2 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                <div className={`mb-4 p-4 rounded-lg $bg-slate-900/50 border border-slate-700`}>
+                  <h3 className={`text-sm font-medium mb-2 $text-slate-400`}>
                     Server Reply
                   </h3>
                   {authResult.replyMessages.map((msg, i) => (
-                    <p key={i} className={isRetro ? 'retro-text' : 'text-white'}>{msg}</p>
+                    <p key={i} className="text-white">{msg}</p>
                   ))}
                 </div>
               )}
 
               {/* Response Attributes */}
               {authResult.attributes && authResult.attributes.length > 0 && (
-                <div className={`mb-4 ${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden`}>
+                <div className={`mb-4 $bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden`}>
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Attribute</th>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Value</th>
+                      <tr className="border-b border-slate-700">
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Attribute</th>
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Value</th>
                       </tr>
                     </thead>
                     <tbody>
                       {authResult.attributes.map((attr, i) => (
-                        <tr key={i} className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                          <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                        <tr key={i} className="border-b border-slate-700">
+                          <td className={`px-4 py-2 font-medium $text-slate-400`}>
                             {attr.typeName}
                           </td>
-                          <td className={`px-4 py-2 ${isRetro ? 'retro-text' : 'text-white'}`}>
+                          <td className={`px-4 py-2 $text-white`}>
                             {attr.stringValue || (attr.intValue !== null ? attr.intValue : `(${attr.length - 2} bytes)`)}
                           </td>
                         </tr>
@@ -499,15 +479,15 @@ export default function RadiusClient({ onBack }: RadiusProps) {
 
               {/* Timing */}
               <div className="grid grid-cols-2 gap-4">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {authResult.connectTimeMs}ms
                   </p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>
                     {authResult.totalTimeMs}ms
                   </p>
                 </div>
@@ -519,8 +499,8 @@ export default function RadiusClient({ onBack }: RadiusProps) {
 
       {/* Probe History */}
       {probeHistory.length > 0 && activeTab === 'probe' && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Probe History
           </h2>
           <div className="space-y-2">
@@ -528,18 +508,18 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               <div
                 key={i}
                 className={`flex items-center justify-between p-3 rounded-lg ${
-                  isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'
+                  'bg-slate-900/50 border border-slate-700'
                 }`}
               >
                 <div>
-                  <span className={`font-mono ${isRetro ? 'retro-text' : 'text-white'}`}>
+                  <span className={`font-mono $text-white`}>
                     {item.host}:{item.port}
                   </span>
                   <span className={`ml-3 text-sm ${codeColor(item.responseCode)}`}>
                     {item.responseCodeName}
                   </span>
                 </div>
-                <span className={`text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                <span className={`text-sm $text-slate-400`}>
                   {item.totalTimeMs}ms
                 </span>
               </div>
@@ -549,20 +529,20 @@ export default function RadiusClient({ onBack }: RadiusProps) {
       )}
 
       {/* Protocol Info */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           About RADIUS
         </h2>
-        <div className={`space-y-3 text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>
+        <div className={`space-y-3 text-sm $text-slate-300`}>
           <p>
             RADIUS (Remote Authentication Dial-In User Service) is the dominant protocol for
-            <strong className={isRetro ? 'retro-text' : 'text-white'}> network access AAA (Authentication, Authorization, Accounting)</strong>.
+            <strong className="text-white"> network access AAA (Authentication, Authorization, Accounting)</strong>.
             Defined in RFC 2865, it authenticates users connecting via ISPs, enterprise Wi-Fi (802.1X),
             VPNs, and network devices.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Key Features</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Key Features</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>MD5-based password encryption</li>
                 <li>Message-Authenticator (HMAC-MD5)</li>
@@ -572,7 +552,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               </ul>
             </div>
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Common Uses</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Common Uses</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>ISP subscriber authentication</li>
                 <li>WPA2/WPA3-Enterprise (802.1X)</li>
@@ -582,7 +562,7 @@ export default function RadiusClient({ onBack }: RadiusProps) {
               </ul>
             </div>
           </div>
-          <div className={`mt-3 p-3 rounded-lg ${isRetro ? 'border border-yellow-500/30' : 'bg-yellow-500/10 border border-yellow-500/20'}`}>
+          <div className={`mt-3 p-3 rounded-lg $bg-yellow-500/10 border border-yellow-500/20`}>
             <p className="text-yellow-300 text-xs">
               <strong>Note:</strong> This client uses RADIUS over TCP (RFC 6613). Traditional RADIUS uses UDP,
               but RFC 6613 defines TCP transport for reliability. Your RADIUS server must support TCP connections

@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import { protocols } from '../data/protocols';
 
 type ChecklistState = Record<string, Record<string, boolean>>;
 
-const categoryOrder = ['databases', 'messaging', 'email', 'remote', 'files', 'web', 'network', 'specialty'] as const;
+const categoryOrder = ['remote', 'files', 'databases', 'messaging', 'email', 'web', 'network', 'specialty'] as const;
 const categoryLabels: Record<string, string> = {
   databases: 'Databases',
   messaging: 'Messaging',
@@ -17,8 +16,6 @@ const categoryLabels: Record<string, string> = {
 };
 
 export default function ChecklistTab() {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
   const [checklist, setChecklist] = useState<ChecklistState>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
@@ -99,8 +96,8 @@ export default function ChecklistTab() {
 
   if (loading) {
     return (
-      <div className={`text-center py-16 ${isRetro ? 'retro-text-amber' : 'text-slate-400'}`}>
-        {isRetro ? 'LOADING CHECKLIST...' : 'Loading checklist...'}
+      <div className="text-center py-16 text-slate-400">
+        Loading checklist...
       </div>
     );
   }
@@ -109,24 +106,24 @@ export default function ChecklistTab() {
     <div className="max-w-4xl mx-auto px-4 pb-16">
       {/* Save error toast */}
       {saveError && (
-        <div className={`mb-4 px-4 py-3 rounded-lg text-sm ${isRetro ? 'bg-red-900 retro-text' : 'bg-red-900/80 text-red-200'}`}>
+        <div className="mb-4 px-4 py-3 rounded-lg text-sm bg-red-900/80 text-red-200">
           {saveError}
         </div>
       )}
 
       {/* Summary header */}
-      <div className={`mb-8 p-4 rounded-xl ${isRetro ? 'retro-panel' : 'bg-slate-800'}`}>
+      <div className="mb-8 p-4 rounded-xl bg-slate-800">
         <div className="flex items-center justify-between mb-3">
-          <span className={`font-semibold ${isRetro ? 'retro-text' : 'text-slate-200'}`}>
-            {isRetro ? 'OVERALL PROGRESS' : 'Overall Progress'}
+          <span className="font-semibold text-slate-200">
+            Overall Progress
           </span>
-          <span className={`text-sm ${isRetro ? 'retro-text-amber' : 'text-slate-400'}`}>
+          <span className="text-sm text-slate-400">
             {totalDone} / {totalItems} ({pct}%)
           </span>
         </div>
-        <div className={`w-full h-3 rounded-full ${isRetro ? 'bg-slate-900' : 'bg-slate-700'}`}>
+        <div className="w-full h-3 rounded-full bg-slate-700">
           <div
-            className={`h-3 rounded-full transition-all duration-300 ${isRetro ? 'bg-green-400' : 'bg-blue-500'}`}
+            className="h-3 rounded-full transition-all duration-300 bg-blue-500"
             style={{ width: `${pct}%` }}
           />
         </div>
@@ -138,10 +135,8 @@ export default function ChecklistTab() {
           <button
             key={f}
             onClick={() => setFilter(f)}
-            className={`px-4 py-2 text-sm font-medium transition-all ${
-              isRetro
-                ? `retro-button ${filter === f ? 'retro-glow retro-text' : 'retro-text-amber'}`
-                : `rounded-lg ${filter === f ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`
+            className={`px-4 py-2 text-sm font-medium transition-all rounded-lg ${
+              filter === f ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
             }`}
           >
             {f === 'all' ? 'All' : f === 'incomplete' ? 'Incomplete' : 'Complete'}
@@ -152,11 +147,7 @@ export default function ChecklistTab() {
       {/* Protocol groups */}
       {filteredGrouped.map(({ category, label, items }) => (
         <div key={category} className="mb-10">
-          <h2 className={`text-lg font-bold mb-4 pb-2 border-b ${
-            isRetro
-              ? 'retro-text border-green-800'
-              : 'text-slate-200 border-slate-700'
-          }`}>
+          <h2 className="text-lg font-bold mb-4 pb-2 border-b text-slate-200 border-slate-700">
             {label}
           </h2>
           <div className="space-y-4">
@@ -167,26 +158,20 @@ export default function ChecklistTab() {
               return (
                 <div
                   key={protocol.id}
-                  className={`rounded-lg p-4 ${
-                    isRetro
-                      ? 'retro-panel'
-                      : `bg-slate-800 border ${allDone ? 'border-green-700' : 'border-slate-700'}`
-                  }`}
+                  className={`rounded-lg p-4 bg-slate-800 border ${allDone ? 'border-green-700' : 'border-slate-700'}`}
                 >
                   <div className="flex items-center justify-between mb-3">
-                    <h3 className={`font-semibold flex items-center gap-2 ${isRetro ? 'retro-text' : 'text-slate-100'}`}>
+                    <h3 className="font-semibold flex items-center gap-2 text-slate-100">
                       <span>{protocol.icon}</span>
                       <span>{protocol.name}</span>
                       {protocol.port > 0 && (
-                        <span className={`text-xs font-normal ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>
+                        <span className="text-xs font-normal text-slate-500">
                           :{protocol.port}
                         </span>
                       )}
                     </h3>
                     <span className={`text-xs px-2 py-1 rounded-full ${
-                      allDone
-                        ? isRetro ? 'retro-text bg-green-900' : 'bg-green-900 text-green-300'
-                        : isRetro ? 'retro-text-amber' : 'text-slate-400'
+                      allDone ? 'bg-green-900 text-green-300' : 'text-slate-400'
                     }`}>
                       {done}/{total}
                     </span>
@@ -208,16 +193,12 @@ export default function ChecklistTab() {
                             checked={checked}
                             disabled={isSaving}
                             onChange={e => toggle(protocol.id, feature, e.target.checked)}
-                            className={`w-4 h-4 rounded cursor-pointer ${
-                              isRetro
-                                ? 'accent-green-400'
-                                : 'accent-blue-500'
-                            }`}
+                            className="w-4 h-4 rounded cursor-pointer accent-blue-500"
                           />
                           <span className={`text-sm transition-colors ${
                             checked
-                              ? isRetro ? 'line-through retro-text-amber opacity-60' : 'line-through text-slate-500'
-                              : isRetro ? 'retro-text' : 'text-slate-300 group-hover:text-slate-100'
+                              ? 'line-through text-slate-500'
+                              : 'text-slate-300 group-hover:text-slate-100'
                           }`}>
                             {feature}
                           </span>
@@ -233,7 +214,7 @@ export default function ChecklistTab() {
       ))}
 
       {filteredGrouped.length === 0 && (
-        <div className={`text-center py-16 ${isRetro ? 'retro-text-amber' : 'text-slate-400'}`}>
+        <div className="text-center py-16 text-slate-400">
           No protocols match this filter.
         </div>
       )}

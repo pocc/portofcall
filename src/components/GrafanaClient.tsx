@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import { SectionHeader, FormField, ActionButton, StatusMessage, ConnectionInfo } from './SharedComponents';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface GrafanaClientProps {
   onBack: () => void;
@@ -15,12 +15,10 @@ interface GrafanaResponse {
 type TabType = 'health' | 'datasources' | 'dashboards';
 
 export default function GrafanaClient({ onBack }: GrafanaClientProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
   const [activeTab, setActiveTab] = useState<TabType>('health');
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3000');
+  const [host, setHost] = usePersistedState('grafana-host', '');
+  const [port, setPort] = usePersistedState('grafana-port', '3000');
 
   // Health state
   const [healthLoading, setHealthLoading] = useState(false);
@@ -33,8 +31,8 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
   const [datasourcesError, setDatasourcesError] = useState('');
 
   // Dashboards state
-  const [query, setQuery] = useState('');
-  const [limit, setLimit] = useState('50');
+  const [query, setQuery] = usePersistedState('grafana-query', '');
+  const [limit, setLimit] = usePersistedState('grafana-limit', '50');
   const [dashboardsLoading, setDashboardsLoading] = useState(false);
   const [dashboardsResult, setDashboardsResult] = useState<Record<string, unknown> | null>(null);
   const [dashboardsError, setDashboardsError] = useState('');
@@ -109,27 +107,27 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
   };
 
   const tabs = [
-    { id: 'health' as const, label: isRetro ? '[HEALTH]' : 'Health & Info' },
-    { id: 'datasources' as const, label: isRetro ? '[DATASOURCES]' : 'Datasources' },
-    { id: 'dashboards' as const, label: isRetro ? '[DASHBOARDS]' : 'Dashboards' }
+    { id: 'health' as const, label: 'Health & Info' },
+    { id: 'datasources' as const, label: 'Datasources' },
+    { id: 'dashboards' as const, label: 'Dashboards' }
   ];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <button onClick={onBack} className={isRetro ? 'retro-button' : 'text-slate-400 hover:text-slate-200 transition-colors'}>
-          {isRetro ? '← BACK' : '← Back'}
+        <button onClick={onBack} className="text-slate-400 hover:text-slate-200 transition-colors">
+          ← Back
         </button>
-        <h2 className={isRetro ? 'retro-title' : 'text-2xl font-bold text-white'}>
-          {isRetro ? '>>> GRAFANA CLIENT <<<' : '📈 Grafana Client'}
+        <h2 className="text-2xl font-bold text-white">
+          📈 Grafana Client
         </h2>
       </div>
 
       <ConnectionInfo
         items={[
-          { label: isRetro ? 'PORT' : 'Default Port', value: '3000' },
-          { label: isRetro ? 'TYPE' : 'Protocol', value: 'HTTP REST API' },
-          { label: isRetro ? 'USE' : 'Purpose', value: 'Observability & Monitoring' },
+          { label: 'Default Port', value: '3000' },
+          { label: 'Protocol', value: 'HTTP REST API' },
+          { label: 'Purpose', value: 'Observability & Monitoring' },
         ]}
       />
 
@@ -141,15 +139,12 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
       </div>
 
       {/* Tab selector */}
-      <div className={`flex gap-2 ${isRetro ? 'font-mono' : ''}`}>
+      <div className="flex gap-2">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={isRetro
-              ? `px-3 py-1 border ${activeTab === tab.id ? 'bg-green-900 text-green-400 border-green-500' : 'border-green-800 text-green-700 hover:text-green-500'}`
-              : `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab.id ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`
-            }
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab.id ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
           >
             {tab.label}
           </button>
@@ -180,7 +175,7 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
       {activeTab === 'datasources' && (
         <div className="space-y-4">
           <SectionHeader stepNumber={2} title="Datasources" />
-          <p className={`text-sm ${isRetro ? 'text-green-700' : 'text-slate-400'}`}>
+          <p className={`text-sm $text-slate-400`}>
             List all configured data sources (Prometheus, Loki, InfluxDB, etc.).
           </p>
           <ActionButton
@@ -203,7 +198,7 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
       {activeTab === 'dashboards' && (
         <div className="space-y-4">
           <SectionHeader stepNumber={2} title="Dashboard Search" />
-          <p className={`text-sm ${isRetro ? 'text-green-700' : 'text-slate-400'}`}>
+          <p className={`text-sm $text-slate-400`}>
             Search for dashboards by name or tag.
           </p>
 
@@ -230,9 +225,7 @@ export default function GrafanaClient({ onBack }: GrafanaClientProps) {
                   key={q || 'all'}
                   onClick={() => setQuery(q)}
                   className={
-                    isRetro
-                      ? 'px-2 py-1 border border-green-800 text-green-700 hover:text-green-500 text-xs'
-                      : 'bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1 rounded text-xs transition-colors'
+                    'bg-slate-700 hover:bg-slate-600 text-slate-300 px-3 py-1 rounded text-xs transition-colors'
                   }
                 >
                   {q || 'All Dashboards'}

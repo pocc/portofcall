@@ -30,4 +30,3 @@ export interface RFCEntry {
 }
 
 export type SortOption = 'popularity' | 'year-asc' | 'year-desc' | 'port-asc' | 'port-desc';
-export type ViewMode = 'cards' | 'compact';

@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import { SectionHeader, FormField, ActionButton, StatusMessage, ConnectionInfo, ResultDisplay } from './SharedComponents';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface LokiHealthResult {
   success: boolean;
@@ -53,11 +53,9 @@ interface LokiMetricsResult {
 }
 
 export default function LokiClient({ onBack }: { onBack: () => void }) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('3100');
+  const [host, setHost] = usePersistedState('loki-host', '');
+  const [port, setPort] = usePersistedState('loki-port', '3100');
   const [activeTab, setActiveTab] = useState<'health' | 'query' | 'metrics'>('health');
 
   // Health state
@@ -66,8 +64,8 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
   const [healthError, setHealthError] = useState('');
 
   // Query state
-  const [query, setQuery] = useState('{job="varlogs"}');
-  const [queryLimit, setQueryLimit] = useState('100');
+  const [query, setQuery] = usePersistedState('loki-query', '{job="varlogs"}');
+  const [queryLimit, setQueryLimit] = usePersistedState('loki-queryLimit', '100');
   const [queryLoading, setQueryLoading] = useState(false);
   const [queryResult, setQueryResult] = useState<LokiQueryResult | null>(null);
   const [queryError, setQueryError] = useState('');
@@ -147,27 +145,27 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
   ];
 
   const tabs = [
-    { id: 'health' as const, label: isRetro ? '[HEALTH]' : 'Health & Info' },
-    { id: 'query' as const, label: isRetro ? '[LOGQL]' : 'LogQL Query' },
-    { id: 'metrics' as const, label: isRetro ? '[METRICS]' : 'Metrics' },
+    { id: 'health' as const, label: 'Health & Info' },
+    { id: 'query' as const, label: 'LogQL Query' },
+    { id: 'metrics' as const, label: 'Metrics' },
   ];
 
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <button onClick={onBack} className={isRetro ? 'retro-button' : 'text-slate-400 hover:text-slate-200 transition-colors'}>
-          {isRetro ? '← BACK' : '← Back'}
+        <button onClick={onBack} className="text-slate-400 hover:text-slate-200 transition-colors">
+          ← Back
         </button>
-        <h2 className={isRetro ? 'retro-title' : 'text-2xl font-bold text-white'}>
-          {isRetro ? '>>> GRAFANA LOKI CLIENT <<<' : '🪵 Grafana Loki Client'}
+        <h2 className="text-2xl font-bold text-white">
+          🪵 Grafana Loki Client
         </h2>
       </div>
 
       <ConnectionInfo
         items={[
-          { label: isRetro ? 'PORT' : 'Default Port', value: '3100' },
-          { label: isRetro ? 'TYPE' : 'Protocol', value: 'HTTP REST API' },
-          { label: isRetro ? 'SPEC' : 'Query Language', value: 'LogQL' },
+          { label: 'Default Port', value: '3100' },
+          { label: 'Protocol', value: 'HTTP REST API' },
+          { label: 'Query Language', value: 'LogQL' },
         ]}
       />
 
@@ -179,15 +177,12 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
       </div>
 
       {/* Tab selector */}
-      <div className={`flex gap-2 ${isRetro ? 'font-mono' : ''}`}>
+      <div className="flex gap-2">
         {tabs.map(tab => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={isRetro
-              ? `px-3 py-1 border ${activeTab === tab.id ? 'bg-green-900 text-green-400 border-green-500' : 'border-green-800 text-green-700 hover:text-green-500'}`
-              : `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab.id ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`
-            }
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab.id ? 'bg-amber-600 text-white' : 'bg-slate-700 text-slate-300 hover:bg-slate-600'}`}
           >
             {tab.label}
           </button>
@@ -205,7 +200,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
             variant="primary"
             ariaLabel="Check Loki health"
           >
-            {isRetro ? 'PROBE LOKI' : 'Check Health'}
+            Check Health
           </ActionButton>
 
           {healthError && <StatusMessage type="error" message={healthError} />}
@@ -262,15 +257,12 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
           </div>
 
           {/* Quick queries */}
-          <div className={`flex flex-wrap gap-2 mb-4 ${isRetro ? 'font-mono text-xs' : ''}`}>
+          <div className="flex flex-wrap gap-2 mb-4">
             {quickQueries.map(q => (
               <button
                 key={q.label}
                 onClick={() => setQuery(q.query)}
-                className={isRetro
-                  ? 'px-2 py-0.5 border border-green-800 text-green-600 hover:text-green-400 hover:border-green-500'
-                  : 'px-3 py-1 text-xs bg-slate-700 text-amber-400 rounded hover:bg-slate-600 transition-colors'
-                }
+                className="px-3 py-1 text-xs bg-slate-700 text-amber-400 rounded hover:bg-slate-600 transition-colors"
               >
                 {q.label}
               </button>
@@ -284,7 +276,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
             variant="primary"
             ariaLabel="Execute LogQL query"
           >
-            {isRetro ? 'EXECUTE QUERY' : 'Run Query'}
+            Run Query
           </ActionButton>
 
           {queryError && <StatusMessage type="error" message={queryError} />}
@@ -309,43 +301,37 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
 
               {/* Log stream results */}
               {queryResult.result?.data?.result && queryResult.result.data.result.length > 0 && (
-                <div className={isRetro
-                  ? 'border border-green-800 p-3 font-mono text-xs'
-                  : 'bg-slate-800 rounded-lg p-4 border border-slate-700'
-                }>
-                  <h4 className={isRetro ? 'text-green-500 mb-2' : 'text-white font-semibold mb-3'}>
-                    {isRetro ? '--- LOG ENTRIES ---' : 'Results'}
+                <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                  <h4 className="text-white font-semibold mb-3">
+                    Results
                   </h4>
                   <div className="space-y-3 max-h-96 overflow-y-auto">
                     {queryResult.result.data.result.slice(0, 20).map((entry, i) => (
-                      <div key={i} className={isRetro
-                        ? 'border-b border-green-900 pb-2'
-                        : 'border-b border-slate-700 pb-2'
-                      }>
+                      <div key={i} className="border-b border-slate-700 pb-2">
                         {/* Stream labels */}
                         {entry.stream && (
-                          <div className={isRetro ? 'text-green-600 mb-1' : 'text-amber-400 text-xs mb-1'}>
+                          <div className="text-amber-400 text-xs mb-1">
                             {Object.entries(entry.stream).map(([k, v]) => `${k}="${v}"`).join(' ')}
                           </div>
                         )}
                         {/* Metric labels */}
                         {entry.metric && (
-                          <div className={isRetro ? 'text-green-600 mb-1' : 'text-amber-400 text-xs mb-1'}>
+                          <div className="text-amber-400 text-xs mb-1">
                             {Object.entries(entry.metric).map(([k, v]) => `${k}="${v}"`).join(' ')}
                           </div>
                         )}
                         {/* Log values */}
                         {entry.values && entry.values.slice(0, 5).map(([ts, line], j) => (
-                          <div key={j} className={isRetro ? 'text-green-400 pl-2' : 'text-slate-300 text-sm pl-2'}>
-                            <span className={isRetro ? 'text-green-700' : 'text-slate-500 text-xs'}>
+                          <div key={j} className="text-slate-300 text-sm pl-2">
+                            <span className="text-slate-500 text-xs">
                               {new Date(parseInt(ts, 10) / 1000000).toISOString().substring(11, 23)}
                             </span>
-                            {' '}{line.substring(0, 200)}
+                             {line.substring(0, 200)}
                           </div>
                         ))}
                         {/* Instant value */}
                         {entry.value && (
-                          <div className={isRetro ? 'text-green-400 pl-2' : 'text-slate-300 text-sm pl-2'}>
+                          <div className="text-slate-300 text-sm pl-2">
                             Value: {entry.value[1]}
                           </div>
                         )}
@@ -371,7 +357,7 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
             variant="primary"
             ariaLabel="Scrape Loki metrics"
           >
-            {isRetro ? 'SCRAPE METRICS' : 'Scrape Metrics'}
+            Scrape Metrics
           </ActionButton>
 
           {metricsError && <StatusMessage type="error" message={metricsError} />}
@@ -385,21 +371,18 @@ export default function LokiClient({ onBack }: { onBack: () => void }) {
               } />
 
               {/* Metrics preview */}
-              <div className={isRetro
-                ? 'border border-green-800 p-3 font-mono text-xs'
-                : 'bg-slate-800 rounded-lg p-4 border border-slate-700'
-              }>
-                <h4 className={isRetro ? 'text-green-500 mb-2' : 'text-white font-semibold mb-3'}>
-                  {isRetro ? '--- METRICS PREVIEW ---' : `Metrics (showing ${Math.min(metricsResult.metrics.length, 30)} of ${metricsResult.totalMetrics})`}
+              <div className="bg-slate-800 rounded-lg p-4 border border-slate-700">
+                <h4 className="text-white font-semibold mb-3">
+                  {`Metrics (showing ${Math.min(metricsResult.metrics.length, 30)} of ${metricsResult.totalMetrics})`}
                 </h4>
                 <div className="space-y-1 max-h-80 overflow-y-auto">
                   {metricsResult.metrics.slice(0, 30).map((m, i) => (
-                    <div key={i} className={isRetro ? 'text-green-400' : 'text-sm'}>
-                      <span className={isRetro ? 'text-green-500' : 'text-amber-400 font-mono'}>{m.name}</span>
-                      <span className={isRetro ? 'text-green-700' : 'text-slate-500'}> [{m.type}]</span>
-                      <span className={isRetro ? 'text-green-800' : 'text-slate-600'}> {m.samples} samples</span>
+                    <div key={i} className="text-sm">
+                      <span className="text-amber-400 font-mono">{m.name}</span>
+                      <span className="text-slate-500"> [{m.type}]</span>
+                      <span className="text-slate-600"> {m.samples} samples</span>
                       {m.help && (
-                        <div className={isRetro ? 'text-green-900 pl-4' : 'text-slate-500 text-xs pl-4'}>{m.help.substring(0, 120)}</div>
+                        <div className="text-slate-500 text-xs pl-4">{m.help.substring(0, 120)}</div>
                       )}
                     </div>
                   ))}

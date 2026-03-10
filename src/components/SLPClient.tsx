@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { useTheme } from '../contexts/ThemeContext';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SLPProps {
   onBack: () => void;
@@ -59,21 +59,19 @@ interface AttributeResult {
 type TabType = 'types' | 'find' | 'attributes';
 
 export default function SLPClient({ onBack }: SLPProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
 
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('427');
-  const [scope, setScope] = useState('DEFAULT');
+  const [host, setHost] = usePersistedState('slp-host', '');
+  const [port, setPort] = usePersistedState('slp-port', '427');
+  const [scope, setScope] = usePersistedState('slp-scope', 'DEFAULT');
   const [activeTab, setActiveTab] = useState<TabType>('types');
   const [loading, setLoading] = useState(false);
 
   // Find-specific fields
-  const [serviceType, setServiceType] = useState('service:printer:lpr');
-  const [predicate, setPredicate] = useState('');
+  const [serviceType, setServiceType] = usePersistedState('slp-serviceType', 'service:printer:lpr');
+  const [predicate, setPredicate] = usePersistedState('slp-predicate', '');
 
   // Attribute-specific fields
-  const [serviceUrl, setServiceUrl] = useState('');
+  const [serviceUrl, setServiceUrl] = usePersistedState('slp-serviceUrl', '');
 
   // Results
   const [typesResult, setTypesResult] = useState<ServiceTypesResult | null>(null);
@@ -170,12 +168,12 @@ export default function SLPClient({ onBack }: SLPProps) {
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
-          className={`${isRetro ? 'retro-button' : 'bg-slate-700 hover:bg-slate-600'} text-white px-3 py-2 rounded-lg transition-colors`}
+          className={`$bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded-lg transition-colors`}
         >
           ← Back
         </button>
         <div className="flex items-center gap-3">
-          <div className={`w-12 h-12 ${isRetro ? 'retro-card' : 'bg-gradient-to-br from-teal-500 to-teal-700'} rounded-xl flex items-center justify-center`}>
+          <div className={`w-12 h-12 $bg-gradient-to-br from-teal-500 to-teal-700 rounded-xl flex items-center justify-center`}>
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <circle cx="12" cy="12" r="9" stroke="currentColor" strokeWidth="1.5" fill="none" className="text-white" />
               <path d="M12 8v4l2 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="text-white" />
@@ -185,8 +183,8 @@ export default function SLPClient({ onBack }: SLPProps) {
           </div>
 
           <div>
-            <h1 className={`text-2xl font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>SLP Client</h1>
-            <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>
+            <h1 className={`text-2xl font-bold $text-white`}>SLP Client</h1>
+            <p className="text-slate-400">
               Service Location Protocol · Port 427 · RFC 2608
             </p>
           </div>
@@ -201,11 +199,7 @@ export default function SLPClient({ onBack }: SLPProps) {
             onClick={() => setActiveTab(tab)}
             className={`px-4 py-2 rounded-lg font-medium transition-colors ${
               activeTab === tab
-                ? isRetro
-                  ? 'retro-button-active'
-                  : 'bg-teal-600 text-white'
-                : isRetro
-                ? 'retro-button'
+                ? 'bg-teal-600 text-white'
                 : 'bg-slate-700 text-slate-300 hover:bg-slate-600'
             }`}
           >
@@ -215,45 +209,45 @@ export default function SLPClient({ onBack }: SLPProps) {
       </div>
 
       {/* Connection Form */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           Connection Settings
         </h2>
       <ApiExamples examples={apiExamples.SLP || []} />
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Host</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Host</label>
             <input
               type="text"
               value={host}
               onChange={(e) => setHost(e.target.value)}
               placeholder="slp-server.example.com"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-teal-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Port</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Port</label>
             <input
               type="text"
               value={port}
               onChange={(e) => setPort(e.target.value)}
               placeholder="427"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-teal-500`}
             />
           </div>
           <div>
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Scope</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Scope</label>
             <input
               type="text"
               value={scope}
               onChange={(e) => setScope(e.target.value)}
               placeholder="DEFAULT"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-teal-500`}
             />
           </div>
@@ -263,19 +257,19 @@ export default function SLPClient({ onBack }: SLPProps) {
         {activeTab === 'find' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Service Type</label>
+              <label className={`block text-sm mb-1 $text-slate-400`}>Service Type</label>
               <input
                 type="text"
                 value={serviceType}
                 onChange={(e) => setServiceType(e.target.value)}
                 placeholder="service:printer:lpr"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-teal-500`}
               />
             </div>
             <div>
-              <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+              <label className={`block text-sm mb-1 $text-slate-400`}>
                 Predicate (LDAP filter, optional)
               </label>
               <input
@@ -284,7 +278,7 @@ export default function SLPClient({ onBack }: SLPProps) {
                 onChange={(e) => setPredicate(e.target.value)}
                 placeholder="(location=floor3)"
                 className={`w-full px-3 py-2 rounded-lg ${
-                  isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                  'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
                 } focus:outline-none focus:ring-2 focus:ring-teal-500`}
               />
             </div>
@@ -293,14 +287,14 @@ export default function SLPClient({ onBack }: SLPProps) {
 
         {activeTab === 'attributes' && (
           <div className="mb-4">
-            <label className={`block text-sm mb-1 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Service URL</label>
+            <label className={`block text-sm mb-1 $text-slate-400`}>Service URL</label>
             <input
               type="text"
               value={serviceUrl}
               onChange={(e) => setServiceUrl(e.target.value)}
               placeholder="service:printer:lpr://printer.example.com/queue1"
               className={`w-full px-3 py-2 rounded-lg ${
-                isRetro ? 'retro-input' : 'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
+                'bg-slate-900 border border-slate-600 text-white placeholder-slate-500'
               } focus:outline-none focus:ring-2 focus:ring-teal-500`}
             />
           </div>
@@ -323,8 +317,6 @@ export default function SLPClient({ onBack }: SLPProps) {
           className={`px-6 py-2 rounded-lg font-medium transition-colors ${
             loading || !host || (activeTab === 'find' && !serviceType) || (activeTab === 'attributes' && !serviceUrl)
               ? 'bg-slate-600 text-slate-400 cursor-not-allowed'
-              : isRetro
-              ? 'retro-button'
               : 'bg-teal-600 hover:bg-teal-500 text-white'
           }`}
         >
@@ -340,34 +332,34 @@ export default function SLPClient({ onBack }: SLPProps) {
 
       {/* Service Types Result */}
       {activeTab === 'types' && typesResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Service Types
           </h2>
 
           {!typesResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{typesResult.error}</p>
             </div>
           ) : (
             <>
               {/* Summary */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Version</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-white'}`}>{typesResult.version}</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Version</p>
+                  <p className={`text-lg font-bold $text-white`}>{typesResult.version}</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Types Found</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-teal-400'}`}>{typesResult.serviceTypeCount}</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Types Found</p>
+                  <p className={`text-lg font-bold $text-teal-400`}>{typesResult.serviceTypeCount}</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>{typesResult.connectTimeMs}ms</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>{typesResult.connectTimeMs}ms</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>{typesResult.totalTimeMs}ms</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>{typesResult.totalTimeMs}ms</p>
                 </div>
               </div>
 
@@ -378,17 +370,17 @@ export default function SLPClient({ onBack }: SLPProps) {
                     <div
                       key={i}
                       className={`flex items-center justify-between p-3 rounded-lg cursor-pointer transition-colors ${
-                        isRetro ? 'retro-card hover:border-green-400/50' : 'bg-slate-900/50 border border-slate-700 hover:border-teal-500/50'
+                        'bg-slate-900/50 border border-slate-700 hover:border-teal-500/50'
                       }`}
                       onClick={() => selectServiceType(type)}
                     >
-                      <span className={`font-mono ${isRetro ? 'retro-text' : 'text-teal-300'}`}>{type}</span>
-                      <span className={`text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>→ Find</span>
+                      <span className={`font-mono $text-teal-300`}>{type}</span>
+                      <span className={`text-sm $text-slate-400`}>→ Find</span>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>No service types found in scope "{typesResult.scope}"</p>
+                <p className="text-slate-400">No service types found in scope "{typesResult.scope}"</p>
               )}
             </>
           )}
@@ -397,58 +389,58 @@ export default function SLPClient({ onBack }: SLPProps) {
 
       {/* Find Services Result */}
       {activeTab === 'find' && findResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Services Found
           </h2>
 
           {!findResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{findResult.error}</p>
             </div>
           ) : (
             <>
               {/* Summary */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Service Type</p>
-                  <p className={`text-sm font-bold ${isRetro ? 'retro-text' : 'text-white'} truncate`}>{findResult.serviceType}</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Service Type</p>
+                  <p className={`text-sm font-bold $text-white truncate`}>{findResult.serviceType}</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Found</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-teal-400'}`}>{findResult.serviceCount}</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Found</p>
+                  <p className={`text-lg font-bold $text-teal-400`}>{findResult.serviceCount}</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>{findResult.connectTimeMs}ms</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>{findResult.connectTimeMs}ms</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>{findResult.totalTimeMs}ms</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>{findResult.totalTimeMs}ms</p>
                 </div>
               </div>
 
               {/* Services List */}
               {findResult.services && findResult.services.length > 0 ? (
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden`}>
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Service URL</th>
-                        <th className={`px-4 py-2 text-right ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Lifetime</th>
-                        <th className={`px-4 py-2 text-right ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Actions</th>
+                      <tr className="border-b border-slate-700">
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Service URL</th>
+                        <th className={`px-4 py-2 text-right $text-slate-400`}>Lifetime</th>
+                        <th className={`px-4 py-2 text-right $text-slate-400`}>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
                       {findResult.services.map((svc, i) => (
-                        <tr key={i} className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                          <td className={`px-4 py-2 font-mono ${isRetro ? 'retro-text' : 'text-teal-300'}`}>{svc.url}</td>
-                          <td className={`px-4 py-2 text-right ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>{svc.lifetime}s</td>
+                        <tr key={i} className="border-b border-slate-700">
+                          <td className={`px-4 py-2 font-mono $text-teal-300`}>{svc.url}</td>
+                          <td className={`px-4 py-2 text-right $text-slate-400`}>{svc.lifetime}s</td>
                           <td className="px-4 py-2 text-right">
                             <button
                               onClick={() => selectServiceUrl(svc.url)}
                               className={`text-xs px-2 py-1 rounded ${
-                                isRetro ? 'retro-button' : 'bg-teal-600/30 text-teal-300 hover:bg-teal-600/50'
+                                'bg-teal-600/30 text-teal-300 hover:bg-teal-600/50'
                               }`}
                             >
                               Attrs →
@@ -460,7 +452,7 @@ export default function SLPClient({ onBack }: SLPProps) {
                   </table>
                 </div>
               ) : (
-                <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>No services found for type "{findResult.serviceType}"</p>
+                <p className="text-slate-400">No services found for type "{findResult.serviceType}"</p>
               )}
             </>
           )}
@@ -469,69 +461,69 @@ export default function SLPClient({ onBack }: SLPProps) {
 
       {/* Attributes Result */}
       {activeTab === 'attributes' && attrResult && (
-        <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6 mb-6`}>
-          <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+        <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6 mb-6`}>
+          <h2 className={`text-lg font-semibold mb-4 $text-white`}>
             Service Attributes
           </h2>
 
           {!attrResult.success ? (
-            <div className={`p-4 rounded-lg ${isRetro ? 'border border-red-500/30' : 'bg-red-500/10 border border-red-500/20'}`}>
+            <div className={`p-4 rounded-lg $bg-red-500/10 border border-red-500/20`}>
               <p className="text-red-400">{attrResult.error}</p>
             </div>
           ) : (
             <>
               {/* Summary */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Service URL</p>
-                  <p className={`text-xs font-bold ${isRetro ? 'retro-text' : 'text-white'} truncate`}>{attrResult.serviceUrl}</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Service URL</p>
+                  <p className={`text-xs font-bold $text-white truncate`}>{attrResult.serviceUrl}</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Attributes</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-teal-400'}`}>{attrResult.attributeCount}</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Attributes</p>
+                  <p className={`text-lg font-bold $text-teal-400`}>{attrResult.attributeCount}</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Connect</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>{attrResult.connectTimeMs}ms</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Connect</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>{attrResult.connectTimeMs}ms</p>
                 </div>
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg p-3 text-center`}>
-                  <p className={`text-xs ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Total</p>
-                  <p className={`text-lg font-bold ${isRetro ? 'retro-text' : 'text-blue-400'}`}>{attrResult.totalTimeMs}ms</p>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg p-3 text-center`}>
+                  <p className={`text-xs $text-slate-400`}>Total</p>
+                  <p className={`text-lg font-bold $text-blue-400`}>{attrResult.totalTimeMs}ms</p>
                 </div>
               </div>
 
               {/* Attributes Table */}
               {attrResult.attributes && Object.keys(attrResult.attributes).length > 0 ? (
-                <div className={`${isRetro ? 'retro-card' : 'bg-slate-900/50 border border-slate-700'} rounded-lg overflow-hidden`}>
+                <div className={`$bg-slate-900/50 border border-slate-700 rounded-lg overflow-hidden`}>
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Attribute</th>
-                        <th className={`px-4 py-2 text-left ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>Value</th>
+                      <tr className="border-b border-slate-700">
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Attribute</th>
+                        <th className={`px-4 py-2 text-left $text-slate-400`}>Value</th>
                       </tr>
                     </thead>
                     <tbody>
                       {Object.entries(attrResult.attributes).map(([key, value], i) => (
-                        <tr key={i} className={isRetro ? 'border-b border-green-900/30' : 'border-b border-slate-700'}>
-                          <td className={`px-4 py-2 font-medium ${isRetro ? 'retro-text' : 'text-teal-300'}`}>{key}</td>
-                          <td className={`px-4 py-2 font-mono ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>{value}</td>
+                        <tr key={i} className="border-b border-slate-700">
+                          <td className={`px-4 py-2 font-medium $text-teal-300`}>{key}</td>
+                          <td className={`px-4 py-2 font-mono $text-slate-300`}>{value}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
               ) : (
-                <p className={isRetro ? 'retro-text-dim' : 'text-slate-400'}>No attributes found</p>
+                <p className="text-slate-400">No attributes found</p>
               )}
 
               {/* Raw Attribute List */}
               {attrResult.rawAttributeList && (
                 <div className="mt-4">
-                  <h3 className={`text-sm font-medium mb-2 ${isRetro ? 'retro-text-dim' : 'text-slate-400'}`}>
+                  <h3 className={`text-sm font-medium mb-2 $text-slate-400`}>
                     Raw Attribute List
                   </h3>
                   <pre className={`p-3 rounded-lg text-xs overflow-x-auto ${
-                    isRetro ? 'retro-card font-mono' : 'bg-slate-900/50 border border-slate-700 text-slate-300'
+                    'bg-slate-900/50 border border-slate-700 text-slate-300'
                   }`}>
                     {attrResult.rawAttributeList}
                   </pre>
@@ -543,19 +535,19 @@ export default function SLPClient({ onBack }: SLPProps) {
       )}
 
       {/* Protocol Info */}
-      <div className={`${isRetro ? 'retro-card' : 'bg-slate-800 border border-slate-700'} rounded-xl p-6`}>
-        <h2 className={`text-lg font-semibold mb-4 ${isRetro ? 'retro-text' : 'text-white'}`}>
+      <div className={`$bg-slate-800 border border-slate-700 rounded-xl p-6`}>
+        <h2 className={`text-lg font-semibold mb-4 $text-white`}>
           About SLP
         </h2>
-        <div className={`space-y-3 text-sm ${isRetro ? 'retro-text-dim' : 'text-slate-300'}`}>
+        <div className={`space-y-3 text-sm $text-slate-300`}>
           <p>
             SLP (Service Location Protocol) provides
-            <strong className={isRetro ? 'retro-text' : 'text-white'}> automatic service discovery</strong> on
+            <strong className="text-white"> automatic service discovery</strong> on
             networks, enabling clients to find services without prior configuration.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-3">
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Key Features</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Key Features</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>Automatic service discovery</li>
                 <li>Service type enumeration</li>
@@ -565,7 +557,7 @@ export default function SLPClient({ onBack }: SLPProps) {
               </ul>
             </div>
             <div>
-              <h3 className={`font-medium mb-2 ${isRetro ? 'retro-text' : 'text-white'}`}>Common Service Types</h3>
+              <h3 className={`font-medium mb-2 $text-white`}>Common Service Types</h3>
               <ul className="list-disc list-inside space-y-1">
                 <li>service:printer:lpr - LPR printers</li>
                 <li>service:http - HTTP servers</li>
@@ -575,7 +567,7 @@ export default function SLPClient({ onBack }: SLPProps) {
               </ul>
             </div>
           </div>
-          <div className={`mt-3 p-3 rounded-lg ${isRetro ? 'border border-yellow-500/30' : 'bg-yellow-500/10 border border-yellow-500/20'}`}>
+          <div className={`mt-3 p-3 rounded-lg $bg-yellow-500/10 border border-yellow-500/20`}>
             <p className="text-yellow-300 text-xs">
               <strong>Note:</strong> SLP is commonly used in enterprise networks for service discovery.
               It has largely been replaced by mDNS/DNS-SD (Bonjour) in consumer devices.

@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import type { Protocol } from '../types/protocols';
 import { protocols, categoryConfig, popularityConfig } from '../data/protocols';
-import { useTheme } from '../contexts/ThemeContext';
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -55,8 +54,6 @@ function highlightMatch(text: string, query: string) {
 }
 
 export default function CommandPalette({ isOpen, onClose, onSelect, favorites, recent }: CommandPaletteProps) {
-  const { theme } = useTheme();
-  const isRetro = theme === 'retro';
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -166,33 +163,23 @@ export default function CommandPalette({ isOpen, onClose, onSelect, favorites, r
       {/* Palette */}
       <div
         onClick={(e) => e.stopPropagation()}
-        className={`relative w-full max-w-lg mx-4 overflow-hidden ${
-          isRetro
-            ? 'retro-box border-2 border-green-500 bg-black'
-            : 'bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50'
-        }`}
+        className="relative w-full max-w-lg mx-4 overflow-hidden bg-slate-800 border border-slate-600 rounded-xl shadow-2xl shadow-black/50"
       >
         {/* Search Input */}
-        <div className={`flex items-center gap-3 px-4 py-3 ${isRetro ? 'retro-border' : 'border-b border-slate-700'}`}>
-          <span className={`text-sm ${isRetro ? 'retro-text' : 'text-slate-400'}`}>
-            {isRetro ? '>' : '🔍'}
-          </span>
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-slate-700">
+          <span className="text-sm text-slate-400">🔍</span>
           <input
             ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isRetro ? 'SEARCH PROTOCOLS...' : 'Search protocols by name, port, or feature...'}
-            className={`flex-1 bg-transparent outline-none text-sm ${
-              isRetro ? 'retro-text font-mono placeholder-green-800' : 'text-white placeholder-slate-500'
-            }`}
+            placeholder="Search protocols by name, port, or feature..."
+            className="flex-1 bg-transparent outline-none text-sm text-white placeholder-slate-500"
             autoComplete="off"
             spellCheck={false}
           />
-          <kbd className={`text-[10px] px-1.5 py-0.5 rounded ${
-            isRetro ? 'retro-text-amber' : 'bg-slate-700 text-slate-400 border border-slate-600'
-          }`}>
+          <kbd className="text-[10px] px-1.5 py-0.5 rounded bg-slate-700 text-slate-400 border border-slate-600">
             ESC
           </kbd>
         </div>
@@ -200,17 +187,15 @@ export default function CommandPalette({ isOpen, onClose, onSelect, favorites, r
         {/* Results */}
         <div ref={listRef} className="max-h-[50vh] overflow-y-auto">
           {flatResults.length === 0 && query.trim() && (
-            <div className={`px-4 py-8 text-center text-sm ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>
-              {isRetro ? '> NO MATCHES FOUND' : 'No protocols found'}
+            <div className="px-4 py-8 text-center text-sm text-slate-500">
+              No protocols found
             </div>
           )}
 
           {results.map(section => (
             <div key={section.label}>
-              <div className={`px-4 py-1.5 text-[10px] uppercase tracking-wider font-semibold sticky top-0 ${
-                isRetro ? 'retro-text-amber bg-black' : 'text-slate-500 bg-slate-800/95 backdrop-blur-sm'
-              }`}>
-                {isRetro ? `--- ${section.label} ---` : section.label}
+              <div className="px-4 py-1.5 text-[10px] uppercase tracking-wider font-semibold sticky top-0 text-slate-500 bg-slate-800/95 backdrop-blur-sm">
+                {section.label}
               </div>
               {section.protocols.map(protocol => {
                 const globalIdx = flatResults.indexOf(protocol);
@@ -224,27 +209,23 @@ export default function CommandPalette({ isOpen, onClose, onSelect, favorites, r
                     onClick={() => { onSelect(protocol.id); onClose(); }}
                     onMouseEnter={() => setSelectedIndex(globalIdx)}
                     className={`w-full text-left px-4 py-2 flex items-center gap-3 transition-colors ${
-                      isRetro
-                        ? `${isSelected ? 'bg-green-900/30 retro-text' : 'retro-text'}`
-                        : `${isSelected ? 'bg-indigo-900/40' : 'hover:bg-slate-700/50'}`
+                      isSelected ? 'bg-indigo-900/40' : 'hover:bg-slate-700/50'
                     }`}
                   >
                     <span className="text-lg flex-shrink-0" aria-hidden="true">{protocol.icon}</span>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className={`font-medium text-sm ${isRetro ? '' : 'text-white'}`}>
+                        <span className="font-medium text-sm text-white">
                           {highlightMatch(protocol.name, query)}
                         </span>
-                        <span className={`text-[10px] font-mono ${isRetro ? 'retro-text-amber' : 'text-slate-500'}`}>
+                        <span className="text-[10px] font-mono text-slate-500">
                           :{protocol.port}
                         </span>
-                        {!isRetro && (
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${pop.textColor} bg-slate-700/50`}>
-                            {cat.icon} {cat.label}
-                          </span>
-                        )}
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full ${pop.textColor} bg-slate-700/50`}>
+                          {cat.icon} {cat.label}
+                        </span>
                       </div>
-                      <p className={`text-xs truncate mt-0.5 ${isRetro ? 'retro-text-amber' : 'text-slate-400'}`}>
+                      <p className="text-xs truncate mt-0.5 text-slate-400">
                         {highlightMatch(protocol.description, query)}
                       </p>
                     </div>
@@ -259,12 +240,10 @@ export default function CommandPalette({ isOpen, onClose, onSelect, favorites, r
         </div>
 
         {/* Footer */}
-        <div className={`px-4 py-2 flex items-center gap-4 text-[10px] ${
-          isRetro ? 'retro-border retro-text-amber' : 'border-t border-slate-700 text-slate-500'
-        }`}>
-          <span><kbd className={isRetro ? '' : 'bg-slate-700 px-1 rounded'}>↑↓</kbd> navigate</span>
-          <span><kbd className={isRetro ? '' : 'bg-slate-700 px-1 rounded'}>↵</kbd> select</span>
-          <span><kbd className={isRetro ? '' : 'bg-slate-700 px-1 rounded'}>esc</kbd> close</span>
+        <div className="px-4 py-2 flex items-center gap-4 text-[10px] border-t border-slate-700 text-slate-500">
+          <span><kbd className="bg-slate-700 px-1 rounded">↑↓</kbd> navigate</span>
+          <span><kbd className="bg-slate-700 px-1 rounded">↵</kbd> select</span>
+          <span><kbd className="bg-slate-700 px-1 rounded">esc</kbd> close</span>
         </div>
       </div>
     </div>

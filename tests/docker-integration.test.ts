@@ -17,19 +17,22 @@
  *        docker compose -f docker-compose.misc.yml up -d         # Misc protocols
  *        docker compose -f docker-compose.directory.yml up -d    # LDAP, RADIUS, Kerberos
  *
- *   2. Start local Worker (--env dev bypasses SSRF checks for localhost):
+ *   2a. LOCAL: Start local Worker (--env dev bypasses SSRF checks for localhost):
  *        npx wrangler dev --env dev --port 8787
- *
- *   3. Run tests:
  *        API_BASE=http://localhost:8787/api npx vitest run tests/docker-integration.test.ts
  *
- * SKIPPED when API_BASE points to production — production Worker cannot reach localhost.
+ *   2b. REMOTE: Run Docker on a VPS, test via production Worker:
+ *        API_BASE=https://l4.fyi/api DOCKER_HOST=<VPS_IP> npx vitest run tests/docker-integration.test.ts
+ *
+ * SKIPPED when API_BASE points to production AND no DOCKER_HOST is set.
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
 
 const API_BASE = process.env.API_BASE || 'https://l4.fyi/api';
+const DOCKER_HOST = process.env.DOCKER_HOST || 'localhost';
 const isLocal = API_BASE.includes('localhost') || API_BASE.includes('127.0.0.1');
+const hasRemoteDocker = DOCKER_HOST !== 'localhost' && DOCKER_HOST !== '127.0.0.1';
 
 // Helper for POST requests
 async function post(path: string, body: Record<string, unknown>) {
@@ -43,7 +46,7 @@ async function post(path: string, body: Record<string, unknown>) {
 // Helper: check if a Docker service is reachable (TCP ping)
 async function isServiceUp(port: number): Promise<boolean> {
   try {
-    const res = await post('/ping', { host: 'localhost', port, timeout: 3000 });
+    const res = await post('/ping', { host: DOCKER_HOST, port, timeout: 3000 });
     const data = await res.json();
     return data.success === true;
   } catch {
@@ -51,8 +54,8 @@ async function isServiceUp(port: number): Promise<boolean> {
   }
 }
 
-// Skip entire file if not targeting local worker
-const suite = isLocal ? describe : describe.skip;
+// Run when: local worker (localhost API), OR remote Docker host is specified
+const suite = (isLocal || hasRemoteDocker) ? describe : describe.skip;
 
 // ═══════════════════════════════════════════════════════════════
 // CORE SERVICES (docker-compose.yml)
@@ -65,7 +68,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
       if (!res.ok) throw new Error(`Worker returned ${res.status}`);
     } catch {
       throw new Error(
-        `Local Worker not reachable at ${API_BASE}. Run: npx wrangler dev --port 8787`
+        `Worker not reachable at ${API_BASE}. Run: npx wrangler dev --port 8787 (local) or set API_BASE=https://l4.fyi/api DOCKER_HOST=<IP> (remote)`
       );
     }
   });
@@ -74,68 +77,68 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('TCP Ping', () => {
     it('should ping Redis (6379)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 6379 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 6379 });
       const data = await res.json();
       expect(data.success).toBe(true);
       expect(data.rtt).toBeGreaterThanOrEqual(0);
     });
 
     it('should ping MySQL (3306)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 3306 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 3306 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping PostgreSQL (5432)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 5432 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 5432 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping Memcached (11211)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 11211 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 11211 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping SSH (2222)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 2222 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 2222 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping MongoDB (27017)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 27017 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 27017 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping IRC (6667)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 6667 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 6667 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping MQTT (1883)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 1883 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 1883 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping HTTP/nginx (80)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 80 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 80 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping FTP (21)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 21 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 21 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
 
     it('should ping Telnet (23)', async () => {
-      const res = await post('/ping', { host: 'localhost', port: 23 });
+      const res = await post('/ping', { host: DOCKER_HOST, port: 23 });
       const data = await res.json();
       expect(data.success).toBe(true);
     });
@@ -145,7 +148,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('Redis (port 6379)', () => {
     it('POST /redis/connect — should connect and report version', async () => {
-      const res = await post('/redis/connect', { host: 'localhost', port: 6379 });
+      const res = await post('/redis/connect', { host: DOCKER_HOST, port: 6379 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -155,7 +158,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /redis/command [PING] — should return PONG', async () => {
       const res = await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['PING'],
       });
@@ -170,7 +173,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
       const val = 'integration_test_value';
 
       const setRes = await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['SET', key, val],
       });
@@ -179,7 +182,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
       expect(setData.response).toContain('OK');
 
       const getRes = await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['GET', key],
       });
@@ -189,7 +192,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
       // Cleanup
       await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['DEL', key],
       });
@@ -197,7 +200,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /redis/command [INFO server] — should return server info', async () => {
       const res = await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['INFO', 'server'],
       });
@@ -208,7 +211,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /redis/command [DBSIZE] — should return db size', async () => {
       const res = await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['DBSIZE'],
       });
@@ -218,7 +221,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /redis/command [CONFIG GET] — should be blocked for safety', async () => {
       const res = await post('/redis/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6379,
         command: ['CONFIG', 'GET', 'maxmemory'],
       });
@@ -233,7 +236,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('MySQL (port 3306)', () => {
     it('POST /mysql/connect — probe mode (no creds)', async () => {
-      const res = await post('/mysql/connect', { host: 'localhost', port: 3306 });
+      const res = await post('/mysql/connect', { host: DOCKER_HOST, port: 3306 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -244,7 +247,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /mysql/connect — root auth', async () => {
       const res = await post('/mysql/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3306,
         username: 'root',
         password: 'rootpass123',
@@ -257,7 +260,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /mysql/connect — testuser auth with database', async () => {
       const res = await post('/mysql/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3306,
         username: 'testuser',
         password: 'testpass123',
@@ -270,7 +273,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /mysql/connect — should reject bad credentials', async () => {
       const res = await post('/mysql/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3306,
         username: 'root',
         password: 'wrong',
@@ -281,7 +284,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /mysql/query — SHOW DATABASES', async () => {
       const res = await post('/mysql/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3306,
         username: 'root',
         password: 'rootpass123',
@@ -297,7 +300,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /mysql/query — SELECT expression', async () => {
       const res = await post('/mysql/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3306,
         username: 'root',
         password: 'rootpass123',
@@ -312,7 +315,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /mysql/query — SHOW VARIABLES LIKE version', async () => {
       const res = await post('/mysql/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3306,
         username: 'root',
         password: 'rootpass123',
@@ -330,7 +333,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
   describe('PostgreSQL (port 5432)', () => {
     it('POST /postgres/connect — should authenticate', async () => {
       const res = await post('/postgres/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5432,
         username: 'testuser',
         password: 'rootpass123',
@@ -344,7 +347,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /postgres/connect — should reject bad credentials', async () => {
       const res = await post('/postgres/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5432,
         username: 'testuser',
         password: 'wrong',
@@ -356,7 +359,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /postgres/query — SELECT expression', async () => {
       const res = await post('/postgres/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5432,
         username: 'testuser',
         password: 'rootpass123',
@@ -372,7 +375,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /postgres/query — list databases', async () => {
       const res = await post('/postgres/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5432,
         username: 'testuser',
         password: 'rootpass123',
@@ -388,7 +391,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /postgres/query — version()', async () => {
       const res = await post('/postgres/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5432,
         username: 'testuser',
         password: 'rootpass123',
@@ -406,7 +409,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('Memcached (port 11211)', () => {
     it('POST /memcached/connect — should report version', async () => {
-      const res = await post('/memcached/connect', { host: 'localhost', port: 11211 });
+      const res = await post('/memcached/connect', { host: DOCKER_HOST, port: 11211 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -415,7 +418,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /memcached/command [version] — should return VERSION', async () => {
       const res = await post('/memcached/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 11211,
         command: 'version',
       });
@@ -426,7 +429,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     });
 
     it('POST /memcached/stats — should return server stats', async () => {
-      const res = await post('/memcached/stats', { host: 'localhost', port: 11211 });
+      const res = await post('/memcached/stats', { host: DOCKER_HOST, port: 11211 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -437,7 +440,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /memcached/stats [items] — should return items stats', async () => {
       const res = await post('/memcached/stats', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 11211,
         subcommand: 'items',
       });
@@ -448,7 +451,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /memcached/stats [slabs] — should return slab stats', async () => {
       const res = await post('/memcached/stats', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 11211,
         subcommand: 'slabs',
       });
@@ -462,7 +465,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('SSH (port 2222)', () => {
     it('POST /ssh/connect — should read SSH banner', async () => {
-      const res = await post('/ssh/connect', { host: 'localhost', port: 2222 });
+      const res = await post('/ssh/connect', { host: DOCKER_HOST, port: 2222 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -470,7 +473,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     });
 
     it('POST /ssh/kexinit — should list key exchange algorithms', async () => {
-      const res = await post('/ssh/kexinit', { host: 'localhost', port: 2222 });
+      const res = await post('/ssh/kexinit', { host: DOCKER_HOST, port: 2222 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -481,7 +484,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     });
 
     it('POST /ssh/auth — should attempt auth method probe', async () => {
-      const res = await post('/ssh/auth', { host: 'localhost', port: 2222 });
+      const res = await post('/ssh/auth', { host: DOCKER_HOST, port: 2222 });
       const data = await res.json();
       // Some SSH servers reject the SERVICE_REQUEST for auth probing;
       // we just verify the endpoint responded with the right shape.
@@ -491,7 +494,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /ssh/exec [echo] — should execute command', async () => {
       const res = await post('/ssh/exec', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2222,
         username: 'testuser',
         password: 'testpass123',
@@ -505,7 +508,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /ssh/exec [whoami] — should return testuser', async () => {
       const res = await post('/ssh/exec', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2222,
         username: 'testuser',
         password: 'testpass123',
@@ -518,7 +521,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /ssh/exec [uname] — should return OS info', async () => {
       const res = await post('/ssh/exec', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2222,
         username: 'testuser',
         password: 'testpass123',
@@ -531,7 +534,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /ssh/exec — should reject bad password', async () => {
       const res = await post('/ssh/exec', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2222,
         username: 'testuser',
         password: 'wrong',
@@ -546,7 +549,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('MongoDB (port 27017)', () => {
     it('POST /mongodb/connect — should report server info', async () => {
-      const res = await post('/mongodb/connect', { host: 'localhost', port: 27017 });
+      const res = await post('/mongodb/connect', { host: DOCKER_HOST, port: 27017 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -555,7 +558,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     });
 
     it('POST /mongodb/ping — should return ok=1', async () => {
-      const res = await post('/mongodb/ping', { host: 'localhost', port: 27017 });
+      const res = await post('/mongodb/ping', { host: DOCKER_HOST, port: 27017 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -570,7 +573,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     it('POST /irc/connect — should receive server messages', async () => {
       const nick = `poc_${Date.now() % 100000}`;
       const res = await post('/irc/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 6667,
         nickname: nick,
       });
@@ -586,7 +589,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('MQTT (port 1883)', () => {
     it('POST /mqtt/connect — should connect to broker', async () => {
-      const res = await post('/mqtt/connect', { host: 'localhost', port: 1883 });
+      const res = await post('/mqtt/connect', { host: DOCKER_HOST, port: 1883 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -598,7 +601,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
   describe('FTP (port 21)', () => {
     it('POST /ftp/connect — should authenticate and connect', async () => {
       const res = await post('/ftp/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 21,
         username: 'testuser',
         password: 'testpass123',
@@ -612,7 +615,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
       // FTP passive mode returns 127.0.0.1 from Docker, which the handler blocks.
       // This validates the SSRF protection inside the FTP handler itself.
       const res = await post('/ftp/list', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 21,
         username: 'testuser',
         password: 'testpass123',
@@ -625,7 +628,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /ftp/connect — should reject bad credentials', async () => {
       const res = await post('/ftp/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 21,
         username: 'testuser',
         password: 'wrong',
@@ -639,7 +642,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('Telnet (port 23)', () => {
     it('POST /telnet/connect — should connect to telnet server', async () => {
-      const res = await post('/telnet/connect', { host: 'localhost', port: 23 });
+      const res = await post('/telnet/connect', { host: DOCKER_HOST, port: 23 });
       expect(res.ok).toBe(true);
       const data = await res.json();
       expect(data.success).toBe(true);
@@ -651,7 +654,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
   describe('Simple Protocols (Echo/Daytime/Time/Finger)', () => {
     it('POST /echo/test — should echo message back', async () => {
       const res = await post('/echo/test', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 7,
         message: 'hello_docker',
       });
@@ -663,7 +666,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     });
 
     it('POST /daytime/get — should return time string', async () => {
-      const res = await post('/daytime/get', { host: 'localhost', port: 13 });
+      const res = await post('/daytime/get', { host: DOCKER_HOST, port: 13 });
       if (res.ok) {
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -672,7 +675,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
     });
 
     it('POST /time/get — should return binary time', async () => {
-      const res = await post('/time/get', { host: 'localhost', port: 37 });
+      const res = await post('/time/get', { host: DOCKER_HOST, port: 37 });
       if (res.ok) {
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -681,7 +684,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
     it('POST /finger/query — should query finger', async () => {
       const res = await post('/finger/query', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 79,
         username: 'testuser',
       });
@@ -696,7 +699,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('SMTP (port 25)', () => {
     it('POST /smtp/connect — should read banner', async () => {
-      const res = await post('/smtp/connect', { host: 'localhost', port: 25 });
+      const res = await post('/smtp/connect', { host: DOCKER_HOST, port: 25 });
       if (res.ok) {
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -708,7 +711,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('IMAP (port 143)', () => {
     it('POST /imap/connect — should read IMAP banner', async () => {
-      const res = await post('/imap/connect', { host: 'localhost', port: 143 });
+      const res = await post('/imap/connect', { host: DOCKER_HOST, port: 143 });
       if (res.ok) {
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -720,7 +723,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
 
   describe('POP3 (port 110)', () => {
     it('POST /pop3/connect — should read POP3 banner', async () => {
-      const res = await post('/pop3/connect', { host: 'localhost', port: 110 });
+      const res = await post('/pop3/connect', { host: DOCKER_HOST, port: 110 });
       if (res.ok) {
         const data = await res.json();
         expect(data.success).toBe(true);
@@ -733,7 +736,7 @@ suite('Docker: Core Services (docker-compose.yml)', () => {
   describe('HTTP via nginx (port 80)', () => {
     it('POST /http/request — should fetch from nginx', async () => {
       const res = await post('/http/request', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 80,
         method: 'GET',
         path: '/',
@@ -755,7 +758,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /amqp/connect — should connect to AMQP broker', async () => {
       if (!(await isServiceUp(5672))) return;
       const res = await post('/amqp/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5672,
         vhost: '/',
         username: 'testuser',
@@ -771,7 +774,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /stomp/connect — should connect to STOMP broker', async () => {
       if (!(await isServiceUp(61613))) return;
       const res = await post('/stomp/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 61613,
         username: 'testuser',
         password: 'testpass123',
@@ -788,7 +791,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /kafka/versions — should fetch API versions', async () => {
       if (!(await isServiceUp(9092))) return;
       const res = await post('/kafka/versions', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 9092,
       });
       if (res.ok) {
@@ -800,7 +803,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /kafka/metadata — should fetch cluster metadata', async () => {
       if (!(await isServiceUp(9092))) return;
       const res = await post('/kafka/metadata', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 9092,
       });
       if (res.ok) {
@@ -814,7 +817,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /zookeeper/connect — should respond to ruok', async () => {
       if (!(await isServiceUp(2181))) return;
       const res = await post('/zookeeper/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2181,
       });
       expect(res.ok).toBe(true);
@@ -825,7 +828,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /zookeeper/command [srvr] — should return server info', async () => {
       if (!(await isServiceUp(2181))) return;
       const res = await post('/zookeeper/command', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2181,
         command: 'srvr',
       });
@@ -840,7 +843,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /nats/connect — should connect to NATS', async () => {
       if (!(await isServiceUp(4222))) return;
       const res = await post('/nats/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 4222,
         username: 'testuser',
         password: 'testpass123',
@@ -856,7 +859,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /beanstalkd/connect — should connect', async () => {
       if (!(await isServiceUp(11300))) return;
       const res = await post('/beanstalkd/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 11300,
       });
       if (res.ok) {
@@ -870,7 +873,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // 1. Put a job
       const putRes = await post('/beanstalkd/put', {
-        host: 'localhost', port: 11300,
+        host: DOCKER_HOST, port: 11300,
         tube: 'test-lifecycle', payload: 'lifecycle-test-job',
         priority: 0, delay: 0, ttr: 120,
       });
@@ -880,7 +883,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // 2. Reserve the job
       const resRes = await post('/beanstalkd/reserve', {
-        host: 'localhost', port: 11300,
+        host: DOCKER_HOST, port: 11300,
         tube: 'test-lifecycle', reserveTimeout: 2,
       });
       const resData = await resRes.json();
@@ -894,7 +897,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
       //    return NOT_FOUND which is expected behavior since each
       //    API call opens a fresh TCP connection.
       const touchRes = await post('/beanstalkd/touch', {
-        host: 'localhost', port: 11300, jobId,
+        host: DOCKER_HOST, port: 11300, jobId,
       });
       const touchData = await touchRes.json();
       // Touch requires the same connection that reserved the job,
@@ -903,7 +906,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // 4. Delete the job
       const delRes = await post('/beanstalkd/delete', {
-        host: 'localhost', port: 11300, jobId,
+        host: DOCKER_HOST, port: 11300, jobId,
       });
       const delData = await delRes.json();
       // Job may already have been auto-released after connection closed
@@ -915,7 +918,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // Put and verify
       const putRes = await post('/beanstalkd/put', {
-        host: 'localhost', port: 11300,
+        host: DOCKER_HOST, port: 11300,
         tube: 'test-bury', payload: 'bury-test-job',
       });
       const putData = await putRes.json();
@@ -923,7 +926,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // Reserve
       const resRes = await post('/beanstalkd/reserve', {
-        host: 'localhost', port: 11300, tube: 'test-bury',
+        host: DOCKER_HOST, port: 11300, tube: 'test-bury',
       });
       const resData = await resRes.json();
       expect(resData.success).toBe(true);
@@ -931,26 +934,26 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // Bury (fresh connection — job was auto-released when reserve connection closed)
       const buryRes = await post('/beanstalkd/bury', {
-        host: 'localhost', port: 11300, jobId,
+        host: DOCKER_HOST, port: 11300, jobId,
       });
       const buryData = await buryRes.json();
       expect(buryData.status).toMatch(/BURIED|NOT_FOUND/);
 
       // Kick buried jobs back to ready
       const kickRes = await post('/beanstalkd/kick', {
-        host: 'localhost', port: 11300, tube: 'test-bury', bound: 10,
+        host: DOCKER_HOST, port: 11300, tube: 'test-bury', bound: 10,
       });
       const kickData = await kickRes.json();
       expect(kickData.status).toMatch(/KICKED/);
 
       // Clean up — reserve and delete the kicked job
       const cleanRes = await post('/beanstalkd/reserve', {
-        host: 'localhost', port: 11300, tube: 'test-bury', reserveTimeout: 1,
+        host: DOCKER_HOST, port: 11300, tube: 'test-bury', reserveTimeout: 1,
       });
       const cleanData = await cleanRes.json();
       if (cleanData.jobId) {
         await post('/beanstalkd/delete', {
-          host: 'localhost', port: 11300, jobId: cleanData.jobId,
+          host: DOCKER_HOST, port: 11300, jobId: cleanData.jobId,
         });
       }
     });
@@ -958,7 +961,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('DELETE with invalid jobId — should return NOT_FOUND', async () => {
       if (!(await isServiceUp(11300))) return;
       const res = await post('/beanstalkd/delete', {
-        host: 'localhost', port: 11300, jobId: 999999999,
+        host: DOCKER_HOST, port: 11300, jobId: 999999999,
       });
       const data = await res.json();
       expect(data.success).toBe(false);
@@ -970,7 +973,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // Put a job
       const putRes = await post('/beanstalkd/put', {
-        host: 'localhost', port: 11300,
+        host: DOCKER_HOST, port: 11300,
         tube: 'test-release', payload: 'release-test',
       });
       const putData = await putRes.json();
@@ -979,19 +982,19 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
 
       // Release (fresh connection — NOT_FOUND expected since not reserved here)
       const relRes = await post('/beanstalkd/release', {
-        host: 'localhost', port: 11300, jobId,
+        host: DOCKER_HOST, port: 11300, jobId,
       });
       const relData = await relRes.json();
       expect(relData.status).toMatch(/RELEASED|NOT_FOUND/);
 
       // Clean up
       const cleanRes = await post('/beanstalkd/reserve', {
-        host: 'localhost', port: 11300, tube: 'test-release', reserveTimeout: 1,
+        host: DOCKER_HOST, port: 11300, tube: 'test-release', reserveTimeout: 1,
       });
       const cleanData = await cleanRes.json();
       if (cleanData.jobId) {
         await post('/beanstalkd/delete', {
-          host: 'localhost', port: 11300, jobId: cleanData.jobId,
+          host: DOCKER_HOST, port: 11300, jobId: cleanData.jobId,
         });
       }
     });
@@ -1001,7 +1004,7 @@ suite('Docker: Queue Services (docker-compose.queues.yml)', () => {
     it('POST /activemq/connect — should connect to OpenWire', async () => {
       if (!(await isServiceUp(61616))) return;
       const res = await post('/activemq/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 61616,
       });
       if (res.ok) {
@@ -1021,7 +1024,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /cassandra/connect — should handshake', async () => {
       if (!(await isServiceUp(9042))) return;
       const res = await post('/cassandra/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 9042,
       });
       expect(res.ok).toBe(true);
@@ -1034,7 +1037,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /clickhouse/connect — should connect', async () => {
       if (!(await isServiceUp(9000))) return;
       const res = await post('/clickhouse/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 9000,
         username: 'testuser',
         password: 'testpass123',
@@ -1050,7 +1053,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /couchdb/connect — should connect', async () => {
       if (!(await isServiceUp(5984))) return;
       const res = await post('/couchdb/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5984,
       });
       if (res.ok) {
@@ -1064,7 +1067,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /neo4j/connect — should handshake Bolt protocol', async () => {
       if (!(await isServiceUp(7687))) return;
       const res = await post('/neo4j/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 7687,
       });
       if (res.ok) {
@@ -1078,7 +1081,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /rethinkdb/connect — should connect', async () => {
       if (!(await isServiceUp(28015))) return;
       const res = await post('/rethinkdb/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 28015,
       });
       if (res.ok) {
@@ -1092,7 +1095,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /etcd/connect — should connect', async () => {
       if (!(await isServiceUp(2379))) return;
       const res = await post('/etcd/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2379,
       });
       if (res.ok) {
@@ -1106,7 +1109,7 @@ suite('Docker: Additional Databases (docker-compose.databases.yml)', () => {
     it('POST /tarantool/connect — should connect', async () => {
       if (!(await isServiceUp(3301))) return;
       const res = await post('/tarantool/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3301,
       });
       if (res.ok) {
@@ -1126,7 +1129,7 @@ suite('Docker: Monitoring Services (docker-compose.monitoring.yml)', () => {
     it('POST /elasticsearch/health — should return cluster health', async () => {
       if (!(await isServiceUp(9200))) return;
       const res = await post('/elasticsearch/health', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 9200,
       });
       if (res.ok) {
@@ -1140,7 +1143,7 @@ suite('Docker: Monitoring Services (docker-compose.monitoring.yml)', () => {
     it('POST /graphite/send — should send metric', async () => {
       if (!(await isServiceUp(2003))) return;
       const res = await post('/graphite/send', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2003,
         metrics: [{ name: 'test.docker.cpu', value: 42.5 }],
       });
@@ -1155,7 +1158,7 @@ suite('Docker: Monitoring Services (docker-compose.monitoring.yml)', () => {
     it('POST /influxdb/connect — should connect', async () => {
       if (!(await isServiceUp(8086))) return;
       const res = await post('/influxdb/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 8086,
       });
       if (res.ok) {
@@ -1175,7 +1178,7 @@ suite('Docker: Directory Services (docker-compose.directory.yml)', () => {
     it('POST /ldap/connect — should connect to OpenLDAP', async () => {
       if (!(await isServiceUp(389))) return;
       const res = await post('/ldap/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 389,
       });
       if (res.ok) {
@@ -1195,7 +1198,7 @@ suite('Docker: Misc Protocols (docker-compose.misc.yml)', () => {
     it('POST /gopher/fetch — should fetch root menu', async () => {
       if (!(await isServiceUp(70))) return;
       const res = await post('/gopher/fetch', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 70,
         selector: '',
       });
@@ -1210,7 +1213,7 @@ suite('Docker: Misc Protocols (docker-compose.misc.yml)', () => {
     it('POST /nntp/connect — should read banner', async () => {
       if (!(await isServiceUp(119))) return;
       const res = await post('/nntp/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 119,
       });
       if (res.ok) {
@@ -1224,7 +1227,7 @@ suite('Docker: Misc Protocols (docker-compose.misc.yml)', () => {
     it('POST /dict/databases — should list databases', async () => {
       if (!(await isServiceUp(2628))) return;
       const res = await post('/dict/databases', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 2628,
       });
       if (res.ok) {
@@ -1238,7 +1241,7 @@ suite('Docker: Misc Protocols (docker-compose.misc.yml)', () => {
     it('POST /whois/lookup — should query local WHOIS', async () => {
       if (!(await isServiceUp(43))) return;
       const res = await post('/whois/lookup', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 43,
         domain: 'test.com',
       });
@@ -1259,7 +1262,7 @@ suite('Docker: File Services (docker-compose.files.yml)', () => {
     it('POST /rsync/connect — should list modules', async () => {
       if (!(await isServiceUp(873))) return;
       const res = await post('/rsync/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 873,
       });
       if (res.ok) {
@@ -1273,7 +1276,7 @@ suite('Docker: File Services (docker-compose.files.yml)', () => {
     it('POST /smb/connect — should negotiate SMB', async () => {
       if (!(await isServiceUp(445))) return;
       const res = await post('/smb/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 445,
       });
       if (res.ok) {
@@ -1293,7 +1296,7 @@ suite('Docker: Industrial Protocols (docker-compose.industrial.yml)', () => {
     it('POST /modbus/connect — should connect to simulator', async () => {
       if (!(await isServiceUp(502))) return;
       const res = await post('/modbus/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 502,
         unitId: 1,
       });
@@ -1306,7 +1309,7 @@ suite('Docker: Industrial Protocols (docker-compose.industrial.yml)', () => {
     it('POST /modbus/read — should read holding registers', async () => {
       if (!(await isServiceUp(502))) return;
       const res = await post('/modbus/read', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 502,
         functionCode: 3,
         address: 0,
@@ -1323,7 +1326,7 @@ suite('Docker: Industrial Protocols (docker-compose.industrial.yml)', () => {
     it('POST /opcua/connect — should connect to simulator', async () => {
       if (!(await isServiceUp(4840))) return;
       const res = await post('/opcua/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 4840,
       });
       if (res.ok) {
@@ -1343,7 +1346,7 @@ suite('Docker: Version Control (docker-compose.vcs.yml)', () => {
     it('POST /svn/connect — should connect to svnserve', async () => {
       if (!(await isServiceUp(3690))) return;
       const res = await post('/svn/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 3690,
       });
       if (res.ok) {
@@ -1363,7 +1366,7 @@ suite('Docker: Security Services (docker-compose.security.yml)', () => {
     it('POST /socks5/connect — should negotiate with proxy', async () => {
       if (!(await isServiceUp(1080))) return;
       const res = await post('/socks5/connect', {
-        proxyHost: 'localhost',
+        proxyHost: DOCKER_HOST,
         proxyPort: 1080,
         destHost: 'example.com',
         destPort: 80,
@@ -1385,7 +1388,7 @@ suite('Docker: Chat Services (docker-compose.chat.yml)', () => {
     it('POST /xmpp/connect — should negotiate XMPP stream', async () => {
       if (!(await isServiceUp(5222))) return;
       const res = await post('/xmpp/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 5222,
       });
       if (res.ok) {
@@ -1405,7 +1408,7 @@ suite('Docker: HashiCorp Services (docker-compose.hashicorp.yml)', () => {
     it('POST /consul/connect — should connect', async () => {
       if (!(await isServiceUp(8500))) return;
       const res = await post('/consul/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 8500,
       });
       if (res.ok) {
@@ -1419,7 +1422,7 @@ suite('Docker: HashiCorp Services (docker-compose.hashicorp.yml)', () => {
     it('POST /vault/connect — should connect', async () => {
       if (!(await isServiceUp(8200))) return;
       const res = await post('/vault/connect', {
-        host: 'localhost',
+        host: DOCKER_HOST,
         port: 8200,
       });
       if (res.ok) {

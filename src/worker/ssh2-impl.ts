@@ -769,7 +769,7 @@ async function runSSHSession(
 
   // ── Step 10: I/O forwarding ───────────────────────────────────────────────────
 
-  let channelOpen = false; // set true only after 'connected' is sent
+  let channelOpen = false;
   let localWindowRemaining = localWindowSize;
 
   // Write queue for WS → SSH data (RFC 4254 §5.2 compliant window management).
@@ -787,43 +787,10 @@ async function runSSHSession(
     fn?.();
   }
 
-  // Drain loop: runs concurrently with the SSH read loop below.
-  const drainDone = (async () => {
-    while (channelOpen) {
-      if (inputQueue.length === 0 || remoteWindow === 0) {
-        // Park until new input arrives or the remote window opens.
-        await new Promise<void>(resolve => { drainWake = resolve; });
-        continue;
-      }
-      const data = inputQueue[0];
-      let offset = 0;
-      while (offset < data.length && remoteWindow > 0 && channelOpen) {
-        const chunkSize = Math.min(data.length - offset, remoteWindow, remoteMaxPktSize);
-        const chunk = data.slice(offset, offset + chunkSize);
-        try {
-          await sendPayload(cat(
-            new Uint8Array([MSG_CHANNEL_DATA]),
-            u32(remoteChannel),
-            sshBytes(chunk),
-          ));
-          remoteWindow -= chunkSize;
-          offset += chunkSize;
-        } catch {
-          channelOpen = false;
-          break;
-        }
-      }
-      if (offset >= data.length) {
-        inputQueue.shift(); // fully consumed
-        inputQueueBytes -= data.length;
-      } else if (offset > 0) {
-        inputQueue[0] = data.slice(offset); // replace with unsent remainder
-        inputQueueBytes -= offset;
-      }
-    }
-  })();
-
-  ws.send(JSON.stringify({ type: 'connected' }));
+  // Enable I/O forwarding and register the WS → SSH listener BEFORE
+  // sending 'connected' to the client (so the drain loop is alive when
+  // the first keystrokes arrive) and before starting the drain loop
+  // (which checks `channelOpen` on entry).
   channelOpen = true;
 
   // WebSocket → SSH: push input to queue non-blocking; drain loop handles sending.
@@ -863,6 +830,47 @@ async function runSSHSession(
     inputQueueBytes += data.length;
     signalDrain(); // wake drain loop if it was waiting for input
   });
+
+  // Drain loop: runs concurrently with the SSH read loop below.
+  // Must start AFTER channelOpen = true so the while-loop doesn't exit immediately.
+  const drainDone = (async () => {
+    while (channelOpen) {
+      if (inputQueue.length === 0 || remoteWindow === 0) {
+        // Park until new input arrives or the remote window opens.
+        await new Promise<void>(resolve => { drainWake = resolve; });
+        continue;
+      }
+      const data = inputQueue[0];
+      let offset = 0;
+      while (offset < data.length && remoteWindow > 0 && channelOpen) {
+        const chunkSize = Math.min(data.length - offset, remoteWindow, remoteMaxPktSize);
+        const chunk = data.slice(offset, offset + chunkSize);
+        try {
+          await sendPayload(cat(
+            new Uint8Array([MSG_CHANNEL_DATA]),
+            u32(remoteChannel),
+            sshBytes(chunk),
+          ));
+          remoteWindow -= chunkSize;
+          offset += chunkSize;
+        } catch {
+          channelOpen = false;
+          break;
+        }
+      }
+      if (offset >= data.length) {
+        inputQueue.shift(); // fully consumed
+        inputQueueBytes -= data.length;
+      } else if (offset > 0) {
+        inputQueue[0] = data.slice(offset); // replace with unsent remainder
+        inputQueueBytes -= offset;
+      }
+    }
+  })();
+
+  // Notify the client that the session is ready — sent AFTER the drain loop
+  // and WS listener are wired up so keystrokes are handled immediately.
+  ws.send(JSON.stringify({ type: 'connected' }));
 
   // SSH → WebSocket: forward channel output to terminal
   while (channelOpen) {

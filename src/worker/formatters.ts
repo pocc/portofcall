@@ -345,6 +345,53 @@ const FORMATTERS: Record<string, Formatter> = {
   ws: formatWs,
 };
 
+import type { ProtocolManpage } from './manpages';
+
+export function formatManpage(proto: string, manpage: ProtocolManpage, host?: string): string {
+  const h = host || 'l4.fyi';
+  const label = `PORTOFCALL ${manpage.name}(1)`;
+  const width = 72;
+  const headerLine = label + ' '.repeat(Math.max(1, width - label.length * 2)) + label;
+
+  let out = `\n${headerLine}\n\n`;
+  out += `NAME\n`;
+  out += `  ${proto} — ${manpage.fullName}`;
+  if (manpage.defaultPort !== null) out += ` (port ${manpage.defaultPort})`;
+  out += `\n\n`;
+
+  out += `SYNOPSIS\n`;
+  if (manpage.shortRoute) {
+    if (manpage.defaultPort !== null) {
+      out += `  curl ${h}/${proto}/<host>\n`;
+      out += `  curl ${h}/${proto}/<host>:<port>\n`;
+    } else {
+      out += `  curl ${h}/${proto}/<host>:<port>\n`;
+    }
+  }
+  const firstEndpoint = manpage.endpoints[0] || 'connect';
+  out += `  curl -X POST ${h}/api/${proto}/${firstEndpoint} -d '{"host":"..."}'\n`;
+  out += `\n`;
+
+  out += `ENDPOINTS\n`;
+  const maxPath = Math.max(...manpage.endpoints.map(e => `/api/${proto}/${e}`.length));
+  for (const ep of manpage.endpoints) {
+    const path = `/api/${proto}/${ep}`;
+    out += `  POST ${path.padEnd(maxPath + 2)}${ep}\n`;
+  }
+  out += `\n`;
+
+  if (manpage.shortRoute && manpage.defaultPort !== null) {
+    out += `SEE ALSO\n`;
+    out += `  curl ${h}/${proto}/example.com\n`;
+    out += `  curl ${h}/${proto}/example.com:${manpage.defaultPort}\n`;
+    out += `\n`;
+  }
+
+  const footerLine = ' '.repeat(Math.max(0, (width - h.length) / 2)) + h + ' '.repeat(Math.max(0, (width - h.length) / 2 - label.length)) + label;
+  out += `${footerLine}\n`;
+  return out;
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function formatResponse(protocol: string, json: any, rawTarget: string, host?: string): string {
   const resolvedHost = host || 'l4.fyi';

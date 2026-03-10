@@ -296,7 +296,8 @@ import { addSecurityHeaders, sanitizeErrors } from './response-middleware';
 import { handleTcpPing, handleSocketConnection } from './websocket-pipe';
 import { detectClient } from './content-negotiation';
 import { matchShortRoute, dispatchShortRoute, isKnownProtocolMissingPort } from './cli-routes';
-import { formatResponse } from './formatters';
+import { formatResponse, formatManpage } from './formatters';
+import { getManpage } from './manpages';
 import { serveCLIScript } from './cli-script';
 import { serveCurlLandingPage } from './curl-landing';
 import { checkIfCloudflare } from './cloudflare-detector';
@@ -531,6 +532,36 @@ export default {
         `\nPORTOFCALL ${missingPort.protocol} ${missingPort.target}\n\n  ERROR  Port required. Usage: /${missingPort.protocol}/${missingPort.target}:<port>\n`,
         { status: 400, headers: { 'Content-Type': 'text/plain; charset=utf-8' } },
       );
+    }
+
+    // --- Protocol manpage routes (bare /:protocol or /:protocol/) ---
+    {
+      const bare = url.pathname.replace(/\/$/, '').slice(1).toLowerCase();
+      if (bare && !bare.includes('/')) {
+        const manpage = getManpage(bare);
+        if (manpage) {
+          const clientType = detectClient(request);
+          if (clientType === 'browser') {
+            return Response.redirect(`/#${bare}`, 302);
+          }
+          if (clientType === 'json') {
+            return new Response(JSON.stringify({
+              protocol: bare,
+              name: manpage.name,
+              fullName: manpage.fullName,
+              defaultPort: manpage.defaultPort,
+              shortRoute: manpage.shortRoute,
+              endpoints: manpage.endpoints.map(ep => ({
+                method: 'POST',
+                path: `/api/${bare}/${ep}`,
+              })),
+            }), { headers: { 'Content-Type': 'application/json' } });
+          }
+          return new Response(formatManpage(bare, manpage, url.host), {
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+          });
+        }
+      }
     }
 
     // API endpoint for TCP ping

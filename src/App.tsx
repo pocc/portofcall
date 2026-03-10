@@ -52,6 +52,7 @@ function useOnlineStatus() {
 }
 
 // Lazy load all protocol clients for better performance
+const LiveDemo = lazy(() => import('./components/LiveDemo'));
 const TcpClient = lazy(() => import('./components/TcpClient'));
 const EchoClient = lazy(() => import('./components/EchoClient'));
 const ActiveUsersClient = lazy(() => import('./components/ActiveUsersClient'));
@@ -281,6 +282,7 @@ const SCPClient = lazy(() => import('./components/SCPClient'));
 const SPDYClient = lazy(() => import('./components/SPDYClient'));
 const ShadowsocksClient = lazy(() => import('./components/ShadowsocksClient'));
 type Protocol =
+  | 'live-demo'
   | 'echo'
   | 'activeusers'
   | 'whois'
@@ -560,6 +562,8 @@ function App() {
   const renderProtocolClient = () => {
 
     switch (selectedProtocol) {
+      case 'live-demo':
+        return <LiveDemo onBack={handleBack} />;
       case 'echo':
         return <EchoClient onBack={handleBack} />;
       case 'activeusers':

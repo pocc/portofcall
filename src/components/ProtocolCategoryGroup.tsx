@@ -57,7 +57,21 @@ export default function ProtocolCategoryGroup({
       {!isCollapsed && (
         <div id={`category-content-${category}`}>
           <div className="bg-slate-800/50 rounded-lg border border-slate-700 overflow-hidden">
-            <table className="w-full text-sm">
+            <table className="w-full text-sm table-fixed">
+              <colgroup>
+                <col className="w-auto" />
+                <col className="w-24" />
+                <col className="w-16 hidden md:table-column" />
+                <col className="w-10" />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-slate-600">
+                  <th className="text-left py-1.5 px-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Protocol</th>
+                  <th className="text-left py-1.5 px-3 text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Port</th>
+                  <th className="text-left py-1.5 px-3 hidden md:table-cell text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Year</th>
+                  <th className="w-10"></th>
+                </tr>
+              </thead>
               <tbody>
                 {protocols.map((protocol, idx) => (
                   <tr

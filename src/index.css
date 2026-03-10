@@ -18,3 +18,69 @@ body {
 #root {
   width: 100%;
 }
+
+/* ─── Modern Protocol Card Containers ─── */
+@layer components {
+  /* Glass-morphism card used by protocol pages */
+  .protocol-card {
+    @apply bg-slate-800/60 backdrop-blur-sm border border-slate-700/40 rounded-2xl p-6;
+    box-shadow:
+      0 0 0 1px rgba(148, 163, 184, 0.05),
+      0 4px 24px -4px rgba(0, 0, 0, 0.3),
+      0 1px 2px rgba(0, 0, 0, 0.2);
+  }
+
+  .protocol-card:hover {
+    @apply border-slate-600/50;
+  }
+
+  /* Subtle inner glow for focused sections */
+  .protocol-card-glow {
+    @apply protocol-card;
+    background-image: radial-gradient(ellipse at top, rgba(59, 130, 246, 0.04), transparent 70%);
+  }
+}
+
+/* ─── Enhanced scrollbar for terminal/output areas ─── */
+.output-content::-webkit-scrollbar,
+pre::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.output-content::-webkit-scrollbar-track,
+pre::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.output-content::-webkit-scrollbar-thumb,
+pre::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.3);
+  border-radius: 3px;
+}
+
+.output-content::-webkit-scrollbar-thumb:hover,
+pre::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+}
+
+/* ─── Smooth transitions for all interactive elements ─── */
+input,
+select,
+textarea,
+button {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ─── Focus ring consistency ─── */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* ─── Enhanced selection color ─── */
+::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: white;
+}

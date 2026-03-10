@@ -1,22 +1,29 @@
 import { useState } from 'react';
+import ProtocolClientLayout, {
+  SectionHeader,
+  FormField,
+  ActionButton,
+  HelpSection,
+} from './ProtocolClientLayout';
 import ApiExamples from './ApiExamples';
 import apiExamples from '../data/api-examples';
+import { usePersistedState } from '../hooks/usePersistedState';
 
 interface SFTPClientProps {
   onBack: () => void;
 }
 
 export default function SFTPClient({ onBack }: SFTPClientProps) {
-  const [host, setHost] = useState('');
-  const [port, setPort] = useState('22');
+  const [host, setHost] = usePersistedState('sftp-host', '');
+  const [port, setPort] = usePersistedState('sftp-port', '22');
   const [loading, setLoading] = useState(false);
   const [output, setOutput] = useState<string[]>([]);
 
   const addOutput = (text: string, type: 'info' | 'error' | 'success' = 'info') => {
     const prefix = {
-      info: '💡 ',
-      error: '❌ ',
-      success: '✅ ',
+      info: '\u{1f4a1} ',
+      error: '\u{274c} ',
+      success: '\u{2705} ',
     }[type];
     setOutput(prev => {
       const next = [...prev, `${prefix}${text}`];
@@ -70,83 +77,88 @@ export default function SFTPClient({ onBack }: SFTPClientProps) {
     }
   };
 
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !loading && host) {
+      handleConnect();
+    }
+  };
+
   return (
-    <div className="sftp-client">
-      <div className="client-header">
-        <button onClick={onBack} className="back-button">
-          ← Back
-        </button>
-        <h2>SFTP Client</h2>
-        <div className="protocol-info">Port 22 - SSH File Transfer Protocol</div>
-      </div>
+    <ProtocolClientLayout title="SFTP Client" onBack={onBack}>
+      <p className="text-slate-400 text-sm mb-6">Port 22 &mdash; SSH File Transfer Protocol</p>
 
       <ApiExamples examples={apiExamples.SFTP || []} />
 
-      <div className="info-box" style={{ marginBottom: '1rem', borderColor: '#f59e0b', background: 'rgba(245,158,11,0.08)', color: '#fcd34d' }}>
-        <strong>Connectivity test only.</strong> Tests TCP reachability and reads the SSH banner to verify SFTP availability. File operations (list, upload, download, delete, mkdir, rename) are not yet implemented — they require a WebSocket-based SFTP session.
+      <div className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-4 mb-6 flex items-start gap-3">
+        <svg className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
+        </svg>
+        <p className="text-sm text-amber-200/80 leading-relaxed">
+          <strong className="text-amber-200">Connectivity test only.</strong> Tests TCP reachability and reads the SSH banner to verify SFTP availability. File operations (list, upload, download, delete, mkdir, rename) are not yet implemented — they require a WebSocket-based SFTP session.
+        </p>
       </div>
 
-      <div className="connection-form">
-        <h3>Test SFTP Server Connectivity</h3>
+      <div className="bg-slate-800/60 backdrop-blur-sm border border-slate-700/40 rounded-2xl p-6 shadow-lg shadow-black/10">
+        <SectionHeader stepNumber={1} title="Test SFTP Server Connectivity" />
 
-        <div className="form-row">
-          <div className="form-group" style={{ flex: 3 }}>
-            <label htmlFor="sftp-host">Host</label>
-            <input
+        <div className="grid md:grid-cols-4 gap-4 mb-6">
+          <div className="md:col-span-3">
+            <FormField
               id="sftp-host"
+              label="Host"
               type="text"
               value={host}
-              onChange={(e) => setHost(e.target.value)}
+              onChange={setHost}
+              onKeyDown={handleKeyDown}
               placeholder="test.rebex.net"
-              disabled={loading}
+              required
             />
           </div>
-
-          <div className="form-group" style={{ flex: 1 }}>
-            <label htmlFor="sftp-port">Port</label>
-            <input
-              id="sftp-port"
-              type="number"
-              value={port}
-              onChange={(e) => setPort(e.target.value)}
-              disabled={loading}
-            />
-          </div>
+          <FormField
+            id="sftp-port"
+            label="Port"
+            type="number"
+            value={port}
+            onChange={setPort}
+            onKeyDown={handleKeyDown}
+          />
         </div>
 
-        <button
+        <ActionButton
           onClick={handleConnect}
           disabled={loading || !host}
-          className="connect-button"
+          loading={loading}
+          ariaLabel="Test SFTP connection"
         >
-          {loading ? 'Testing...' : 'Test Connection'}
-        </button>
+          Test Connection
+        </ActionButton>
 
-        <div className="help-text">
-          <p>Tests whether an SSH server is reachable and reports the SSH banner.</p>
-          <p>Test server: test.rebex.net:22</p>
-        </div>
+        <HelpSection
+          title="About SFTP"
+          description="Tests whether an SSH server is reachable and reports the SSH banner. Try test.rebex.net:22 for a public test server."
+        />
       </div>
 
       {output.length > 0 && (
-        <div className="output-panel">
-          <h4>Connection Log</h4>
-          <div className="output-content">
+        <div className="mt-6 bg-slate-900/60 backdrop-blur-sm border border-slate-700/40 rounded-2xl p-5">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold text-slate-300">Connection Log</h4>
+            <button
+              onClick={() => setOutput([])}
+              className="text-xs text-slate-500 hover:text-slate-300 px-2.5 py-1 rounded-lg hover:bg-slate-800/50 transition-all duration-200"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="output-content space-y-1.5 max-h-64 overflow-y-auto pr-2">
             {output.map((line, i) => (
-              <div key={i} className="output-line">
+              <div key={i} className="text-sm text-slate-300 font-mono leading-relaxed">
                 {line}
               </div>
             ))}
           </div>
-          <button
-            onClick={() => setOutput([])}
-            className="secondary-button"
-            style={{ marginTop: '0.5rem' }}
-          >
-            Clear Log
-          </button>
         </div>
       )}
-    </div>
+    </ProtocolClientLayout>
   );
 }

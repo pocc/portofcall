@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTheme } from '../contexts/ThemeContext';
-import { protocols } from './ProtocolSelector';
+import { protocols } from '../data/protocols';
 
 type ChecklistState = Record<string, Record<string, boolean>>;
 
